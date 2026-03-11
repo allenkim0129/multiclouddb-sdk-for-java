@@ -11,7 +11,7 @@
 hyperscaledb.provider=cosmos
 
 # Your Cosmos DB account endpoint -- found in Azure Portal -> Cosmos DB -> Overview -> URI
-hyperscaledb.connection.endpoint=https://allekim-test-sm.documents.azure.com:443/
+hyperscaledb.connection.endpoint=https://<YOUR-COSMOS-ACCOUNT-NAME>.documents.azure.com:443/
 
 # Use "direct" for best performance in production; "gateway" for restricted networks
 hyperscaledb.connection.connectionMode=direct
@@ -19,16 +19,16 @@ hyperscaledb.connection.connectionMode=direct
 # -- ARM management-plane (required for auto-provisioning databases & containers) --
 # Azure subscription ID that owns the Cosmos DB account
 # Run: az account show --query id -o tsv
-hyperscaledb.connection.subscriptionId=b31b6408-0fb5-4688-9a3c-33ffb3983297
+hyperscaledb.connection.subscriptionId=<YOUR-SUBSCRIPTION-ID>
 
 # Resource group containing the Cosmos DB account
 # Run: az cosmosdb show --name <account> --query resourceGroup -o tsv
-hyperscaledb.connection.resourceGroupName=allekim_test_rg
+hyperscaledb.connection.resourceGroupName=<YOUR-RESOURCE-GROUP>
 
 # -- Tenant ID (required to avoid InvalidAuthenticationTokenTenant errors) --
 # The Azure AD tenant that owns your subscription
 # Run: az account show --query tenantId -o tsv
-hyperscaledb.connection.tenantId=b5a53dd4-9da5-494f-adab-d04a5754fc6f
+hyperscaledb.connection.tenantId=<YOUR-TENANT-ID>
 
 # -- No key needed ----------------------------------------------------------
 # Leave the key property absent -- the SDK uses DefaultAzureCredential automatically.
@@ -40,4 +40,3 @@ hyperscaledb.connection.tenantId=b5a53dd4-9da5-494f-adab-d04a5754fc6f
 #   5. Azure Developer CLI  (azd auth login)
 #   6. IntelliJ / Visual Studio credentials
 # hyperscaledb.connection.key=<leave absent for Entra ID auth>
-

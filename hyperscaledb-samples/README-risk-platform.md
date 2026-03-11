@@ -28,6 +28,13 @@ dark-themed executive dashboard for portfolio risk analytics.
 8. [Demo Tenants & Data](#demo-tenants--data)
 9. [Project Structure](#project-structure)
 10. [Appendix: Installing Prerequisites](#appendix-installing-prerequisites)
+    - [Install JDK](#install-jdk)
+    - [Set JAVA_HOME](#set-java_home)
+    - [Install Maven](#install-maven)
+    - [Install Azure CLI](#install-azure-cli)
+    - [Install AWS CLI](#install-aws-cli)
+    - [Install OpenSSL (Windows)](#install-openssl-windows-only--needed-for-option-a)
+    - [Install Node.js (optional)](#install-nodejs-optional--for-dynamodb-admin-gui)
 
 ---
 
@@ -173,8 +180,8 @@ echo $JAVA_HOME
 |--------|-------------|-------|
 | **A** — Cosmos DB Emulator | `openssl`, `keytool` | `keytool` ships with JDK. `openssl` ships with macOS/Linux; on Windows install via `winget install ShiningLight.OpenSSL.Light` |
 | **B** — DynamoDB Local | _(none)_ | Downloaded in step B1 |
-| **C** — Cosmos DB Cloud | Azure CLI | `az login` required |
-| **D** — DynamoDB Cloud | AWS CLI | `aws configure` required |
+| **C** — Cosmos DB Cloud | Azure CLI | `az login` required. Not installed? → [Install Azure CLI](#install-azure-cli) |
+| **D** — DynamoDB Cloud | AWS CLI | `aws configure` required. Not installed? → [Install AWS CLI](#install-aws-cli) |
 | _(optional)_ | Node.js 18+ | Only for `dynamodb-admin` GUI |
 
 > **You do NOT need to create any databases, containers, or tables manually.**
@@ -875,41 +882,234 @@ and the DynamoDB Local terminal.
 ### Option C: Run against Cosmos DB (Azure Cloud)
 
 This option connects to a **real Azure Cosmos DB account** using
-**Microsoft Entra ID** (Azure AD) authentication via `DefaultAzureCredential`.
-No master key is needed — authentication uses your Azure identity.
+**Microsoft Entra ID** (Azure AD / Entra) authentication via `DefaultAzureCredential`.
+**No master key is needed** — all authentication uses your Azure identity.
 
-#### C1 — Sign in with Azure CLI
+> **What you need:**
+> - An existing Azure Cosmos DB (NoSQL API) account
+> - Azure CLI installed and on your PATH — not installed? → [Install Azure CLI](#install-azure-cli)
+> - Your identity signed in with `az login`
+> - The **Cosmos DB Built-in Data Contributor** data-plane RBAC role assigned to your identity
+> - **Contributor** or **Owner** ARM role on the resource group (for auto-provisioning databases/containers)
 
+---
+
+#### C0 — Create the properties file (one-time setup)
+
+The cloud properties file contains your subscription ID, tenant ID, and endpoint.
+**It is git-ignored and must never be committed.**
+
+A template is provided. Copy it and fill in your values:
+
+**macOS / Linux:**
+```bash
+cp hyperscaledb-samples/src/main/resources/risk-platform-cosmos-cloud.properties.template \
+   hyperscaledb-samples/src/main/resources/risk-platform-cosmos-cloud.properties
+```
+
+**Windows (PowerShell):**
 ```powershell
+Copy-Item hyperscaledb-samples\src\main\resources\risk-platform-cosmos-cloud.properties.template `
+          hyperscaledb-samples\src\main\resources\risk-platform-cosmos-cloud.properties
+```
+
+Then open the file and fill in the four values below. The commands in C1 will
+print each value for you.
+
+```ini
+hyperscaledb.provider=cosmos
+hyperscaledb.connection.endpoint=https://<YOUR-COSMOS-ACCOUNT-NAME>.documents.azure.com:443/
+hyperscaledb.connection.connectionMode=direct
+hyperscaledb.connection.subscriptionId=<YOUR-SUBSCRIPTION-ID>
+hyperscaledb.connection.resourceGroupName=<YOUR-RESOURCE-GROUP>
+hyperscaledb.connection.tenantId=<YOUR-TENANT-ID>
+```
+
+> ⚠️ **Do not add a `key=` line.** Leaving it absent enables Entra ID
+> (`DefaultAzureCredential`) automatically. Adding a key switches to key-based auth.
+
+---
+
+#### C1 — Sign in and collect your credential values
+
+##### macOS / Linux
+
+```bash
+# Sign in to Azure CLI
 az login
+
+# Print your tenant ID  → paste into hyperscaledb.connection.tenantId
+az account show --query tenantId -o tsv
+
+# Print your subscription ID  → paste into hyperscaledb.connection.subscriptionId
+az account show --query id -o tsv
+
+# If you have multiple subscriptions, list them all and pick the right one
+az account list --query "[].{Name:name, ID:id, TenantID:tenantId}" -o table
+
+# Set the correct subscription (replace with your subscription ID)
+az account set --subscription "<YOUR-SUBSCRIPTION-ID>"
+
+# Print the resource group of your Cosmos DB account  → paste into hyperscaledb.connection.resourceGroupName
+az cosmosdb show --name "<YOUR-COSMOS-ACCOUNT-NAME>" --query resourceGroup -o tsv
+
+# Print the endpoint URL  → paste into hyperscaledb.connection.endpoint
+az cosmosdb show --name "<YOUR-COSMOS-ACCOUNT-NAME>" --query documentEndpoint -o tsv
 ```
 
-Verify:
+##### Windows (PowerShell)
 
 ```powershell
-az account show --query "{name:name, id:id}" -o table
+# Sign in to Azure CLI
+az login
+
+# Print your tenant ID  → paste into hyperscaledb.connection.tenantId
+az account show --query tenantId -o tsv
+
+# Print your subscription ID  → paste into hyperscaledb.connection.subscriptionId
+az account show --query id -o tsv
+
+# If you have multiple subscriptions, list them all and pick the right one
+az account list --query "[].{Name:name, ID:id, TenantID:tenantId}" -o table
+
+# Set the correct subscription (replace with your subscription ID)
+az account set --subscription "<YOUR-SUBSCRIPTION-ID>"
+
+# Print the resource group of your Cosmos DB account  → paste into hyperscaledb.connection.resourceGroupName
+az cosmosdb show --name "<YOUR-COSMOS-ACCOUNT-NAME>" --query resourceGroup -o tsv
+
+# Print the endpoint URL  → paste into hyperscaledb.connection.endpoint
+az cosmosdb show --name "<YOUR-COSMOS-ACCOUNT-NAME>" --query documentEndpoint -o tsv
 ```
 
-#### C2 — Grant Cosmos DB RBAC role
+> **Multiple tenants / subscriptions?**
+> The `tenantId` property is critical when your CLI account has access to
+> multiple Azure AD tenants. It pins both `DefaultAzureCredential` and the
+> ARM management client to the correct tenant, preventing
+> `InvalidAuthenticationTokenTenant` 401 errors. Always set it explicitly.
 
-Your Azure identity needs the **Cosmos DB Built-in Data Contributor** role on
-the Cosmos DB account. Run once per account:
+---
+
+#### C2 — Grant the Cosmos DB data-plane RBAC role (one-time per account)
+
+Your identity needs the **Cosmos DB Built-in Data Contributor** role to read and
+write data. This is separate from ARM RBAC — it is a Cosmos-native data-plane role.
+
+> Run this **once** per Cosmos DB account. If the role is already assigned,
+> this command is safe to re-run (it will error with a conflict, which you can ignore).
+
+##### macOS / Linux
+
+```bash
+# Get your principal (object) ID
+PRINCIPAL_ID=$(az ad signed-in-user show --query id -o tsv)
+echo "Your principal ID: $PRINCIPAL_ID"
+
+# Assign the Cosmos DB Built-in Data Contributor role
+az cosmosdb sql role assignment create \
+  --account-name "<YOUR-COSMOS-ACCOUNT-NAME>" \
+  --resource-group "<YOUR-RESOURCE-GROUP>" \
+  --role-definition-name "Cosmos DB Built-in Data Contributor" \
+  --scope "/" \
+  --principal-id "$PRINCIPAL_ID"
+```
+
+##### Windows (PowerShell)
 
 ```powershell
+# Get your principal (object) ID
+$PRINCIPAL_ID = az ad signed-in-user show --query id -o tsv
+Write-Host "Your principal ID: $PRINCIPAL_ID"
+
+# Assign the Cosmos DB Built-in Data Contributor role
 az cosmosdb sql role assignment create `
-  --account-name tvk-my-cosmos-account `
-  --resource-group <YOUR-RESOURCE-GROUP> `
+  --account-name "<YOUR-COSMOS-ACCOUNT-NAME>" `
+  --resource-group "<YOUR-RESOURCE-GROUP>" `
   --role-definition-name "Cosmos DB Built-in Data Contributor" `
   --scope "/" `
-  --principal-id (az ad signed-in-user show --query id -o tsv)
+  --principal-id $PRINCIPAL_ID
 ```
 
-> Replace `<YOUR-RESOURCE-GROUP>` with the resource group containing
-> your Cosmos DB account.
+> **Why is this needed?**
+> When a Cosmos DB account has **local auth disabled** (Entra-ID-only mode),
+> the data-plane rejects any request that isn't authorized by a Cosmos-native RBAC
+> role — even if you have Contributor on the ARM resource. This role assignment
+> is what allows reads and writes.
 
-#### C3 — Launch the Risk Platform (Cosmos DB Cloud)
+---
 
-From the **repo root**:
+#### C3 — Verify prerequisites
+
+##### macOS / Linux
+
+```bash
+# Confirm you are signed in and on the right subscription/tenant
+az account show --query "{Name:name, SubscriptionID:id, TenantID:tenantId}" -o table
+
+# Confirm the Cosmos DB account is reachable
+az cosmosdb show \
+  --name "<YOUR-COSMOS-ACCOUNT-NAME>" \
+  --resource-group "<YOUR-RESOURCE-GROUP>" \
+  --query "{Name:name, Endpoint:documentEndpoint, Location:location}" -o table
+
+# Confirm the RBAC role is assigned to your identity
+az cosmosdb sql role assignment list \
+  --account-name "<YOUR-COSMOS-ACCOUNT-NAME>" \
+  --resource-group "<YOUR-RESOURCE-GROUP>" \
+  --query "[].{Role:roleDefinitionId, Principal:principalId}" -o table
+```
+
+##### Windows (PowerShell)
+
+```powershell
+# Confirm you are signed in and on the right subscription/tenant
+az account show --query "{Name:name, SubscriptionID:id, TenantID:tenantId}" -o table
+
+# Confirm the Cosmos DB account is reachable
+az cosmosdb show `
+  --name "<YOUR-COSMOS-ACCOUNT-NAME>" `
+  --resource-group "<YOUR-RESOURCE-GROUP>" `
+  --query "{Name:name, Endpoint:documentEndpoint, Location:location}" -o table
+
+# Confirm the RBAC role is assigned to your identity
+az cosmosdb sql role assignment list `
+  --account-name "<YOUR-COSMOS-ACCOUNT-NAME>" `
+  --resource-group "<YOUR-RESOURCE-GROUP>" `
+  --query "[].{Role:roleDefinitionId, Principal:principalId}" -o table
+```
+
+---
+
+#### C4 — Build the project
+
+##### macOS / Linux
+
+```bash
+mvn clean install -DskipTests
+```
+
+##### Windows (PowerShell)
+
+```powershell
+mvn clean install -DskipTests
+```
+
+---
+
+#### C5 — Launch the Risk Platform (Cosmos DB Cloud)
+
+Run from the **repo root**. No truststore needed — Azure Cosmos DB uses a
+publicly trusted TLS certificate.
+
+##### macOS / Linux
+
+```bash
+mvn -pl hyperscaledb-samples exec:java \
+  -Dexec.mainClass=com.hyperscaledb.samples.riskplatform.RiskPlatformApp \
+  -Drisk.config=risk-platform-cosmos-cloud.properties
+```
+
+##### Windows (PowerShell)
 
 ```powershell
 mvn -pl hyperscaledb-samples exec:java `
@@ -917,16 +1117,70 @@ mvn -pl hyperscaledb-samples exec:java `
   "-Drisk.config=risk-platform-cosmos-cloud.properties"
 ```
 
-> **No truststore needed** — Azure Cosmos DB uses a publicly trusted TLS
-> certificate, unlike the local emulator.
+On first run, the app auto-provisions all databases and containers via the
+Azure Resource Manager API, then seeds demo data. This may take **1–2 minutes**
+on first run. Subsequent runs skip existing resources and start in seconds.
 
-#### C4 — Open the dashboard
+Expected output:
+```
+  Starting Risk Analysis Platform...
+  Loaded config: risk-platform-cosmos-cloud.properties
+  Provisioning resources for Azure Cosmos DB...
+    Database: riskplatform-admin
+      Container: tenants
+    Database: acme-capital-risk-db
+      Container: portfolios
+      ...
+  Resource provisioning complete.
+  Seeding demo data...
+  Demo data seeded successfully.
+
+╔═══════════════════════════════════════════════════════════╗
+║   RISK ANALYSIS PLATFORM — Multi-Tenant Demo             ║
+╠═══════════════════════════════════════════════════════════╣
+║   Provider:  Azure Cosmos DB                            ║
+║   Dashboard: http://localhost:8090                      ║
+║   API:       http://localhost:8090/api                  ║
+╚═══════════════════════════════════════════════════════════╝
+```
+
+---
+
+#### C6 — Open the dashboard
 
 Navigate to **http://localhost:8090** in your browser.
 
-#### C5 — Stop the app
+---
+
+#### C7 — Stop the app
 
 Press `Ctrl+C` in the terminal running Maven.
+
+If the port is still in use on the next run:
+
+**macOS / Linux:**
+```bash
+lsof -ti:8090 | xargs kill -9
+```
+
+**Windows (PowerShell):**
+```powershell
+Get-NetTCPConnection -LocalPort 8090 -ErrorAction SilentlyContinue |
+  ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+```
+
+---
+
+#### Troubleshooting Option C
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `InvalidAuthenticationTokenTenant` (401) | Your CLI/credential is signed into a different tenant than the one owning the subscription | Set `hyperscaledb.connection.tenantId` in the properties file to the value from `az account show --query tenantId -o tsv`. This pins both `DefaultAzureCredential` and the ARM client to the right tenant. |
+| `Request blocked by Auth … cannot be authorized by AAD token in data plane` (403, subStatus 5300) | The **Cosmos DB Built-in Data Contributor** data-plane role is not assigned to your identity | Run the `az cosmosdb sql role assignment create` command in Step C2 above |
+| `DefaultAzureCredential authentication failed` | Not signed in to Azure CLI | Run `az login`, then verify with `az account show` |
+| `The subscription … must match the tenant` (401) | Multiple Azure tenants in your account; token issued for wrong tenant | Run `az account list -o table` to identify the correct subscription, then `az account set --subscription <ID>` and ensure `tenantId` in the properties file matches |
+| `Address already in use` on port 8090 | A previous instance is still running | Run the kill command in Step C7 above |
+| App exits silently after provisioning | First-run ARM deployments timed out | Re-run the app — it checks resource existence first and skips already-created resources |
 
 ---
 
@@ -1079,14 +1333,16 @@ dashboard header shows which one you're looking at.
 
 ### Configuration Files
 
-| File | Provider | Target | Auth |
-|------|----------|--------|------|
-| `risk-platform-cosmos.properties` | Azure Cosmos DB | `https://localhost:8081` (emulator) | Master key |
-| `risk-platform-cosmos-cloud.properties` | Azure Cosmos DB | Azure cloud endpoint | DefaultAzureCredential (Entra ID) |
-| `risk-platform-dynamo.properties` | Amazon DynamoDB | `http://localhost:8000` (local) | Fake static credentials |
-| `risk-platform-dynamo-cloud.properties` | Amazon DynamoDB | AWS DynamoDB service | Default AWS credential chain |
+| File | Provider | Target | Auth | Committed? |
+|------|----------|--------|------|------------|
+| `risk-platform-cosmos.properties` | Azure Cosmos DB | `https://localhost:8081` (emulator) | Master key | ✅ Yes |
+| `risk-platform-cosmos-cloud.properties` | Azure Cosmos DB | Azure cloud endpoint | DefaultAzureCredential (Entra ID) | ❌ **No — git-ignored** |
+| `risk-platform-cosmos-cloud.properties.template` | Azure Cosmos DB | *(fill in your values)* | DefaultAzureCredential (Entra ID) | ✅ Yes (no secrets) |
+| `risk-platform-dynamo.properties` | Amazon DynamoDB | `http://localhost:8000` (local) | Fake static credentials | ✅ Yes |
+| `risk-platform-dynamo-cloud.properties` | Amazon DynamoDB | AWS DynamoDB service | Default AWS credential chain | ❌ **No — git-ignored** |
 
-Both files live in `hyperscaledb-samples/src/main/resources/`.
+> **Cloud properties files are git-ignored.** Copy the `.template` file,
+> fill in your values, and keep it local. See Step C0 for instructions.
 
 ### Changing the Port
 
@@ -1102,13 +1358,15 @@ Override the default port (8090) with:
 
 | Problem | Cause | Solution |
 |---------|-------|----------|
-| `Address already in use: bind` on port 8090 | A previous instance is still running | Kill it: `Get-NetTCPConnection -LocalPort 8090 -ErrorAction SilentlyContinue \| ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }` |
+| `Address already in use: bind` on port 8090 | A previous instance is still running | **macOS/Linux:** `lsof -ti:8090 \| xargs kill -9` / **Windows:** `Get-NetTCPConnection -LocalPort 8090 -ErrorAction SilentlyContinue \| ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }` |
 | `PKIX path building failed` / SSL errors (Cosmos) | Truststore missing or wrong path | Re-create the truststore (see Step A3) and ensure `$PWD` resolves correctly — run from repo root |
 | `Connection refused` on port 8081 (Cosmos) | Emulator not started | Launch the Cosmos DB Emulator from Start Menu and wait for the tray icon |
 | `Connection refused` on port 8000 (DynamoDB) | DynamoDB Local not started | Start it in a separate terminal (see Step B1) |
 | `UnsatisfiedLinkError` (DynamoDB Local) | Wrong `-Djava.library.path` | Use `-Djava.library.path=./DynamoDBLocal_lib` (not `.`) |
 | `BUILD FAILURE` on `mvn install` | JAVA_HOME not set | Run `$env:JAVA_HOME = '...'` and `$env:PATH = ...` first |
 | `ClassNotFoundException` when running the app | SDK not built | Run `mvn clean install -DskipTests` from repo root first |
+| `InvalidAuthenticationTokenTenant` (401) | CLI token issued for a different tenant than the subscription's tenant | Set `hyperscaledb.connection.tenantId` in the properties file — run `az account show --query tenantId -o tsv` to get the correct value |
+| `Request blocked by Auth … cannot be authorized by AAD token in data plane` (403 subStatus 5300) | Cosmos DB Built-in Data Contributor role not assigned | Run `az cosmosdb sql role assignment create` (see Step C2) |
 | `DefaultAzureCredential authentication failed` (Cosmos Cloud) | Not signed in to Azure CLI | Run `az login` and verify with `az account show` |
 | `403 Forbidden` on Cosmos DB Cloud | Missing RBAC role | Assign the **Cosmos DB Built-in Data Contributor** role (see Step C2) |
 | `Unable to load credentials` (DynamoDB Cloud) | AWS credentials not configured | Run `aws configure` and enter your access key / secret (see Step D2) |
@@ -1388,6 +1646,178 @@ After installing, verify:
 mvn -version
 # → Apache Maven 3.9.x ...
 ```
+
+### Install Azure CLI
+
+Required for **Option C** (Cosmos DB Cloud). The Azure CLI lets you authenticate
+with `az login` and manage Azure resources from the terminal.
+
+**Windows (PowerShell):**
+
+```powershell
+# Option 1 — winget (recommended, one command)
+winget install Microsoft.AzureCLI
+
+# Option 2 — MSI installer (download and run the wizard)
+# Download from: https://aka.ms/installazurecliwindows
+Start-Process "https://aka.ms/installazurecliwindows"
+```
+
+> Restart your terminal after installing so `az` is on your PATH.
+
+**macOS (Homebrew):**
+
+```bash
+brew update && brew install azure-cli
+```
+
+**macOS (direct install script — no Homebrew required):**
+
+```bash
+curl -L https://aka.ms/InstallAzureCli | bash
+```
+
+> Restart your terminal or run `exec -l $SHELL` after installing.
+
+**Linux — Debian / Ubuntu (apt):**
+
+```bash
+# Import the Microsoft signing key
+curl -sLS https://packages.microsoft.com/keys/microsoft.asc |
+  gpg --dearmor | sudo tee /etc/apt/keyrings/microsoft.gpg > /dev/null
+sudo chmod go+r /etc/apt/keyrings/microsoft.gpg
+
+# Add the Azure CLI repo
+AZ_DIST=$(lsb_release -cs)
+echo "Types: deb
+URIs: https://packages.microsoft.com/repos/azure-cli/
+Suites: ${AZ_DIST}
+Components: main
+Arch: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/microsoft.gpg" |
+  sudo tee /etc/apt/sources.list.d/azure-cli.sources
+
+# Install
+sudo apt update && sudo apt install -y azure-cli
+```
+
+**Linux — Fedora / RHEL (dnf):**
+
+```bash
+sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
+sudo dnf install -y https://packages.microsoft.com/config/rhel/9.0/packages-microsoft-prod.rpm
+sudo dnf install -y azure-cli
+```
+
+After installing, verify:
+
+```bash
+az --version
+# → azure-cli  2.x.x  ...
+```
+
+Then sign in:
+
+```bash
+az login
+```
+
+A browser window will open to complete authentication. After signing in, verify:
+
+```bash
+az account show --query "{Name:name, TenantID:tenantId, SubscriptionID:id}" -o table
+```
+
+> **Multiple accounts / tenants?** Use `az account list -o table` to see all
+> subscriptions and `az account set --subscription <ID>` to select the right one.
+> Then set `hyperscaledb.connection.tenantId` in your properties file to match
+> (run `az account show --query tenantId -o tsv`).
+
+---
+
+### Install AWS CLI
+
+Required for **Option D** (DynamoDB Cloud). The AWS CLI lets you configure
+credentials with `aws configure` and manage AWS resources from the terminal.
+
+**Windows (PowerShell):**
+
+```powershell
+# Option 1 — winget (recommended)
+winget install Amazon.AWSCLI
+
+# Option 2 — MSI installer
+curl.exe -fSL -o "$env:TEMP\AWSCLIV2.msi" "https://awscli.amazonaws.com/AWSCLIV2.msi"
+Start-Process msiexec.exe -ArgumentList "/i `"$env:TEMP\AWSCLIV2.msi`"" -Wait
+```
+
+> Restart your terminal after installing so `aws` is on your PATH.
+
+**macOS:**
+
+```bash
+# Option 1 — Homebrew
+brew install awscli
+
+# Option 2 — official pkg installer
+curl "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o /tmp/AWSCLIV2.pkg
+sudo installer -pkg /tmp/AWSCLIV2.pkg -target /
+```
+
+**Linux — x86_64:**
+
+```bash
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+unzip /tmp/awscliv2.zip -d /tmp/aws-install
+sudo /tmp/aws-install/aws/install
+```
+
+**Linux — ARM64:**
+
+```bash
+curl "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscliv2.zip
+unzip /tmp/awscliv2.zip -d /tmp/aws-install
+sudo /tmp/aws-install/aws/install
+```
+
+After installing, verify:
+
+```bash
+aws --version
+# → aws-cli/2.x.x ...
+```
+
+Then configure credentials:
+
+**macOS / Linux:**
+
+```bash
+aws configure
+```
+
+**Windows (PowerShell):**
+
+```powershell
+aws configure
+```
+
+Enter when prompted:
+
+| Prompt | Value |
+|--------|-------|
+| AWS Access Key ID | Your IAM access key |
+| AWS Secret Access Key | Your IAM secret key |
+| Default region name | `us-east-1` (or your preferred region) |
+| Default output format | `json` |
+
+Verify access:
+
+```bash
+aws sts get-caller-identity
+# → { "UserId": "...", "Account": "...", "Arn": "..." }
+```
+
+---
 
 ### Install OpenSSL (Windows only — needed for Option A)
 
