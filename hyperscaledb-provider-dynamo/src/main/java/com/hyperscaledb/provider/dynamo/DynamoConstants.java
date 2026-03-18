@@ -92,5 +92,28 @@ public final class DynamoConstants {
 
     /** Internal parameter key used to pass partition key value through query parameter maps. */
     public static final String QUERY_PARTITION_KEY_PARAM = "_pkval";
+
+    // ── HTTP / response metadata ──────────────────────────────────────────────
+
+    /**
+     * HTTP response header name used to extract the AWS request ID from
+     * responses that do not expose {@code responseMetadata()} directly (e.g. Scan).
+     */
+    public static final String HEADER_REQUEST_ID = "x-amzn-requestid";
+
+    // ── Operation names (DynamoDB-specific query variants) ────────────────────
+    //
+    // Shared operation names (create, read, update, upsert, delete, query,
+    // queryWithTranslation, ensureDatabase, ensureContainer) are defined in
+    // com.hyperscaledb.api.OperationNames and should be referenced from there.
+
+    /** Operation name used in diagnostics for native PartiQL passthrough queries. */
+    public static final String OP_QUERY_PARTIQL = "query(partiql)";
+
+    /** Operation name used in diagnostics for full-table scan queries. */
+    public static final String OP_QUERY_SCAN = "query(scan)";
+
+    /** Operation name used in diagnostics for filtered scan queries. */
+    public static final String OP_QUERY_SCAN_FILTER = "query(scan+filter)";
 }
 

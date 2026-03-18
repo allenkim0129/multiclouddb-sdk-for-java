@@ -13,6 +13,7 @@ import com.azure.resourcemanager.cosmos.models.SqlContainerCreateUpdateParameter
 import com.azure.resourcemanager.cosmos.models.SqlContainerResource;
 import com.azure.resourcemanager.cosmos.models.ContainerPartitionKey;
 import com.hyperscaledb.api.*;
+import com.hyperscaledb.api.OperationNames;
 import com.hyperscaledb.api.query.TranslatedQuery;
 import com.hyperscaledb.spi.HyperscaleDbProviderClient;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -114,9 +115,10 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             doc.put(CosmosConstants.FIELD_ID, key.sortKey() != null ? key.sortKey() : key.partitionKey());
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
             PartitionKey pk = resolvePartitionKey(key);
-            container.createItem(doc, pk, new CosmosItemRequestOptions());
+            CosmosItemResponse<ObjectNode> response = container.createItem(doc, pk, new CosmosItemRequestOptions());
+            logItemDiagnostics(OperationNames.CREATE, address, response);
         } catch (CosmosException e) {
-            throw CosmosErrorMapper.map(e, "create");
+            throw CosmosErrorMapper.map(e, OperationNames.CREATE);
         }
     }
 
@@ -127,12 +129,13 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             PartitionKey pk = resolvePartitionKey(key);
             String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
             CosmosItemResponse<JsonNode> response = container.readItem(cosmosId, pk, JsonNode.class);
+            logItemDiagnostics(OperationNames.READ, address, response);
             return response.getItem();
         } catch (CosmosException e) {
             if (e.getStatusCode() == 404) {
                 return null;
             }
-            throw CosmosErrorMapper.map(e, "read");
+            throw CosmosErrorMapper.map(e, OperationNames.READ);
         }
     }
 
@@ -145,9 +148,10 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             doc.put(CosmosConstants.FIELD_ID, cosmosId);
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
             PartitionKey pk = resolvePartitionKey(key);
-            container.replaceItem(doc, cosmosId, pk, new CosmosItemRequestOptions());
+            CosmosItemResponse<ObjectNode> response = container.replaceItem(doc, cosmosId, pk, new CosmosItemRequestOptions());
+            logItemDiagnostics(OperationNames.UPDATE, address, response);
         } catch (CosmosException e) {
-            throw CosmosErrorMapper.map(e, "update");
+            throw CosmosErrorMapper.map(e, OperationNames.UPDATE);
         }
     }
 
@@ -159,9 +163,10 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             doc.put(CosmosConstants.FIELD_ID, key.sortKey() != null ? key.sortKey() : key.partitionKey());
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
             PartitionKey pk = resolvePartitionKey(key);
-            container.upsertItem(doc, pk, new CosmosItemRequestOptions());
+            CosmosItemResponse<ObjectNode> response = container.upsertItem(doc, pk, new CosmosItemRequestOptions());
+            logItemDiagnostics(OperationNames.UPSERT, address, response);
         } catch (CosmosException e) {
-            throw CosmosErrorMapper.map(e, "upsert");
+            throw CosmosErrorMapper.map(e, OperationNames.UPSERT);
         }
     }
 
@@ -171,12 +176,13 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             CosmosContainer container = getContainer(address);
             PartitionKey pk = resolvePartitionKey(key);
             String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
-            container.deleteItem(cosmosId, pk, new CosmosItemRequestOptions());
+            CosmosItemResponse<Object> response = container.deleteItem(cosmosId, pk, new CosmosItemRequestOptions());
+            logItemDiagnostics(OperationNames.DELETE, address, response);
         } catch (CosmosException e) {
             if (e.getStatusCode() == 404) {
                 return;
             }
-            throw CosmosErrorMapper.map(e, "delete");
+            throw CosmosErrorMapper.map(e, OperationNames.DELETE);
         }
     }
 
@@ -224,12 +230,13 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             for (FeedResponse<JsonNode> page : pages) {
                 items.addAll(page.getResults());
                 continuationToken = page.getContinuationToken();
+                logFeedDiagnostics(OperationNames.QUERY, address, page, items.size());
                 break;
             }
 
             return new QueryPage(items, continuationToken);
         } catch (CosmosException e) {
-            throw CosmosErrorMapper.map(e, "query");
+            throw CosmosErrorMapper.map(e, OperationNames.QUERY);
         }
     }
 
@@ -268,12 +275,13 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             for (FeedResponse<JsonNode> page : pages) {
                 items.addAll(page.getResults());
                 continuationToken = page.getContinuationToken();
+                logFeedDiagnostics(OperationNames.QUERY_WITH_TRANSLATION, address, page, items.size());
                 break;
             }
 
             return new QueryPage(items, continuationToken);
         } catch (CosmosException e) {
-            throw CosmosErrorMapper.map(e, "query");
+            throw CosmosErrorMapper.map(e, OperationNames.QUERY);
         }
     }
 
@@ -330,7 +338,7 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
                 cosmosClient.createDatabaseIfNotExists(database);
                 LOG.info("Ensured Cosmos database: {}", database);
             } catch (CosmosException e) {
-                throw CosmosErrorMapper.map(e, "ensureDatabase");
+                throw CosmosErrorMapper.map(e, OperationNames.ENSURE_DATABASE);
             }
         }
     }
@@ -372,7 +380,7 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
                 db.createContainerIfNotExists(props);
                 LOG.info("Ensured Cosmos container: {}/{}", address.database(), address.collection());
             } catch (CosmosException e) {
-                throw CosmosErrorMapper.map(e, "ensureContainer");
+                throw CosmosErrorMapper.map(e, OperationNames.ENSURE_CONTAINER);
             }
         }
     }
@@ -385,6 +393,41 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
 
     private PartitionKey resolvePartitionKey(Key key) {
         return new PartitionKey(key.partitionKey());
+    }
+
+    /**
+     * Logs per-operation diagnostics from a {@link CosmosItemResponse} at DEBUG
+     * level: activity ID (request correlation), request charge (RU cost), and
+     * HTTP status code.
+     */
+    private void logItemDiagnostics(String operation, ResourceAddress address,
+            CosmosItemResponse<?> response) {
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("cosmos.diagnostics op={} db={} col={} activityId={} requestCharge={} statusCode={}",
+                    operation,
+                    address.database(),
+                    address.collection(),
+                    response.getActivityId(),
+                    response.getRequestCharge(),
+                    response.getStatusCode());
+        }
+    }
+
+    /**
+     * Logs per-page diagnostics from a {@link FeedResponse} at DEBUG level:
+     * request charge (RU cost) and result count for the current page.
+     */
+    private void logFeedDiagnostics(String operation, ResourceAddress address,
+            FeedResponse<?> page, int itemCount) {
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("cosmos.diagnostics op={} db={} col={} requestCharge={} itemCount={} hasMore={}",
+                    operation,
+                    address.database(),
+                    address.collection(),
+                    page.getRequestCharge(),
+                    itemCount,
+                    page.getContinuationToken() != null);
+        }
     }
 
     /**
