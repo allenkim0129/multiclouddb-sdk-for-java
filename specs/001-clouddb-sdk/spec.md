@@ -231,6 +231,10 @@ Portability is the default mode of the SDK.
 - **FR-031**: The SDK MUST support literal values in expressions: strings (single-quoted), numbers (integer and decimal), booleans (`true`/`false`), and `NULL`.
 - **FR-032**: The SDK MUST preserve operator precedence: `NOT` binds tightest, then `AND`, then `OR`. Parentheses MUST be supported for explicit grouping.
 
+#### Provider Constants Centralization Requirements
+
+- **FR-049**: Each provider adapter MUST centralize all hard-coded string literals — including configuration keys, field names, query fragments, error messages, and default values — into a provider-specific constants class (e.g., `CosmosConstants`, `DynamoConstants`). Magic strings scattered across implementation classes are not permitted.
+
 ### Portable Operator and Function Reference
 
 The following operators and functions form the portable query subset, available on all supported providers:
@@ -307,6 +311,10 @@ The following operators and functions form the portable query subset, available 
 - Queries MUST support partition-key-scoped execution. When a partition key value is specified on a query request, the SDK MUST use each provider's native efficient mechanism to scope the query to that partition only (e.g., Cosmos DB `setPartitionKey()` on query options, DynamoDB PartiQL WHERE condition on the partition key column). Queries without a partition key scope may still result in cross-partition scans. Applications SHOULD use `Key.of(partitionKey, sortKey)` to co-locate related documents and then scope queries by partition key for efficient retrieval.
 - `ensureDatabase`, `ensureContainer`, and `provisionSchema` are convenience methods for development and startup scenarios. They create resources with the SDK's standard schema defaults and are not intended for advanced provisioning (e.g., custom throughput, indexing policies, TTL settings). For production provisioning with fine-grained control, developers should use provider SDKs directly or infrastructure-as-code tools.
 - The Cosmos DB provider uses the Azure Resource Manager management SDK (`azure-resourcemanager-cosmos`) for database creation when operating in RBAC/`DefaultAzureCredential` mode, because Cosmos data-plane RBAC does not have permissions for control-plane operations like creating databases. Key-based authentication continues to use data-plane calls.
+- **SDK versions (current)**: Azure Cosmos DB SDK 4.78.0, AWS SDK v2 2.34.0, Azure Resource Manager Cosmos 2.54.1, Azure Identity 1.18.2, Azure Core Management 1.19.3. Minimum Java version is 17. These versions represent the latest stable releases validated against this SDK; newer versions may be adopted as long as the portable contract is preserved.
+- Properties files containing credentials or connection secrets (e.g., `*.properties` with endpoint/key values) MUST be gitignored and MUST NOT be committed to source control. Template files (`*.properties.template`) with placeholder values are provided so users can copy them, fill in their credentials, and keep the result local-only.
+- Cleanup scripts for removing provider resources (containers, tables, databases) created during sample runs are provided under `hyperscaledb-samples/scripts/` for each supported provider, in both Bash and PowerShell variants.
+- Sample application output banners use fixed-width ASCII box-drawing characters (printable ASCII only, no Unicode box-drawing code points) to ensure consistent rendering across all terminal environments and operating systems.
 
 ## Acceptance Checklist
 
@@ -368,3 +376,10 @@ This checklist is used to accept the feature as “done” at the spec level.
 - [ ] The Cosmos DB provider authenticates via `DefaultAzureCredential` when no account key is configured, supporting Managed Identity, Azure CLI, and environment variable credentials.
 - [ ] In RBAC mode, the Cosmos DB provider uses the Azure Resource Manager SDK for database creation (data-plane RBAC cannot create databases).
 - [ ] Management SDK config (`subscriptionId`, `resourceGroupName`) is optional; when absent, provisioning falls back to data-plane calls with a warning.
+
+### Code Quality & Developer Experience
+
+- [ ] Each provider adapter has a dedicated constants class (e.g., `CosmosConstants`, `DynamoConstants`) that centralizes all magic strings — config keys, field names, query fragments, error messages, and default values. No hard-coded string literals are scattered across implementation classes.
+- [ ] Properties template files (`*.properties.template`) are provided for each sample scenario, enabling users to copy and fill in credentials locally. Actual properties files containing credentials are gitignored and never committed.
+- [ ] Cleanup scripts (`cleanup-cosmos.sh`, `cleanup-cosmos.ps1`, `cleanup-dynamo.sh`, `cleanup-dynamo.ps1`) exist under `hyperscaledb-samples/scripts/` and successfully remove all provider resources created by sample runs.
+
