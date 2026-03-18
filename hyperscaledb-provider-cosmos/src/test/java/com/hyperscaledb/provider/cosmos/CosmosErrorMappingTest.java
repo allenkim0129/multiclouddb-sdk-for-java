@@ -3,6 +3,7 @@ package com.hyperscaledb.provider.cosmos;
 import com.azure.cosmos.CosmosException;
 import com.hyperscaledb.api.HyperscaleDbErrorCategory;
 import com.hyperscaledb.api.HyperscaleDbException;
+import com.hyperscaledb.api.OperationNames;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -35,11 +36,11 @@ class CosmosErrorMappingTest {
     @DisplayName("Status code maps to correct category")
     void statusCodeMapsCorrectly(int statusCode, String expectedCategory) {
         CosmosException cosmosEx = mockCosmosException(statusCode, 0);
-        HyperscaleDbException result = CosmosErrorMapper.map(cosmosEx, "test-op");
+        HyperscaleDbException result = CosmosErrorMapper.map(cosmosEx, OperationNames.READ);
 
         assertEquals(HyperscaleDbErrorCategory.valueOf(expectedCategory), result.error().category());
         assertEquals("cosmos", result.error().provider().id());
-        assertEquals("test-op", result.error().operation());
+        assertEquals(OperationNames.READ, result.error().operation());
         assertNotNull(result.error().providerDetails());
         assertEquals(String.valueOf(statusCode), result.error().providerDetails().get("statusCode"));
     }
@@ -59,7 +60,7 @@ class CosmosErrorMappingTest {
     @DisplayName("Retryable flag set correctly")
     void retryableFlagCorrect(int statusCode, boolean expectedRetryable) {
         CosmosException cosmosEx = mockCosmosException(statusCode, 0);
-        HyperscaleDbException result = CosmosErrorMapper.map(cosmosEx, "get");
+        HyperscaleDbException result = CosmosErrorMapper.map(cosmosEx, OperationNames.READ);
 
         assertEquals(expectedRetryable, result.error().retryable());
     }
@@ -71,7 +72,7 @@ class CosmosErrorMappingTest {
         when(cosmosEx.getActivityId()).thenReturn("activity-123");
         when(cosmosEx.getRequestCharge()).thenReturn(3.5);
 
-        HyperscaleDbException result = CosmosErrorMapper.map(cosmosEx, "get");
+        HyperscaleDbException result = CosmosErrorMapper.map(cosmosEx, OperationNames.READ);
 
         assertEquals("activity-123", result.error().providerDetails().get("requestId"));
         assertEquals("3.5", result.error().providerDetails().get("requestCharge"));
@@ -81,7 +82,7 @@ class CosmosErrorMappingTest {
     @DisplayName("Original exception is preserved as cause")
     void originalExceptionPreserved() {
         CosmosException cosmosEx = mockCosmosException(500, 0);
-        HyperscaleDbException result = CosmosErrorMapper.map(cosmosEx, "put");
+        HyperscaleDbException result = CosmosErrorMapper.map(cosmosEx, OperationNames.CREATE);
 
         assertSame(cosmosEx, result.getCause());
     }

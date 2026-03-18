@@ -10,6 +10,7 @@ import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType;
  * Using this class avoids magic strings scattered across the implementation
  * and makes every tunable value easy to find and change.
  */
+@SuppressWarnings("unused") // constants are referenced from DynamoProviderClient and DynamoConstantsTest
 public final class DynamoConstants {
 
     private DynamoConstants() {}
