@@ -6,6 +6,7 @@ package com.hyperscaledb.api;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -39,10 +40,14 @@ public final class CapabilitySet {
     }
 
     /**
-     * All capabilities.
+     * Returns an unmodifiable snapshot of all capabilities declared by this
+     * provider.
+     * <p>
+     * The returned list is unmodifiable; mutations throw
+     * {@link UnsupportedOperationException}.
      */
-    public Collection<Capability> all() {
-        return capabilities.values();
+    public List<Capability> all() {
+        return List.copyOf(capabilities.values());
     }
 
     @Override
