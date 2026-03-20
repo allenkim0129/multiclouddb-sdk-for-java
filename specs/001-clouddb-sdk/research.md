@@ -71,11 +71,12 @@ This document resolves key design choices for the Hyperscale DB SDK and records 
 - Alternatives considered:
   - Offset-based paging: non-portable and often inefficient.
 
-## Decision 7: Capabilities + portability warnings
-- Decision: Capabilities are first-class and discoverable; non-portable behaviors require explicit opt-in and MUST emit a portability warning signal.
-- Rationale: Prevents “it worked on Cosmos” surprises and preserves trust.
-- Alternatives considered:
+## Decision 7: Capabilities — discoverable, not assumed
+- **Decision:** Capabilities are first-class and discoverable at runtime via `client.capabilities()`. The API exposes only the portable common denominator by default. Provider-specific opt-ins and non-portable features are not exposed until there is demonstrated customer need.
+- **Rationale:** Prevents "it worked on Cosmos" surprises. Discoverable capabilities let callers make informed decisions (check before use, not fail at runtime). Exposing only the common denominator keeps the contract credible and testable.
+- **Alternatives considered:**
   - Best-effort behavior with docs only: too easy to miss and too risky.
+  - Feature flags + portability warnings from day 0: adds surface area to the public API, SPI, and all three provider adapters for zero demonstrated customer value. Re-evaluate if real evidence of need emerges.
 
 ## Decision 8: Configuration-only portability
 - Decision: Provider selection and environment differences are configuration-only for the portable contract. Provider-specific opt-ins SHOULD be config-driven when possible.

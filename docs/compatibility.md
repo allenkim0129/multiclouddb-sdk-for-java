@@ -27,7 +27,7 @@ provider-specific extensions (feature flags) that are available.
 HyperscaleDbClient client = HyperscaleDbClientFactory.create(config);
 CapabilitySet caps = client.capabilities();
 
-if (caps.isSupported(Capability.LIKE)) {
+if (caps.isSupported(Capability.LIKE_OPERATOR)) {
     // Use LIKE in queries
 } else {
     // Fall back to STARTS_WITH + CONTAINS
@@ -56,7 +56,7 @@ All providers support the portable expression grammar for queries:
 QueryRequest q1 = QueryRequest.builder()
     .expression("status = @status")
     .parameter("status", "active")
-    .pageSize(20)
+    .maxPageSize(20)
     .build();
 
 // Function call
@@ -64,81 +64,51 @@ QueryRequest q2 = QueryRequest.builder()
     .expression("STARTS_WITH(name, @prefix) AND age >= @minAge")
     .parameter("prefix", "J")
     .parameter("minAge", 21)
-    .pageSize(50)
+    .maxPageSize(50)
     .build();
-```
-
-## Provider-Specific Extensions (Feature Flags)
-
-Feature flags enable provider-specific behaviors. Using them produces **portability
-warnings** at client creation time (logged at WARN level).
-
-### Azure Cosmos DB
-
-| Flag | Effect | Default |
-|------|--------|---------|
-| `cosmos.sessionConsistency` | Enable session-level consistency tokens | `false` |
-| `cosmos.crossPartitionQuery` | Allow queries to fan out across partitions | `false` |
-
-### Amazon DynamoDB
-
-| Flag | Effect | Default |
-|------|--------|---------|
-| `dynamo.strongConsistentReads` | Force strongly-consistent reads on all get operations | `false` |
-| `dynamo.onDemandBilling` | Use on-demand billing mode for table creation | `false` |
-
-### Google Cloud Spanner
-
-| Flag | Effect | Default |
-|------|--------|---------|
-| `spanner.readOnlyTransactions` | Use read-only transactions for query operations | `false` |
-| `spanner.staleReads` | Allow stale reads with configurable staleness | `false` |
-
-### Usage
-
-```java
-HyperscaleDbClientConfig config = HyperscaleDbClientConfig.builder()
-    .provider(ProviderId.COSMOS)
-    .connection(Map.of("endpoint", "https://..."))
-    .featureFlag("cosmos.crossPartitionQuery", "true")
-    .build();
-
-// At creation time, a WARN log will be emitted:
-// "Portability warning [COSMOS_CROSS_PARTITION_QUERY]: ..."
-HyperscaleDbClient client = HyperscaleDbClientFactory.create(config);
 ```
 
 ## Error Category Mapping
 
-All provider exceptions are mapped to portable `HyperscaleDbErrorCategory` values:
+All provider exceptions are mapped to portable `HyperscaleDbErrorCategory` values.
+The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 
-| Category | Cosmos DB | DynamoDB | Spanner |
-|----------|-----------|----------|---------|
-| `INVALID_REQUEST` | HTTP 400 | ValidationException, HTTP 400 | INVALID_ARGUMENT, FAILED_PRECONDITION |
-| `AUTHENTICATION_FAILED` | HTTP 401 | UnrecognizedClientException, HTTP 401/403 | UNAUTHENTICATED |
-| `AUTHORIZATION_FAILED` | HTTP 403 | AccessDeniedException | PERMISSION_DENIED |
-| `NOT_FOUND` | HTTP 404 | ResourceNotFoundException, HTTP 404 | NOT_FOUND |
-| `CONFLICT` | HTTP 409, 412 | ConditionalCheckFailedException | ALREADY_EXISTS, ABORTED |
-| `THROTTLED` | HTTP 429 | ProvisionedThroughputExceededException, ThrottlingException | RESOURCE_EXHAUSTED |
-| `TRANSIENT_FAILURE` | HTTP 449, 500, 502, 503 | HTTP 500–5xx | UNAVAILABLE |
-| `PERMANENT_FAILURE` | — | ItemCollectionSizeLimitExceededException | — |
-| `UNSUPPORTED_CAPABILITY` | — | — | UNIMPLEMENTED |
-| `PROVIDER_ERROR` | Other | Other | INTERNAL, Other |
+| Category  | Cosmos DB  | DynamoDB  | Spanner  |
+|-----------|------------|-----------|----------|
+| `INVALID_REQUEST`  | HTTP 400  | ValidationException, HTTP 400  | INVALID_ARGUMENT, FAILED_PRECONDITION  |
+| `AUTHENTICATION_FAILED`  | HTTP 401  | UnrecognizedClientException, HTTP 401/403  | UNAUTHENTICATED  |
+| `AUTHORIZATION_FAILED`  | HTTP 403  | AccessDeniedException  | PERMISSION_DENIED  |
+| `NOT_FOUND`  | HTTP 404  | ResourceNotFoundException, HTTP 404  | NOT_FOUND  |
+| `CONFLICT`  | HTTP 409, 412  | ConditionalCheckFailedException  | ALREADY_EXISTS, ABORTED  |
+| `THROTTLED`  | HTTP 429  | ProvisionedThroughputExceededException, ThrottlingException  | RESOURCE_EXHAUSTED  |
+| `TRANSIENT_FAILURE`  | HTTP 449, 500, 502, 503  | HTTP 500–5xx  | UNAVAILABLE  |
+| `PERMANENT_FAILURE`  | —  | ItemCollectionSizeLimitExceededException  | —  |
+| `UNSUPPORTED_CAPABILITY`  | —  | —  | UNIMPLEMENTED  |
+| `PROVIDER_ERROR`  | Other  | Other  | INTERNAL, Other  |
 
 ## Native Client Escape Hatch
 
-When portable abstractions are insufficient, access the provider's native client:
+When portable abstractions are insufficient, access the provider's native client
+directly via `nativeClient(Class<T>)`. This is also the correct path for
+**async / reactive access** — the portable API is synchronous by design; each
+provider exposes its own async client type:
 
 ```java
-// Cosmos DB
+// Cosmos DB — sync
 CosmosClient cosmosClient = client.nativeClient(CosmosClient.class);
+// Cosmos DB — async (Reactor Mono/Flux)
+CosmosAsyncClient cosmosAsync = client.nativeClient(CosmosAsyncClient.class);
 
-// DynamoDB
+// DynamoDB — sync
 DynamoDbClient dynamoClient = client.nativeClient(DynamoDbClient.class);
+// DynamoDB — async (CompletableFuture)
+DynamoDbAsyncClient dynamoAsync = client.nativeClient(DynamoDbAsyncClient.class);
 
-// Spanner
+// Spanner — sync/async (ApiFuture / gRPC streaming)
 Spanner spannerClient = client.nativeClient(Spanner.class);
 ```
 
 > **Warning**: Native client access breaks portability. The SDK logs an INFO
-> message when the escape hatch is used.
+> message when the escape hatch is used. The async client types listed above
+> are provider-specific — code using them cannot be switched to another
+> provider by configuration alone.
