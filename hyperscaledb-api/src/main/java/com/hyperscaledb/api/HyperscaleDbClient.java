@@ -129,52 +129,59 @@ public interface HyperscaleDbClient extends AutoCloseable {
     CapabilitySet capabilities();
 
     /**
-     * Ensure a logical database exists.
+     * Ensure a logical database exists, creating it if it does not already exist.
      * <p>
-     * Creates the database if it does not already exist.
+     * This is an idempotent operation — if the database already exists the call
+     * succeeds silently. Use this at application startup to guarantee the required
+     * databases are in place before performing data operations.
+     * <p>
      * For providers without a native database concept (e.g., DynamoDB), this is a
      * no-op.
+     * <p>
+     * <b>Cosmos DB + RBAC note:</b> data-plane RBAC does not permit control-plane
+     * operations. If your identity only has the
+     * <em>Cosmos DB Built-in Data Contributor</em> role you must create databases
+     * via the Azure Portal, CLI, or Bicep/Terraform before calling this method.
+     * Key-based auth works without restriction.
      *
-     * @param database the logical database name
-     * @deprecated Provisioning belongs outside a data-access SDK. Use your
-     *             provider's own SDK, Terraform, Pulumi, or another
-     *             infrastructure-as-code tool to create databases and containers
-     *             before the application starts.
-     *             This method will be removed in the next minor release.
+     * @param database the logical database name to create if absent
+     * @throws HyperscaleDbException if the creation fails for a reason other than
+     *                               the resource already existing
      */
-    @Deprecated(since = "0.1.0", forRemoval = true)
     void ensureDatabase(String database);
 
     /**
-     * Ensure a container (or table) exists within the given database.
+     * Ensure a container (table) exists within the given database, creating it if
+     * it does not already exist.
      * <p>
-     * Creates the container/table if it does not already exist, using the
-     * provider's default schema conventions (key columns, partition key path,
-     * etc.).
+     * This is an idempotent operation — if the container already exists the call
+     * succeeds silently. Use this at application startup to guarantee the required
+     * containers are in place before performing data operations.
+     * <p>
+     * Containers are always created with the SDK's standard schema conventions
+     * (partition key path {@code /partitionKey}, sort key column {@code sortKey}).
      *
-     * @param address the database + collection identifying the container
-     * @deprecated Provisioning belongs outside a data-access SDK. Use your
-     *             provider's own SDK, Terraform, Pulumi, or another
-     *             infrastructure-as-code tool to create databases and containers
-     *             before the application starts.
-     *             This method will be removed in the next minor release.
+     * @param address the database + collection identifying the container to create
+     *                if absent
+     * @throws HyperscaleDbException if the creation fails for a reason other than
+     *                               the resource already existing
      */
-    @Deprecated(since = "0.1.0", forRemoval = true)
     void ensureContainer(ResourceAddress address);
 
     /**
-     * Provision a full schema of databases and containers/tables.
+     * Provision a full schema of databases and containers in a single call.
      * <p>
-     * Creates all databases concurrently, then all containers concurrently.
+     * Equivalent to calling {@link #ensureDatabase} for every database key and
+     * {@link #ensureContainer} for every collection, but executes both phases in
+     * parallel using a bounded thread pool (max 10 threads) for efficiency.
+     * <p>
+     * All operations are idempotent — existing resources are left unchanged.
+     * Use this at application startup to guarantee the entire required schema is
+     * in place before performing data operations.
      *
-     * @param schema map of database name → list of collection/table names
-     * @deprecated Provisioning belongs outside a data-access SDK. Use your
-     *             provider's own SDK, Terraform, Pulumi, or another
-     *             infrastructure-as-code tool to create databases and containers
-     *             before the application starts.
-     *             This method will be removed in the next minor release.
+     * @param schema map of database name → list of collection/table names to ensure
+     * @throws HyperscaleDbException if any database or container creation fails
      */
-    @Deprecated(since = "0.1.0", forRemoval = true)
     void provisionSchema(java.util.Map<String, java.util.List<String>> schema);
 
     /**

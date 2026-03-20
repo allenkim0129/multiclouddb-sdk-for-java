@@ -4,40 +4,36 @@
 package com.hyperscaledb.samples.riskplatform.infra;
 
 import com.hyperscaledb.api.HyperscaleDbClient;
-import com.hyperscaledb.api.ResourceAddress;
 
 import java.util.*;
 
 /**
- * Pre-creates databases and containers/tables required by the Risk Platform.
+ * Pre-creates all databases and containers/tables required by the Risk Platform.
  * <p>
- * <strong>Note:</strong> The SDK provisioning API ({@code ensureDatabase},
- * {@code ensureContainer}, {@code provisionSchema}) is deprecated and will be
- * removed. For production use, create resources with your provider's own tooling
- * before the application starts:
- * <ul>
- *   <li><b>Cosmos DB</b>: Azure Portal, ARM templates, Bicep, or Terraform</li>
- *   <li><b>DynamoDB</b>: AWS Console, CloudFormation, CDK, or Terraform</li>
- *   <li><b>Spanner</b>: GCP Console, Deployment Manager, or Terraform</li>
- * </ul>
- * This class keeps the deprecated calls for local-emulator / dev convenience only.
+ * Uses {@link HyperscaleDbClient#provisionSchema} — a single portable call that
+ * works across Cosmos DB, DynamoDB, and Spanner. Existing resources are left
+ * unchanged (all operations are idempotent).
+ * <p>
+ * <b>Cosmos DB + RBAC note:</b> if your identity only has the data-plane
+ * <em>Built-in Data Contributor</em> role, database creation will fail with
+ * 403 Forbidden. Pre-create the databases via the Azure Portal or CLI, then
+ * run the app — container creation will still work via the data-plane.
  */
-@SuppressWarnings("deprecation")
 public class ResourceProvisioner {
 
     /** Admin database storing the tenant registry. */
     private static final String ADMIN_DB = "riskplatform-admin";
 
-    /** Databases to create, each with its required collections. */
+    /** Full schema: database name → collections to ensure. */
     private static final Map<String, List<String>> SCHEMA;
 
     static {
         Map<String, List<String>> m = new LinkedHashMap<>();
-        m.put(ADMIN_DB, List.of("tenants"));
-        m.put("acme-capital-risk-db", List.of("portfolios", "positions", "risk_metrics", "alerts"));
+        m.put(ADMIN_DB,                   List.of("tenants"));
+        m.put("acme-capital-risk-db",     List.of("portfolios", "positions", "risk_metrics", "alerts"));
         m.put("vanguard-partners-risk-db", List.of("portfolios", "positions", "risk_metrics", "alerts"));
-        m.put("summit-wealth-risk-db", List.of("portfolios", "positions", "risk_metrics", "alerts"));
-        m.put("_shared-risk-db", List.of("market_data"));
+        m.put("summit-wealth-risk-db",    List.of("portfolios", "positions", "risk_metrics", "alerts"));
+        m.put("_shared-risk-db",          List.of("market_data"));
         SCHEMA = Collections.unmodifiableMap(m);
     }
 
@@ -48,30 +44,18 @@ public class ResourceProvisioner {
     }
 
     /**
-     * Provision all required databases and containers/tables.
-     * <p>
-     * For local-emulator / dev use only. In production, create these resources
-     * with Terraform, the Azure Portal, AWS Console, or GCP Console before
-     * starting the application.
-     *
-     * @deprecated Provisioning will be removed from the SDK. Use your provider's
-     *             own infrastructure tooling instead.
+     * Provisions all required databases and containers for any provider.
+     * Existing resources are left unchanged.
      */
-    @Deprecated
     public void provision() {
         System.out.println("  Provisioning resources for " + client.providerId().displayName() + "...");
-        System.out.println("  (Note: SDK provisioning is deprecated — use Terraform/IaC for production)");
-
         for (Map.Entry<String, List<String>> entry : SCHEMA.entrySet()) {
-            String database = entry.getKey();
-            System.out.println("    Database: " + database);
-            client.ensureDatabase(database);
+            System.out.println("    Database: " + entry.getKey());
             for (String collection : entry.getValue()) {
                 System.out.println("      Container: " + collection);
-                client.ensureContainer(new ResourceAddress(database, collection));
             }
         }
-
+        client.provisionSchema(SCHEMA);
         System.out.println("  Resource provisioning complete.");
     }
 }

@@ -74,40 +74,39 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
     }
 
     /**
-     * Ensure a logical database exists.
+     * Ensure a logical database exists, creating it if absent.
+     * <p>
+     * Default is a no-op — providers that have a native database concept override
+     * this method.
      *
      * @param database the logical database name
-     * @deprecated See {@code HyperscaleDbClient#ensureDatabase} — provisioning
-     *             will be removed from this SDK. Implementations should use
-     *             their provider's own infrastructure SDK or IaC tooling.
      */
-    @Deprecated(since = "0.1.0", forRemoval = true)
     default void ensureDatabase(String database) {
         // Default is no-op — providers that have a native database concept override
     }
 
     /**
-     * Ensure a container (or table) exists within the given database.
+     * Ensure a container (or table) exists within the given database, creating it
+     * if absent.
+     * <p>
+     * Default is a no-op — providers override with their creation logic.
      *
      * @param address the database + collection identifying the container
-     * @deprecated See {@code HyperscaleDbClient#ensureContainer} — provisioning
-     *             will be removed from this SDK. Implementations should use
-     *             their provider's own infrastructure SDK or IaC tooling.
      */
-    @Deprecated(since = "0.1.0", forRemoval = true)
     default void ensureContainer(ResourceAddress address) {
         // Default is no-op — providers override with their creation logic
     }
 
     /**
-     * Provision a full schema of databases and containers/tables in parallel.
+     * Provision a full schema of databases and containers in parallel.
+     * <p>
+     * Default implementation creates all databases concurrently (Phase 1),
+     * waits for completion, then creates all containers concurrently (Phase 2),
+     * using a bounded thread pool (max 10 threads). Providers may override for
+     * provider-specific optimisations.
      *
      * @param schema map of database name → list of collection/table names
-     * @deprecated See {@code HyperscaleDbClient#provisionSchema} — provisioning
-     *             will be removed from this SDK. Implementations should use
-     *             their provider's own infrastructure SDK or IaC tooling.
      */
-    @Deprecated(since = "0.1.0", forRemoval = true)
     default void provisionSchema(Map<String, List<String>> schema) {
         List<String> databases = new ArrayList<>(schema.keySet());
         List<ResourceAddress> containers = new ArrayList<>();

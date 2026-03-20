@@ -432,42 +432,52 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
         cosmosClient.close();
     }
 
-    // ── Provisioning (deprecated) ────────────────────────────────────────────
+    // ── Provisioning ─────────────────────────────────────────────────────────
 
     /**
-     * @deprecated Provisioning is outside the scope of this data-access SDK.
-     *             Use the Azure Cosmos DB SDK, ARM templates, Terraform, or the
-     *             Azure Portal to create databases before the application starts.
-     *             This method will be removed in a future release.
+     * Creates the Cosmos DB database if it does not already exist (idempotent).
+     * <p>
+     * Uses the data-plane {@code createDatabaseIfNotExists} call.
+     * <p>
+     * <b>RBAC limitation:</b> Cosmos DB data-plane RBAC (the
+     * <em>Built-in Data Contributor</em> role) does not permit control-plane
+     * operations such as creating databases. If your identity only has a
+     * data-plane RBAC role this call will fail with 403 Forbidden. In that case
+     * create the database via the Azure Portal, Azure CLI, or Bicep/Terraform
+     * before starting the application, and skip this call.
+     * Key-based authentication works without restriction.
+     *
+     * @param database the logical database name to create if absent
+     * @throws HyperscaleDbException if creation fails
      */
-    @Deprecated(since = "0.1.0", forRemoval = true)
     @Override
-    @SuppressWarnings("deprecation")
     public void ensureDatabase(String database) {
         try {
             cosmosClient.createDatabaseIfNotExists(database);
-            LOG.info("ensureDatabase (deprecated): created or verified Cosmos database '{}'", database);
+            LOG.info("ensureDatabase: created or verified Cosmos database '{}'", database);
         } catch (CosmosException e) {
             throw CosmosErrorMapper.map(e, OperationNames.ENSURE_DATABASE);
         }
     }
 
     /**
-     * @deprecated Provisioning is outside the scope of this data-access SDK.
-     *             Use the Azure Cosmos DB SDK, ARM templates, Terraform, or the
-     *             Azure Portal to create containers before the application starts.
-     *             This method will be removed in a future release.
+     * Creates the Cosmos DB container if it does not already exist (idempotent).
+     * <p>
+     * The container is always created with partition key path
+     * {@code /partitionKey}, matching the system field injected by the CRUD
+     * methods.
+     *
+     * @param address the logical database + container address
+     * @throws HyperscaleDbException if creation fails
      */
-    @Deprecated(since = "0.1.0", forRemoval = true)
     @Override
-    @SuppressWarnings("deprecation")
     public void ensureContainer(ResourceAddress address) {
         try {
             CosmosDatabase db = cosmosClient.getDatabase(address.database());
             CosmosContainerProperties props = new CosmosContainerProperties(
                     address.collection(), CosmosConstants.PARTITION_KEY_PATH);
             db.createContainerIfNotExists(props);
-            LOG.info("ensureContainer (deprecated): created or verified Cosmos container '{}/{}'",
+            LOG.info("ensureContainer: created or verified Cosmos container '{}/{}'",
                     address.database(), address.collection());
         } catch (CosmosException e) {
             throw CosmosErrorMapper.map(e, OperationNames.ENSURE_CONTAINER);
@@ -487,7 +497,7 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
     }
 
     /**
-     * Resolves the Cosmos DB {@link PartitionKey} from the portable {@link Key}.
+     * Resolves the Cosmos DB {@link PartitionKey} from the portable {@link HyperscaleDbKey}.
      * The partition key value is always {@code key.partitionKey()}.
      *
      * @param key the portable document key
