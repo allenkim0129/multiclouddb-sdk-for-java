@@ -341,7 +341,7 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
     public QueryPage query(ResourceAddress address, QueryRequest query, OperationOptions options) {
         try {
             String tableName = resolveTableName(address);
-            int pageSize = query.pageSize() != null ? query.pageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
+            int pageSize = query.maxPageSize() != null ? query.maxPageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
 
             // Deserialize continuation token if present
             Map<String, AttributeValue> exclusiveStartKey = null;
@@ -422,7 +422,7 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
     public QueryPage queryWithTranslation(ResourceAddress address, TranslatedQuery translated,
             QueryRequest query, OperationOptions options) {
         try {
-            int pageSize = query.pageSize() != null ? query.pageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
+            int pageSize = query.maxPageSize() != null ? query.maxPageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
             List<AttributeValue> params = new ArrayList<>();
             for (Object val : translated.positionalParameters()) {
                 params.add(DynamoItemMapper.toAttributeValue(val));

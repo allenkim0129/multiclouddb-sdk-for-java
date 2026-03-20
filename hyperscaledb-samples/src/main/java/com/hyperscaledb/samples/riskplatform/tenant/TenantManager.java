@@ -67,7 +67,7 @@ public class TenantManager {
      */
     public List<JsonNode> listTenants() {
         ResourceAddress addr = new ResourceAddress(ADMIN_DB, TENANTS_COLLECTION);
-        QueryRequest query = QueryRequest.builder().pageSize(100).build();
+        QueryRequest query = QueryRequest.builder().maxPageSize(100).build();
         QueryPage page = client.query(addr, query);
         List<JsonNode> tenants = new ArrayList<>();
         for (Map<String, Object> item : page.items()) {
@@ -165,7 +165,7 @@ public class TenantManager {
      */
     public List<JsonNode> listAll(String tenantId, String collection) {
         return query(tenantId, collection,
-                QueryRequest.builder().pageSize(200).build());
+                QueryRequest.builder().maxPageSize(200).build());
     }
 
     /**
@@ -176,7 +176,7 @@ public class TenantManager {
         return query(tenantId, collection,
                 QueryRequest.builder()
                         .partitionKey(partitionKey)
-                        .pageSize(200)
+                        .maxPageSize(200)
                         .build());
     }
 
@@ -191,7 +191,7 @@ public class TenantManager {
                 .expression(request.expression())
                 .nativeExpression(request.nativeExpression())
                 .parameters(request.parameters())
-                .pageSize(request.pageSize() != null ? request.pageSize() : 200)
+                .maxPageSize(request.maxPageSize() != null ? request.maxPageSize() : 200)
                 .continuationToken(request.continuationToken())
                 .build();
         return query(tenantId, collection, scoped);

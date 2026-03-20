@@ -290,8 +290,8 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             if (query.partitionKey() != null) {
                 queryOptions.setPartitionKey(new PartitionKey(query.partitionKey()));
             }
-            if (query.pageSize() != null) {
-                queryOptions.setMaxBufferedItemCount(query.pageSize());
+            if (query.maxPageSize() != null) {
+                queryOptions.setMaxBufferedItemCount(query.maxPageSize());
             }
 
             String expression = query.nativeExpression() != null ? query.nativeExpression() : query.expression();
@@ -310,7 +310,7 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             }
 
             SqlQuerySpec sqlQuery = new SqlQuerySpec(expression, sqlParams);
-            int pageSize = query.pageSize() != null ? query.pageSize() : CosmosConstants.PAGE_SIZE_DEFAULT;
+            int pageSize = query.maxPageSize() != null ? query.maxPageSize() : CosmosConstants.PAGE_SIZE_DEFAULT;
             List<Map<String, Object>> items = new ArrayList<>();
             String continuationToken = null;
 
@@ -369,8 +369,8 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             if (query.partitionKey() != null) {
                 queryOptions.setPartitionKey(new PartitionKey(query.partitionKey()));
             }
-            if (query.pageSize() != null) {
-                queryOptions.setMaxBufferedItemCount(query.pageSize());
+            if (query.maxPageSize() != null) {
+                queryOptions.setMaxBufferedItemCount(query.maxPageSize());
             }
 
             List<SqlParameter> sqlParams = new ArrayList<>();
@@ -379,7 +379,7 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             }
 
             SqlQuerySpec sqlQuery = new SqlQuerySpec(translated.queryString(), sqlParams);
-            int pageSize = query.pageSize() != null ? query.pageSize() : CosmosConstants.PAGE_SIZE_DEFAULT;
+            int pageSize = query.maxPageSize() != null ? query.maxPageSize() : CosmosConstants.PAGE_SIZE_DEFAULT;
             List<Map<String, Object>> items = new ArrayList<>();
             String continuationToken = null;
 

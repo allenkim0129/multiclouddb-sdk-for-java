@@ -30,7 +30,7 @@ public class UnsupportedCapabilityConformanceTest {
             QueryRequest likeQuery = QueryRequest.builder()
                     .expression("name LIKE @pattern")
                     .parameters(java.util.Map.of("pattern", "%test%"))
-                    .pageSize(10)
+                    .maxPageSize(10)
                     .build();
 
             HyperscaleDbException ex = assertThrows(HyperscaleDbException.class,
@@ -54,7 +54,7 @@ public class UnsupportedCapabilityConformanceTest {
             QueryRequest endsWithQuery = QueryRequest.builder()
                     .expression("ends_with(name, @suffix)")
                     .parameters(java.util.Map.of("suffix", "test"))
-                    .pageSize(10)
+                    .maxPageSize(10)
                     .build();
 
             assertThrows(HyperscaleDbException.class,

@@ -106,7 +106,7 @@ public abstract class CrudConformanceTests {
                     Map.of("title", "Query Item " + i, "batch", "conformance"));
         }
         QueryPage page = client.query(getAddress(),
-                QueryRequest.builder().expression("SELECT * FROM c").pageSize(50).build());
+                QueryRequest.builder().expression("SELECT * FROM c").maxPageSize(50).build());
         assertNotNull(page);
         assertFalse(page.items().isEmpty(), "Query should return at least our inserted items");
         for (int i = 1; i <= 3; i++) client.delete(getAddress(), HyperscaleDbKey.of("conf-query-" + i, "conf-query-" + i));
@@ -120,7 +120,7 @@ public abstract class CrudConformanceTests {
                     Map.of("title", "Page Item " + i));
         }
         QueryPage page1 = client.query(getAddress(),
-                QueryRequest.builder().expression("SELECT * FROM c").pageSize(2).build());
+                QueryRequest.builder().expression("SELECT * FROM c").maxPageSize(2).build());
         assertNotNull(page1);
         assertTrue(page1.items().size() <= 2, "Page should respect pageSize limit");
         for (int i = 1; i <= 5; i++) client.delete(getAddress(), HyperscaleDbKey.of("conf-page-" + i, "conf-page-" + i));
@@ -159,14 +159,14 @@ public abstract class CrudConformanceTests {
                     Map.of("title", "Beta Item " + i, "group", "beta"));
 
         QueryPage alphaPage = client.query(getAddress(),
-                QueryRequest.builder().partitionKey("alpha").pageSize(100).build());
+                QueryRequest.builder().partitionKey("alpha").maxPageSize(100).build());
         assertNotNull(alphaPage);
         assertEquals(3, alphaPage.items().size(), "Partition 'alpha' should contain exactly 3 items");
         for (Map<String, Object> item : alphaPage.items())
             assertEquals("alpha", str(item, "group"), "All items should belong to the alpha group");
 
         QueryPage betaPage = client.query(getAddress(),
-                QueryRequest.builder().partitionKey("beta").pageSize(100).build());
+                QueryRequest.builder().partitionKey("beta").maxPageSize(100).build());
         assertNotNull(betaPage);
         assertEquals(2, betaPage.items().size(), "Partition 'beta' should contain exactly 2 items");
 
@@ -181,7 +181,7 @@ public abstract class CrudConformanceTests {
         client.upsert(getAddress(), HyperscaleDbKey.of("cross-b", "pk-cross-b"), Map.of("title", "Cross-B"));
 
         QueryPage page = client.query(getAddress(),
-                QueryRequest.builder().pageSize(200).build());
+                QueryRequest.builder().maxPageSize(200).build());
         assertNotNull(page);
         assertTrue(page.items().size() >= 2,
                 "Cross-partition query should return items from multiple partitions");
@@ -194,7 +194,7 @@ public abstract class CrudConformanceTests {
     @DisplayName("partitionKey for nonexistent partition returns empty result")
     void queryNonexistentPartition() {
         QueryPage page = client.query(getAddress(),
-                QueryRequest.builder().partitionKey("nonexistent-partition-xyz").pageSize(100).build());
+                QueryRequest.builder().partitionKey("nonexistent-partition-xyz").maxPageSize(100).build());
         assertNotNull(page);
         assertTrue(page.items().isEmpty(),
                 "Query on nonexistent partition should return no items");

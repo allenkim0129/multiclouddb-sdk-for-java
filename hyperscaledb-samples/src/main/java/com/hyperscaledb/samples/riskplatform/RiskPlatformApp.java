@@ -498,7 +498,7 @@ public class RiskPlatformApp {
                     QueryRequest.builder()
                             .expression("status = @status")
                             .parameters(Map.of("status", "OPEN"))
-                            .pageSize(200)
+                            .maxPageSize(200)
                             .build());
             summary.put("openAlerts", openAlerts.size());
 

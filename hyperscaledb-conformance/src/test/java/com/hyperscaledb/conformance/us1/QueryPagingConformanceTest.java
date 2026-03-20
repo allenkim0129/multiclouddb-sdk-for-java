@@ -64,7 +64,7 @@ public abstract class QueryPagingConformanceTest {
     void firstPageRespectsPageSize() {
         QueryRequest query = QueryRequest.builder()
                 .expression("SELECT * FROM c")
-                .pageSize(PAGE_SIZE)
+                .maxPageSize(PAGE_SIZE)
                 .build();
 
         QueryPage page = client.query(getAddress(), query);
@@ -85,7 +85,7 @@ public abstract class QueryPagingConformanceTest {
         do {
             QueryRequest.Builder qb = QueryRequest.builder()
                     .expression("SELECT * FROM c")
-                    .pageSize(PAGE_SIZE);
+                    .maxPageSize(PAGE_SIZE);
             if (continuationToken != null) {
                 qb.continuationToken(continuationToken);
             }
@@ -125,7 +125,7 @@ public abstract class QueryPagingConformanceTest {
         // Query with a very large page size to get all items at once
         QueryRequest query = QueryRequest.builder()
                 .expression("SELECT * FROM c")
-                .pageSize(1000)
+                .maxPageSize(1000)
                 .build();
 
         QueryPage page = client.query(getAddress(), query);
@@ -140,7 +140,7 @@ public abstract class QueryPagingConformanceTest {
     void pageSizeOne() {
         QueryRequest query = QueryRequest.builder()
                 .expression("SELECT * FROM c")
-                .pageSize(1)
+                .maxPageSize(1)
                 .build();
 
         QueryPage page = client.query(getAddress(), query);

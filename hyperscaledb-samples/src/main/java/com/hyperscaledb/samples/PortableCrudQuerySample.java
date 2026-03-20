@@ -91,7 +91,7 @@ public class PortableCrudQuerySample {
             // 4a. Full scan with paging
             System.out.println("  [Full scan, pageSize=2]");
             QueryRequest fullScan = QueryRequest.builder()
-                    .pageSize(2)
+                    .maxPageSize(2)
                     .build();
             QueryPage page = client.query(address, fullScan);
             System.out.println("    Page 1: " + page.items().size() + " items, hasMore=" + page.hasMore());
@@ -101,7 +101,7 @@ public class PortableCrudQuerySample {
             QueryRequest statusQuery = QueryRequest.builder()
                     .expression("status = @status")
                     .parameters(Map.of("status", "active"))
-                    .pageSize(50)
+                    .maxPageSize(50)
                     .build();
             QueryPage activePage = client.query(address, statusQuery);
             System.out.println("    Found " + activePage.items().size() + " active items");
@@ -111,7 +111,7 @@ public class PortableCrudQuerySample {
             QueryRequest prefixQuery = QueryRequest.builder()
                     .expression("starts_with(title, @prefix)")
                     .parameters(Map.of("prefix", "Task"))
-                    .pageSize(50)
+                    .maxPageSize(50)
                     .build();
             QueryPage prefixPage = client.query(address, prefixQuery);
             System.out.println("    Found " + prefixPage.items().size() + " items starting with 'Task'");
@@ -121,7 +121,7 @@ public class PortableCrudQuerySample {
             QueryRequest combinedQuery = QueryRequest.builder()
                     .expression("status = @status AND priority > @minP")
                     .parameters(Map.of("status", "active", "minP", 1))
-                    .pageSize(50)
+                    .maxPageSize(50)
                     .build();
             QueryPage combinedPage = client.query(address, combinedQuery);
             System.out.println("    Found " + combinedPage.items().size() + " active items with priority > 1");
@@ -150,7 +150,7 @@ public class PortableCrudQuerySample {
             if (nativeExpr != null) {
                 QueryRequest nativeQuery = QueryRequest.builder()
                         .nativeExpression(nativeExpr)
-                        .pageSize(50)
+                        .maxPageSize(50)
                         .build();
                 QueryPage nativePage = client.query(address, nativeQuery);
                 System.out

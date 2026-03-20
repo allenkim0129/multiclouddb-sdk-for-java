@@ -128,7 +128,7 @@ class DynamoQueryIntegrationTest {
     @DisplayName("equality filter: status = @status returns only active items")
     void equalityFilter() {
         QueryPage page = client.query(address, QueryRequest.builder()
-                .expression("status = @status").parameters(Map.of("status", "active")).pageSize(50).build());
+                .expression("status = @status").parameters(Map.of("status", "active")).maxPageSize(50).build());
         assertNotNull(page);
         List<Map<String, Object>> items = page.items();
         System.out.println("[DynamoDB] equality filter returned " + items.size() + " items");
@@ -143,7 +143,7 @@ class DynamoQueryIntegrationTest {
     void andFilter() {
         QueryPage page = client.query(address, QueryRequest.builder()
                 .expression("status = @status AND category = @cat")
-                .parameters(Map.of("status", "active", "cat", "shopping")).pageSize(50).build());
+                .parameters(Map.of("status", "active", "cat", "shopping")).maxPageSize(50).build());
         List<Map<String, Object>> items = page.items();
         System.out.println("[DynamoDB] AND filter returned " + items.size() + " items");
         items.forEach(item -> System.out.println("  -> " + str(item, "sortKey") + ": " + str(item, "title")));
@@ -158,7 +158,7 @@ class DynamoQueryIntegrationTest {
     @DisplayName("comparison filter: priority > @minPriority")
     void comparisonFilter() {
         QueryPage page = client.query(address, QueryRequest.builder()
-                .expression("priority > @minPriority").parameters(Map.of("minPriority", 3)).pageSize(50).build());
+                .expression("priority > @minPriority").parameters(Map.of("minPriority", 3)).maxPageSize(50).build());
         List<Map<String, Object>> items = page.items();
         System.out.println("[DynamoDB] comparison filter (priority > 3) returned " + items.size() + " items");
         items.forEach(item -> System.out.println("  -> " + str(item, "sortKey") + ": priority=" + num(item, "priority")));
@@ -171,7 +171,7 @@ class DynamoQueryIntegrationTest {
     @DisplayName("starts_with function: starts_with(title, @prefix)")
     void startsWithFunction() {
         QueryPage page = client.query(address, QueryRequest.builder()
-                .expression("starts_with(title, @prefix)").parameters(Map.of("prefix", "Buy")).pageSize(50).build());
+                .expression("starts_with(title, @prefix)").parameters(Map.of("prefix", "Buy")).maxPageSize(50).build());
         List<Map<String, Object>> items = page.items();
         System.out.println("[DynamoDB] starts_with('Buy') returned " + items.size() + " items");
         items.forEach(item -> System.out.println("  -> " + str(item, "sortKey") + ": " + str(item, "title")));
@@ -184,7 +184,7 @@ class DynamoQueryIntegrationTest {
     @DisplayName("contains function: contains(title, @substr)")
     void containsFunction() {
         QueryPage page = client.query(address, QueryRequest.builder()
-                .expression("contains(title, @substr)").parameters(Map.of("substr", "book")).pageSize(50).build());
+                .expression("contains(title, @substr)").parameters(Map.of("substr", "book")).maxPageSize(50).build());
         List<Map<String, Object>> items = page.items();
         System.out.println("[DynamoDB] contains('book') returned " + items.size() + " items");
         items.forEach(item -> System.out.println("  -> " + str(item, "sortKey") + ": " + str(item, "title")));
@@ -196,7 +196,7 @@ class DynamoQueryIntegrationTest {
     @DisplayName("NOT expression: NOT status = @status")
     void notExpression() {
         QueryPage page = client.query(address, QueryRequest.builder()
-                .expression("NOT status = @status").parameters(Map.of("status", "active")).pageSize(50).build());
+                .expression("NOT status = @status").parameters(Map.of("status", "active")).maxPageSize(50).build());
         List<Map<String, Object>> items = page.items();
         System.out.println("[DynamoDB] NOT active returned " + items.size() + " items");
         items.forEach(item -> System.out.println("  -> " + str(item, "sortKey") + ": status=" + str(item, "status")));
@@ -210,7 +210,7 @@ class DynamoQueryIntegrationTest {
     void orExpression() {
         QueryPage page = client.query(address, QueryRequest.builder()
                 .expression("category = @cat1 OR category = @cat2")
-                .parameters(Map.of("cat1", "travel", "cat2", "personal")).pageSize(50).build());
+                .parameters(Map.of("cat1", "travel", "cat2", "personal")).maxPageSize(50).build());
         List<Map<String, Object>> items = page.items();
         System.out.println("[DynamoDB] OR (travel|personal) returned " + items.size() + " items");
         items.forEach(item -> System.out.println("  -> " + str(item, "sortKey") + ": category=" + str(item, "category")));
@@ -227,7 +227,7 @@ class DynamoQueryIntegrationTest {
     void complexCompound() {
         QueryPage page = client.query(address, QueryRequest.builder()
                 .expression("status = @s AND (category = @c1 OR category = @c2)")
-                .parameters(Map.of("s", "active", "c1", "shopping", "c2", "travel")).pageSize(50).build());
+                .parameters(Map.of("s", "active", "c1", "shopping", "c2", "travel")).maxPageSize(50).build());
         List<Map<String, Object>> items = page.items();
         System.out.println("[DynamoDB] complex compound returned " + items.size() + " items");
         items.forEach(item -> System.out.println("  -> " + str(item, "sortKey") + ": " + str(item, "title") + " [" + str(item, "status") + ", " + str(item, "category") + "]"));
@@ -245,7 +245,7 @@ class DynamoQueryIntegrationTest {
     void nativeExpressionPassthrough() {
         QueryPage page = client.query(address, QueryRequest.builder()
                 .nativeExpression("SELECT * FROM \"" + TABLE + "\" WHERE begins_with(title, 'Ship')")
-                .pageSize(50).build());
+                .maxPageSize(50).build());
         List<Map<String, Object>> items = page.items();
         System.out.println("[DynamoDB] native PartiQL returned " + items.size() + " items");
         items.forEach(item -> System.out.println("  -> " + str(item, "sortKey") + ": " + str(item, "title")));
@@ -258,7 +258,7 @@ class DynamoQueryIntegrationTest {
     @DisplayName("all data visible: full scan returns all 6 test items")
     void fullScanShowsAllData() {
         QueryPage page = client.query(address, QueryRequest.builder()
-                .expression("SELECT * FROM c").pageSize(100).build());
+                .expression("SELECT * FROM c").maxPageSize(100).build());
         List<Map<String, Object>> items = page.items();
         System.out.println("[DynamoDB] Full scan returned " + items.size() + " items total");
         long testItems = items.stream()

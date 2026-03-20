@@ -335,7 +335,7 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
                     combined.put("_pkval", query.partitionKey());
                     params = combined;
                 }
-                return executeStatement(stmt, params, query.pageSize(), offset);
+                return executeStatement(stmt, params, query.maxPageSize(), offset);
             }
 
             // Expression-based query or full scan
@@ -347,10 +347,10 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
                     return executeStatement(
                             "SELECT * FROM " + table + " WHERE partitionKey = @_pkval",
                             Map.of("_pkval", query.partitionKey()),
-                            query.pageSize(), offset);
+                            query.maxPageSize(), offset);
                 }
                 // Full scan
-                return executeStatement("SELECT * FROM " + table, null, query.pageSize(), offset);
+                return executeStatement("SELECT * FROM " + table, null, query.maxPageSize(), offset);
             }
 
             // Legacy: pass through as-is
@@ -361,9 +361,9 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
                     combined.putAll(query.parameters());
                 }
                 combined.put("_pkval", query.partitionKey());
-                return executeStatement(stmt, combined, query.pageSize(), offset);
+                return executeStatement(stmt, combined, query.maxPageSize(), offset);
             }
-            return executeStatement(expression, query.parameters(), query.pageSize(), offset);
+            return executeStatement(expression, query.parameters(), query.maxPageSize(), offset);
         } catch (SpannerException e) {
             throw SpannerErrorMapper.map(e, "query");
         }
@@ -397,7 +397,7 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
             QueryRequest query, OperationOptions options) {
         try {
             long offset = SpannerContinuationToken.decode(query.continuationToken());
-            int pageSize = query.pageSize() != null ? query.pageSize() : 100;
+            int pageSize = query.maxPageSize() != null ? query.maxPageSize() : 100;
 
             // Inject partition key condition before pagination
             String sql = translated.queryString();

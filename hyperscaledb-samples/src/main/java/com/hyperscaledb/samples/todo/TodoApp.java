@@ -98,7 +98,7 @@ public class TodoApp {
 
     public ArrayNode listTodos() {
         QueryRequest query = QueryRequest.builder()
-                .pageSize(100)
+                .maxPageSize(100)
                 .build();
 
         ArrayNode result = MAPPER.createArrayNode();
