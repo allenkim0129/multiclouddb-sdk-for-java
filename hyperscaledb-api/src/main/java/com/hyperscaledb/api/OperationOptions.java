@@ -6,9 +6,17 @@ package com.hyperscaledb.api;
 import java.time.Duration;
 
 /**
- * Portable operation options: timeout and cancellation controls.
- * All options are hints and may be honored on a best-effort basis by provider
- * adapters.
+ * Per-operation controls applied to a single CRUD or query call.
+ * <p>
+ * <h3>Timeout contract</h3>
+ * When a timeout is set the SDK passes it directly to the underlying provider
+ * SDK's request-level timeout mechanism. The call will throw
+ * {@link HyperscaleDbException} with category
+ * {@link HyperscaleDbErrorCategory#TRANSIENT_FAILURE} if the provider does not
+ * respond within the specified duration. This is a hard deadline, not a hint.
+ * <p>
+ * When no timeout is set ({@link #defaults()}) the provider SDK's own default
+ * timeout applies.
  */
 public final class OperationOptions {
 
@@ -20,17 +28,32 @@ public final class OperationOptions {
         this.timeout = timeout;
     }
 
+    /**
+     * Returns the shared default instance with no explicit timeout set.
+     * The provider SDK's own default timeout applies.
+     */
     public static OperationOptions defaults() {
         return DEFAULTS;
     }
 
+    /**
+     * Returns an {@code OperationOptions} instance with the given hard timeout.
+     * The call will fail with {@link HyperscaleDbException} if the provider does
+     * not respond within this duration.
+     *
+     * @param timeout the maximum time to wait; must be positive and non-null
+     * @throws IllegalArgumentException if {@code timeout} is null or not positive
+     */
     public static OperationOptions withTimeout(Duration timeout) {
+        if (timeout == null || timeout.isNegative() || timeout.isZero()) {
+            throw new IllegalArgumentException("timeout must be a positive duration");
+        }
         return new OperationOptions(timeout);
     }
 
     /**
-     * Returns the caller-specified timeout, or null if not set (use provider
-     * defaults).
+     * Returns the caller-specified timeout, or {@code null} if not set
+     * (provider default applies).
      */
     public Duration timeout() {
         return timeout;

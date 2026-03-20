@@ -4,16 +4,13 @@
 package com.hyperscaledb.provider.spanner;
 
 import com.hyperscaledb.api.HyperscaleDbClientConfig;
-import com.hyperscaledb.api.PortabilityWarning;
 import com.hyperscaledb.api.ProviderId;
 import com.hyperscaledb.api.query.ExpressionTranslator;
 import com.hyperscaledb.spi.HyperscaleDbProviderAdapter;
 import com.hyperscaledb.spi.HyperscaleDbProviderClient;
 
-import java.util.List;
-
 /**
- * ServiceLoader-discovered adapter for Google Cloud Spanner (stub).
+ * ServiceLoader-discovered adapter for Google Cloud Spanner.
  */
 public class SpannerProviderAdapter implements HyperscaleDbProviderAdapter {
 
@@ -30,10 +27,5 @@ public class SpannerProviderAdapter implements HyperscaleDbProviderAdapter {
     @Override
     public ExpressionTranslator createExpressionTranslator() {
         return new SpannerExpressionTranslator();
-    }
-
-    @Override
-    public List<PortabilityWarning> checkFeatureFlags(HyperscaleDbClientConfig config) {
-        return SpannerExtensions.checkFeatureFlags(config);
     }
 }

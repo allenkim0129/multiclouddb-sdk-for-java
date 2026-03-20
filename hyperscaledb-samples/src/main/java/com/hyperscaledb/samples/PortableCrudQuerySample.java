@@ -94,7 +94,7 @@ public class PortableCrudQuerySample {
                     .maxPageSize(2)
                     .build();
             QueryPage page = client.query(address, fullScan);
-            System.out.println("    Page 1: " + page.items().size() + " items, hasMore=" + page.hasMore());
+            System.out.println("    Page 1: " + page.items().size() + " items, hasMore=" + (page.continuationToken() != null));
 
             // 4b. Portable filter: status = @status
             System.out.println("  [Filter: status = @status]");

@@ -14,18 +14,12 @@ public final class QueryPage {
 
     private final List<Map<String, Object>> items;
     private final String continuationToken;
-    private final List<PortabilityWarning> warnings;
 
-    public QueryPage(List<Map<String, Object>> items, String continuationToken, List<PortabilityWarning> warnings) {
+    public QueryPage(List<Map<String, Object>> items, String continuationToken) {
         this.items = items != null
                 ? items.stream().map(Map::copyOf).collect(java.util.stream.Collectors.toUnmodifiableList())
                 : Collections.emptyList();
         this.continuationToken = continuationToken;
-        this.warnings = warnings != null ? List.copyOf(warnings) : Collections.emptyList();
-    }
-
-    public QueryPage(List<Map<String, Object>> items, String continuationToken) {
-        this(items, continuationToken, null);
     }
 
     /**
@@ -45,20 +39,5 @@ public final class QueryPage {
      */
     public String continuationToken() {
         return continuationToken;
-    }
-
-    /**
-     * Portability warnings emitted for this page (e.g., provider-specific
-     * behaviour was activated).
-     * <p>
-     * The returned list is unmodifiable; mutations throw
-     * {@link UnsupportedOperationException}.
-     */
-    public List<PortabilityWarning> warnings() {
-        return warnings;
-    }
-
-    public boolean hasMore() {
-        return continuationToken != null && !continuationToken.isEmpty();
     }
 }

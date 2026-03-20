@@ -147,7 +147,7 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
             }
 
             LOG.debug("query completed: address={}, items={}, hasMore={}, duration={}ms",
-                    address, page.items().size(), page.hasMore(),
+                    address, page.items().size(), page.continuationToken() != null,
                     Duration.between(start, Instant.now()).toMillis());
             return page;
         } catch (ExpressionParseException | ExpressionValidationException e) {

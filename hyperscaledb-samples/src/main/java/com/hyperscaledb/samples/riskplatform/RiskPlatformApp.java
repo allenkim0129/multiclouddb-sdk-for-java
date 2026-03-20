@@ -735,11 +735,6 @@ public class RiskPlatformApp {
                         key.substring("hyperscaledb.auth.".length()),
                         props.getProperty(key));
             }
-            if (key.startsWith("hyperscaledb.feature.")) {
-                builder.featureFlag(
-                        key.substring("hyperscaledb.feature.".length()),
-                        props.getProperty(key));
-            }
         }
 
         return builder.build();
