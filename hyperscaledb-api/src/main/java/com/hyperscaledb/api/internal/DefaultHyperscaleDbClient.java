@@ -11,6 +11,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletionException;
 
 /**
  * Default implementation of {@link HyperscaleDbClient} that delegates to a provider
@@ -221,6 +222,14 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
         } catch (HyperscaleDbException e) {
             throw enrichException(e, "provisionSchema", start);
         } catch (Exception e) {
+            // A provider's provisionSchema may run tasks via CompletableFuture internally.
+            // Defensively unwrap CompletionException so a HyperscaleDbException thrown
+            // inside an async task is not misclassified as PROVIDER_ERROR.
+            Throwable cause = (e instanceof CompletionException && e.getCause() != null)
+                    ? e.getCause() : e;
+            if (cause instanceof HyperscaleDbException) {
+                throw enrichException((HyperscaleDbException) cause, "provisionSchema", start);
+            }
             throw wrapUnexpected(e, "provisionSchema", start);
         }
     }

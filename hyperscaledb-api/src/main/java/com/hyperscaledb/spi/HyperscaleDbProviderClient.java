@@ -5,11 +5,14 @@ import com.hyperscaledb.api.query.TranslatedQuery;
 import com.fasterxml.jackson.databind.JsonNode;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * SPI contract for a provider client that implements CRUD + query operations.
@@ -136,16 +139,72 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
             CompletableFuture<?>[] dbFutures = databases.stream()
                     .map(db -> CompletableFuture.runAsync(() -> ensureDatabase(db), pool))
                     .toArray(CompletableFuture[]::new);
-            CompletableFuture.allOf(dbFutures).join();
+            joinAndRethrow(dbFutures);
 
             // Phase 2: containers in parallel
             CompletableFuture<?>[] containerFutures = containers.stream()
                     .map(addr -> CompletableFuture.runAsync(() -> ensureContainer(addr), pool))
                     .toArray(CompletableFuture[]::new);
-            CompletableFuture.allOf(containerFutures).join();
+            joinAndRethrow(containerFutures);
         } finally {
             pool.shutdown();
+            try {
+                if (!pool.awaitTermination(30, TimeUnit.SECONDS)) {
+                    pool.shutdownNow();
+                }
+            } catch (InterruptedException ie) {
+                pool.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
         }
+    }
+
+    /**
+     * Waits for <em>all</em> futures to complete (regardless of individual failures),
+     * then rethrows the first failure with its original error category preserved.
+     *
+     * <p>Each {@link CompletionException} wrapper is unwrapped before propagating, so
+     * a {@link HyperscaleDbException} thrown inside an async task retains its
+     * structured {@code errorCategory} — it is not misclassified as
+     * {@code PROVIDER_ERROR} by downstream catch blocks.
+     *
+     * <p>Additional failures beyond the first are attached as
+     * {@linkplain Throwable#addSuppressed suppressed exceptions} so callers can
+     * inspect every root cause if needed.
+     */
+    private static void joinAndRethrow(CompletableFuture<?>[] futures) {
+        // Drain all futures (replacing failures with null) so every task finishes
+        // before we inspect results. This prevents in-flight tasks from continuing
+        // after we return on a partial failure.
+        CompletableFuture.allOf(
+                Arrays.stream(futures)
+                        .map(f -> f.exceptionally(ex -> null))
+                        .toArray(CompletableFuture[]::new)
+        ).join();
+
+        List<Throwable> failures = new ArrayList<>();
+        for (CompletableFuture<?> f : futures) {
+            if (f.isCompletedExceptionally()) {
+                try {
+                    f.join();
+                } catch (CompletionException e) {
+                    // Unwrap: recover the original exception thrown inside the async task
+                    failures.add(e.getCause() != null ? e.getCause() : e);
+                }
+            }
+        }
+
+        if (failures.isEmpty()) return;
+
+        // First failure is the primary; all others are attached as suppressed
+        Throwable primary = failures.get(0);
+        for (int i = 1; i < failures.size(); i++) {
+            primary.addSuppressed(failures.get(i));
+        }
+
+        if (primary instanceof RuntimeException) throw (RuntimeException) primary;
+        if (primary instanceof Error) throw (Error) primary;
+        throw new RuntimeException(primary);
     }
 
     /**
