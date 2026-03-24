@@ -124,9 +124,19 @@ mvn test -pl hyperscaledb-provider-cosmos
 mvn test -pl hyperscaledb-api -Dtest=CapabilityTest
 ```
 
-Integration tests (against live emulators) are run via Maven profiles and
-require the relevant emulator to be running locally. See the emulator table
-above for setup commands.
+Integration tests (against live emulators) live in the `hyperscaledb-conformance`
+module and require the relevant emulator to be running locally. See the emulator
+table above for setup commands. Once your emulator is up, run:
+
+```bash
+# Run conformance (integration) tests against all running emulators
+mvn test -pl hyperscaledb-conformance
+
+# Run conformance tests for a single provider
+mvn test -pl hyperscaledb-conformance -Dtest=CosmosConformanceTest
+mvn test -pl hyperscaledb-conformance -Dtest=DynamoConformanceTest
+mvn test -pl hyperscaledb-conformance -Dtest=SpannerConformanceTest
+```
 
 ---
 
@@ -148,8 +158,10 @@ above for setup commands.
 ### PR checklist
 
 - [ ] `mvn clean install` passes
-- [ ] New public API methods have Javadoc
-- [ ] Tests added or updated for the change
+- [ ] New or changed public API methods have Javadoc
+- [ ] Tests added or updated to cover the change
+- [ ] No provider-specific types exposed on the `com.hyperscaledb.api.*` surface
+- [ ] `docs/compatibility.md` updated if capabilities changed
 - [ ] CLA signed
 
 ---
@@ -162,6 +174,11 @@ above for setup commands.
   public API return values; document mutability clearly in Javadoc.
 - Avoid Jackson or provider-specific types on the public API surface
   (`com.hyperscaledb.api.*`). Documents are `Map<String, Object>`.
+  > **Note:** The current API uses `JsonNode` (Jackson). Migration to
+  > `Map<String, Object>` is tracked in
+  > [issue #9](https://github.com/microsoft/hyperscale-db-sdk-for-java/issues/9).
+  > Until that migration is complete, new code may use `JsonNode` on the
+  > public surface while following this guideline in spirit.
 - Keep the public API surface minimal. Only expose what has a demonstrated
   use case.
 - Provider adapters must not bleed provider-specific details into the
