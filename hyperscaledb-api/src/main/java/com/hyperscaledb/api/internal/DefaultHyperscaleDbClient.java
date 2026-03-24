@@ -223,14 +223,16 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
             throw enrichException(e, "provisionSchema", start);
         } catch (Exception e) {
             // A provider's provisionSchema may run tasks via CompletableFuture internally.
-            // Defensively unwrap CompletionException so a HyperscaleDbException thrown
+            // Peel all CompletionException layers so a HyperscaleDbException thrown
             // inside an async task is not misclassified as PROVIDER_ERROR.
-            Throwable cause = (e instanceof CompletionException && e.getCause() != null)
-                    ? e.getCause() : e;
+            Throwable cause = e;
+            while (cause instanceof CompletionException && cause.getCause() != null) {
+                cause = cause.getCause();
+            }
             if (cause instanceof HyperscaleDbException) {
                 throw enrichException((HyperscaleDbException) cause, "provisionSchema", start);
             }
-            throw wrapUnexpected(e, "provisionSchema", start);
+            throw wrapUnexpected(cause instanceof Exception ? (Exception) cause : e, "provisionSchema", start);
         }
     }
 

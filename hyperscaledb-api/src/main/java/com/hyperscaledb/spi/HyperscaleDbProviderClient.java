@@ -123,6 +123,14 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
      *
      * @param schema map of database name → list of collection/table names
      */
+    /**
+     * Maximum time in seconds to wait for the thread pool to terminate after
+     * {@code joinAndRethrow} has already drained all futures. In the normal path
+     * this returns immediately; the timeout is a safety net for edge cases where a
+     * task is still running despite the drain (e.g. stuck I/O).
+     */
+    int POOL_TERMINATION_TIMEOUT_SECONDS = 30;
+
     default void provisionSchema(Map<String, List<String>> schema) {
         List<String> databases = new ArrayList<>(schema.keySet());
         List<ResourceAddress> containers = new ArrayList<>();
@@ -131,6 +139,8 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
                 containers.add(new ResourceAddress(entry.getKey(), collection));
             }
         }
+
+        if (databases.isEmpty() && containers.isEmpty()) return;
 
         int parallelism = Math.min(databases.size() + containers.size(), 10);
         ExecutorService pool = Executors.newFixedThreadPool(parallelism);
@@ -149,7 +159,9 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
         } finally {
             pool.shutdown();
             try {
-                if (!pool.awaitTermination(30, TimeUnit.SECONDS)) {
+                // joinAndRethrow already drains all futures, so this returns immediately
+                // in the normal path. The timeout is a safety net for stuck tasks.
+                if (!pool.awaitTermination(POOL_TERMINATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                     pool.shutdownNow();
                 }
             } catch (InterruptedException ie) {
@@ -161,16 +173,19 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
 
     /**
      * Waits for <em>all</em> futures to complete (regardless of individual failures),
-     * then rethrows the first failure with its original error category preserved.
+     * then rethrows one of the failures as the primary exception with its original
+     * error category preserved. All additional failures are attached as
+     * {@linkplain Throwable#addSuppressed suppressed exceptions} so callers can
+     * inspect every root cause if needed.
      *
      * <p>Each {@link CompletionException} wrapper is unwrapped before propagating, so
      * a {@link HyperscaleDbException} thrown inside an async task retains its
      * structured {@code errorCategory} — it is not misclassified as
      * {@code PROVIDER_ERROR} by downstream catch blocks.
      *
-     * <p>Additional failures beyond the first are attached as
-     * {@linkplain Throwable#addSuppressed suppressed exceptions} so callers can
-     * inspect every root cause if needed.
+     * <p><b>Note:</b> the "primary" failure is whichever task appears first in the
+     * futures array, which reflects the order of {@code schema.keySet()} iteration
+     * (map-order, not chronological failure order).
      */
     private static void joinAndRethrow(CompletableFuture<?>[] futures) {
         // Drain all futures (replacing failures with null) so every task finishes
@@ -204,7 +219,17 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
 
         if (primary instanceof RuntimeException) throw (RuntimeException) primary;
         if (primary instanceof Error) throw (Error) primary;
-        throw new RuntimeException(primary);
+        // Checked exception from inside a future: wrap with PROVIDER_ERROR to stay
+        // consistent with how all other unexpected exceptions are handled in the SDK.
+        throw new HyperscaleDbException(
+                new HyperscaleDbError(
+                        HyperscaleDbErrorCategory.PROVIDER_ERROR,
+                        "Unexpected checked exception in provisionSchema: " + primary.getMessage(),
+                        null,
+                        "provisionSchema",
+                        false,
+                        Map.of("exceptionType", primary.getClass().getName())),
+                primary);
     }
 
     /**
