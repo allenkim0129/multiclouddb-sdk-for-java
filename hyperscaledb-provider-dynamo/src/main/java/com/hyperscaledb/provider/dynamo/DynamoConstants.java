@@ -84,10 +84,6 @@ public final class DynamoConstants {
     public static final String PARTIQL_PARTITION_KEY_CONDITION =
             PARTIQL_PARTITION_KEY + " = " + PARTIQL_PARAM_PLACEHOLDER;
 
-    /** Partition key scoping condition for DynamoDB scan filter expressions. */
-    public static final String SCAN_PARTITION_KEY_CONDITION =
-            ATTR_PARTITION_KEY + " = :_pkval";
-
     /** Scan filter parameter name for partition key scoping. */
     public static final String SCAN_PARTITION_KEY_PARAM = ":_pkval";
 
@@ -126,12 +122,8 @@ public final class DynamoConstants {
 
     /**
      * {@code KeyConditionExpression} used to scope a DynamoDB Query to a single
-     * partition (hash key). Used with the DynamoDB {@code QueryRequest} API.
-     * <p>
-     * Note: although the string value is identical to {@link #SCAN_PARTITION_KEY_CONDITION},
-     * this constant is intentionally separate to make it clear that it is used as a
-     * {@code KeyConditionExpression} (hash-key index lookup, O(partition size))
-     * not as a {@code FilterExpression} on a Scan (post-read filter, O(table size)).
+     * partition (hash key). Used with the DynamoDB {@code QueryRequest} API
+     * (hash-key index lookup, O(partition size)).
      */
     public static final String KEY_CONDITION_EXPRESSION =
             ATTR_PARTITION_KEY + " = :_pkval";

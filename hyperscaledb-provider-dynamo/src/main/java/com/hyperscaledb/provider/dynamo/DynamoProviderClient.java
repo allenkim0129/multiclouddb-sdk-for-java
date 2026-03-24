@@ -96,6 +96,11 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
                 endpoint != null ? endpoint : "default");
     }
 
+    /** Package-private constructor for testing — injects a pre-configured {@link DynamoDbClient}. */
+    DynamoProviderClient(DynamoDbClient dynamoClient) {
+        this.dynamoClient = dynamoClient;
+    }
+
     @Override
     public void create(ResourceAddress address, Key key, JsonNode document, OperationOptions options) {
         try {
@@ -244,7 +249,7 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
             if (query.expression() == null || query.expression().isBlank()
                     || query.expression().trim().equalsIgnoreCase(DynamoConstants.QUERY_SELECT_ALL_COSMOS)) {
                 if (query.partitionKey() != null) {
-                    return executeQueryByPartitionKey(tableName, query.partitionKey(),
+                    return executeQueryByPartitionKey(address, tableName, query.partitionKey(),
                             null, null, pageSize, exclusiveStartKey);
                 }
                 return executeScan(tableName, pageSize, exclusiveStartKey);
@@ -254,7 +259,7 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
             // - With partitionKey: Query API with KeyConditionExpression + FilterExpression
             // - Without partitionKey: Scan with FilterExpression (no key to scope on)
             if (query.partitionKey() != null) {
-                return executeQueryByPartitionKey(tableName, query.partitionKey(),
+                return executeQueryByPartitionKey(address, tableName, query.partitionKey(),
                         query.expression(), query.parameters(), pageSize, exclusiveStartKey);
             }
             return executeScanWithFilter(tableName, query.expression(), query.parameters(),
@@ -358,6 +363,7 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
      * conditions inside {@code filterExpression} — those are handled by
      * {@link DynamoConstants#KEY_CONDITION_EXPRESSION} automatically.
      *
+     * @param address            resource address used for diagnostics logging
      * @param tableName          resolved DynamoDB table name
      * @param partitionKeyValue  the partition key value to scope the query to
      * @param filterExpression   optional additional filter expression; {@code null} for none
@@ -367,7 +373,7 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
      * @param exclusiveStartKey  decoded continuation token for pagination; {@code null} for first page
      * @return a {@link QueryPage} containing matching items and an optional continuation token
      */
-    private QueryPage executeQueryByPartitionKey(String tableName, String partitionKeyValue,
+    private QueryPage executeQueryByPartitionKey(ResourceAddress address, String tableName, String partitionKeyValue,
             String filterExpression, Map<String, Object> filterParameters,
             int pageSize, Map<String, AttributeValue> exclusiveStartKey) {
         Map<String, AttributeValue> expressionValues = new LinkedHashMap<>();
@@ -411,7 +417,7 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
             continuationToken = DynamoContinuationToken.encode(response.lastEvaluatedKey());
         }
 
-        logQueryDiagnostics(DynamoConstants.OP_QUERY_KEY_CONDITION, null,
+        logQueryDiagnostics(DynamoConstants.OP_QUERY_KEY_CONDITION, address,
                 response.sdkHttpResponse().firstMatchingHeader(DynamoConstants.HEADER_REQUEST_ID).orElse(null),
                 response.consumedCapacity(), items.size(), continuationToken);
 
