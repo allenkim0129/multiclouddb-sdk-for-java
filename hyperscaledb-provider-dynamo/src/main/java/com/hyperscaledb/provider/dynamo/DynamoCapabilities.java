@@ -37,6 +37,13 @@ public final class DynamoCapabilities {
                         new Capability(Capability.ENDS_WITH, false, "No native ends_with in DynamoDB PartiQL"),
                         new Capability(Capability.REGEX_MATCH, false, "No native regex support in DynamoDB PartiQL"),
                         new Capability(Capability.CASE_FUNCTIONS, false, "No native UPPER/LOWER in DynamoDB PartiQL"),
-                        new Capability(Capability.RESULT_LIMIT, true,
-                                        "LIMIT N applied via DynamoDB Scan/PartiQL limit parameter")));
+                        new Capability(Capability.RESULT_LIMIT, false,
+                                        "DynamoDB limit parameter caps the current scan/query page only; "
+                                        + "pagination via continuation tokens can exceed the stated limit. "
+                                        + "A true server-side total cap (like Cosmos SELECT TOP N) is not supported."),
+                        new Capability(Capability.ROW_LEVEL_TTL, true,
+                                        "Item-level TTL via " + DynamoConstants.ATTR_TTL_EXPIRY + " epoch-seconds attribute; "
+                                        + "requires DynamoDB table TTL enabled on that attribute — silently ignored otherwise"),
+                        new Capability(Capability.WRITE_TIMESTAMP, false,
+                                        "DynamoDB does not expose per-item write timestamps via GetItem")));
 }

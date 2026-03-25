@@ -72,6 +72,7 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
     public void update(ResourceAddress address, Key key, JsonNode document, OperationOptions options) {
         Instant start = Instant.now();
         try {
+            DocumentSizeValidator.validate(document, OperationNames.UPDATE);
             providerClient.update(address, key, document, options);
             LOG.debug("update completed: address={}, key={}, duration={}ms",
                     address, key, Duration.between(start, Instant.now()).toMillis());

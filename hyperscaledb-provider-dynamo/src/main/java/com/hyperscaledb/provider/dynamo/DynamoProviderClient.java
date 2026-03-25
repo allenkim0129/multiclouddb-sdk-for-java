@@ -51,6 +51,7 @@ import software.amazon.awssdk.services.dynamodb.model.TableStatus;
 import software.amazon.awssdk.services.dynamodb.waiters.DynamoDbWaiter;
 
 import java.net.URI;
+import java.time.Instant;
 import java.util.*;
 
 /**
@@ -108,6 +109,10 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             item.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));
+            if (options != null && options.ttlSeconds() != null) {
+                long expiryEpoch = Instant.now().getEpochSecond() + options.ttlSeconds();
+                item.put(DynamoConstants.ATTR_TTL_EXPIRY, AttributeValue.fromN(String.valueOf(expiryEpoch)));
+            }
 
             PutItemRequest request = PutItemRequest.builder()
                     .tableName(resolveTableName(address))
@@ -144,7 +149,14 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
             if (!response.hasItem() || response.item().isEmpty()) {
                 return null;
             }
-            ObjectNode doc = (ObjectNode) DynamoItemMapper.attributeMapToJsonNode(response.item());
+            JsonNode rawDoc = DynamoItemMapper.attributeMapToJsonNode(response.item());
+            if (!(rawDoc instanceof ObjectNode doc)) {
+                throw new HyperscaleDbException(new HyperscaleDbError(
+                        HyperscaleDbErrorCategory.PROVIDER_ERROR,
+                        "DynamoItemMapper.attributeMapToJsonNode returned a non-ObjectNode: "
+                                + rawDoc.getClass().getSimpleName(),
+                        ProviderId.DYNAMO, OperationNames.READ, false, null));
+            }
 
             DocumentMetadata metadata = null;
             if (options != null && options.includeMetadata()) {
@@ -188,6 +200,10 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             item.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));
+            if (options != null && options.ttlSeconds() != null) {
+                long expiryEpoch = Instant.now().getEpochSecond() + options.ttlSeconds();
+                item.put(DynamoConstants.ATTR_TTL_EXPIRY, AttributeValue.fromN(String.valueOf(expiryEpoch)));
+            }
 
             PutItemRequest request = PutItemRequest.builder()
                     .tableName(resolveTableName(address))
@@ -228,7 +244,7 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
     @Override
     public QueryPage query(ResourceAddress address, QueryRequest query, OperationOptions options) {
         try {
-            validateResultSetControl(query);
+            validateResultSetControl(query, OperationNames.QUERY);
             String tableName = resolveTableName(address);
             int pageSize = query.pageSize() != null ? query.pageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
             // Respect Top N limit: cap the page size to avoid over-fetching
@@ -292,7 +308,7 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
     public QueryPage queryWithTranslation(ResourceAddress address, TranslatedQuery translated,
             QueryRequest query, OperationOptions options) {
         try {
-            validateResultSetControl(query);
+            validateResultSetControl(query, OperationNames.QUERY_WITH_TRANSLATION);
             int pageSize = query.pageSize() != null ? query.pageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
             // Respect Top N limit
             if (query.limit() != null) {
@@ -464,13 +480,13 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
      * {@link HyperscaleDbErrorCategory#UNSUPPORTED_CAPABILITY}.
      * {@code limit} is supported via the DynamoDB Scan/PartiQL {@code LIMIT} parameter.
      */
-    private void validateResultSetControl(QueryRequest query) {
+    private void validateResultSetControl(QueryRequest query, String operation) {
         if (query.orderBy() != null && !query.orderBy().isEmpty()) {
             throw new HyperscaleDbException(new HyperscaleDbError(
                     HyperscaleDbErrorCategory.UNSUPPORTED_CAPABILITY,
                     "DynamoDB does not support ORDER BY. Check Capability.ORDER_BY before calling query().",
                     ProviderId.DYNAMO,
-                    OperationNames.QUERY,
+                    operation,
                     false,
                     null));
         }

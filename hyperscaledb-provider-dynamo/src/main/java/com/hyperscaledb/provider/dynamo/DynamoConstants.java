@@ -42,6 +42,16 @@ public final class DynamoConstants {
     /** DynamoDB attribute name for the sort / range key. */
     public static final String ATTR_SORT_KEY = "sortKey";
 
+    /**
+     * DynamoDB attribute name that holds the Unix epoch expiry timestamp for item TTL.
+     * DynamoDB's TTL feature must be enabled on the table and configured to use this
+     * attribute name (via {@code UpdateTimeToLive} or the console).  When TTL is not
+     * enabled on the table, DynamoDB silently ignores the attribute — writes succeed
+     * and items are never auto-deleted.  The value written is epoch-seconds
+     * ({@code Instant.now().getEpochSecond() + ttlSeconds}).
+     */
+    public static final String ATTR_TTL_EXPIRY = "ttlExpiry";
+
     // ── Table naming ─────────────────────────────────────────────────────────
 
     /**

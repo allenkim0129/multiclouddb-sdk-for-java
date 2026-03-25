@@ -4,6 +4,9 @@ import com.hyperscaledb.api.CapabilitySet;
 import com.hyperscaledb.api.DocumentMetadata;
 import com.hyperscaledb.api.DocumentResult;
 import com.hyperscaledb.api.HyperscaleDbClientConfig;
+import com.hyperscaledb.api.HyperscaleDbError;
+import com.hyperscaledb.api.HyperscaleDbErrorCategory;
+import com.hyperscaledb.api.HyperscaleDbException;
 import com.hyperscaledb.api.OperationNames;
 import com.hyperscaledb.api.OperationOptions;
 import com.hyperscaledb.api.ProviderId;
@@ -171,7 +174,14 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
 
             try (ResultSet rs = databaseClient.singleUse().executeQuery(statement)) {
                 if (rs.next()) {
-                    ObjectNode item = (ObjectNode) SpannerRowMapper.toJsonNode(rs);
+                    JsonNode rawItem = SpannerRowMapper.toJsonNode(rs);
+                    if (!(rawItem instanceof ObjectNode item)) {
+                        throw new HyperscaleDbException(new HyperscaleDbError(
+                                HyperscaleDbErrorCategory.PROVIDER_ERROR,
+                                "SpannerRowMapper.toJsonNode returned a non-ObjectNode: "
+                                        + rawItem.getClass().getSimpleName(),
+                                ProviderId.SPANNER, OperationNames.READ, false, null));
+                    }
 
                     DocumentMetadata metadata = null;
                     if (options != null && options.includeMetadata()) {
@@ -258,7 +268,7 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
             }
             return executeStatement(expression, query.parameters(), query.pageSize(), offset, query);
         } catch (SpannerException e) {
-            throw SpannerErrorMapper.map(e, "query");
+            throw SpannerErrorMapper.map(e, OperationNames.QUERY);
         }
     }
 
@@ -322,7 +332,7 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
             logQueryDiagnostics(OperationNames.QUERY_WITH_TRANSLATION, address, items.size(), hasMore);
             return new QueryPage(items, continuationToken);
         } catch (SpannerException e) {
-            throw SpannerErrorMapper.map(e, "query");
+            throw SpannerErrorMapper.map(e, OperationNames.QUERY_WITH_TRANSLATION);
         }
     }
 

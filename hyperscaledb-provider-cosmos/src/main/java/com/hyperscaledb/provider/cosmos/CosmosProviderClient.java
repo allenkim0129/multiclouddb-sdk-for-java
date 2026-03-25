@@ -114,6 +114,9 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             ObjectNode doc = document.isObject() ? (ObjectNode) document.deepCopy() : MAPPER.createObjectNode();
             doc.put(CosmosConstants.FIELD_ID, key.sortKey() != null ? key.sortKey() : key.partitionKey());
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
+            if (options != null && options.ttlSeconds() != null) {
+                doc.put(CosmosConstants.FIELD_TTL, options.ttlSeconds());
+            }
             PartitionKey pk = resolvePartitionKey(key);
             CosmosItemResponse<ObjectNode> response = container.createItem(doc, pk, new CosmosItemRequestOptions());
             logItemDiagnostics(OperationNames.CREATE, address, response);
@@ -159,6 +162,9 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
             doc.put(CosmosConstants.FIELD_ID, cosmosId);
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
+            if (options != null && options.ttlSeconds() != null) {
+                doc.put(CosmosConstants.FIELD_TTL, options.ttlSeconds());
+            }
             PartitionKey pk = resolvePartitionKey(key);
             CosmosItemResponse<ObjectNode> response = container.replaceItem(doc, cosmosId, pk, new CosmosItemRequestOptions());
             logItemDiagnostics(OperationNames.UPDATE, address, response);
@@ -174,6 +180,9 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             ObjectNode doc = document.isObject() ? (ObjectNode) document.deepCopy() : MAPPER.createObjectNode();
             doc.put(CosmosConstants.FIELD_ID, key.sortKey() != null ? key.sortKey() : key.partitionKey());
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
+            if (options != null && options.ttlSeconds() != null) {
+                doc.put(CosmosConstants.FIELD_TTL, options.ttlSeconds());
+            }
             PartitionKey pk = resolvePartitionKey(key);
             CosmosItemResponse<ObjectNode> response = container.upsertItem(doc, pk, new CosmosItemRequestOptions());
             logItemDiagnostics(OperationNames.UPSERT, address, response);
@@ -422,17 +431,34 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
     private String applyResultSetControl(String sql, QueryRequest query) {
         String result = sql;
 
-        // Apply TOP N — rewrite SELECT to SELECT TOP N
+        // Apply TOP N — rewrite SELECT to SELECT TOP N using a boolean flag to
+        // track success, avoiding false positives from field names that contain
+        // the substring "TOP" (e.g. "topic", "topology", "stopper").
         if (query.limit() != null) {
-            // Handle "SELECT VALUE c" and "SELECT *" patterns
-            result = result.replaceFirst("(?i)^SELECT\\s+VALUE\\s+c", "SELECT TOP " + query.limit() + " VALUE c");
-            // If the above didn't match, try plain SELECT *
-            if (!result.toUpperCase().contains("TOP " + query.limit())) {
-                result = result.replaceFirst("(?i)^SELECT\\s+\\*", "SELECT TOP " + query.limit() + " *");
+            boolean topApplied = false;
+
+            // Pattern 1: "SELECT VALUE c ..." — Cosmos scalar projection
+            String r1 = result.replaceFirst("(?i)^SELECT\\s+VALUE\\s+c\\b",
+                    "SELECT TOP " + query.limit() + " VALUE c");
+            if (!r1.equals(result)) {
+                result = r1;
+                topApplied = true;
             }
-            // If still no TOP applied (e.g., already has SELECT VALUE), insert generically
-            if (!result.toUpperCase().contains("TOP")) {
-                result = result.replaceFirst("(?i)^SELECT", "SELECT TOP " + query.limit());
+
+            // Pattern 2: "SELECT * ..." — full document projection
+            if (!topApplied) {
+                String r2 = result.replaceFirst("(?i)^SELECT\\s+\\*",
+                        "SELECT TOP " + query.limit() + " *");
+                if (!r2.equals(result)) {
+                    result = r2;
+                    topApplied = true;
+                }
+            }
+
+            // Pattern 3: any other SELECT (custom projections, aliases, etc.)
+            if (!topApplied) {
+                result = result.replaceFirst("(?i)^SELECT\\b",
+                        "SELECT TOP " + query.limit());
             }
         }
 

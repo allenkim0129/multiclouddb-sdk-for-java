@@ -50,6 +50,19 @@ public final class DocumentResult {
     }
 
     @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof DocumentResult that)) return false;
+        return Objects.equals(document, that.document)
+                && Objects.equals(metadata, that.metadata);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(document, metadata);
+    }
+
+    @Override
     public String toString() {
         return "DocumentResult{document=" + document + ", metadata=" + metadata + "}";
     }

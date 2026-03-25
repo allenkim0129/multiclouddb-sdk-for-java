@@ -28,5 +28,10 @@ public final class CosmosCapabilities {
             new Capability(Capability.ENDS_WITH, true, "ENDSWITH function available in Cosmos SQL"),
             new Capability(Capability.REGEX_MATCH, true, "RegexMatch function available in Cosmos SQL"),
             new Capability(Capability.CASE_FUNCTIONS, true, "UPPER/LOWER functions available in Cosmos SQL"),
-            new Capability(Capability.RESULT_LIMIT, true, "TOP N supported in Cosmos SQL (SELECT TOP N)")));
+            new Capability(Capability.RESULT_LIMIT, true, "TOP N supported in Cosmos SQL (SELECT TOP N)"),
+            new Capability(Capability.ROW_LEVEL_TTL, true,
+                    "Document-level TTL via _ttl field; requires the container to have TTL enabled "
+                    + "(set container default TTL to -1 or a positive value in the portal)"),
+            new Capability(Capability.WRITE_TIMESTAMP, true,
+                    "ETag exposed as version field in DocumentMetadata on read")));
 }

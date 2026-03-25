@@ -61,6 +61,14 @@ public final class CosmosConstants {
     /** The partition key field name used in every document and container definition. */
     public static final String FIELD_PARTITION_KEY = "partitionKey";
 
+    /**
+     * Cosmos DB document-level TTL field. When set to a positive integer, Cosmos DB deletes
+     * the document after that many seconds, provided the container has TTL enabled
+     * (container default TTL must be set to {@code -1} or a positive value in the portal/ARM).
+     * Setting to {@code -1} disables TTL on a per-document basis.
+     */
+    public static final String FIELD_TTL = "_ttl";
+
     // ── Partition key ─────────────────────────────────────────────────────────
 
     /** JSON path of the partition key field in every Cosmos container. */

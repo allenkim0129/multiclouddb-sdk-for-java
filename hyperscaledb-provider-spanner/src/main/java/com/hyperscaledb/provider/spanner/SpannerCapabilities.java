@@ -33,5 +33,12 @@ public final class SpannerCapabilities {
                         new Capability(Capability.CASE_FUNCTIONS, true,
                                         "UPPER/LOWER functions available in GoogleSQL"),
                         new Capability(Capability.RESULT_LIMIT, true,
-                                        "LIMIT N supported in GoogleSQL queries")));
+                                        "Per-page LIMIT N supported in GoogleSQL queries; "
+                                        + "cap is per-page only, not a hard total across pagination"),
+                        new Capability(Capability.ROW_LEVEL_TTL, false,
+                                        "Spanner TTL requires ROW_DELETION_POLICY DDL on the table schema; "
+                                        + "not implementable as a runtime write — SDK does not manage schema"),
+                        new Capability(Capability.WRITE_TIMESTAMP, false,
+                                        "Full commit-timestamp metadata requires allow_commit_timestamp=true DDL; "
+                                        + "deferred — current impl returns empty metadata shell")));
 }

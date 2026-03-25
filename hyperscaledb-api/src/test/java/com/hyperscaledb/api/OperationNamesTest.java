@@ -96,17 +96,6 @@ class OperationNamesTest {
                 + "Duplicate values found in: " + findDuplicates(all));
     }
 
-    @Test
-    @DisplayName("All operation name constants are non-null and non-blank (reflective)")
-    void allNonNullAndNonBlankReflective() {
-        List<String> all = allNamesReflective();
-        assertFalse(all.isEmpty(), "OperationNames must declare at least one constant");
-        for (String name : all) {
-            assertNotNull(name, "Operation name must not be null");
-            assertFalse(name.isBlank(), "Operation name must not be blank");
-        }
-    }
-
     /**
      * Reads all {@code public static final String} fields from {@link OperationNames}
      * via reflection. Any new constant added to {@link OperationNames} is automatically

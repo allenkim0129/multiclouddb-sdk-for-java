@@ -1,6 +1,7 @@
 package com.hyperscaledb.conformance.us5;
 
 import com.hyperscaledb.api.*;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.*;
@@ -165,13 +166,16 @@ public abstract class ResultSetControlConformanceTest {
         assertFalse(ascItems.isEmpty(), "ASC query must return at least one item");
         assertFalse(descItems.isEmpty(), "DESC query must return at least one item");
 
-        // The first item of ASC and DESC should differ (or be the same if only 1 item exists)
-        if (ascItems.size() >= 1 && descItems.size() >= 1) {
-            // We cannot guarantee different items without provider-specific data knowledge,
-            // but we verify the calls succeed and return non-null items.
-            assertNotNull(ascItems.get(0), "ASC first item must not be null");
-            assertNotNull(descItems.get(0), "DESC first item must not be null");
-        }
+        // Seed documents have deterministic score values (10, 20, 30, 40, 50).
+        // ASC should return the item with score=10 first; DESC should return score=50 first.
+        JsonNode ascFirst = (JsonNode) ascItems.get(0);
+        JsonNode descFirst = (JsonNode) descItems.get(0);
+        assertNotNull(ascFirst, "ASC first item must not be null");
+        assertNotNull(descFirst, "DESC first item must not be null");
+        assertEquals(10, ascFirst.get("score").asInt(),
+                "ASC ordering must return lowest score (10) first");
+        assertEquals(50, descFirst.get("score").asInt(),
+                "DESC ordering must return highest score (50) first");
     }
 
     // -------------------------------------------- FR-053: invalid limit

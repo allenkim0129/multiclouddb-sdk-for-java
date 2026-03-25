@@ -32,6 +32,23 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
     DocumentResult read(ResourceAddress address, Key key, OperationOptions options);
 
     /**
+     * Compatibility bridge for provider implementations compiled against the previous API where
+     * {@code read()} returned {@code JsonNode}. Delegates to {@link #read(ResourceAddress, Key, OperationOptions)}
+     * and unwraps the document.
+     *
+     * @deprecated Provider implementations should implement {@link #read(ResourceAddress, Key, OperationOptions)}
+     *             returning {@link DocumentResult}. This bridge exists to ease migration across the
+     *             {@code JsonNode} → {@code DocumentResult} breaking change and will be removed in the
+     *             next major version.
+     */
+    @Deprecated
+    default com.fasterxml.jackson.databind.JsonNode readDocument(
+            ResourceAddress address, Key key, OperationOptions options) {
+        DocumentResult result = read(address, key, options);
+        return result == null ? null : result.document();
+    }
+
+    /**
      * Update an existing document. Fails if the key does not exist.
      *
      * @throws HyperscaleDbException with category NOT_FOUND if the key does not exist
