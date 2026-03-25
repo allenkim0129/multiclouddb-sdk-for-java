@@ -51,11 +51,11 @@ public abstract class CrudConformanceTests {
         Key key = Key.of("conf-test-1", "conf-test-1");
         client.upsert(getAddress(), key, doc);
 
-        JsonNode result = client.read(getAddress(), key);
+        DocumentResult result = client.read(getAddress(), key);
         assertNotNull(result, "Document should be returned after upsert");
-        assertEquals("Conformance Test Item", result.get("title").asText());
-        assertEquals(42, result.get("value").asInt());
-        assertTrue(result.get("active").asBoolean());
+        assertEquals("Conformance Test Item", result.document().get("title").asText());
+        assertEquals(42, result.document().get("value").asInt());
+        assertTrue(result.document().get("active").asBoolean());
     }
 
     @Test
@@ -73,10 +73,10 @@ public abstract class CrudConformanceTests {
         doc2.put("extra", "field");
         client.upsert(getAddress(), key, doc2);
 
-        JsonNode result = client.read(getAddress(), key);
+        DocumentResult result = client.read(getAddress(), key);
         assertNotNull(result);
-        assertEquals(2, result.get("version").asInt());
-        assertTrue(result.has("extra"));
+        assertEquals(2, result.document().get("version").asInt());
+        assertTrue(result.document().has("extra"));
 
         // cleanup
         client.delete(getAddress(), key);
@@ -87,7 +87,7 @@ public abstract class CrudConformanceTests {
     @DisplayName("read returns null for nonexistent key")
     void readNonExistent() {
         Key key = Key.of("does-not-exist-xyz", "does-not-exist-xyz");
-        JsonNode result = client.read(getAddress(), key);
+        DocumentResult result = client.read(getAddress(), key);
         assertNull(result, "Should return null for nonexistent document");
     }
 

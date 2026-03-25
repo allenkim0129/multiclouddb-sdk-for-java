@@ -66,9 +66,9 @@ public class PortableCrudQuerySample {
             // === 2. READ: Retrieve a document ===
             System.out.println("--- READ: Retrieve document ---");
             Key getKey = Key.of("sample-1", "sample-1");
-            JsonNode retrieved = client.read(address, getKey);
-            if (retrieved != null) {
-                System.out.println("  Retrieved: " + retrieved.toPrettyString());
+            DocumentResult readResult = client.read(address, getKey);
+            if (readResult != null) {
+                System.out.println("  Retrieved: " + readResult.document().toPrettyString());
             }
             System.out.println();
 

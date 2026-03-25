@@ -123,14 +123,26 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
     }
 
     @Override
-    public JsonNode read(ResourceAddress address, Key key, OperationOptions options) {
+    public DocumentResult read(ResourceAddress address, Key key, OperationOptions options) {
         try {
             CosmosContainer container = getContainer(address);
             PartitionKey pk = resolvePartitionKey(key);
             String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
-            CosmosItemResponse<JsonNode> response = container.readItem(cosmosId, pk, JsonNode.class);
+            CosmosItemResponse<ObjectNode> response = container.readItem(cosmosId, pk, ObjectNode.class);
             logItemDiagnostics(OperationNames.READ, address, response);
-            return response.getItem();
+            ObjectNode item = response.getItem();
+            if (item == null) return null;
+
+            DocumentMetadata metadata = null;
+            if (options != null && options.includeMetadata()) {
+                DocumentMetadata.Builder metaBuilder = DocumentMetadata.builder();
+                // Cosmos exposes ETag as version
+                if (response.getETag() != null) {
+                    metaBuilder.version(response.getETag());
+                }
+                metadata = metaBuilder.build();
+            }
+            return new DocumentResult(item, metadata);
         } catch (CosmosException e) {
             if (e.getStatusCode() == 404) {
                 return null;

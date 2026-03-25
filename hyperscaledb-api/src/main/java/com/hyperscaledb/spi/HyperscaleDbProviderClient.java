@@ -27,9 +27,9 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
     /**
      * Read a document by key.
      *
-     * @return the document, or null if not found
+     * @return the document result (document + optional metadata), or {@code null} if not found
      */
-    JsonNode read(ResourceAddress address, Key key, OperationOptions options);
+    DocumentResult read(ResourceAddress address, Key key, OperationOptions options);
 
     /**
      * Update an existing document. Fails if the key does not exist.

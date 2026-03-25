@@ -1,6 +1,8 @@
 package com.hyperscaledb.provider.dynamo;
 
 import com.hyperscaledb.api.CapabilitySet;
+import com.hyperscaledb.api.DocumentMetadata;
+import com.hyperscaledb.api.DocumentResult;
 import com.hyperscaledb.api.HyperscaleDbClientConfig;
 import com.hyperscaledb.api.HyperscaleDbError;
 import com.hyperscaledb.api.HyperscaleDbErrorCategory;
@@ -15,6 +17,7 @@ import com.hyperscaledb.api.ResourceAddress;
 import com.hyperscaledb.api.query.TranslatedQuery;
 import com.hyperscaledb.spi.HyperscaleDbProviderClient;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -122,7 +125,7 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
     }
 
     @Override
-    public JsonNode read(ResourceAddress address, Key key, OperationOptions options) {
+    public DocumentResult read(ResourceAddress address, Key key, OperationOptions options) {
         try {
             Map<String, AttributeValue> keyMap = new LinkedHashMap<>();
             keyMap.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
@@ -141,7 +144,15 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
             if (!response.hasItem() || response.item().isEmpty()) {
                 return null;
             }
-            return DynamoItemMapper.attributeMapToJsonNode(response.item());
+            ObjectNode doc = (ObjectNode) DynamoItemMapper.attributeMapToJsonNode(response.item());
+
+            DocumentMetadata metadata = null;
+            if (options != null && options.includeMetadata()) {
+                // DynamoDB does not expose per-item write timestamps via GetItem;
+                // return empty metadata shell to signal the call was honoured.
+                metadata = DocumentMetadata.builder().build();
+            }
+            return new DocumentResult(doc, metadata);
         } catch (DynamoDbException e) {
             throw DynamoErrorMapper.map(e, OperationNames.READ);
         }

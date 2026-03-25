@@ -64,17 +64,18 @@ public class TodoApp {
 
     public JsonNode getTodo(String id) {
         Key key = Key.of(id, id);
-        return client.read(address, key);
+        DocumentResult result = client.read(address, key);
+        return result != null ? result.document() : null;
     }
 
     public JsonNode updateTodo(String id, JsonNode updates) {
         Key key = Key.of(id, id);
-        JsonNode existing = client.read(address, key);
+        DocumentResult existing = client.read(address, key);
         if (existing == null) {
             return null;
         }
 
-        ObjectNode updated = existing.deepCopy();
+        ObjectNode updated = existing.document().deepCopy();
         updates.fields().forEachRemaining(field -> updated.set(field.getKey(), field.getValue()));
         updated.put("updatedAt", Instant.now().toString());
         client.upsert(address, key, updated);

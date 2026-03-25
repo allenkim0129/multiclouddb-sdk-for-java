@@ -36,15 +36,16 @@ public interface HyperscaleDbClient extends AutoCloseable {
      *
      * @param address target database + collection
      * @param key     document key
-     * @param options operation options
-     * @return the document, or null if not found
+     * @param options operation options; set {@link OperationOptions#includeMetadata()} to
+     *                {@code true} to request provider write-metadata
+     * @return the document result (document + optional metadata), or {@code null} if not found
      */
-    JsonNode read(ResourceAddress address, Key key, OperationOptions options);
+    DocumentResult read(ResourceAddress address, Key key, OperationOptions options);
 
     /**
      * Read a document by key, using default options.
      */
-    default JsonNode read(ResourceAddress address, Key key) {
+    default DocumentResult read(ResourceAddress address, Key key) {
         return read(address, key, OperationOptions.defaults());
     }
 

@@ -83,7 +83,8 @@ public class TenantManager {
     public JsonNode getTenant(String tenantId) {
         ResourceAddress addr = new ResourceAddress(ADMIN_DB, TENANTS_COLLECTION);
         Key key = Key.of(tenantId, tenantId);
-        return client.read(addr, key);
+        DocumentResult result = client.read(addr, key);
+        return result != null ? result.document() : null;
     }
 
     // ── Per-tenant resource addressing ──────────────────────────────────────
@@ -118,7 +119,8 @@ public class TenantManager {
      * Read a document from a tenant-scoped collection.
      */
     public JsonNode read(String tenantId, String collection, Key key) {
-        return client.read(addressFor(tenantId, collection), key);
+        DocumentResult result = client.read(addressFor(tenantId, collection), key);
+        return result != null ? result.document() : null;
     }
 
     /**

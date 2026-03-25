@@ -1,6 +1,8 @@
 package com.hyperscaledb.provider.spanner;
 
 import com.hyperscaledb.api.CapabilitySet;
+import com.hyperscaledb.api.DocumentMetadata;
+import com.hyperscaledb.api.DocumentResult;
 import com.hyperscaledb.api.HyperscaleDbClientConfig;
 import com.hyperscaledb.api.OperationNames;
 import com.hyperscaledb.api.OperationOptions;
@@ -12,6 +14,7 @@ import com.hyperscaledb.api.SortOrder;
 import com.hyperscaledb.api.query.TranslatedQuery;
 import com.hyperscaledb.spi.HyperscaleDbProviderClient;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.cloud.spanner.DatabaseAdminClient;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
@@ -154,7 +157,7 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
     }
 
     @Override
-    public JsonNode read(ResourceAddress address, com.hyperscaledb.api.Key key, OperationOptions options) {
+    public DocumentResult read(ResourceAddress address, com.hyperscaledb.api.Key key, OperationOptions options) {
         try {
             String table = address.collection();
             String partitionKeyVal = key.partitionKey();
@@ -168,9 +171,15 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
 
             try (ResultSet rs = databaseClient.singleUse().executeQuery(statement)) {
                 if (rs.next()) {
-                    JsonNode result = SpannerRowMapper.toJsonNode(rs);
-                    logItemDiagnostics(OperationNames.READ, address);
-                    return result;
+                    ObjectNode item = (ObjectNode) SpannerRowMapper.toJsonNode(rs);
+
+                    DocumentMetadata metadata = null;
+                    if (options != null && options.includeMetadata()) {
+                        // Spanner does not expose per-row commit timestamps via query unless
+                        // the table has allow_commit_timestamp=true. Return empty shell.
+                        metadata = DocumentMetadata.builder().build();
+                    }
+                    return new DocumentResult(item, metadata);
                 }
                 return null;
             }

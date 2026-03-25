@@ -53,10 +53,10 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
     }
 
     @Override
-    public JsonNode read(ResourceAddress address, Key key, OperationOptions options) {
+    public DocumentResult read(ResourceAddress address, Key key, OperationOptions options) {
         Instant start = Instant.now();
         try {
-            JsonNode result = providerClient.read(address, key, options);
+            DocumentResult result = providerClient.read(address, key, options);
             LOG.debug("read completed: address={}, key={}, found={}, duration={}ms",
                     address, key, result != null, Duration.between(start, Instant.now()).toMillis());
             return result;
