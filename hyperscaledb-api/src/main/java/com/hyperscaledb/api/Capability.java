@@ -22,6 +22,13 @@ public final class Capability {
     public static final String REGEX_MATCH = "regex_match";
     public static final String CASE_FUNCTIONS = "case_functions";
 
+    /** Result set control capabilities */
+    public static final String RESULT_LIMIT = "result_limit";
+
+    /** TTL and metadata capabilities */
+    public static final String ROW_LEVEL_TTL = "row_level_ttl";
+    public static final String WRITE_TIMESTAMP = "write_timestamp";
+
     private final String name;
     private final boolean supported;
     private final String notes;

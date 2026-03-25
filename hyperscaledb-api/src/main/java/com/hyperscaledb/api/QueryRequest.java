@@ -1,6 +1,8 @@
 package com.hyperscaledb.api;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -14,11 +16,16 @@ public final class QueryRequest {
     private final Integer pageSize;
     private final String continuationToken;
     private final String partitionKey;
+    private final Integer limit;
+    private final List<SortOrder> orderBy;
 
     private QueryRequest(Builder builder) {
         if (builder.expression != null && builder.nativeExpression != null) {
             throw new IllegalArgumentException(
                     "expression and nativeExpression are mutually exclusive; set only one");
+        }
+        if (builder.limit != null && builder.limit < 1) {
+            throw new IllegalArgumentException("limit must be >= 1 when set");
         }
         this.expression = builder.expression;
         this.nativeExpression = builder.nativeExpression;
@@ -26,6 +33,8 @@ public final class QueryRequest {
         this.pageSize = builder.pageSize;
         this.continuationToken = builder.continuationToken;
         this.partitionKey = builder.partitionKey;
+        this.limit = builder.limit;
+        this.orderBy = builder.orderBy != null ? List.copyOf(builder.orderBy) : Collections.emptyList();
     }
 
     public String expression() {
@@ -79,6 +88,28 @@ public final class QueryRequest {
         return partitionKey;
     }
 
+    /**
+     * Optional maximum number of items to return (Top N).
+     * Applied after filtering and partition scoping.
+     * {@code null} means no limit.
+     *
+     * @return result limit, or {@code null}
+     */
+    public Integer limit() {
+        return limit;
+    }
+
+    /**
+     * Optional list of sort specifications for ORDER BY.
+     * Empty list means no ordering.
+     * <p>ORDER BY is capability-gated — check {@link Capability#ORDER_BY} before use.
+     *
+     * @return unmodifiable list of sort orders, never null
+     */
+    public List<SortOrder> orderBy() {
+        return orderBy;
+    }
+
     public static Builder builder() {
         return new Builder();
     }
@@ -90,6 +121,8 @@ public final class QueryRequest {
         private Integer pageSize;
         private String continuationToken;
         private String partitionKey;
+        private Integer limit;
+        private List<SortOrder> orderBy;
 
         public Builder expression(String expression) {
             this.expression = expression;
@@ -129,6 +162,34 @@ public final class QueryRequest {
          */
         public Builder partitionKey(String partitionKey) {
             this.partitionKey = partitionKey;
+            return this;
+        }
+
+        /**
+         * Limit the number of results returned (Top N).
+         *
+         * @param limit maximum number of items (must be >= 1)
+         * @return this builder
+         */
+        public Builder limit(int limit) {
+            this.limit = limit;
+            return this;
+        }
+
+        /**
+         * Append a sort specification to the ORDER BY clause.
+         * May be called multiple times for multi-field sorting.
+         * ORDER BY is capability-gated — check {@link Capability#ORDER_BY} before use.
+         *
+         * @param field     the field name to sort on
+         * @param direction the sort direction
+         * @return this builder
+         */
+        public Builder orderBy(String field, SortDirection direction) {
+            if (this.orderBy == null) {
+                this.orderBy = new ArrayList<>();
+            }
+            this.orderBy.add(SortOrder.of(field, direction));
             return this;
         }
 

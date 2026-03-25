@@ -27,5 +27,6 @@ public final class CosmosCapabilities {
             new Capability(Capability.ORDER_BY, true, "ORDER BY supported in Cosmos SQL queries"),
             new Capability(Capability.ENDS_WITH, true, "ENDSWITH function available in Cosmos SQL"),
             new Capability(Capability.REGEX_MATCH, true, "RegexMatch function available in Cosmos SQL"),
-            new Capability(Capability.CASE_FUNCTIONS, true, "UPPER/LOWER functions available in Cosmos SQL")));
+            new Capability(Capability.CASE_FUNCTIONS, true, "UPPER/LOWER functions available in Cosmos SQL"),
+            new Capability(Capability.RESULT_LIMIT, true, "TOP N supported in Cosmos SQL (SELECT TOP N)")));
 }

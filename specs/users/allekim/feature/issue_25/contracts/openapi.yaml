@@ -1,0 +1,140 @@
+openapi: 3.1.0
+info:
+  title: HyperscaleDB SDK — Issue 25 API Delta
+  description: |
+    API changes introduced by issue 25: Result Set Control, TTL/Write Metadata,
+    Uniform Document Size, and Provider Diagnostics Completion.
+    This is an extension to the parent contract in `specs/001-clouddb-sdk/contracts/openapi.yaml`.
+  version: 0.2.0
+
+components:
+  schemas:
+
+    SortDirection:
+      type: string
+      enum: [ASC, DESC]
+      description: Sort direction for ORDER BY clauses.
+
+    SortOrder:
+      type: object
+      required: [field, direction]
+      properties:
+        field:
+          type: string
+          minLength: 1
+          description: Name of the field to sort on.
+        direction:
+          $ref: '#/components/schemas/SortDirection'
+
+    QueryRequest:
+      description: |
+        Extended QueryRequest with result set control.
+        New fields: `limit` and `orderBy`.
+      allOf:
+        - description: Existing portable query request fields (expression, nativeExpression, parameters, pageSize, continuationToken, partitionKey)
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: |
+            Maximum number of items to return (Top N). Applied after filter and partition scope.
+            Null means no limit.
+        orderBy:
+          type: array
+          items:
+            $ref: '#/components/schemas/SortOrder'
+          description: |
+            Zero or more sort specifications. Empty means no ordering.
+            ORDER BY is capability-gated — fails at translation time on providers that do not support it (DynamoDB).
+
+    DocumentMetadata:
+      type: object
+      description: |
+        Optional system-managed properties returned alongside a document when
+        `OperationOptions.includeMetadata` is true.
+      properties:
+        remainingTtlSeconds:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            Approximate remaining TTL in seconds. Absent if TTL not set or provider does not expose it.
+            - Cosmos DB: derived from `_ttl` + `_ts` system properties.
+            - DynamoDB: derived from `ttlExpiry` epoch seconds attribute.
+            - Spanner: not available.
+        writeTimestamp:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Last write timestamp. Absent if provider does not expose it.
+            - Cosmos DB: sourced from `_ts` system property.
+            - DynamoDB: not available at item level.
+            - Spanner: sourced from `lastModified` commit timestamp column.
+
+    DocumentResult:
+      type: object
+      required: [document]
+      description: |
+        Return type for `read()` operations. Wraps document payload and optional metadata.
+      properties:
+        document:
+          type: object
+          additionalProperties: true
+          description: The document payload (JSON-like object).
+        metadata:
+          $ref: '#/components/schemas/DocumentMetadata'
+          nullable: true
+          description: Present only when `OperationOptions.includeMetadata` is true.
+
+    OperationOptionsExtended:
+      description: |
+        Extended OperationOptions with TTL and metadata retrieval.
+        New fields: `ttlSeconds` and `includeMetadata`.
+      allOf:
+        - description: Existing fields (timeout, cancellation token)
+      properties:
+        ttlSeconds:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: |
+            TTL in seconds for write operations (create, upsert).
+            Capability-gated (`ROW_LEVEL_TTL`). Fails fast on providers that do not support it (Spanner).
+        includeMetadata:
+          type: boolean
+          default: false
+          description: |
+            When true, read operations return a DocumentMetadata envelope alongside the document payload.
+
+    DocumentSizeLimit:
+      type: object
+      description: Programmatic document size limit.
+      properties:
+        maxDocumentSizeBytes:
+          type: integer
+          const: 409600
+          description: Uniform maximum document size enforced across all providers (400 KB = 400 × 1024 bytes).
+
+    ErrorCategories:
+      description: |
+        No new error categories. Oversized documents map to `INVALID_REQUEST`.
+        Unsupported TTL on Spanner maps to `UNSUPPORTED_CAPABILITY` (existing category).
+
+  # New capability constants (additions to Capability class)
+  x-capability-additions:
+    ROW_LEVEL_TTL:
+      name: row_level_ttl
+      description: Provider supports per-document time-to-live expiry.
+      supported_by: [cosmos, dynamo]
+      unsupported_by: [spanner]
+    WRITE_TIMESTAMP:
+      name: write_timestamp
+      description: Provider exposes the last-write timestamp in document metadata.
+      supported_by: [cosmos, spanner]
+      unsupported_by: [dynamo]
+    RESULT_LIMIT:
+      name: result_limit
+      description: Provider supports Top N result capping in queries.
+      supported_by: [cosmos, dynamo, spanner]

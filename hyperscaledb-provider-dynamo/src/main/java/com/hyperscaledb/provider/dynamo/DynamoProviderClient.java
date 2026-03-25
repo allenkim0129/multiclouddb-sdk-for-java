@@ -2,6 +2,9 @@ package com.hyperscaledb.provider.dynamo;
 
 import com.hyperscaledb.api.CapabilitySet;
 import com.hyperscaledb.api.HyperscaleDbClientConfig;
+import com.hyperscaledb.api.HyperscaleDbError;
+import com.hyperscaledb.api.HyperscaleDbErrorCategory;
+import com.hyperscaledb.api.HyperscaleDbException;
 import com.hyperscaledb.api.Key;
 import com.hyperscaledb.api.OperationNames;
 import com.hyperscaledb.api.OperationOptions;
@@ -214,8 +217,13 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
     @Override
     public QueryPage query(ResourceAddress address, QueryRequest query, OperationOptions options) {
         try {
+            validateResultSetControl(query);
             String tableName = resolveTableName(address);
             int pageSize = query.pageSize() != null ? query.pageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
+            // Respect Top N limit: cap the page size to avoid over-fetching
+            if (query.limit() != null) {
+                pageSize = Math.min(pageSize, query.limit());
+            }
 
             // Deserialize continuation token if present
             Map<String, AttributeValue> exclusiveStartKey = null;
@@ -273,7 +281,12 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
     public QueryPage queryWithTranslation(ResourceAddress address, TranslatedQuery translated,
             QueryRequest query, OperationOptions options) {
         try {
+            validateResultSetControl(query);
             int pageSize = query.pageSize() != null ? query.pageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
+            // Respect Top N limit
+            if (query.limit() != null) {
+                pageSize = Math.min(pageSize, query.limit());
+            }
             List<AttributeValue> params = new ArrayList<>();
             for (Object val : translated.positionalParameters()) {
                 params.add(DynamoItemMapper.toAttributeValue(val));
@@ -430,6 +443,26 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
             return stmt + " AND " + DynamoConstants.PARTIQL_PARTITION_KEY_CONDITION;
         }
         return stmt + " WHERE " + DynamoConstants.PARTIQL_PARTITION_KEY_CONDITION;
+    }
+
+    /**
+     * Validates result-set control fields in a query request.
+     * <p>
+     * DynamoDB does not support server-side ORDER BY; any non-empty {@code orderBy}
+     * list throws {@link HyperscaleDbException} with
+     * {@link HyperscaleDbErrorCategory#UNSUPPORTED_CAPABILITY}.
+     * {@code limit} is supported via the DynamoDB Scan/PartiQL {@code LIMIT} parameter.
+     */
+    private void validateResultSetControl(QueryRequest query) {
+        if (query.orderBy() != null && !query.orderBy().isEmpty()) {
+            throw new HyperscaleDbException(new HyperscaleDbError(
+                    HyperscaleDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    "DynamoDB does not support ORDER BY. Check Capability.ORDER_BY before calling query().",
+                    ProviderId.DYNAMO,
+                    OperationNames.QUERY,
+                    false,
+                    null));
+        }
     }
 
     @Override

@@ -32,8 +32,11 @@ public final class DynamoCapabilities {
                                         "Portable expression translation to DynamoDB PartiQL"),
                         new Capability(Capability.LIKE_OPERATOR, false,
                                         "LIKE not natively supported in PartiQL on DynamoDB"),
-                        new Capability(Capability.ORDER_BY, false, "ORDER BY not supported in DynamoDB PartiQL scans"),
+                        new Capability(Capability.ORDER_BY, false,
+                                        "ORDER BY not supported in DynamoDB PartiQL scans; use validateResultSetControl to fail fast"),
                         new Capability(Capability.ENDS_WITH, false, "No native ends_with in DynamoDB PartiQL"),
                         new Capability(Capability.REGEX_MATCH, false, "No native regex support in DynamoDB PartiQL"),
-                        new Capability(Capability.CASE_FUNCTIONS, false, "No native UPPER/LOWER in DynamoDB PartiQL")));
+                        new Capability(Capability.CASE_FUNCTIONS, false, "No native UPPER/LOWER in DynamoDB PartiQL"),
+                        new Capability(Capability.RESULT_LIMIT, true,
+                                        "LIMIT N applied via DynamoDB Scan/PartiQL limit parameter")));
 }

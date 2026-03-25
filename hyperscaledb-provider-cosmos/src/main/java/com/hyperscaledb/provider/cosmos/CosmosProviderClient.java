@@ -203,6 +203,11 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
                 expression = CosmosConstants.QUERY_SELECT_ALL;
             }
 
+            // Apply TOP N and ORDER BY for non-native expressions
+            if (query.nativeExpression() == null) {
+                expression = applyResultSetControl(expression, query);
+            }
+
             List<SqlParameter> sqlParams = new ArrayList<>();
             if (query.parameters() != null) {
                 for (Map.Entry<String, Object> entry : query.parameters().entrySet()) {
@@ -258,7 +263,8 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
                 sqlParams.add(new SqlParameter(entry.getKey(), entry.getValue()));
             }
 
-            SqlQuerySpec sqlQuery = new SqlQuerySpec(translated.queryString(), sqlParams);
+            String sql = applyResultSetControl(translated.queryString(), query);
+            SqlQuerySpec sqlQuery = new SqlQuerySpec(sql, sqlParams);
             int pageSize = query.pageSize() != null ? query.pageSize() : CosmosConstants.PAGE_SIZE_DEFAULT;
             List<JsonNode> items = new ArrayList<>();
             String continuationToken = null;
@@ -393,6 +399,43 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
 
     private PartitionKey resolvePartitionKey(Key key) {
         return new PartitionKey(key.partitionKey());
+    }
+
+    /**
+     * Applies TOP N (limit) and ORDER BY from the query request to a Cosmos SQL string.
+     * <p>
+     * For TOP N: rewrites {@code SELECT} to {@code SELECT TOP N} when limit is set.
+     * For ORDER BY: appends {@code ORDER BY c.field ASC/DESC} clause.
+     */
+    private String applyResultSetControl(String sql, QueryRequest query) {
+        String result = sql;
+
+        // Apply TOP N — rewrite SELECT to SELECT TOP N
+        if (query.limit() != null) {
+            // Handle "SELECT VALUE c" and "SELECT *" patterns
+            result = result.replaceFirst("(?i)^SELECT\\s+VALUE\\s+c", "SELECT TOP " + query.limit() + " VALUE c");
+            // If the above didn't match, try plain SELECT *
+            if (!result.toUpperCase().contains("TOP " + query.limit())) {
+                result = result.replaceFirst("(?i)^SELECT\\s+\\*", "SELECT TOP " + query.limit() + " *");
+            }
+            // If still no TOP applied (e.g., already has SELECT VALUE), insert generically
+            if (!result.toUpperCase().contains("TOP")) {
+                result = result.replaceFirst("(?i)^SELECT", "SELECT TOP " + query.limit());
+            }
+        }
+
+        // Apply ORDER BY
+        if (query.orderBy() != null && !query.orderBy().isEmpty()) {
+            StringBuilder orderClause = new StringBuilder(" ORDER BY ");
+            for (int i = 0; i < query.orderBy().size(); i++) {
+                SortOrder so = query.orderBy().get(i);
+                if (i > 0) orderClause.append(", ");
+                orderClause.append("c.").append(so.field()).append(" ").append(so.direction().name());
+            }
+            result = result + orderClause;
+        }
+
+        return result;
     }
 
     /**

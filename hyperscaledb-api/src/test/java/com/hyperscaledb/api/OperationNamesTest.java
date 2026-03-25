@@ -3,6 +3,9 @@ package com.hyperscaledb.api;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -13,6 +16,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * Verifies that every constant has the expected string value and that all
  * values are unique so no two operations share the same name (which would
  * make log and error correlation ambiguous).
+ * <p>
+ * The uniqueness test uses reflection so any future constant added to
+ * {@link OperationNames} is automatically covered without updating this test.
  */
 class OperationNamesTest {
 
@@ -73,7 +79,7 @@ class OperationNamesTest {
     @Test
     @DisplayName("All operation name constants are non-null and non-blank")
     void allNonNullAndNonBlank() {
-        List<String> all = allNames();
+        List<String> all = allNamesReflective();
         for (String name : all) {
             assertNotNull(name, "Operation name must not be null");
             assertFalse(name.isBlank(), "Operation name must not be blank");
@@ -81,26 +87,57 @@ class OperationNamesTest {
     }
 
     @Test
-    @DisplayName("All operation name constants are unique")
+    @DisplayName("All operation name constants are unique (reflective)")
     void allUnique() {
-        List<String> all = allNames();
+        List<String> all = allNamesReflective();
         long distinctCount = all.stream().distinct().count();
         assertEquals(all.size(), distinctCount,
-                "Every operation name constant must be unique — duplicates would break log correlation");
+                "Every operation name constant must be unique — duplicates would break log correlation. "
+                + "Duplicate values found in: " + findDuplicates(all));
     }
 
-    private List<String> allNames() {
-        return List.of(
-                OperationNames.CREATE,
-                OperationNames.READ,
-                OperationNames.UPDATE,
-                OperationNames.UPSERT,
-                OperationNames.DELETE,
-                OperationNames.QUERY,
-                OperationNames.QUERY_WITH_TRANSLATION,
-                OperationNames.ENSURE_DATABASE,
-                OperationNames.ENSURE_CONTAINER
-        );
+    @Test
+    @DisplayName("All operation name constants are non-null and non-blank (reflective)")
+    void allNonNullAndNonBlankReflective() {
+        List<String> all = allNamesReflective();
+        assertFalse(all.isEmpty(), "OperationNames must declare at least one constant");
+        for (String name : all) {
+            assertNotNull(name, "Operation name must not be null");
+            assertFalse(name.isBlank(), "Operation name must not be blank");
+        }
+    }
+
+    /**
+     * Reads all {@code public static final String} fields from {@link OperationNames}
+     * via reflection. Any new constant added to {@link OperationNames} is automatically
+     * included in uniqueness and non-blank checks without modifying this test.
+     */
+    private List<String> allNamesReflective() {
+        List<String> names = new ArrayList<>();
+        for (Field field : OperationNames.class.getDeclaredFields()) {
+            int mods = field.getModifiers();
+            if (Modifier.isPublic(mods) && Modifier.isStatic(mods) && Modifier.isFinal(mods)
+                    && field.getType() == String.class) {
+                try {
+                    names.add((String) field.get(null));
+                } catch (IllegalAccessException e) {
+                    fail("Could not access field " + field.getName() + ": " + e.getMessage());
+                }
+            }
+        }
+        return names;
+    }
+
+    private List<String> findDuplicates(List<String> names) {
+        List<String> seen = new ArrayList<>();
+        List<String> duplicates = new ArrayList<>();
+        for (String name : names) {
+            if (seen.contains(name)) {
+                duplicates.add(name);
+            }
+            seen.add(name);
+        }
+        return duplicates;
     }
 }
 

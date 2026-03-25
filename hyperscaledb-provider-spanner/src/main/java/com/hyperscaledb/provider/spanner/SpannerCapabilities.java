@@ -31,5 +31,7 @@ public final class SpannerCapabilities {
                         new Capability(Capability.ENDS_WITH, true, "ENDS_WITH function available in GoogleSQL"),
                         new Capability(Capability.REGEX_MATCH, true, "REGEXP_CONTAINS available in GoogleSQL"),
                         new Capability(Capability.CASE_FUNCTIONS, true,
-                                        "UPPER/LOWER functions available in GoogleSQL")));
+                                        "UPPER/LOWER functions available in GoogleSQL"),
+                        new Capability(Capability.RESULT_LIMIT, true,
+                                        "LIMIT N supported in GoogleSQL queries")));
 }
