@@ -231,3 +231,123 @@ Provider-specific features/behaviors may be enabled via explicit configuration t
 ## Testing portability
 - Run the shared conformance test suite against each provider configuration.
 - Treat any documented exceptions as portability gaps that must be explicitly acknowledged.
+
+---
+
+## Result Set Control — Top N and ORDER BY
+
+```java
+// Get the 5 most recent positions for a portfolio (ORDER BY requires Cosmos or Spanner)
+QueryRequest request = QueryRequest.builder()
+    .expression("portfolioId = @pid")
+    .parameters(Map.of("pid", "portfolio-alpha"))
+    .partitionKey("portfolio-alpha")
+    .orderBy("timestamp", SortDirection.DESC)
+    .limit(5)
+    .build();
+
+QueryPage page = client.query(address, request, OperationOptions.defaults());
+page.items().forEach(item -> System.out.println(item.toPrettyString()));
+```
+
+```java
+// DynamoDB does not support ORDER BY — throws UNSUPPORTED_CAPABILITY
+QueryRequest badRequest = QueryRequest.builder()
+    .expression("status = @s")
+    .parameters(Map.of("s", "active"))
+    .orderBy("createdAt", SortDirection.ASC)  // capability-gated
+    .build();
+// On DynamoDB: throws HyperscaleDbException(UNSUPPORTED_CAPABILITY)
+```
+
+```java
+// Top N without ORDER BY works on all providers
+QueryRequest limitOnly = QueryRequest.builder()
+    .expression("status = @s")
+    .parameters(Map.of("s", "active"))
+    .limit(10)
+    .build();
+```
+
+---
+
+## Document TTL and Write Metadata
+
+### Setting TTL on a document
+
+```java
+// Create a document that expires in 300 seconds (5 minutes)
+OperationOptions optionsWithTtl = OperationOptions.builder()
+    .ttlSeconds(300)
+    .build();
+
+client.create(address, key, document, optionsWithTtl);
+// On Spanner: throws HyperscaleDbException(UNSUPPORTED_CAPABILITY) — Spanner does not support row-level TTL
+```
+
+### Reading document metadata
+
+```java
+OperationOptions optionsWithMeta = OperationOptions.builder()
+    .includeMetadata(true)
+    .build();
+
+DocumentResult result = client.read(address, key, optionsWithMeta);
+ObjectNode doc = result.document();
+DocumentMetadata meta = result.metadata();
+if (meta != null) {
+    if (meta.lastModified() != null) System.out.println("Last written: " + meta.lastModified());
+    if (meta.version() != null) System.out.println("ETag: " + meta.version());
+}
+```
+
+### Without metadata (backward compatible)
+
+```java
+// Existing callers: pass OperationOptions.defaults() — no metadata overhead
+DocumentResult result = client.read(address, key, OperationOptions.defaults());
+ObjectNode doc = result.document();  // same as before
+```
+
+---
+
+## Uniform Document Size Limit
+
+The SDK enforces a **400 KB** maximum document size across all providers (driven by DynamoDB's limit). Documents exceeding the limit are rejected at the SDK layer before any I/O.
+
+```java
+// Oversized documents are rejected before any I/O
+ObjectNode largeDoc = buildLargeDocument();  // >400 KB
+try {
+    client.create(address, key, largeDoc, OperationOptions.defaults());
+} catch (HyperscaleDbException e) {
+    if (e.error().category() == HyperscaleDbErrorCategory.INVALID_REQUEST) {
+        System.out.println("Document too large: " + e.error().message());
+    }
+}
+```
+
+---
+
+## Capability Checking for New Features
+
+Before using capability-gated features, check provider support:
+
+```java
+CapabilitySet caps = client.capabilities();
+
+// Check ORDER BY support
+if (caps.isSupported(Capability.ORDER_BY)) {
+    // Safe to use orderBy() on QueryRequest
+}
+
+// Check row-level TTL support
+if (caps.isSupported(Capability.ROW_LEVEL_TTL)) {
+    // Safe to set ttlSeconds on OperationOptions
+}
+
+// Check RESULT_LIMIT support (all three providers support this)
+if (caps.isSupported(Capability.RESULT_LIMIT)) {
+    // Safe to set limit() on QueryRequest
+}
+```
