@@ -391,8 +391,10 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
             }
         }
 
-        software.amazon.awssdk.services.dynamodb.model.QueryRequest.Builder queryBuilder =
-                software.amazon.awssdk.services.dynamodb.model.QueryRequest.builder()
+        // DynamoDB's QueryRequest conflicts with com.hyperscaledb.api.QueryRequest by name;
+        // Java has no import aliases, so the FQCN is required for the SDK type.
+        // `var` is used to avoid repeating it on the left-hand side.
+        var queryBuilder = software.amazon.awssdk.services.dynamodb.model.QueryRequest.builder()
                         .tableName(tableName)
                         .keyConditionExpression(DynamoConstants.KEY_CONDITION_EXPRESSION)
                         .expressionAttributeValues(expressionValues)
