@@ -135,17 +135,16 @@
                 <version>${aws-sdk.version}</version>
             </dependency>
 
-            <!-- Netty version override: pins the transitive Netty dependency pulled
-                 in by the AWS SDK to a version that resolves CVE-2025-67735. -->
+            <!-- Netty BOM: pins ALL transitive Netty modules to the same version.
+                 Fixes CVE-2025-67735 (CRLF Injection in HttpRequestEncoder) and
+                 prevents split-version ClassNotFoundErrors (e.g. LeakPresenceDetector)
+                 when different SDKs pull in different Netty versions. -->
             <dependency>
                 <groupId>io.netty</groupId>
-                <artifactId>netty-codec-http</artifactId>
+                <artifactId>netty-bom</artifactId>
                 <version>${netty.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.netty</groupId>
-                <artifactId>netty-codec-http2</artifactId>
-                <version>${netty.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
             </dependency>
 
             <!-- Google Cloud Spanner -->
