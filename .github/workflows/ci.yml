@@ -103,6 +103,45 @@ jobs:
           Start-CosmosDbEmulator -NoUI -Key "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw=="
           Write-Host "Cosmos DB Emulator is running"
 
+      - name: Create test database and container
+        shell: pwsh
+        run: |
+          $masterKey = "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw=="
+          $endpoint  = "https://localhost:8081"
+
+          function Get-CosmosAuthHeader([string]$verb, [string]$resourceType, [string]$resourceLink, [string]$date, [string]$key) {
+              $keyBytes = [System.Convert]::FromBase64String($key)
+              $text     = "$($verb.ToLowerInvariant())`n$($resourceType.ToLowerInvariant())`n$resourceLink`n$($date.ToLowerInvariant())`n`n"
+              $hmac     = New-Object System.Security.Cryptography.HMACSHA256
+              $hmac.Key = $keyBytes
+              $sig      = [System.Convert]::ToBase64String($hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($text)))
+              return [uri]::EscapeDataString("type=master&ver=1.0&sig=$sig")
+          }
+
+          function Invoke-CosmosApi([string]$verb, [string]$url, [string]$resourceType, [string]$resourceLink, [string]$body) {
+              $date    = [DateTime]::UtcNow.ToString("r")
+              $auth    = Get-CosmosAuthHeader $verb $resourceType $resourceLink $date $masterKey
+              $headers = @{ "Authorization" = $auth; "x-ms-date" = $date; "x-ms-version" = "2018-12-31" }
+              try {
+                  Invoke-RestMethod -Uri $url -Method $verb -Headers $headers -Body $body `
+                      -ContentType "application/json" -SkipCertificateCheck
+                  Write-Host "  Created successfully"
+              } catch {
+                  if ($_.Exception.Response.StatusCode.value__ -eq 409) {
+                      Write-Host "  Already exists (409) - OK"
+                  } else { throw }
+              }
+          }
+
+          Write-Host "Creating database 'todoapp'..."
+          Invoke-CosmosApi "POST" "$endpoint/dbs" "dbs" "" '{"id":"todoapp"}'
+
+          Write-Host "Creating container 'todos' (partition key: /partitionKey)..."
+          Invoke-CosmosApi "POST" "$endpoint/dbs/todoapp/colls" "colls" "dbs/todoapp" `
+              '{"id":"todos","partitionKey":{"paths":["/partitionKey"],"kind":"Hash","Version":2}}'
+
+          Write-Host "Test database and container are ready"
+
       - name: Run Cosmos DB integration tests
         shell: bash
         run: |
