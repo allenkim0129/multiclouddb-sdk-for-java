@@ -166,11 +166,6 @@ jobs:
   emulator-dynamo:
     name: DynamoDB Local Tests
     runs-on: ubuntu-latest
-    services:
-      dynamodb-local:
-        image: amazon/dynamodb-local:latest
-        ports:
-          - 8000:8000
     steps:
       - uses: actions/checkout@v4
 
@@ -180,6 +175,26 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
           cache: 'maven'
+
+      - name: Start DynamoDB Local
+        run: |
+          # Pull with retry + exponential backoff to handle Docker Hub rate limits
+          IMAGE="amazon/dynamodb-local:2.5.3"
+          for i in 1 2 3 4 5; do
+            echo "Attempt $i: pulling $IMAGE..."
+            if docker pull "$IMAGE" 2>&1; then
+              echo "Pull succeeded"
+              break
+            fi
+            if [ "$i" -eq 5 ]; then
+              echo "::error::Failed to pull $IMAGE after 5 attempts"
+              exit 1
+            fi
+            WAIT=$((i * 15))
+            echo "Pull failed, waiting ${WAIT}s before retry..."
+            sleep "$WAIT"
+          done
+          docker run -d --name dynamodb-local -p 8000:8000 "$IMAGE"
 
       - name: Wait for DynamoDB Local
         run: |
@@ -194,6 +209,10 @@ jobs:
 
       - name: Run DynamoDB integration tests
         run: mvn verify -Pemulator-dynamo -pl hyperscaledb-conformance -am
+
+      - name: Stop DynamoDB Local
+        if: always()
+        run: docker rm -f dynamodb-local 2>/dev/null || true
 
       - name: Upload test reports
         if: always()
