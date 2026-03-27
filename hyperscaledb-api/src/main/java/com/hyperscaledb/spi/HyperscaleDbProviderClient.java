@@ -110,6 +110,14 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
     }
 
     /**
+     * Maximum time in seconds to wait for the thread pool to terminate after
+     * {@code joinAndRethrow} has already drained all futures. In the normal path
+     * this returns immediately; the timeout is a safety net for edge cases where a
+     * task is still running despite the drain (e.g. stuck I/O).
+     */
+    int POOL_TERMINATION_TIMEOUT_SECONDS = 30;
+
+    /**
      * Provision a full schema of databases and containers in parallel.
      * <p>
      * Default implementation creates all databases concurrently (Phase 1),
@@ -119,14 +127,6 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
      *
      * @param schema map of database name → list of collection/table names
      */
-    /**
-     * Maximum time in seconds to wait for the thread pool to terminate after
-     * {@code joinAndRethrow} has already drained all futures. In the normal path
-     * this returns immediately; the timeout is a safety net for edge cases where a
-     * task is still running despite the drain (e.g. stuck I/O).
-     */
-    int POOL_TERMINATION_TIMEOUT_SECONDS = 30;
-
     default void provisionSchema(Map<String, List<String>> schema) {
         List<String> databases = new ArrayList<>(schema.keySet());
         List<ResourceAddress> containers = new ArrayList<>();
