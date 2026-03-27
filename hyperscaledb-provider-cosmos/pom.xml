@@ -44,10 +44,6 @@
             <groupId>com.azure</groupId>
             <artifactId>azure-identity</artifactId>
         </dependency>
-        <dependency>
-            <groupId>com.azure.resourcemanager</groupId>
-            <artifactId>azure-resourcemanager-cosmos</artifactId>
-        </dependency>
 
         <!-- Test -->
         <dependency>
