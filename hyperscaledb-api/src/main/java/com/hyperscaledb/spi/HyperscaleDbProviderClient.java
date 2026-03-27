@@ -4,6 +4,8 @@
 package com.hyperscaledb.spi;
 
 import com.hyperscaledb.api.CapabilitySet;
+import com.hyperscaledb.api.HyperscaleDbError;
+import com.hyperscaledb.api.HyperscaleDbErrorCategory;
 import com.hyperscaledb.api.HyperscaleDbException;
 import com.hyperscaledb.api.HyperscaleDbKey;
 import com.hyperscaledb.api.OperationOptions;
