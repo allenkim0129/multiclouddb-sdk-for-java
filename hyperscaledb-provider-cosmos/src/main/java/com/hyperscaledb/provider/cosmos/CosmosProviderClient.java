@@ -1,28 +1,23 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package com.hyperscaledb.provider.cosmos;
 
 import com.azure.core.credential.TokenCredential;
-import com.azure.core.management.AzureEnvironment;
-import com.azure.core.management.profile.AzureProfile;
 import com.azure.cosmos.*;
 import com.azure.cosmos.models.*;
 import com.azure.identity.DefaultAzureCredentialBuilder;
-import com.azure.resourcemanager.cosmos.CosmosManager;
-import com.azure.resourcemanager.cosmos.models.SqlDatabaseCreateUpdateParameters;
-import com.azure.resourcemanager.cosmos.models.SqlDatabaseResource;
-import com.azure.resourcemanager.cosmos.models.SqlContainerCreateUpdateParameters;
-import com.azure.resourcemanager.cosmos.models.SqlContainerResource;
-import com.azure.resourcemanager.cosmos.models.ContainerPartitionKey;
 import com.hyperscaledb.api.*;
 import com.hyperscaledb.api.OperationNames;
 import com.hyperscaledb.api.query.TranslatedQuery;
 import com.hyperscaledb.spi.HyperscaleDbProviderClient;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.net.URI;
 import java.util.*;
 
 /**
@@ -42,15 +37,26 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
 
     private static final Logger LOG = LoggerFactory.getLogger(CosmosProviderClient.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
     private final CosmosClient cosmosClient;
     private final HyperscaleDbClientConfig config;
 
-    // Management-plane client for provisioning (non-null only in cloud/RBAC mode)
-    private final CosmosManager cosmosManager;
-    private final String resourceGroupName;
-    private final String accountName;
 
+    /**
+     * Constructs a Cosmos DB provider client from the supplied configuration.
+     * <p>
+     * Authentication is selected automatically:
+     * <ul>
+     *   <li>If {@code connection.key} is present, key-based authentication is used.</li>
+     *   <li>Otherwise {@link DefaultAzureCredentialBuilder} is used, supporting
+     *       Managed Identity, Azure CLI, environment variables, and the full
+     *       DefaultAzureCredential chain.</li>
+     * </ul>
+     *
+     * @param config client configuration carrying connection, auth, and options
+     * @throws IllegalArgumentException if {@code connection.endpoint} is missing or blank
+     */
     public CosmosProviderClient(HyperscaleDbClientConfig config) {
         this.config = config;
         String endpoint = config.connection().get(CosmosConstants.CONFIG_ENDPOINT);
@@ -68,9 +74,6 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
         if (key != null && !key.isBlank()) {
             builder.key(key);
             LOG.info("Cosmos client using key-based authentication");
-            this.cosmosManager    = null;
-            this.resourceGroupName = null;
-            this.accountName       = null;
         } else {
             String tenantId = config.connection().get(CosmosConstants.CONFIG_TENANT_ID);
             DefaultAzureCredentialBuilder credentialBuilder = new DefaultAzureCredentialBuilder();
@@ -80,21 +83,6 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             TokenCredential credential = credentialBuilder.build();
             builder.credential(credential);
             LOG.info("Cosmos client using DefaultAzureCredential (supports Managed Identity, Azure CLI, environment variables)");
-
-            String subscriptionId   = config.connection().get(CosmosConstants.CONFIG_SUBSCRIPTION_ID);
-            this.resourceGroupName  = config.connection().get(CosmosConstants.CONFIG_RESOURCE_GROUP);
-            this.accountName        = extractAccountName(endpoint);
-
-            if (subscriptionId != null && resourceGroupName != null && accountName != null) {
-                AzureProfile profile = new AzureProfile(tenantId, subscriptionId, AzureEnvironment.AZURE);
-                this.cosmosManager = CosmosManager.authenticate(credential, profile);
-                LOG.info("Cosmos management client initialised (subscription={}, rg={}, account={})",
-                        subscriptionId, resourceGroupName, accountName);
-            } else {
-                this.cosmosManager = null;
-                LOG.warn("Management SDK config incomplete (subscriptionId/resourceGroupName) — "
-                        + "provisioning will fall back to data-plane calls");
-            }
         }
 
         String connectionMode = config.connection().getOrDefault(
@@ -109,95 +97,194 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
         LOG.info("Cosmos client created for endpoint: {}", endpoint);
     }
 
+    /**
+     * Inserts a new document into the specified container.
+     * <p>
+     * Before writing, two system fields are injected into the document:
+     * <ul>
+     *   <li>{@code id} — set to {@code key.sortKey()} if present, otherwise {@code key.partitionKey()}.
+     *       This is the Cosmos DB item identifier required by the SDK.</li>
+     *   <li>{@code partitionKey} — set to {@code key.partitionKey()}, matching the
+     *       container's partition key path ({@code /partitionKey}).</li>
+     * </ul>
+     * Uses a {@code createItem} call with no pre-condition, so the operation fails with
+     * {@link com.hyperscaledb.api.HyperscaleDbErrorCategory#CONFLICT} if an item with
+     * the same {@code id} already exists in the partition.
+     *
+     * @param address the logical database + container to write to
+     * @param key     the document key; {@code partitionKey} is required, {@code sortKey} is optional
+     * @param document the document payload as a flat or nested map
+     * @param options  operation options (currently unused by this provider; reserved for timeout support)
+     * @throws com.hyperscaledb.api.HyperscaleDbException mapped from {@link CosmosException} —
+     *         category {@code CONFLICT} (409) if the key already exists
+     */
     @Override
-    public void create(ResourceAddress address, Key key, JsonNode document, OperationOptions options) {
+    public void create(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options) {
         try {
             CosmosContainer container = getContainer(address);
-            ObjectNode doc = document.isObject() ? (ObjectNode) document.deepCopy() : MAPPER.createObjectNode();
+            ObjectNode doc = toObjectNode(document);
             doc.put(CosmosConstants.FIELD_ID, key.sortKey() != null ? key.sortKey() : key.partitionKey());
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
             PartitionKey pk = resolvePartitionKey(key);
-            java.time.Instant start = java.time.Instant.now();
             CosmosItemResponse<ObjectNode> response = container.createItem(doc, pk, new CosmosItemRequestOptions());
-            logItemDiagnostics(OperationNames.CREATE, address, response,
-                    java.time.Duration.between(start, java.time.Instant.now()));
+            logItemDiagnostics(OperationNames.CREATE, address, response);
         } catch (CosmosException e) {
+            logExceptionDiagnostics(OperationNames.CREATE, address, e);
             throw CosmosErrorMapper.map(e, OperationNames.CREATE);
         }
     }
 
+    /**
+     * Reads a single document by its composite key.
+     * <p>
+     * Performs a direct point-read using the Cosmos DB {@code readItem} API, which is
+     * the lowest-latency read path. The item is looked up by the Cosmos {@code id}
+     * (derived from {@code key.sortKey()} or {@code key.partitionKey()}) within the
+     * specified logical partition.
+     *
+     * @param address the logical database + container to read from
+     * @param key     the document key; {@code partitionKey} is required, {@code sortKey} is optional
+     * @param options operation options (currently unused by this provider)
+     * @return the document as a {@code Map<String, Object>}, or {@code null} if not found (HTTP 404)
+     * @throws com.hyperscaledb.api.HyperscaleDbException for any non-404 Cosmos error
+     */
     @Override
-    public JsonNode read(ResourceAddress address, Key key, OperationOptions options) {
+    public Map<String, Object> read(ResourceAddress address, HyperscaleDbKey key, OperationOptions options) {
         try {
             CosmosContainer container = getContainer(address);
             PartitionKey pk = resolvePartitionKey(key);
             String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
-            java.time.Instant start = java.time.Instant.now();
             CosmosItemResponse<JsonNode> response = container.readItem(cosmosId, pk, JsonNode.class);
-            logItemDiagnostics(OperationNames.READ, address, response,
-                    java.time.Duration.between(start, java.time.Instant.now()));
-            return response.getItem();
+            logItemDiagnostics(OperationNames.READ, address, response);
+            return toMap(response.getItem());
         } catch (CosmosException e) {
             if (e.getStatusCode() == 404) {
                 return null;
             }
+            logExceptionDiagnostics(OperationNames.READ, address, e);
             throw CosmosErrorMapper.map(e, OperationNames.READ);
         }
     }
 
+    /**
+     * Replaces an existing document in the specified container.
+     * <p>
+     * Uses the Cosmos DB {@code replaceItem} API, which requires the item to already
+     * exist — the operation fails with {@link com.hyperscaledb.api.HyperscaleDbErrorCategory#NOT_FOUND}
+     * if no matching item is found. The system fields {@code id} and {@code partitionKey}
+     * are injected before the write, consistent with {@link #create}.
+     *
+     * @param address  the logical database + container
+     * @param key      the document key identifying the item to replace
+     * @param document the new document payload; replaces the entire stored document
+     * @param options  operation options (currently unused by this provider)
+     * @throws com.hyperscaledb.api.HyperscaleDbException category {@code NOT_FOUND} (404) if the item
+     *         does not exist
+     */
     @Override
-    public void update(ResourceAddress address, Key key, JsonNode document, OperationOptions options) {
+    public void update(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options) {
         try {
             CosmosContainer container = getContainer(address);
-            ObjectNode doc = document.isObject() ? (ObjectNode) document.deepCopy() : MAPPER.createObjectNode();
+            ObjectNode doc = toObjectNode(document);
             String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
             doc.put(CosmosConstants.FIELD_ID, cosmosId);
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
             PartitionKey pk = resolvePartitionKey(key);
-            java.time.Instant start = java.time.Instant.now();
             CosmosItemResponse<ObjectNode> response = container.replaceItem(doc, cosmosId, pk, new CosmosItemRequestOptions());
-            logItemDiagnostics(OperationNames.UPDATE, address, response,
-                    java.time.Duration.between(start, java.time.Instant.now()));
+            logItemDiagnostics(OperationNames.UPDATE, address, response);
         } catch (CosmosException e) {
+            logExceptionDiagnostics(OperationNames.UPDATE, address, e);
             throw CosmosErrorMapper.map(e, OperationNames.UPDATE);
         }
     }
 
+    /**
+     * Creates or replaces a document (upsert semantics).
+     * <p>
+     * Uses the Cosmos DB {@code upsertItem} API, which inserts the item if it does not
+     * exist, or replaces it completely if it does. The system fields {@code id} and
+     * {@code partitionKey} are injected before the write.
+     *
+     * @param address  the logical database + container
+     * @param key      the document key
+     * @param document the document payload
+     * @param options  operation options (currently unused by this provider)
+     * @throws com.hyperscaledb.api.HyperscaleDbException on any Cosmos error
+     */
     @Override
-    public void upsert(ResourceAddress address, Key key, JsonNode document, OperationOptions options) {
+    public void upsert(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options) {
         try {
             CosmosContainer container = getContainer(address);
-            ObjectNode doc = document.isObject() ? (ObjectNode) document.deepCopy() : MAPPER.createObjectNode();
+            ObjectNode doc = toObjectNode(document);
             doc.put(CosmosConstants.FIELD_ID, key.sortKey() != null ? key.sortKey() : key.partitionKey());
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
             PartitionKey pk = resolvePartitionKey(key);
-            java.time.Instant start = java.time.Instant.now();
             CosmosItemResponse<ObjectNode> response = container.upsertItem(doc, pk, new CosmosItemRequestOptions());
-            logItemDiagnostics(OperationNames.UPSERT, address, response,
-                    java.time.Duration.between(start, java.time.Instant.now()));
+            logItemDiagnostics(OperationNames.UPSERT, address, response);
         } catch (CosmosException e) {
+            logExceptionDiagnostics(OperationNames.UPSERT, address, e);
             throw CosmosErrorMapper.map(e, OperationNames.UPSERT);
         }
     }
 
+    /**
+     * Deletes a document by its composite key.
+     * <p>
+     * A 404 (item not found) response is treated as a success — delete is idempotent.
+     * All other Cosmos errors are mapped to a {@link com.hyperscaledb.api.HyperscaleDbException}.
+     *
+     * @param address the logical database + container
+     * @param key     the document key identifying the item to delete
+     * @param options operation options (currently unused by this provider)
+     * @throws com.hyperscaledb.api.HyperscaleDbException on any non-404 Cosmos error
+     */
     @Override
-    public void delete(ResourceAddress address, Key key, OperationOptions options) {
+    public void delete(ResourceAddress address, HyperscaleDbKey key, OperationOptions options) {
         try {
             CosmosContainer container = getContainer(address);
             PartitionKey pk = resolvePartitionKey(key);
             String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
-            java.time.Instant start = java.time.Instant.now();
             CosmosItemResponse<Object> response = container.deleteItem(cosmosId, pk, new CosmosItemRequestOptions());
-            logItemDiagnostics(OperationNames.DELETE, address, response,
-                    java.time.Duration.between(start, java.time.Instant.now()));
+            logItemDiagnostics(OperationNames.DELETE, address, response);
         } catch (CosmosException e) {
             if (e.getStatusCode() == 404) {
                 return;
             }
+            logExceptionDiagnostics(OperationNames.DELETE, address, e);
             throw CosmosErrorMapper.map(e, OperationNames.DELETE);
         }
     }
 
+    /**
+     * Executes a query and returns a single page of results.
+     * <p>
+     * Query routing logic (evaluated in order):
+     * <ol>
+     *   <li>If {@link QueryRequest#nativeExpression()} is set, it is used as-is as the
+     *       Cosmos SQL string (native passthrough).</li>
+     *   <li>If {@link QueryRequest#expression()} is set, it is used as the Cosmos SQL
+     *       WHERE expression.</li>
+     *   <li>If neither is set, {@code SELECT * FROM c} is used (full container scan).</li>
+     * </ol>
+     * Named parameters ({@code @name} syntax) from {@link QueryRequest#parameters()} are
+     * bound as {@link SqlParameter} values. Parameter names that do not already start with
+     * {@code @} are prefixed automatically.
+     * <p>
+     * If {@link QueryRequest#partitionKey()} is set, the query is scoped to a single
+     * logical partition via {@link CosmosQueryRequestOptions#setPartitionKey}, avoiding
+     * a cross-partition fan-out.
+     * <p>
+     * Only the first page of results is returned; pass the returned
+     * {@link QueryPage#continuationToken()} in the next request to page forward.
+     *
+     * @param address the logical database + container to query
+     * @param query   query request containing expression, parameters, page size, and
+     *                optional continuation token
+     * @param options operation options (currently unused by this provider)
+     * @return a page of results; {@link QueryPage#continuationToken()} is non-null when
+     *         more pages are available
+     * @throws com.hyperscaledb.api.HyperscaleDbException on any Cosmos query error
+     */
     @Override
     public QueryPage query(ResourceAddress address, QueryRequest query, OperationOptions options) {
         try {
@@ -206,8 +293,8 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             if (query.partitionKey() != null) {
                 queryOptions.setPartitionKey(new PartitionKey(query.partitionKey()));
             }
-            if (query.pageSize() != null) {
-                queryOptions.setMaxBufferedItemCount(query.pageSize());
+            if (query.maxPageSize() != null) {
+                queryOptions.setMaxBufferedItemCount(query.maxPageSize());
             }
 
             String expression = query.nativeExpression() != null ? query.nativeExpression() : query.expression();
@@ -226,8 +313,8 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             }
 
             SqlQuerySpec sqlQuery = new SqlQuerySpec(expression, sqlParams);
-            int pageSize = query.pageSize() != null ? query.pageSize() : CosmosConstants.PAGE_SIZE_DEFAULT;
-            List<JsonNode> items = new ArrayList<>();
+            int pageSize = query.maxPageSize() != null ? query.maxPageSize() : CosmosConstants.PAGE_SIZE_DEFAULT;
+            List<Map<String, Object>> items = new ArrayList<>();
             String continuationToken = null;
             java.time.Instant queryStart = java.time.Instant.now();
 
@@ -241,23 +328,47 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             }
 
             for (FeedResponse<JsonNode> page : pages) {
-                items.addAll(page.getResults());
+                for (JsonNode item : page.getResults()) {
+                    items.add(toMap(item));
+                }
                 continuationToken = page.getContinuationToken();
                 OperationDiagnostics diag = buildFeedDiagnostics(OperationNames.QUERY, address, page,
                         items.size(), java.time.Duration.between(queryStart, java.time.Instant.now()));
-                return new QueryPage(items, continuationToken, null, diag);
+                return new QueryPage(items, continuationToken, diag);
             }
 
             OperationDiagnostics emptyDiag = OperationDiagnostics
                     .builder(ProviderId.COSMOS, OperationNames.QUERY,
                             java.time.Duration.between(queryStart, java.time.Instant.now()))
                     .itemCount(0).build();
-            return new QueryPage(items, continuationToken, null, emptyDiag);
+            return new QueryPage(items, continuationToken, emptyDiag);
         } catch (CosmosException e) {
+            logExceptionDiagnostics(OperationNames.QUERY, address, e);
             throw CosmosErrorMapper.map(e, OperationNames.QUERY);
         }
     }
 
+    /**
+     * Executes a pre-translated portable query and returns a single page of results.
+     * <p>
+     * Called by {@link com.hyperscaledb.api.internal.DefaultHyperscaleDbClient} after
+     * the portable expression has been parsed, validated, and translated into Cosmos SQL
+     * by {@link CosmosExpressionTranslator}. Named parameters from
+     * {@link TranslatedQuery#namedParameters()} are bound directly as
+     * {@link SqlParameter} values.
+     * <p>
+     * If {@link QueryRequest#partitionKey()} is set the query is scoped to a single
+     * partition, consistent with {@link #query}.
+     *
+     * @param address    the logical database + container to query
+     * @param translated the Cosmos SQL string and bound named parameters produced by the
+     *                   expression translator
+     * @param query      the original query request (used for page size, continuation
+     *                   token, and partition key)
+     * @param options    operation options (currently unused by this provider)
+     * @return a page of results with an optional continuation token
+     * @throws com.hyperscaledb.api.HyperscaleDbException on any Cosmos query error
+     */
     @Override
     public QueryPage queryWithTranslation(ResourceAddress address, TranslatedQuery translated,
             QueryRequest query, OperationOptions options) {
@@ -267,8 +378,8 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             if (query.partitionKey() != null) {
                 queryOptions.setPartitionKey(new PartitionKey(query.partitionKey()));
             }
-            if (query.pageSize() != null) {
-                queryOptions.setMaxBufferedItemCount(query.pageSize());
+            if (query.maxPageSize() != null) {
+                queryOptions.setMaxBufferedItemCount(query.maxPageSize());
             }
 
             List<SqlParameter> sqlParams = new ArrayList<>();
@@ -277,8 +388,8 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             }
 
             SqlQuerySpec sqlQuery = new SqlQuerySpec(translated.queryString(), sqlParams);
-            int pageSize = query.pageSize() != null ? query.pageSize() : CosmosConstants.PAGE_SIZE_DEFAULT;
-            List<JsonNode> items = new ArrayList<>();
+            int pageSize = query.maxPageSize() != null ? query.maxPageSize() : CosmosConstants.PAGE_SIZE_DEFAULT;
+            List<Map<String, Object>> items = new ArrayList<>();
             String continuationToken = null;
             java.time.Instant queryStart = java.time.Instant.now();
 
@@ -292,19 +403,22 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             }
 
             for (FeedResponse<JsonNode> page : pages) {
-                items.addAll(page.getResults());
+                for (JsonNode item : page.getResults()) {
+                    items.add(toMap(item));
+                }
                 continuationToken = page.getContinuationToken();
                 OperationDiagnostics diag = buildFeedDiagnostics(OperationNames.QUERY_WITH_TRANSLATION, address,
                         page, items.size(), java.time.Duration.between(queryStart, java.time.Instant.now()));
-                return new QueryPage(items, continuationToken, null, diag);
+                return new QueryPage(items, continuationToken, diag);
             }
 
             OperationDiagnostics emptyDiag = OperationDiagnostics
                     .builder(ProviderId.COSMOS, OperationNames.QUERY,
                             java.time.Duration.between(queryStart, java.time.Instant.now()))
                     .itemCount(0).build();
-            return new QueryPage(items, continuationToken, null, emptyDiag);
+            return new QueryPage(items, continuationToken, emptyDiag);
         } catch (CosmosException e) {
+            logExceptionDiagnostics(OperationNames.QUERY_WITH_TRANSLATION, address, e);
             throw CosmosErrorMapper.map(e, OperationNames.QUERY);
         }
     }
@@ -312,15 +426,6 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
     @Override
     public CapabilitySet capabilities() {
         return CosmosCapabilities.CAPABILITIES;
-    }
-
-    @Override
-    @SuppressWarnings("unchecked")
-    public <T> T nativeClient(Class<T> clientType) {
-        if (clientType.isInstance(cosmosClient)) {
-            return (T) cosmosClient;
-        }
-        return null;
     }
 
     @Override
@@ -333,119 +438,97 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
         cosmosClient.close();
     }
 
-    // ── Provisioning ────────────────────────────────────────────────────────
+    // ── Provisioning ─────────────────────────────────────────────────────────
 
+    /**
+     * Creates the Cosmos DB database if it does not already exist (idempotent).
+     * <p>
+     * Uses the data-plane {@code createDatabaseIfNotExists} call. No management
+     * or ARM SDK dependency is required.
+     * <p>
+     * <b>Permission requirement:</b> The caller must hold a role that permits
+     * control-plane database creation (e.g., <em>Cosmos DB Operator</em> or
+     * key-based authentication). When operating under a data-plane-only RBAC role
+     * (e.g., <em>Cosmos DB Built-in Data Contributor</em>), this call will fail
+     * with a {@code PERMISSION_DENIED} error. In that case provision the database
+     * out-of-band (Azure Portal, CLI, or Bicep/Terraform) and do not call this
+     * method.
+     *
+     * @param database the logical database name to create if absent
+     * @throws HyperscaleDbException with category {@code PERMISSION_DENIED} when the
+     *                               caller lacks control-plane permissions, or
+     *                               category {@code INTERNAL_ERROR} for other failures
+     */
     @Override
     public void ensureDatabase(String database) {
-        if (cosmosManager != null) {
-            try {
-                cosmosManager.serviceClient()
-                        .getSqlResources()
-                        .getSqlDatabase(resourceGroupName, accountName, database);
-                LOG.info("Cosmos database already exists, skipping create: {}", database);
-                return;
-            } catch (com.azure.core.management.exception.ManagementException e) {
-                if (e.getResponse() != null && e.getResponse().getStatusCode() != 404) {
-                    throw e;
-                }
-            }
-            cosmosManager.serviceClient()
-                    .getSqlResources()
-                    .createUpdateSqlDatabase(
-                            resourceGroupName, accountName, database,
-                            new SqlDatabaseCreateUpdateParameters()
-                                    .withResource(new SqlDatabaseResource().withId(database)),
-                            com.azure.core.util.Context.NONE);
-            LOG.info("Ensured Cosmos database via management SDK: {}", database);
-        } else {
-            try {
-                cosmosClient.createDatabaseIfNotExists(database);
-                LOG.info("Ensured Cosmos database: {}", database);
-            } catch (CosmosException e) {
-                throw CosmosErrorMapper.map(e, OperationNames.ENSURE_DATABASE);
-            }
+        try {
+            cosmosClient.createDatabaseIfNotExists(database);
+            LOG.info("ensureDatabase: created or verified Cosmos database '{}'", database);
+        } catch (CosmosException e) {
+            throw CosmosErrorMapper.map(e, OperationNames.ENSURE_DATABASE);
         }
     }
 
+    /**
+     * Creates the Cosmos DB container if it does not already exist (idempotent).
+     * <p>
+     * The container is always created with partition key path
+     * {@code /partitionKey}, matching the system field injected by the CRUD
+     * methods.
+     *
+     * @param address the logical database + container address
+     * @throws HyperscaleDbException if creation fails
+     */
     @Override
     public void ensureContainer(ResourceAddress address) {
-        if (cosmosManager != null) {
-            try {
-                cosmosManager.serviceClient()
-                        .getSqlResources()
-                        .getSqlContainer(resourceGroupName, accountName,
-                                address.database(), address.collection());
-                LOG.info("Cosmos container already exists, skipping create: {}/{}",
-                        address.database(), address.collection());
-                return;
-            } catch (com.azure.core.management.exception.ManagementException e) {
-                if (e.getResponse() != null && e.getResponse().getStatusCode() != 404) {
-                    throw e;
-                }
-            }
-            cosmosManager.serviceClient()
-                    .getSqlResources()
-                    .createUpdateSqlContainer(
-                            resourceGroupName, accountName,
-                            address.database(), address.collection(),
-                            new SqlContainerCreateUpdateParameters()
-                                    .withResource(new SqlContainerResource()
-                                            .withId(address.collection())
-                                            .withPartitionKey(new ContainerPartitionKey()
-                                                    .withPaths(List.of(CosmosConstants.PARTITION_KEY_PATH)))),
-                            com.azure.core.util.Context.NONE);
-            LOG.info("Ensured Cosmos container via management SDK: {}/{}",
+        try {
+            CosmosDatabase db = cosmosClient.getDatabase(address.database());
+            CosmosContainerProperties props = new CosmosContainerProperties(
+                    address.collection(), CosmosConstants.PARTITION_KEY_PATH);
+            db.createContainerIfNotExists(props);
+            LOG.info("ensureContainer: created or verified Cosmos container '{}/{}'",
                     address.database(), address.collection());
-        } else {
-            try {
-                CosmosDatabase db = cosmosClient.getDatabase(address.database());
-                CosmosContainerProperties props = new CosmosContainerProperties(
-                        address.collection(), CosmosConstants.PARTITION_KEY_PATH);
-                db.createContainerIfNotExists(props);
-                LOG.info("Ensured Cosmos container: {}/{}", address.database(), address.collection());
-            } catch (CosmosException e) {
-                throw CosmosErrorMapper.map(e, OperationNames.ENSURE_CONTAINER);
-            }
+        } catch (CosmosException e) {
+            throw CosmosErrorMapper.map(e, OperationNames.ENSURE_CONTAINER);
         }
     }
 
-
+    /**
+     * Returns the {@link CosmosContainer} handle for the given resource address.
+     * Does not make a network call — the Cosmos SDK resolves the container lazily.
+     *
+     * @param address the logical database + container
+     * @return a live {@link CosmosContainer} reference
+     */
     private CosmosContainer getContainer(ResourceAddress address) {
         CosmosDatabase database = cosmosClient.getDatabase(address.database());
         return database.getContainer(address.collection());
     }
 
-    private PartitionKey resolvePartitionKey(Key key) {
+    /**
+     * Resolves the Cosmos DB {@link PartitionKey} from the portable {@link HyperscaleDbKey}.
+     * The partition key value is always {@code key.partitionKey()}.
+     *
+     * @param key the portable document key
+     * @return the Cosmos SDK partition key object
+     */
+    private PartitionKey resolvePartitionKey(HyperscaleDbKey key) {
         return new PartitionKey(key.partitionKey());
     }
 
-    /**
-     * Logs diagnostics for a single-item operation at DEBUG level.
-     * When {@code nativeDiagnosticsEnabled} is set in config, also logs the full
-     * {@link CosmosDiagnostics} string at INFO level.
-     */
     private void logItemDiagnostics(String operation, ResourceAddress address,
-            CosmosItemResponse<?> response, java.time.Duration duration) {
-        OperationDiagnostics diag = OperationDiagnostics
-                .builder(ProviderId.COSMOS, operation, duration)
-                .requestId(response.getActivityId())
-                .statusCode(response.getStatusCode())
-                .requestCharge(response.getRequestCharge())
-                .etag(response.getETag())
-                .sessionToken(response.getSessionToken())
-                .build();
+            CosmosItemResponse<?> response) {
+        CosmosDiagnosticsLogger.logItem(operation, address, response);
+    }
 
-        LOG.debug("cosmos.diagnostics op={} db={} col={} activityId={} requestCharge={} statusCode={} etag={}",
-                operation, address.database(), address.collection(),
-                diag.requestId(), diag.requestCharge(), diag.statusCode(), diag.etag());
+    private void logFeedDiagnostics(String operation, ResourceAddress address,
+            FeedResponse<?> page, int itemCount) {
+        CosmosDiagnosticsLogger.logFeed(operation, address, page, itemCount);
+    }
 
-        if (config.nativeDiagnosticsEnabled()) {
-            CosmosDiagnostics native_ = response.getDiagnostics();
-            if (native_ != null) {
-                LOG.info("cosmos.native-diagnostics op={} db={} col={} details={}",
-                        operation, address.database(), address.collection(), native_);
-            }
-        }
+    private void logExceptionDiagnostics(String operation, ResourceAddress address,
+            CosmosException e) {
+        CosmosDiagnosticsLogger.logException(operation, address, e);
     }
 
     /**
@@ -475,19 +558,29 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
     }
 
     /**
-     * Extracts the Cosmos account name from an endpoint URL.
-     * E.g. {@code https://my-account.documents.azure.com:443/} →
-     * {@code my-account}.
+     * Converts a caller-supplied {@code Map<String, Object>} document into a Jackson
+     * {@link ObjectNode} suitable for Cosmos SDK write calls.
+     * Jackson is used as a private implementation detail and does not appear on the
+     * public API surface.
+     *
+     * @param document the document payload
+     * @return an {@link ObjectNode} representation of the document
      */
-    private static String extractAccountName(String endpoint) {
-        try {
-            String host = URI.create(endpoint).getHost();
-            if (host != null && host.contains(".")) {
-                return host.substring(0, host.indexOf('.'));
-            }
-        } catch (IllegalArgumentException ignored) {
-            // fall through
-        }
-        return null;
+    private ObjectNode toObjectNode(Map<String, Object> document) {
+        return MAPPER.convertValue(document, ObjectNode.class);
+    }
+
+
+    /**
+     * Converts a Cosmos SDK {@link JsonNode} response item into a plain
+     * {@code Map<String, Object>} for return on the public API surface.
+     *
+     * @param node the JSON node returned by the Cosmos SDK; may be {@code null}
+     * @return a map representation, or {@code null} if {@code node} is {@code null}
+     */
+    private Map<String, Object> toMap(JsonNode node) {
+        if (node == null) return null;
+        return MAPPER.convertValue(node, MAP_TYPE);
     }
 }
+

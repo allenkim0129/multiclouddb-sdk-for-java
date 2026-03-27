@@ -1,8 +1,14 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package com.hyperscaledb.provider.dynamo;
 
 import com.hyperscaledb.api.CapabilitySet;
 import com.hyperscaledb.api.HyperscaleDbClientConfig;
-import com.hyperscaledb.api.Key;
+import com.hyperscaledb.api.HyperscaleDbError;
+import com.hyperscaledb.api.HyperscaleDbErrorCategory;
+import com.hyperscaledb.api.HyperscaleDbException;
+import com.hyperscaledb.api.HyperscaleDbKey;
 import com.hyperscaledb.api.OperationDiagnostics;
 import com.hyperscaledb.api.OperationNames;
 import com.hyperscaledb.api.OperationOptions;
@@ -12,7 +18,6 @@ import com.hyperscaledb.api.QueryRequest;
 import com.hyperscaledb.api.ResourceAddress;
 import com.hyperscaledb.api.query.TranslatedQuery;
 import com.hyperscaledb.spi.HyperscaleDbProviderClient;
-import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -23,6 +28,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.ConsumedCapacity;
+import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
 import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest;
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemResponse;
@@ -71,6 +77,23 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
     private final HyperscaleDbClientConfig config;
     private final DynamoDbClient dynamoClient;
 
+    /**
+     * Constructs a DynamoDB provider client from the supplied configuration.
+     * <p>
+     * Authentication is selected automatically:
+     * <ul>
+     *   <li>If {@code auth.accessKeyId} and {@code auth.secretAccessKey} are both
+     *       present, {@link StaticCredentialsProvider} is used. This is required for
+     *       DynamoDB Local and useful when credentials cannot be sourced from the
+     *       environment.</li>
+     *   <li>Otherwise the AWS SDK's default credential provider chain is used
+     *       (environment variables, {@code ~/.aws/credentials}, IAM role, etc.).</li>
+     * </ul>
+     * If {@code connection.endpoint} is set, it overrides the AWS regional endpoint —
+     * use this to point at DynamoDB Local ({@code http://localhost:8000}).
+     *
+     * @param config client configuration carrying connection, auth, and options
+     */
     public DynamoProviderClient(HyperscaleDbClientConfig config) {
         this.config = config;
         String region   = config.connection().getOrDefault(DynamoConstants.CONFIG_REGION, DynamoConstants.REGION_DEFAULT);
@@ -98,10 +121,35 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
                 endpoint != null ? endpoint : "default");
     }
 
+    /**
+     * Inserts a new item into the DynamoDB table that corresponds to the given address.
+     * <p>
+     * The physical table name is composed as
+     * {@code address.database() + "__" + address.collection()} (see
+     * {@link DynamoConstants#TABLE_NAME_SEPARATOR}).
+     * <p>
+     * Before writing, two key attributes are injected (or overwritten) in the item:
+     * <ul>
+     *   <li>{@code partitionKey} — set to {@code key.partitionKey()} (hash key).</li>
+     *   <li>{@code sortKey} — set to {@code key.sortKey()} if present, otherwise
+     *       {@code key.partitionKey()} (range key).</li>
+     * </ul>
+     * A {@code attribute_not_exists(partitionKey)} condition expression is applied so
+     * that the call fails with
+     * {@link com.hyperscaledb.api.HyperscaleDbErrorCategory#CONFLICT} if an item with
+     * the same key already exists.
+     *
+     * @param address  the logical database + collection (maps to a DynamoDB table)
+     * @param key      the document key; {@code partitionKey} is required, {@code sortKey} is optional
+     * @param document the document payload; all entries are stored as DynamoDB attributes
+     * @param options  operation options (currently unused by this provider)
+     * @throws com.hyperscaledb.api.HyperscaleDbException category {@code CONFLICT} if the
+     *         item already exists, or any other mapped DynamoDB error
+     */
     @Override
-    public void create(ResourceAddress address, Key key, JsonNode document, OperationOptions options) {
+    public void create(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options) {
         try {
-            Map<String, AttributeValue> item = DynamoItemMapper.jsonNodeToAttributeMap(document);
+            Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             item.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));
@@ -113,19 +161,30 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
                     .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
                     .build();
 
-            java.time.Instant start = java.time.Instant.now();
             PutItemResponse response = dynamoClient.putItem(request);
-            buildItemDiagnostics(OperationNames.CREATE, address, response.responseMetadata().requestId(),
-                    response.consumedCapacity(),
-                    response.sdkHttpResponse(),
-                    java.time.Duration.between(start, java.time.Instant.now()));
+            logItemDiagnostics(OperationNames.CREATE, address, response.responseMetadata().requestId(),
+                    response.consumedCapacity());
         } catch (DynamoDbException e) {
             throw DynamoErrorMapper.map(e, OperationNames.CREATE);
         }
     }
 
+    /**
+     * Retrieves a single item from DynamoDB by its composite key.
+     * <p>
+     * Uses a {@code GetItem} request (a direct key-lookup), which is the most
+     * efficient read path in DynamoDB. Both the hash key ({@code partitionKey}) and
+     * range key ({@code sortKey}) are required for the lookup; if {@code key.sortKey()}
+     * is absent, {@code key.partitionKey()} is used for both attributes.
+     *
+     * @param address the logical database + collection
+     * @param key     the document key
+     * @param options operation options (currently unused by this provider)
+     * @return the item as a {@code Map<String, Object>}, or {@code null} if not found
+     * @throws com.hyperscaledb.api.HyperscaleDbException on any DynamoDB error
+     */
     @Override
-    public JsonNode read(ResourceAddress address, Key key, OperationOptions options) {
+    public Map<String, Object> read(ResourceAddress address, HyperscaleDbKey key, OperationOptions options) {
         try {
             Map<String, AttributeValue> keyMap = new LinkedHashMap<>();
             keyMap.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
@@ -138,25 +197,37 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
                     .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
                     .build();
 
-            java.time.Instant start = java.time.Instant.now();
             GetItemResponse response = dynamoClient.getItem(request);
-            buildItemDiagnostics(OperationNames.READ, address, response.responseMetadata().requestId(),
-                    response.consumedCapacity(),
-                    response.sdkHttpResponse(),
-                    java.time.Duration.between(start, java.time.Instant.now()));
+            logItemDiagnostics(OperationNames.READ, address, response.responseMetadata().requestId(),
+                    response.consumedCapacity());
             if (!response.hasItem() || response.item().isEmpty()) {
                 return null;
             }
-            return DynamoItemMapper.attributeMapToJsonNode(response.item());
+            return DynamoItemMapper.attributeMapToMap(response.item());
         } catch (DynamoDbException e) {
             throw DynamoErrorMapper.map(e, OperationNames.READ);
         }
     }
 
+    /**
+     * Replaces an existing item in DynamoDB (conditional put).
+     * <p>
+     * Uses a {@code PutItem} with an {@code attribute_exists(partitionKey)} condition
+     * expression. If no item with the given key exists, the operation fails with
+     * {@link com.hyperscaledb.api.HyperscaleDbErrorCategory#CONFLICT} (mapped from
+     * DynamoDB's {@code ConditionalCheckFailedException}).
+     *
+     * @param address  the logical database + collection
+     * @param key      the document key identifying the item to replace
+     * @param document the new document payload; replaces all attributes of the stored item
+     * @param options  operation options (currently unused by this provider)
+     * @throws com.hyperscaledb.api.HyperscaleDbException category {@code NOT_FOUND} if the
+     *         item does not exist
+     */
     @Override
-    public void update(ResourceAddress address, Key key, JsonNode document, OperationOptions options) {
+    public void update(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options) {
         try {
-            Map<String, AttributeValue> item = DynamoItemMapper.jsonNodeToAttributeMap(document);
+            Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             item.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));
@@ -168,21 +239,46 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
                     .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
                     .build();
 
-            java.time.Instant start = java.time.Instant.now();
             PutItemResponse response = dynamoClient.putItem(request);
-            buildItemDiagnostics(OperationNames.UPDATE, address, response.responseMetadata().requestId(),
-                    response.consumedCapacity(),
-                    response.sdkHttpResponse(),
-                    java.time.Duration.between(start, java.time.Instant.now()));
+            logItemDiagnostics(OperationNames.UPDATE, address, response.responseMetadata().requestId(),
+                    response.consumedCapacity());
+        } catch (ConditionalCheckFailedException e) {
+            // attribute_exists() guard failed — item does not exist; map to NOT_FOUND
+            // to match the contract and the behaviour of Cosmos (HTTP 404) and Spanner (NOT_FOUND).
+            Map<String, String> details = new java.util.LinkedHashMap<>();
+            if (e.awsErrorDetails() != null) {
+                details.put("errorCode", e.awsErrorDetails().errorCode());
+            }
+            throw new HyperscaleDbException(new HyperscaleDbError(
+                    HyperscaleDbErrorCategory.NOT_FOUND,
+                    "Item not found for update: " + e.getMessage(),
+                    ProviderId.DYNAMO,
+                    OperationNames.UPDATE,
+                    false,
+                    e.statusCode(),
+                    details), e);
         } catch (DynamoDbException e) {
             throw DynamoErrorMapper.map(e, OperationNames.UPDATE);
         }
     }
 
+    /**
+     * Creates or replaces an item in DynamoDB (unconditional put / upsert semantics).
+     * <p>
+     * Uses a {@code PutItem} without any condition expression, so the item is
+     * written regardless of whether it already exists. The key attributes
+     * ({@code partitionKey}, {@code sortKey}) are injected before the write.
+     *
+     * @param address  the logical database + collection
+     * @param key      the document key
+     * @param document the document payload
+     * @param options  operation options (currently unused by this provider)
+     * @throws com.hyperscaledb.api.HyperscaleDbException on any DynamoDB error
+     */
     @Override
-    public void upsert(ResourceAddress address, Key key, JsonNode document, OperationOptions options) {
+    public void upsert(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options) {
         try {
-            Map<String, AttributeValue> item = DynamoItemMapper.jsonNodeToAttributeMap(document);
+            Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             item.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));
@@ -193,19 +289,27 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
                     .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
                     .build();
 
-            java.time.Instant start = java.time.Instant.now();
             PutItemResponse response = dynamoClient.putItem(request);
-            buildItemDiagnostics(OperationNames.UPSERT, address, response.responseMetadata().requestId(),
-                    response.consumedCapacity(),
-                    response.sdkHttpResponse(),
-                    java.time.Duration.between(start, java.time.Instant.now()));
+            logItemDiagnostics(OperationNames.UPSERT, address, response.responseMetadata().requestId(),
+                    response.consumedCapacity());
         } catch (DynamoDbException e) {
             throw DynamoErrorMapper.map(e, OperationNames.UPSERT);
         }
     }
 
+    /**
+     * Deletes an item from DynamoDB by its composite key.
+     * <p>
+     * Uses a {@code DeleteItem} request. The operation succeeds silently if the item
+     * does not exist — delete is idempotent in DynamoDB.
+     *
+     * @param address the logical database + collection
+     * @param key     the document key identifying the item to delete
+     * @param options operation options (currently unused by this provider)
+     * @throws com.hyperscaledb.api.HyperscaleDbException on any DynamoDB error
+     */
     @Override
-    public void delete(ResourceAddress address, Key key, OperationOptions options) {
+    public void delete(ResourceAddress address, HyperscaleDbKey key, OperationOptions options) {
         try {
             Map<String, AttributeValue> keyMap = new LinkedHashMap<>();
             keyMap.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
@@ -218,22 +322,47 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
                     .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
                     .build();
 
-            java.time.Instant start = java.time.Instant.now();
             DeleteItemResponse response = dynamoClient.deleteItem(request);
-            buildItemDiagnostics(OperationNames.DELETE, address, response.responseMetadata().requestId(),
-                    response.consumedCapacity(),
-                    response.sdkHttpResponse(),
-                    java.time.Duration.between(start, java.time.Instant.now()));
+            logItemDiagnostics(OperationNames.DELETE, address, response.responseMetadata().requestId(),
+                    response.consumedCapacity());
         } catch (DynamoDbException e) {
             throw DynamoErrorMapper.map(e, OperationNames.DELETE);
         }
     }
 
+    /**
+     * Executes a query and returns a single page of results.
+     * <p>
+     * Query routing logic (evaluated in order):
+     * <ol>
+     *   <li><b>Native PartiQL passthrough</b> — if {@link QueryRequest#nativeExpression()}
+     *       is set, the statement is executed via {@code ExecuteStatement} as-is.</li>
+     *   <li><b>Full scan</b> — if expression is null/blank or equals the Cosmos-style
+     *       {@code "SELECT * FROM c"} sentinel, a DynamoDB {@code Scan} is performed
+     *       across the whole table (or partition-scoped if
+     *       {@link QueryRequest#partitionKey()} is set).</li>
+     *   <li><b>Filtered scan</b> — otherwise the expression is used as a DynamoDB
+     *       {@code Scan} filter expression (backward-compatible legacy path).</li>
+     * </ol>
+     * Pagination is handled via {@link DynamoContinuationToken}: the opaque
+     * {@code exclusiveStartKey} is encoded/decoded as a Base64 JSON string.
+     * <p>
+     * If {@link QueryRequest#partitionKey()} is set, the hash key equality condition
+     * is automatically appended to scope the operation to a single partition.
+     *
+     * @param address the logical database + collection (maps to a DynamoDB table)
+     * @param query   query request containing expression, parameters, page size, and
+     *                optional continuation token
+     * @param options operation options (currently unused by this provider)
+     * @return a page of results; {@link QueryPage#continuationToken()} is non-null when
+     *         more pages are available
+     * @throws com.hyperscaledb.api.HyperscaleDbException on any DynamoDB error
+     */
     @Override
     public QueryPage query(ResourceAddress address, QueryRequest query, OperationOptions options) {
         try {
             String tableName = resolveTableName(address);
-            int pageSize = query.pageSize() != null ? query.pageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
+            int pageSize = query.maxPageSize() != null ? query.maxPageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
 
             // Deserialize continuation token if present
             Map<String, AttributeValue> exclusiveStartKey = null;
@@ -285,13 +414,36 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
     }
 
     /**
-     * Execute a query using a pre-translated TranslatedQuery (PartiQL).
-     * Called from DefaultHyperscaleDbClient when portable expressions are used.
+     * Executes a pre-translated portable query using DynamoDB PartiQL and returns a
+     * single page of results.
+     * <p>
+     * Called by {@link com.hyperscaledb.api.internal.DefaultHyperscaleDbClient} after
+     * the portable expression has been parsed, validated, and translated into a PartiQL
+     * statement by {@link DynamoExpressionTranslator}.
+     * <p>
+     * The translated query uses {@code address.collection()} as the table name; this
+     * method replaces that with the fully-resolved
+     * {@code database__collection} name before execution.
+     * <p>
+     * Positional parameters from {@link TranslatedQuery#positionalParameters()} are
+     * converted to DynamoDB {@link AttributeValue}s and bound in order. If
+     * {@link QueryRequest#partitionKey()} is set, a trailing partition key equality
+     * condition is appended and its value is added as the last positional parameter.
+     *
+     * @param address    the logical database + collection
+     * @param translated the PartiQL statement and positional parameters produced by the
+     *                   expression translator
+     * @param query      the original query request (used for page size, continuation
+     *                   token, and partition key)
+     * @param options    operation options (currently unused by this provider)
+     * @return a page of results with an optional continuation token
+     * @throws com.hyperscaledb.api.HyperscaleDbException on any DynamoDB error
      */
+    @Override
     public QueryPage queryWithTranslation(ResourceAddress address, TranslatedQuery translated,
             QueryRequest query, OperationOptions options) {
         try {
-            int pageSize = query.pageSize() != null ? query.pageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
+            int pageSize = query.maxPageSize() != null ? query.maxPageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
             List<AttributeValue> params = new ArrayList<>();
             for (Object val : translated.positionalParameters()) {
                 params.add(DynamoItemMapper.toAttributeValue(val));
@@ -323,9 +475,9 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
 
             ExecuteStatementResponse response = dynamoClient.executeStatement(stmtBuilder.build());
 
-            List<JsonNode> items = new ArrayList<>();
+            List<Map<String, Object>> items = new ArrayList<>();
             for (Map<String, AttributeValue> item : response.items()) {
-                items.add(DynamoItemMapper.attributeMapToJsonNode(item));
+                items.add(DynamoItemMapper.attributeMapToMap(item));
             }
 
             OperationDiagnostics diag = buildQueryDiagnostics(OperationNames.QUERY_WITH_TRANSLATION, address,
@@ -333,12 +485,27 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
                     response.consumedCapacity(), items.size(), response.nextToken(),
                     java.time.Duration.ZERO, response.sdkHttpResponse());
 
-            return new QueryPage(items, response.nextToken(), null, diag);
+            return new QueryPage(items, response.nextToken(), diag);
         } catch (DynamoDbException e) {
             throw DynamoErrorMapper.map(e, OperationNames.QUERY);
         }
     }
 
+    /**
+     * Executes a native PartiQL {@code ExecuteStatement} and returns a page of results.
+     * <p>
+     * Parameter values are extracted from the supplied map in insertion order and
+     * converted to DynamoDB {@link AttributeValue}s. The DynamoDB
+     * {@code nextToken} is used for pagination (not the SDK-level
+     * {@link DynamoContinuationToken} Base64 format used by Scan).
+     *
+     * @param statement  the PartiQL statement string
+     * @param parameters query parameters (values converted to {@link AttributeValue}s in
+     *                   insertion order)
+     * @param pageSize   maximum number of items to return
+     * @param nextToken  DynamoDB pagination token from a previous call, or {@code null}
+     * @return a page of results
+     */
     private QueryPage executePartiQL(String statement, Map<String, Object> parameters,
             int pageSize, String nextToken) {
         List<AttributeValue> params = new ArrayList<>();
@@ -357,9 +524,9 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
 
         ExecuteStatementResponse response = dynamoClient.executeStatement(stmtBuilder.build());
 
-        List<JsonNode> items = new ArrayList<>();
+        List<Map<String, Object>> items = new ArrayList<>();
         for (Map<String, AttributeValue> item : response.items()) {
-            items.add(DynamoItemMapper.attributeMapToJsonNode(item));
+            items.add(DynamoItemMapper.attributeMapToMap(item));
         }
 
         OperationDiagnostics partiqlDiag = buildQueryDiagnostics(DynamoConstants.OP_QUERY_PARTIQL, null,
@@ -367,9 +534,23 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
                 response.consumedCapacity(), items.size(), response.nextToken(),
                 java.time.Duration.ZERO, response.sdkHttpResponse());
 
-        return new QueryPage(items, response.nextToken(), null, partiqlDiag);
+        return new QueryPage(items, response.nextToken(), partiqlDiag);
     }
 
+    /**
+     * Executes a full-table DynamoDB {@code Scan} with no filter and returns a page of
+     * results.
+     * <p>
+     * Pagination uses {@code exclusiveStartKey} (decoded from the portable
+     * {@link DynamoContinuationToken}) and encodes the returned
+     * {@code lastEvaluatedKey} back into the portable token format.
+     *
+     * @param tableName        the physical DynamoDB table name
+     * @param pageSize         maximum number of items to return
+     * @param exclusiveStartKey the DynamoDB exclusive start key for pagination, or
+     *                         {@code null} for the first page
+     * @return a page of results
+     */
     private QueryPage executeScan(String tableName, int pageSize,
             Map<String, AttributeValue> exclusiveStartKey) {
         ScanRequest.Builder scanBuilder = ScanRequest.builder()
@@ -380,9 +561,9 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
         if (exclusiveStartKey != null) scanBuilder.exclusiveStartKey(exclusiveStartKey);
 
         ScanResponse response = dynamoClient.scan(scanBuilder.build());
-        List<JsonNode> items = new ArrayList<>();
+        List<Map<String, Object>> items = new ArrayList<>();
         for (Map<String, AttributeValue> item : response.items()) {
-            items.add(DynamoItemMapper.attributeMapToJsonNode(item));
+            items.add(DynamoItemMapper.attributeMapToMap(item));
         }
 
         String continuationToken = null;
@@ -395,9 +576,26 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
                 response.consumedCapacity(), items.size(), continuationToken,
                 java.time.Duration.ZERO, response.sdkHttpResponse());
 
-        return new QueryPage(items, continuationToken, null, scanDiag);
+        return new QueryPage(items, continuationToken, scanDiag);
     }
 
+    /**
+     * Executes a DynamoDB {@code Scan} with a filter expression and returns a page of
+     * results.
+     * <p>
+     * Parameter names that do not already start with {@code :} are prefixed
+     * automatically. Pagination uses the same {@link DynamoContinuationToken} encoding
+     * as {@link #executeScan}.
+     *
+     * @param tableName        the physical DynamoDB table name
+     * @param filterExpression the DynamoDB filter expression string
+     * @param parameters       expression attribute values (keys are param names, may
+     *                         or may not include the {@code :} prefix)
+     * @param pageSize         maximum number of items to return
+     * @param exclusiveStartKey DynamoDB exclusive start key for pagination, or
+     *                         {@code null} for the first page
+     * @return a page of results
+     */
     private QueryPage executeScanWithFilter(String tableName, String filterExpression,
             Map<String, Object> parameters, int pageSize,
             Map<String, AttributeValue> exclusiveStartKey) {
@@ -421,9 +619,9 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
         if (exclusiveStartKey != null) scanBuilder.exclusiveStartKey(exclusiveStartKey);
 
         ScanResponse response = dynamoClient.scan(scanBuilder.build());
-        List<JsonNode> items = new ArrayList<>();
+        List<Map<String, Object>> items = new ArrayList<>();
         for (Map<String, AttributeValue> item : response.items()) {
-            items.add(DynamoItemMapper.attributeMapToJsonNode(item));
+            items.add(DynamoItemMapper.attributeMapToMap(item));
         }
 
         String continuationToken = null;
@@ -436,16 +634,34 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
                 response.consumedCapacity(), items.size(), continuationToken,
                 java.time.Duration.ZERO, response.sdkHttpResponse());
 
-        return new QueryPage(items, continuationToken, null, filterDiag);
+        return new QueryPage(items, continuationToken, filterDiag);
     }
 
+    /**
+     * Composes the physical DynamoDB table name from a logical resource address.
+     * <p>
+     * DynamoDB has no native database concept, so the database dimension is encoded
+     * into the table name as: {@code database + "__" + collection}
+     * (see {@link DynamoConstants#TABLE_NAME_SEPARATOR}).
+     *
+     * @param address the logical database + collection
+     * @return the physical DynamoDB table name
+     */
     private String resolveTableName(ResourceAddress address) {
         return address.database() + DynamoConstants.TABLE_NAME_SEPARATOR + address.collection();
     }
 
     /**
-     * Appends {@code AND "partitionKey" = ?} (or {@code WHERE "partitionKey" = ?})
-     * to a PartiQL statement so the query is scoped to a single partition key value.
+     * Appends a partition key equality condition to a PartiQL statement.
+     * <p>
+     * If the statement already contains a {@code WHERE} clause, appends
+     * {@code AND "partitionKey" = ?}; otherwise appends
+     * {@code WHERE "partitionKey" = ?}.
+     * The positional {@code ?} parameter must be added to the parameter list by the
+     * caller.
+     *
+     * @param stmt the base PartiQL statement
+     * @return the statement with the partition key condition appended
      */
     private String appendPartitionKeyCondition(String stmt) {
         if (stmt.toUpperCase().contains(DynamoConstants.SQL_WHERE)) {
@@ -457,15 +673,6 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
     @Override
     public CapabilitySet capabilities() {
         return DynamoCapabilities.CAPABILITIES;
-    }
-
-    @Override
-    @SuppressWarnings("unchecked")
-    public <T> T nativeClient(Class<T> clientType) {
-        if (clientType.isInstance(dynamoClient)) {
-            return (T) dynamoClient;
-        }
-        return null;
     }
 
     @Override
@@ -490,6 +697,29 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
         LOG.debug("ensureDatabase is a no-op for DynamoDB (database={})", database);
     }
 
+    /**
+     * Ensures the specified DynamoDB table exists and is {@code ACTIVE}, creating it if
+     * absent.
+     * <p>
+     * The table is created with:
+     * <ul>
+     *   <li>Hash key: {@code partitionKey} (STRING)</li>
+     *   <li>Range key: {@code sortKey} (STRING)</li>
+     *   <li>Billing mode: {@code PAY_PER_REQUEST} (on-demand)</li>
+     * </ul>
+     * The method handles all intermediate table states gracefully:
+     * <ul>
+     *   <li>{@code null} (does not exist) — creates the table and waits for ACTIVE.</li>
+     *   <li>{@code ACTIVE} — no-op.</li>
+     *   <li>{@code CREATING} / {@code UPDATING} — waits for ACTIVE.</li>
+     *   <li>{@code DELETING} — waits for deletion to complete, then creates.</li>
+     * </ul>
+     * Race conditions ({@link ResourceInUseException}) are silently ignored.
+     *
+     * @param address the logical database + collection; the physical table name is
+     *                resolved via {@link #resolveTableName}
+     * @throws com.hyperscaledb.api.HyperscaleDbException on any unrecoverable DynamoDB error
+     */
     @Override
     public void ensureContainer(ResourceAddress address) {
         String tableName = resolveTableName(address);
@@ -519,6 +749,12 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
         }
     }
 
+    /**
+     * Describes the current status of the given DynamoDB table.
+     *
+     * @param tableName the physical DynamoDB table name
+     * @return the {@link TableStatus}, or {@code null} if the table does not exist
+     */
     private TableStatus describeTableStatus(String tableName) {
         try {
             DescribeTableResponse response = dynamoClient.describeTable(
@@ -529,6 +765,15 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
         }
     }
 
+    /**
+     * Creates a DynamoDB table with the SDK's standard schema and waits until it is
+     * {@code ACTIVE}.
+     * <p>
+     * Schema: hash key {@code partitionKey} (STRING) + range key {@code sortKey}
+     * (STRING), billing mode {@code PAY_PER_REQUEST}.
+     *
+     * @param tableName the physical table name to create
+     */
     private void createTableAndWait(String tableName) {
         CreateTableRequest request = CreateTableRequest.builder()
                 .tableName(tableName)
@@ -558,6 +803,12 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
         waitForTableActive(tableName);
     }
 
+    /**
+     * Blocks until the given DynamoDB table reaches {@code ACTIVE} status using the
+     * AWS SDK's built-in waiter.
+     *
+     * @param tableName the physical table name to wait on
+     */
     private void waitForTableActive(String tableName) {
         try (DynamoDbWaiter waiter = DynamoDbWaiter.builder().client(dynamoClient).build()) {
             waiter.waitUntilTableExists(DescribeTableRequest.builder()
@@ -567,43 +818,43 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
     }
 
     /**
-     * Builds {@link OperationDiagnostics} from item-operation response metadata,
-     * logs at DEBUG level.
-     * When {@code nativeDiagnosticsEnabled} is set in config, also logs the full
-     * HTTP response headers and {@link ConsumedCapacity} breakdown at INFO level.
+     * Logs per-item-operation diagnostics at DEBUG level:
+     * AWS request ID (correlation) and consumed capacity units.
+     *
+     * @param operation       the operation name (from {@link OperationNames})
+     * @param address         the resource address (database + collection)
+     * @param requestId       the AWS request ID from the response metadata
+     * @param consumedCapacity the consumed capacity returned by DynamoDB, or {@code null}
      */
-    private OperationDiagnostics buildItemDiagnostics(String operation, ResourceAddress address,
-            String requestId, ConsumedCapacity consumedCapacity,
-            SdkHttpResponse httpResponse, java.time.Duration duration) {
+    private void logItemDiagnostics(String operation, ResourceAddress address,
+            String requestId, ConsumedCapacity consumedCapacity) {
         double capacityUnits = consumedCapacity != null && consumedCapacity.capacityUnits() != null
                 ? consumedCapacity.capacityUnits() : 0.0;
-        int statusCode = httpResponse != null ? httpResponse.statusCode() : 0;
-        OperationDiagnostics diag = OperationDiagnostics
-                .builder(ProviderId.DYNAMO, operation, duration)
-                .requestId(requestId)
-                .statusCode(statusCode)
-                .requestCharge(capacityUnits)
-                .build();
 
-        LOG.debug("dynamo.diagnostics op={} db={} col={} requestId={} capacityUnits={} statusCode={}",
+        LOG.debug("dynamo.diagnostics op={} db={} col={} requestId={} capacityUnits={}",
                 operation, address.database(), address.collection(),
-                requestId, capacityUnits, statusCode);
+                requestId, capacityUnits);
 
         if (config.nativeDiagnosticsEnabled()) {
-            LOG.info("dynamo.native-diagnostics op={} db={} col={} headers={} consumedCapacity={}",
+            LOG.info("dynamo.native-diagnostics op={} db={} col={} consumedCapacity={}",
                     operation, address.database(), address.collection(),
-                    httpResponse != null ? httpResponse.headers() : null,
                     formatConsumedCapacity(consumedCapacity));
         }
-        return diag;
     }
 
     /**
-     * Builds {@link OperationDiagnostics} from query/scan response metadata,
-     * logs at DEBUG level.
-     * When {@code nativeDiagnosticsEnabled} is set in config, also logs the full
-     * HTTP response headers and {@link ConsumedCapacity} breakdown (including
-     * per-table, GSI, and LSI capacity) at INFO level.
+     * Logs per-query/scan diagnostics at DEBUG level: AWS request ID, consumed
+     * capacity units, result count, and whether more pages exist.
+     *
+     * @param operation       the operation name (from {@link OperationNames} or
+     *                        {@link DynamoConstants})
+     * @param address         the resource address, or {@code null} for PartiQL
+     *                        passthrough queries where the address is not available
+     * @param requestId       the AWS request ID, or {@code null} for Scan responses
+     *                        (extracted from HTTP headers separately)
+     * @param consumedCapacity the consumed capacity, or {@code null}
+     * @param itemCount       the number of items in the current page
+     * @param nextToken       the pagination token, or {@code null} if no more pages
      */
     private OperationDiagnostics buildQueryDiagnostics(String operation, ResourceAddress address,
             String requestId, ConsumedCapacity consumedCapacity,
