@@ -6,7 +6,7 @@
 
     <groupId>com.hyperscaledb</groupId>
     <artifactId>hyperscaledb-sdk-java</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>1-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>Hyperscale DB SDK for Java</name>
@@ -26,6 +26,12 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- Publishable module versions (independent release cadence) -->
+        <hyperscaledb-api.version>0.1.0-beta.1</hyperscaledb-api.version>
+        <hyperscaledb-provider-cosmos.version>0.1.0-beta.1</hyperscaledb-provider-cosmos.version>
+        <hyperscaledb-provider-dynamo.version>0.1.0-beta.1</hyperscaledb-provider-dynamo.version>
+        <hyperscaledb-provider-spanner.version>0.1.0-beta.1</hyperscaledb-provider-spanner.version>
 
         <!-- Dependency versions -->
         <jackson.version>2.18.6</jackson.version>
@@ -52,27 +58,27 @@
 
     <dependencyManagement>
         <dependencies>
-            <!-- Internal modules -->
+            <!-- Internal modules (independently versioned) -->
             <dependency>
                 <groupId>com.hyperscaledb</groupId>
                 <artifactId>hyperscaledb-api</artifactId>
-                <version>${project.version}</version>
+                <version>${hyperscaledb-api.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>com.hyperscaledb</groupId>
                 <artifactId>hyperscaledb-provider-cosmos</artifactId>
-                <version>${project.version}</version>
+                <version>${hyperscaledb-provider-cosmos.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.hyperscaledb</groupId>
                 <artifactId>hyperscaledb-provider-dynamo</artifactId>
-                <version>${project.version}</version>
+                <version>${hyperscaledb-provider-dynamo.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.hyperscaledb</groupId>
                 <artifactId>hyperscaledb-provider-spanner</artifactId>
-                <version>${project.version}</version>
+                <version>${hyperscaledb-provider-spanner.version}</version>
             </dependency>
 
             <!-- Jackson -->

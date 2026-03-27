@@ -3,8 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'          # stable: v1.2.3
-      - 'v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+'  # beta: v1.2.3-beta.1
+      - 'hyperscaledb-*-v[0-9]+.[0-9]+.[0-9]+'           # stable: hyperscaledb-api-v1.2.3
+      - 'hyperscaledb-*-v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+' # beta: hyperscaledb-api-v1.2.3-beta.1
 
 # Only one release at a time
 concurrency:
@@ -18,11 +18,44 @@ permissions:
 jobs:
 
   # ──────────────────────────────────────────────────────────
-  #  Gate 1 — Unit tests
+  #  Parse — extract module name and version from the tag
+  # ──────────────────────────────────────────────────────────
+  parse-tag:
+    name: Parse Release Tag
+    runs-on: ubuntu-latest
+    outputs:
+      module: ${{ steps.parse.outputs.module }}
+      version: ${{ steps.parse.outputs.version }}
+      tag: ${{ steps.parse.outputs.tag }}
+    steps:
+      - name: Parse module and version from tag
+        id: parse
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          # Extract version: everything after the last '-v'
+          VERSION=$(echo "$TAG" | sed 's/.*-v//')
+          # Extract module: everything before the last '-v'
+          MODULE=$(echo "$TAG" | sed 's/-v[^v]*$//')
+
+          VALID_MODULES="hyperscaledb-api hyperscaledb-provider-cosmos hyperscaledb-provider-dynamo hyperscaledb-provider-spanner"
+          if ! echo "$VALID_MODULES" | grep -qw "$MODULE"; then
+            echo "::error::Unknown module '$MODULE' in tag '$TAG'. Valid modules: $VALID_MODULES"
+            exit 1
+          fi
+
+          echo "module=$MODULE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing $MODULE version $VERSION (tag: $TAG)"
+
+  # ──────────────────────────────────────────────────────────
+  #  Gate 1 — Unit tests (always runs)
   # ──────────────────────────────────────────────────────────
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
+    needs: [parse-tag]
     steps:
       - uses: actions/checkout@v4
 
@@ -45,11 +78,13 @@ jobs:
           retention-days: 7
 
   # ──────────────────────────────────────────────────────────
-  #  Gate 2 — Cosmos DB emulator integration tests
+  #  Gate 2 — Cosmos DB emulator (only for api and provider-cosmos)
   # ──────────────────────────────────────────────────────────
   emulator-cosmos:
     name: Cosmos DB Emulator Tests
     runs-on: windows-latest
+    needs: [parse-tag]
+    if: contains(fromJSON('["hyperscaledb-api","hyperscaledb-provider-cosmos"]'), needs.parse-tag.outputs.module)
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -162,11 +197,13 @@ jobs:
           retention-days: 7
 
   # ──────────────────────────────────────────────────────────
-  #  Gate 3 — DynamoDB Local integration tests
+  #  Gate 3 — DynamoDB Local (only for api and provider-dynamo)
   # ──────────────────────────────────────────────────────────
   emulator-dynamo:
     name: DynamoDB Local Tests
     runs-on: ubuntu-latest
+    needs: [parse-tag]
+    if: contains(fromJSON('["hyperscaledb-api","hyperscaledb-provider-dynamo"]'), needs.parse-tag.outputs.module)
     steps:
       - uses: actions/checkout@v4
 
@@ -224,12 +261,19 @@ jobs:
           retention-days: 7
 
   # ──────────────────────────────────────────────────────────
-  #  Publish — runs only after all gates pass
+  #  Publish — runs after all applicable gates pass
   # ──────────────────────────────────────────────────────────
   publish:
-    name: Publish Release Artifacts
+    name: Publish ${{ needs.parse-tag.outputs.module }} ${{ needs.parse-tag.outputs.version }}
     runs-on: ubuntu-latest
-    needs: [unit-tests, emulator-cosmos, emulator-dynamo]
+    needs: [parse-tag, unit-tests, emulator-cosmos, emulator-dynamo]
+    # Run if all non-skipped jobs succeeded
+    if: |
+      always() &&
+      needs.parse-tag.result == 'success' &&
+      needs.unit-tests.result == 'success' &&
+      (needs.emulator-cosmos.result == 'success' || needs.emulator-cosmos.result == 'skipped') &&
+      (needs.emulator-dynamo.result == 'success' || needs.emulator-dynamo.result == 'skipped')
     environment: production
     steps:
       - uses: actions/checkout@v4
@@ -241,79 +285,97 @@ jobs:
           java-version: '17'
           cache: 'maven'
 
-      - name: Extract version from tag
-        id: version
+      - name: Verify POM version matches tag
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#v}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Release version: $VERSION (from tag: $TAG)"
+          MODULE="${{ needs.parse-tag.outputs.module }}"
+          EXPECTED="${{ needs.parse-tag.outputs.version }}"
+          ACTUAL=$(mvn help:evaluate -pl "$MODULE" -Dexpression=project.version -q -DforceStdout)
 
-      - name: Set Maven version from tag
-        run: |
-          mvn versions:set -DnewVersion=${{ steps.version.outputs.version }} -DgenerateBackupPoms=false
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::Version mismatch: $MODULE/pom.xml has version '$ACTUAL' but tag expects '$EXPECTED'"
+            echo "Update the version property in the root pom.xml and the module pom.xml before tagging."
+            exit 1
+          fi
+          echo "Version verified: $MODULE = $EXPECTED"
 
-      - name: Build and stage release artifacts
+      - name: Verify no SNAPSHOT dependencies
         run: |
-          mvn deploy -DskipTests \
+          MODULE="${{ needs.parse-tag.outputs.module }}"
+          SNAPSHOTS=$(mvn dependency:list -pl "$MODULE" -DincludeScope=compile -q -DoutputFile=/dev/stdout 2>/dev/null \
+            | grep "com.hyperscaledb" | grep "SNAPSHOT" || true)
+
+          if [ -n "$SNAPSHOTS" ]; then
+            echo "::error::Module $MODULE has SNAPSHOT dependencies on internal modules:"
+            echo "$SNAPSHOTS"
+            echo "Release the dependency modules first, then update their version properties."
+            exit 1
+          fi
+          echo "No SNAPSHOT dependencies on internal modules"
+
+      - name: Build reactor and deploy target module
+        run: |
+          MODULE="${{ needs.parse-tag.outputs.module }}"
+          VERSION="${{ needs.parse-tag.outputs.version }}"
+
+          # Install full reactor to local repo (for inter-module dep resolution)
+          mvn install -DskipTests -q
+
+          # Deploy only the target module to staging
+          mvn deploy -pl "$MODULE" -DskipTests \
             -DaltDeploymentRepository=local::default::file://${{ github.workspace }}/staging
 
-      - name: Verify required artifacts
+      - name: Verify artifacts
         run: |
-          FULL_MODULES="hyperscaledb-api hyperscaledb-provider-cosmos hyperscaledb-provider-dynamo hyperscaledb-provider-spanner"
-          VERSION="${{ steps.version.outputs.version }}"
+          MODULE="${{ needs.parse-tag.outputs.module }}"
+          VERSION="${{ needs.parse-tag.outputs.version }}"
           ERRORS=0
 
           check_artifact() {
-            local module=$1 type=$2 path=$3
+            local type=$1 path=$2
             if [ -z "$path" ]; then
-              echo "::error::Missing ${module} ${type} artifact"
+              echo "::error::Missing ${MODULE} ${type} artifact"
               ERRORS=$((ERRORS + 1))
             else
               echo "  ✓ ${type}: $(basename "$path")"
             fi
           }
 
-          for module in $FULL_MODULES; do
-            echo "--- Checking $module ---"
-            check_artifact "$module" pom     "$(find staging -path "*/${module}/*.pom" 2>/dev/null | head -1)"
-            check_artifact "$module" jar     "$(find staging -path "*/${module}/*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" 2>/dev/null | head -1)"
-            check_artifact "$module" sources "$(find staging -path "*/${module}/*-sources.jar" 2>/dev/null | head -1)"
-            check_artifact "$module" javadoc "$(find staging -path "*/${module}/*-javadoc.jar" 2>/dev/null | head -1)"
-          done
+          echo "--- Checking $MODULE $VERSION ---"
+          check_artifact pom     "$(find staging -path "*/${MODULE}/*.pom" 2>/dev/null | head -1)"
+          check_artifact jar     "$(find staging -path "*/${MODULE}/*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" 2>/dev/null | head -1)"
+          check_artifact sources "$(find staging -path "*/${MODULE}/*-sources.jar" 2>/dev/null | head -1)"
+          check_artifact javadoc "$(find staging -path "*/${MODULE}/*-javadoc.jar" 2>/dev/null | head -1)"
 
           if [ "$ERRORS" -gt 0 ]; then
             echo "::error::${ERRORS} required artifact(s) missing"
             exit 1
           fi
           echo ""
-          echo "All required artifacts verified for version $VERSION"
+          echo "All artifacts verified for $MODULE $VERSION"
 
       - name: Collect release JARs
         run: |
+          MODULE="${{ needs.parse-tag.outputs.module }}"
+          VERSION="${{ needs.parse-tag.outputs.version }}"
           mkdir -p release-jars
-          MODULES="hyperscaledb-api hyperscaledb-provider-cosmos hyperscaledb-provider-dynamo hyperscaledb-provider-spanner"
-          for module in $MODULES; do
-            cp "$module/target/$module-${{ steps.version.outputs.version }}.jar" release-jars/
-            cp "$module/target/$module-${{ steps.version.outputs.version }}-sources.jar" release-jars/
-            cp "$module/target/$module-${{ steps.version.outputs.version }}-javadoc.jar" release-jars/
-          done
+          cp "$MODULE/target/$MODULE-$VERSION.jar" release-jars/
+          cp "$MODULE/target/$MODULE-$VERSION-sources.jar" release-jars/
+          cp "$MODULE/target/$MODULE-$VERSION-javadoc.jar" release-jars/
           echo "Release JARs:"
           ls -la release-jars/
 
       - name: Upload staging repository
         uses: actions/upload-artifact@v4
         with:
-          name: maven-staging-${{ steps.version.outputs.version }}
+          name: maven-staging-${{ needs.parse-tag.outputs.module }}-${{ needs.parse-tag.outputs.version }}
           path: staging/
           retention-days: 90
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: ${{ steps.version.outputs.version }}
+          tag_name: ${{ needs.parse-tag.outputs.tag }}
+          name: "${{ needs.parse-tag.outputs.module }} ${{ needs.parse-tag.outputs.version }}"
           generate_release_notes: true
           files: release-jars/*
           fail_on_unmatched_files: true
