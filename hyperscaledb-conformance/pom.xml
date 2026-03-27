@@ -19,10 +19,6 @@
             <groupId>com.hyperscaledb</groupId>
             <artifactId>hyperscaledb-api</artifactId>
         </dependency>
-        <dependency>
-            <groupId>com.hyperscaledb</groupId>
-            <artifactId>hyperscaledb-spi</artifactId>
-        </dependency>
 
         <!-- Provider modules (runtime scope for ServiceLoader) -->
         <dependency>

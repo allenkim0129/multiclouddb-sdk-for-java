@@ -32,8 +32,6 @@ jobs:
         run: |
           # Modules that produce .pom + .jar + -sources.jar + -javadoc.jar
           FULL_MODULES="hyperscaledb-api hyperscaledb-provider-cosmos hyperscaledb-provider-dynamo hyperscaledb-provider-spanner"
-          # Modules that only produce .pom + .jar (no sources)
-          MINIMAL_MODULES="hyperscaledb-spi"
           ERRORS=0
 
           check_artifact() {
@@ -52,12 +50,6 @@ jobs:
             check_artifact "$module" jar    "$(find staging -path "*/${module}/*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" 2>/dev/null | head -1)"
             check_artifact "$module" sources "$(find staging -path "*/${module}/*-sources.jar" 2>/dev/null | head -1)"
             check_artifact "$module" javadoc "$(find staging -path "*/${module}/*-javadoc.jar" 2>/dev/null | head -1)"
-          done
-
-          for module in $MINIMAL_MODULES; do
-            echo "--- Checking $module (minimal) ---"
-            check_artifact "$module" pom "$(find staging -path "*/${module}/*.pom" 2>/dev/null | head -1)"
-            check_artifact "$module" jar "$(find staging -path "*/${module}/*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" 2>/dev/null | head -1)"
           done
 
           if [ "$ERRORS" -gt 0 ]; then

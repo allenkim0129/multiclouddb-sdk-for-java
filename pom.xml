@@ -14,7 +14,6 @@
 
     <modules>
         <module>hyperscaledb-api</module>
-        <module>hyperscaledb-spi</module>
         <module>hyperscaledb-provider-cosmos</module>
         <module>hyperscaledb-provider-dynamo</module>
         <module>hyperscaledb-provider-spanner</module>
@@ -59,11 +58,7 @@
                 <artifactId>hyperscaledb-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
-            <dependency>
-                <groupId>com.hyperscaledb</groupId>
-                <artifactId>hyperscaledb-spi</artifactId>
-                <version>${project.version}</version>
-            </dependency>
+
             <dependency>
                 <groupId>com.hyperscaledb</groupId>
                 <artifactId>hyperscaledb-provider-cosmos</artifactId>
