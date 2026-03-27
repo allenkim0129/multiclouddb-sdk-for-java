@@ -167,12 +167,33 @@ class DynamoConstantsTest {
     }
 
     @Test
+    @DisplayName("OP_QUERY_KEY_CONDITION value")
+    void opQueryKeyCondition() {
+        assertEquals("query(key-condition)", DynamoConstants.OP_QUERY_KEY_CONDITION);
+    }
+
+    @Test
+    @DisplayName("KEY_CONDITION_EXPRESSION contains partition key attribute name")
+    void keyConditionExpression() {
+        assertTrue(DynamoConstants.KEY_CONDITION_EXPRESSION.contains(DynamoConstants.ATTR_PARTITION_KEY),
+                "KEY_CONDITION_EXPRESSION must reference ATTR_PARTITION_KEY");
+    }
+
+    @Test
+    @DisplayName("KEY_CONDITION_PK_PARAM starts with FILTER_PARAM_PREFIX")
+    void keyConditionPkParam() {
+        assertTrue(DynamoConstants.KEY_CONDITION_PK_PARAM.startsWith(DynamoConstants.FILTER_PARAM_PREFIX),
+                "KEY_CONDITION_PK_PARAM must start with FILTER_PARAM_PREFIX");
+    }
+
+    @Test
     @DisplayName("DynamoDB-specific op names are unique among themselves")
     void dynamoSpecificOpsAreUnique() {
         List<String> dynamo = List.of(
                 DynamoConstants.OP_QUERY_PARTIQL,
                 DynamoConstants.OP_QUERY_SCAN,
-                DynamoConstants.OP_QUERY_SCAN_FILTER
+                DynamoConstants.OP_QUERY_SCAN_FILTER,
+                DynamoConstants.OP_QUERY_KEY_CONDITION
         );
         long distinct = dynamo.stream().distinct().count();
         assertEquals(dynamo.size(), distinct,
@@ -191,7 +212,8 @@ class DynamoConstantsTest {
         List<String> dynamoSpecific = List.of(
                 DynamoConstants.OP_QUERY_PARTIQL,
                 DynamoConstants.OP_QUERY_SCAN,
-                DynamoConstants.OP_QUERY_SCAN_FILTER
+                DynamoConstants.OP_QUERY_SCAN_FILTER,
+                DynamoConstants.OP_QUERY_KEY_CONDITION
         );
         for (String dynOp : dynamoSpecific) {
             assertFalse(shared.contains(dynOp),
