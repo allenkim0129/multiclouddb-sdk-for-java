@@ -4,6 +4,8 @@
 package com.hyperscaledb.spi;
 
 import com.hyperscaledb.api.CapabilitySet;
+import com.hyperscaledb.api.HyperscaleDbError;
+import com.hyperscaledb.api.HyperscaleDbErrorCategory;
 import com.hyperscaledb.api.HyperscaleDbException;
 import com.hyperscaledb.api.HyperscaleDbKey;
 import com.hyperscaledb.api.OperationOptions;
@@ -14,11 +16,14 @@ import com.hyperscaledb.api.ResourceAddress;
 import com.hyperscaledb.api.query.TranslatedQuery;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * SPI contract for a provider client that implements CRUD + query operations.
@@ -105,6 +110,14 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
     }
 
     /**
+     * Maximum time in seconds to wait for the thread pool to terminate after
+     * {@code joinAndRethrow} has already drained all futures. In the normal path
+     * this returns immediately; the timeout is a safety net for edge cases where a
+     * task is still running despite the drain (e.g. stuck I/O).
+     */
+    int POOL_TERMINATION_TIMEOUT_SECONDS = 30;
+
+    /**
      * Provision a full schema of databases and containers in parallel.
      * <p>
      * Default implementation creates all databases concurrently (Phase 1),
@@ -123,6 +136,8 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
             }
         }
 
+        if (databases.isEmpty() && containers.isEmpty()) return;
+
         int parallelism = Math.min(databases.size() + containers.size(), 10);
         ExecutorService pool = Executors.newFixedThreadPool(parallelism);
         try {
@@ -130,16 +145,87 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
             CompletableFuture<?>[] dbFutures = databases.stream()
                     .map(db -> CompletableFuture.runAsync(() -> ensureDatabase(db), pool))
                     .toArray(CompletableFuture[]::new);
-            CompletableFuture.allOf(dbFutures).join();
+            joinAndRethrow(dbFutures);
 
             // Phase 2: containers in parallel
             CompletableFuture<?>[] containerFutures = containers.stream()
                     .map(addr -> CompletableFuture.runAsync(() -> ensureContainer(addr), pool))
                     .toArray(CompletableFuture[]::new);
-            CompletableFuture.allOf(containerFutures).join();
+            joinAndRethrow(containerFutures);
         } finally {
             pool.shutdown();
+            try {
+                // joinAndRethrow already drains all futures, so this returns immediately
+                // in the normal path. The timeout is a safety net for stuck tasks.
+                if (!pool.awaitTermination(POOL_TERMINATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    pool.shutdownNow();
+                }
+            } catch (InterruptedException ie) {
+                pool.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
         }
+    }
+
+    /**
+     * Waits for <em>all</em> futures to complete (regardless of individual failures),
+     * then rethrows one of the failures as the primary exception with its original
+     * error category preserved. All additional failures are attached as
+     * {@linkplain Throwable#addSuppressed suppressed exceptions} so callers can
+     * inspect every root cause if needed.
+     *
+     * <p>Each {@link CompletionException} wrapper is unwrapped before propagating, so
+     * a {@link HyperscaleDbException} thrown inside an async task retains its
+     * structured {@code errorCategory} — it is not misclassified as
+     * {@code PROVIDER_ERROR} by downstream catch blocks.
+     *
+     * <p><b>Note:</b> the "primary" failure is whichever task appears first in the
+     * futures array, which reflects the order of {@code schema.keySet()} iteration
+     * (map-order, not chronological failure order).
+     */
+    private static void joinAndRethrow(CompletableFuture<?>[] futures) {
+        // Drain all futures (replacing failures with null) so every task finishes
+        // before we inspect results. This prevents in-flight tasks from continuing
+        // after we return on a partial failure.
+        CompletableFuture.allOf(
+                Arrays.stream(futures)
+                        .map(f -> f.exceptionally(ex -> null))
+                        .toArray(CompletableFuture[]::new)
+        ).join();
+
+        List<Throwable> failures = new ArrayList<>();
+        for (CompletableFuture<?> f : futures) {
+            if (f.isCompletedExceptionally()) {
+                try {
+                    f.join();
+                } catch (CompletionException e) {
+                    // Unwrap: recover the original exception thrown inside the async task
+                    failures.add(e.getCause() != null ? e.getCause() : e);
+                }
+            }
+        }
+
+        if (failures.isEmpty()) return;
+
+        // First failure is the primary; all others are attached as suppressed
+        Throwable primary = failures.get(0);
+        for (int i = 1; i < failures.size(); i++) {
+            primary.addSuppressed(failures.get(i));
+        }
+
+        if (primary instanceof RuntimeException) throw (RuntimeException) primary;
+        if (primary instanceof Error) throw (Error) primary;
+        // Checked exception from inside a future: wrap with PROVIDER_ERROR to stay
+        // consistent with how all other unexpected exceptions are handled in the SDK.
+        throw new HyperscaleDbException(
+                new HyperscaleDbError(
+                        HyperscaleDbErrorCategory.PROVIDER_ERROR,
+                        "Unexpected checked exception in provisionSchema: " + primary.getMessage(),
+                        null,
+                        "provisionSchema",
+                        false,
+                        Map.of("exceptionType", primary.getClass().getName())),
+                primary);
     }
 
     /**
