@@ -1,7 +1,6 @@
 package com.hyperscaledb.conformance.us7;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.util.Map;
 import com.hyperscaledb.api.*;
 import com.hyperscaledb.conformance.ConformanceHarness;
 import org.junit.jupiter.api.DisplayName;
@@ -25,8 +24,6 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public class DocumentSizeConformanceTest {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
     /** 400 KB limit — same as {@code DocumentSizeValidator.MAX_BYTES}. */
     private static final int MAX_BYTES = 400 * 1024;
 
@@ -39,9 +36,8 @@ public class DocumentSizeConformanceTest {
             ResourceAddress address = ConformanceHarness.defaultAddress(ProviderId.DYNAMO);
 
             // Build a document just under 400 KB
-            ObjectNode doc = MAPPER.createObjectNode();
-            doc.put("payload", "A".repeat(MAX_BYTES - 200));
-            Key key = Key.of("size-test-within", "size-test-within");
+            Map<String, Object> doc = Map.of("payload", "A".repeat(MAX_BYTES - 200));
+            HyperscaleDbKey key = HyperscaleDbKey.of("size-test-within", "size-test-within");
 
             // The SDK size-validation check happens before any provider I/O.
             // A document within the limit must never be rejected with INVALID_REQUEST.
@@ -65,9 +61,8 @@ public class DocumentSizeConformanceTest {
             ResourceAddress address = ConformanceHarness.defaultAddress(ProviderId.DYNAMO);
 
             // Build a document well over 400 KB
-            ObjectNode doc = MAPPER.createObjectNode();
-            doc.put("payload", "B".repeat(MAX_BYTES + 1000));
-            Key key = Key.of("size-test-over", "size-test-over");
+            Map<String, Object> doc = Map.of("payload", "B".repeat(MAX_BYTES + 1000));
+            HyperscaleDbKey key = HyperscaleDbKey.of("size-test-over", "size-test-over");
 
             HyperscaleDbException ex = assertThrows(HyperscaleDbException.class,
                     () -> client.upsert(address, key, doc),
@@ -86,9 +81,8 @@ public class DocumentSizeConformanceTest {
         try (HyperscaleDbClient client = ConformanceHarness.createClient(ProviderId.DYNAMO)) {
             ResourceAddress address = ConformanceHarness.defaultAddress(ProviderId.DYNAMO);
 
-            ObjectNode doc = MAPPER.createObjectNode();
-            doc.put("payload", "C".repeat(MAX_BYTES + 1000));
-            Key key = Key.of("size-test-create-over", "size-test-create-over");
+            Map<String, Object> doc = Map.of("payload", "C".repeat(MAX_BYTES + 1000));
+            HyperscaleDbKey key = HyperscaleDbKey.of("size-test-create-over", "size-test-create-over");
 
             HyperscaleDbException ex = assertThrows(HyperscaleDbException.class,
                     () -> client.create(address, key, doc),

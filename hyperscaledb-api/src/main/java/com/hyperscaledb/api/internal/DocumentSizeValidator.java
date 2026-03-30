@@ -8,6 +8,8 @@ import com.hyperscaledb.api.HyperscaleDbErrorCategory;
 import com.hyperscaledb.api.HyperscaleDbException;
 import com.hyperscaledb.api.OperationNames;
 
+import java.util.Map;
+
 /**
  * Validates document payload sizes against the uniform maximum defined by FR-061.
  * <p>
@@ -65,5 +67,13 @@ public final class DocumentSizeValidator {
                     false,
                     null));
         }
+    }
+
+    /** Overload accepting {@code Map<String, Object>} documents. */
+    public static void validate(Map<String, Object> document, String operation) {
+        if (document == null) {
+            return;
+        }
+        validate((JsonNode) MAPPER.valueToTree(document), operation);
     }
 }

@@ -27,10 +27,6 @@
             <groupId>com.azure</groupId>
             <artifactId>azure-identity</artifactId>
         </dependency>
-        <dependency>
-            <groupId>com.azure.resourcemanager</groupId>
-            <artifactId>azure-resourcemanager-cosmos</artifactId>
-        </dependency>
 
         <!-- Test -->
         <dependency>
@@ -59,7 +55,13 @@
                     <!-- Byte Buddy (used by Mockito) does not officially support
                          Java versions beyond 22. Enable experimental mode so that
                          CosmosException (and other Azure SDK exception classes)
-                         can be mocked on Java 23+. -->
+                         can be mocked on Java 23+.
+                         Run in classpath mode (not module path) so that Netty 4.2.x
+                         split-module issues are avoided: netty-codec-compression
+                         requires "io.netty.codec" but netty-codec 4.2.x exports the
+                         module as "io.netty.codec.unused", causing resolution failures
+                         when both are on the module path. -->
+                    <useModulePath>false</useModulePath>
                     <argLine>-Dnet.bytebuddy.experimental=true</argLine>
                 </configuration>
             </plugin>

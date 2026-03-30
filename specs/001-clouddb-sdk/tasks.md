@@ -565,13 +565,15 @@ RBAC-mode database creation. Simplifies `ResourceProvisioner` sample to use sing
 
 ### Implementation — Azure Resource Manager SDK for Provisioning
 
-- [x] Task T133: Add `azure-resourcemanager-cosmos` 2.51.0 + `azure-core-management` 1.17.0
-  dependencies to `hyperscaledb-provider-cosmos/pom.xml` and version properties to parent `pom.xml`.
+- [~] Task T133: ~~Add `azure-resourcemanager-cosmos` 2.51.0 + `azure-core-management` 1.17.0~~
+  **SUPERSEDED by spec decision** (see Phase 14): SDK must NOT depend on ARM/management SDKs.
+  These dependencies were never introduced; the spec has now been updated to explicitly prohibit them.
   `hyperscaledb-provider-cosmos/pom.xml`, `pom.xml`
 
-- [x] Task T134: Update `CosmosProviderClient.ensureDatabase()` to use `CosmosManager` ARM SDK
-  for database creation in RBAC mode (when `cosmosManager` is initialized), falling back to
-  data-plane `createDatabaseIfNotExists` for key-based auth or when management config is incomplete.
+- [~] Task T134: ~~Update `CosmosProviderClient.ensureDatabase()` to use `CosmosManager` ARM SDK~~
+  **SUPERSEDED by spec decision** (see Phase 14): provisioning stays data-plane-only; ARM/management
+  SDK integration is a future consideration outside v1 scope. `ensureDatabase` Javadoc updated to
+  document permission requirements and failure semantics.
   `hyperscaledb-provider-cosmos/src/main/java/com/hyperscaledb/provider/cosmos/CosmosProviderClient.java`
 
 ### Integration — Sample App Simplification
@@ -579,7 +581,6 @@ RBAC-mode database creation. Simplifies `ResourceProvisioner` sample to use sing
 - [x] Task T135: Simplify `ResourceProvisioner` to use single `client.provisionSchema(SCHEMA)` call
   instead of manually iterating databases/containers. Cloud and emulator properties files created.
   `hyperscaledb-samples/src/main/java/com/hyperscaledb/samples/riskplatform/infra/ResourceProvisioner.java`
-
 
 ---
 

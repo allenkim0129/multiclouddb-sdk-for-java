@@ -1,9 +1,34 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package com.hyperscaledb.api.internal;
 
-import com.hyperscaledb.api.*;
-import com.hyperscaledb.api.query.*;
+import com.hyperscaledb.api.Capability;
+import com.hyperscaledb.api.CapabilitySet;
+import com.hyperscaledb.api.DocumentResult;
+import com.hyperscaledb.api.HyperscaleDbClient;
+import com.hyperscaledb.api.HyperscaleDbClientConfig;
+import com.hyperscaledb.api.HyperscaleDbError;
+import com.hyperscaledb.api.HyperscaleDbErrorCategory;
+import com.hyperscaledb.api.HyperscaleDbException;
+import com.hyperscaledb.api.HyperscaleDbKey;
+import com.hyperscaledb.api.OperationDiagnostics;
+import com.hyperscaledb.api.OperationNames;
+import com.hyperscaledb.api.OperationOptions;
+import com.hyperscaledb.api.ProviderId;
+import com.hyperscaledb.api.QueryPage;
+import com.hyperscaledb.api.QueryRequest;
+import com.hyperscaledb.api.ResourceAddress;
+import com.hyperscaledb.api.query.Expression;
+import com.hyperscaledb.api.query.ExpressionParseException;
+import com.hyperscaledb.api.query.ExpressionParser;
+import com.hyperscaledb.api.query.ExpressionTranslator;
+import com.hyperscaledb.api.query.ExpressionValidationException;
+import com.hyperscaledb.api.query.ExpressionValidator;
+import com.hyperscaledb.api.query.LogicalExpression;
+import com.hyperscaledb.api.query.NotExpression;
+import com.hyperscaledb.api.query.TranslatedQuery;
 import com.hyperscaledb.spi.HyperscaleDbProviderClient;
-import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -11,6 +36,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletionException;
 
 /**
  * Default implementation of {@link HyperscaleDbClient} that delegates to a provider
@@ -39,7 +65,7 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
     }
 
     @Override
-    public void create(ResourceAddress address, Key key, JsonNode document, OperationOptions options) {
+    public void create(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options) {
         Instant start = Instant.now();
         try {
             DocumentSizeValidator.validate(document, OperationNames.CREATE);
@@ -54,7 +80,7 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
     }
 
     @Override
-    public DocumentResult read(ResourceAddress address, Key key, OperationOptions options) {
+    public DocumentResult read(ResourceAddress address, HyperscaleDbKey key, OperationOptions options) {
         Instant start = Instant.now();
         try {
             DocumentResult result = providerClient.read(address, key, options);
@@ -69,7 +95,7 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
     }
 
     @Override
-    public void update(ResourceAddress address, Key key, JsonNode document, OperationOptions options) {
+    public void update(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options) {
         Instant start = Instant.now();
         try {
             DocumentSizeValidator.validate(document, OperationNames.UPDATE);
@@ -84,7 +110,7 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
     }
 
     @Override
-    public void upsert(ResourceAddress address, Key key, JsonNode document, OperationOptions options) {
+    public void upsert(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options) {
         Instant start = Instant.now();
         try {
             DocumentSizeValidator.validate(document, OperationNames.UPSERT);
@@ -99,7 +125,7 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
     }
 
     @Override
-    public void delete(ResourceAddress address, Key key, OperationOptions options) {
+    public void delete(ResourceAddress address, HyperscaleDbKey key, OperationOptions options) {
         Instant start = Instant.now();
         try {
             providerClient.delete(address, key, options);
@@ -148,7 +174,7 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
             }
 
             LOG.debug("query completed: address={}, items={}, hasMore={}, duration={}ms",
-                    address, page.items().size(), page.hasMore(),
+                    address, page.items().size(), page.continuationToken() != null,
                     Duration.between(start, Instant.now()).toMillis());
             return page;
         } catch (ExpressionParseException | ExpressionValidationException e) {
@@ -224,14 +250,18 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
         } catch (HyperscaleDbException e) {
             throw enrichException(e, "provisionSchema", start);
         } catch (Exception e) {
-            throw wrapUnexpected(e, "provisionSchema", start);
+            // A provider's provisionSchema may run tasks via CompletableFuture internally.
+            // Peel all CompletionException layers so a HyperscaleDbException thrown
+            // inside an async task is not misclassified as PROVIDER_ERROR.
+            Throwable cause = e;
+            while (cause instanceof CompletionException && cause.getCause() != null) {
+                cause = cause.getCause();
+            }
+            if (cause instanceof HyperscaleDbException) {
+                throw enrichException((HyperscaleDbException) cause, "provisionSchema", start);
+            }
+            throw wrapUnexpected(cause instanceof Exception ? (Exception) cause : e, "provisionSchema", start);
         }
-    }
-
-    @Override
-    public <T> T nativeClient(Class<T> clientType) {
-        LOG.info("Escape hatch accessed: requesting native client of type {}", clientType.getName());
-        return providerClient.nativeClient(clientType);
     }
 
     @Override
@@ -246,9 +276,11 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
 
     private HyperscaleDbException enrichException(HyperscaleDbException e, String operation, Instant start) {
         Duration duration = Duration.between(start, Instant.now());
-        OperationDiagnostics diag = new OperationDiagnostics(
-                config.provider(), operation, duration,
-                e.error().providerDetails().get("requestId"));
+        OperationDiagnostics diag = OperationDiagnostics
+                .builder(config.provider(), operation, duration)
+                .requestId(e.error().providerDetails().get("requestId"))
+
+                .build();
         return e.withDiagnostics(diag);
     }
 
@@ -261,8 +293,9 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
                 operation,
                 false,
                 Map.of("exceptionType", e.getClass().getName()));
-        OperationDiagnostics diag = new OperationDiagnostics(
-                config.provider(), operation, duration, null);
+        OperationDiagnostics diag = OperationDiagnostics
+                .builder(config.provider(), operation, duration)
+                .build();
         return new HyperscaleDbException(error, e).withDiagnostics(diag);
     }
 

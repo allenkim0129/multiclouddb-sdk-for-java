@@ -2,8 +2,7 @@ package com.hyperscaledb.conformance.us5;
 
 import com.hyperscaledb.api.*;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.util.Map;
 import org.junit.jupiter.api.*;
 
 import java.util.List;
@@ -33,9 +32,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 public abstract class ResultSetControlConformanceTest {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
-    /** Seeds written before tests run — sorted ascending by {@code score}. */
+/** Seeds written before tests run — sorted ascending by {@code score}. */
     private static final int SEED_COUNT = 5;
 
     protected abstract HyperscaleDbClient createClient();
@@ -61,10 +58,8 @@ public abstract class ResultSetControlConformanceTest {
     /** Seed documents for result-set-control tests. */
     protected void seedDocuments() {
         for (int i = 1; i <= SEED_COUNT; i++) {
-            ObjectNode doc = MAPPER.createObjectNode();
-            doc.put("score", i * 10);
-            doc.put("label", "item-" + i);
-            Key key = Key.of("rsc-" + i, "rsc-" + i);
+            Map<String, Object> doc = Map.of("score", i * 10, "label", "item-" + i);
+            HyperscaleDbKey key = HyperscaleDbKey.of("rsc-" + i, "rsc-" + i);
             client.upsert(getAddress(), key, doc);
         }
     }

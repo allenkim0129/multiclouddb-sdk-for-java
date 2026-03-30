@@ -1,15 +1,30 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package com.hyperscaledb.spi;
 
-import com.hyperscaledb.api.*;
+import com.hyperscaledb.api.CapabilitySet;
+import com.hyperscaledb.api.DocumentResult;
+import com.hyperscaledb.api.HyperscaleDbError;
+import com.hyperscaledb.api.HyperscaleDbErrorCategory;
+import com.hyperscaledb.api.HyperscaleDbException;
+import com.hyperscaledb.api.HyperscaleDbKey;
+import com.hyperscaledb.api.OperationOptions;
+import com.hyperscaledb.api.ProviderId;
+import com.hyperscaledb.api.QueryPage;
+import com.hyperscaledb.api.QueryRequest;
+import com.hyperscaledb.api.ResourceAddress;
 import com.hyperscaledb.api.query.TranslatedQuery;
-import com.fasterxml.jackson.databind.JsonNode;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * SPI contract for a provider client that implements CRUD + query operations.
@@ -22,48 +37,31 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
      *
      * @throws HyperscaleDbException with category CONFLICT if the key already exists
      */
-    void create(ResourceAddress address, Key key, JsonNode document, OperationOptions options);
+    void create(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options);
 
     /**
      * Read a document by key.
      *
      * @return the document result (document + optional metadata), or {@code null} if not found
      */
-    DocumentResult read(ResourceAddress address, Key key, OperationOptions options);
-
-    /**
-     * Compatibility bridge for provider implementations compiled against the previous API where
-     * {@code read()} returned {@code JsonNode}. Delegates to {@link #read(ResourceAddress, Key, OperationOptions)}
-     * and unwraps the document.
-     *
-     * @deprecated Provider implementations should implement {@link #read(ResourceAddress, Key, OperationOptions)}
-     *             returning {@link DocumentResult}. This bridge exists to ease migration across the
-     *             {@code JsonNode} → {@code DocumentResult} breaking change and will be removed in the
-     *             next major version.
-     */
-    @Deprecated
-    default com.fasterxml.jackson.databind.JsonNode readDocument(
-            ResourceAddress address, Key key, OperationOptions options) {
-        DocumentResult result = read(address, key, options);
-        return result == null ? null : result.document();
-    }
+    DocumentResult read(ResourceAddress address, HyperscaleDbKey key, OperationOptions options);
 
     /**
      * Update an existing document. Fails if the key does not exist.
      *
      * @throws HyperscaleDbException with category NOT_FOUND if the key does not exist
      */
-    void update(ResourceAddress address, Key key, JsonNode document, OperationOptions options);
+    void update(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options);
 
     /**
      * Upsert (create or replace) a document.
      */
-    void upsert(ResourceAddress address, Key key, JsonNode document, OperationOptions options);
+    void upsert(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options);
 
     /**
      * Delete a document by key.
      */
-    void delete(ResourceAddress address, Key key, OperationOptions options);
+    void delete(ResourceAddress address, HyperscaleDbKey key, OperationOptions options);
 
     /**
      * Execute a query and return a single page of results.
@@ -89,16 +87,10 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
     }
 
     /**
-     * Ensure a logical database exists.
+     * Ensure a logical database exists, creating it if absent.
      * <p>
-     * Provider semantics:
-     * <ul>
-     * <li><b>Cosmos DB</b>: creates the Cosmos database if it does not exist</li>
-     * <li><b>DynamoDB</b>: no-op (DynamoDB has no native database concept; the
-     * database dimension is encoded in table names)</li>
-     * <li><b>Spanner</b>: no-op (the database is set at client construction
-     * time)</li>
-     * </ul>
+     * Default is a no-op — providers that have a native database concept override
+     * this method.
      *
      * @param database the logical database name
      */
@@ -107,20 +99,10 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
     }
 
     /**
-     * Ensure a container (or table) exists within the given database.
+     * Ensure a container (or table) exists within the given database, creating it
+     * if absent.
      * <p>
-     * Provider semantics:
-     * <ul>
-     * <li><b>Cosmos DB</b>: creates a container with partition key path
-     * {@code /partitionKey}</li>
-     * <li><b>DynamoDB</b>: creates a table named
-     * {@code database__collection} with hash key {@code partitionKey} and sort key
-     * {@code sortKey}</li>
-     * <li><b>Spanner</b>: creates a table with columns
-     * {@code partitionKey STRING(MAX)}
-     * and {@code sortKey STRING(MAX)} as the primary key, plus a {@code data}
-     * column for the JSON document</li>
-     * </ul>
+     * Default is a no-op — providers override with their creation logic.
      *
      * @param address the database + collection identifying the container
      */
@@ -129,11 +111,20 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
     }
 
     /**
-     * Provision a full schema of databases and containers/tables in parallel.
+     * Maximum time in seconds to wait for the thread pool to terminate after
+     * {@code joinAndRethrow} has already drained all futures. In the normal path
+     * this returns immediately; the timeout is a safety net for edge cases where a
+     * task is still running despite the drain (e.g. stuck I/O).
+     */
+    int POOL_TERMINATION_TIMEOUT_SECONDS = 30;
+
+    /**
+     * Provision a full schema of databases and containers in parallel.
      * <p>
-     * Default implementation creates all databases concurrently, waits for
-     * completion, then creates all containers concurrently. Providers may
-     * override for provider-specific optimisations.
+     * Default implementation creates all databases concurrently (Phase 1),
+     * waits for completion, then creates all containers concurrently (Phase 2),
+     * using a bounded thread pool (max 10 threads). Providers may override for
+     * provider-specific optimisations.
      *
      * @param schema map of database name → list of collection/table names
      */
@@ -146,6 +137,8 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
             }
         }
 
+        if (databases.isEmpty() && containers.isEmpty()) return;
+
         int parallelism = Math.min(databases.size() + containers.size(), 10);
         ExecutorService pool = Executors.newFixedThreadPool(parallelism);
         try {
@@ -153,27 +146,93 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
             CompletableFuture<?>[] dbFutures = databases.stream()
                     .map(db -> CompletableFuture.runAsync(() -> ensureDatabase(db), pool))
                     .toArray(CompletableFuture[]::new);
-            CompletableFuture.allOf(dbFutures).join();
+            joinAndRethrow(dbFutures);
 
             // Phase 2: containers in parallel
             CompletableFuture<?>[] containerFutures = containers.stream()
                     .map(addr -> CompletableFuture.runAsync(() -> ensureContainer(addr), pool))
                     .toArray(CompletableFuture[]::new);
-            CompletableFuture.allOf(containerFutures).join();
+            joinAndRethrow(containerFutures);
         } finally {
             pool.shutdown();
+            try {
+                // joinAndRethrow already drains all futures, so this returns immediately
+                // in the normal path. The timeout is a safety net for stuck tasks.
+                if (!pool.awaitTermination(POOL_TERMINATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    pool.shutdownNow();
+                }
+            } catch (InterruptedException ie) {
+                pool.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
         }
+    }
+
+    /**
+     * Waits for <em>all</em> futures to complete (regardless of individual failures),
+     * then rethrows one of the failures as the primary exception with its original
+     * error category preserved. All additional failures are attached as
+     * {@linkplain Throwable#addSuppressed suppressed exceptions} so callers can
+     * inspect every root cause if needed.
+     *
+     * <p>Each {@link CompletionException} wrapper is unwrapped before propagating, so
+     * a {@link HyperscaleDbException} thrown inside an async task retains its
+     * structured {@code errorCategory} — it is not misclassified as
+     * {@code PROVIDER_ERROR} by downstream catch blocks.
+     *
+     * <p><b>Note:</b> the "primary" failure is whichever task appears first in the
+     * futures array, which reflects the order of {@code schema.keySet()} iteration
+     * (map-order, not chronological failure order).
+     */
+    private static void joinAndRethrow(CompletableFuture<?>[] futures) {
+        // Drain all futures (replacing failures with null) so every task finishes
+        // before we inspect results. This prevents in-flight tasks from continuing
+        // after we return on a partial failure.
+        CompletableFuture.allOf(
+                Arrays.stream(futures)
+                        .map(f -> f.exceptionally(ex -> null))
+                        .toArray(CompletableFuture[]::new)
+        ).join();
+
+        List<Throwable> failures = new ArrayList<>();
+        for (CompletableFuture<?> f : futures) {
+            if (f.isCompletedExceptionally()) {
+                try {
+                    f.join();
+                } catch (CompletionException e) {
+                    // Unwrap: recover the original exception thrown inside the async task
+                    failures.add(e.getCause() != null ? e.getCause() : e);
+                }
+            }
+        }
+
+        if (failures.isEmpty()) return;
+
+        // First failure is the primary; all others are attached as suppressed
+        Throwable primary = failures.get(0);
+        for (int i = 1; i < failures.size(); i++) {
+            primary.addSuppressed(failures.get(i));
+        }
+
+        if (primary instanceof RuntimeException) throw (RuntimeException) primary;
+        if (primary instanceof Error) throw (Error) primary;
+        // Checked exception from inside a future: wrap with PROVIDER_ERROR to stay
+        // consistent with how all other unexpected exceptions are handled in the SDK.
+        throw new HyperscaleDbException(
+                new HyperscaleDbError(
+                        HyperscaleDbErrorCategory.PROVIDER_ERROR,
+                        "Unexpected checked exception in provisionSchema: " + primary.getMessage(),
+                        null,
+                        "provisionSchema",
+                        false,
+                        Map.of("exceptionType", primary.getClass().getName())),
+                primary);
     }
 
     /**
      * Return the set of capabilities supported by this provider.
      */
     CapabilitySet capabilities();
-
-    /**
-     * Return the native provider client (for escape hatch), or null.
-     */
-    <T> T nativeClient(Class<T> clientType);
 
     /**
      * Return the provider id.

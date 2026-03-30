@@ -1,6 +1,21 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package com.hyperscaledb.samples.todo;
 
-import com.hyperscaledb.api.*;
+import com.hyperscaledb.api.Capability;
+import com.hyperscaledb.api.CapabilitySet;
+import com.hyperscaledb.api.DocumentResult;
+import com.hyperscaledb.api.HyperscaleDbClient;
+import com.hyperscaledb.api.HyperscaleDbClientConfig;
+import com.hyperscaledb.api.HyperscaleDbClientFactory;
+import com.hyperscaledb.api.HyperscaleDbException;
+import com.hyperscaledb.api.HyperscaleDbKey;
+import com.hyperscaledb.api.ProviderId;
+import com.hyperscaledb.api.QueryPage;
+import com.hyperscaledb.api.QueryRequest;
+import com.hyperscaledb.api.ResourceAddress;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -14,6 +29,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Map;
 import java.util.Properties;
 
 /**
@@ -34,6 +50,7 @@ import java.util.Properties;
 public class TodoApp {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
     private static final String DATABASE = "todoapp";
     private static final String COLLECTION = "todos";
     private static final int DEFAULT_PORT = 8080;
@@ -55,21 +72,21 @@ public class TodoApp {
         doc.put("createdAt", Instant.now().toString());
         doc.put("updatedAt", Instant.now().toString());
 
-        Key key = Key.of(id, id); // id doubles as partition key
-        client.upsert(address, key, doc);
+        HyperscaleDbKey key = HyperscaleDbKey.of(id, id); // id doubles as partition key
+        client.upsert(address, key, MAPPER.convertValue(doc, MAP_TYPE));
 
         doc.put("id", id);
         return doc;
     }
 
     public JsonNode getTodo(String id) {
-        Key key = Key.of(id, id);
+        HyperscaleDbKey key = HyperscaleDbKey.of(id, id);
         DocumentResult result = client.read(address, key);
         return result != null ? result.document() : null;
     }
 
     public JsonNode updateTodo(String id, JsonNode updates) {
-        Key key = Key.of(id, id);
+        HyperscaleDbKey key = HyperscaleDbKey.of(id, id);
         DocumentResult existing = client.read(address, key);
         if (existing == null) {
             return null;
@@ -78,24 +95,24 @@ public class TodoApp {
         ObjectNode updated = existing.document().deepCopy();
         updates.fields().forEachRemaining(field -> updated.set(field.getKey(), field.getValue()));
         updated.put("updatedAt", Instant.now().toString());
-        client.upsert(address, key, updated);
+        client.upsert(address, key, MAPPER.convertValue(updated, MAP_TYPE));
         return updated;
     }
 
     public void deleteTodo(String id) {
-        Key key = Key.of(id, id);
+        HyperscaleDbKey key = HyperscaleDbKey.of(id, id);
         client.delete(address, key);
     }
 
     public ArrayNode listTodos() {
         QueryRequest query = QueryRequest.builder()
-                .pageSize(100)
+                .maxPageSize(100)
                 .build();
 
         ArrayNode result = MAPPER.createArrayNode();
         QueryPage page = client.query(address, query);
-        for (JsonNode item : page.items()) {
-            result.add(item);
+        for (Map<String, Object> item : page.items()) {
+            result.add(MAPPER.valueToTree(item));
         }
         return result;
     }
@@ -157,7 +174,7 @@ public class TodoApp {
         try {
             switch (method) {
                 case "GET" -> {
-                    if (id != null && !id.isEmpty()) {
+                    if (id != null) {
                         JsonNode todo = getTodo(id);
                         if (todo == null) {
                             sendJson(exchange, 404,
@@ -181,7 +198,7 @@ public class TodoApp {
                     sendJson(exchange, 201, created);
                 }
                 case "PUT" -> {
-                    if (id == null || id.isEmpty()) {
+                    if (id == null) {
                         sendJson(exchange, 400,
                                 MAPPER.createObjectNode().put("error", "ID required"));
                         return;
@@ -196,7 +213,7 @@ public class TodoApp {
                     }
                 }
                 case "DELETE" -> {
-                    if (id == null || id.isEmpty()) {
+                    if (id == null) {
                         sendJson(exchange, 400,
                                 MAPPER.createObjectNode().put("error", "ID required"));
                         return;
@@ -216,7 +233,7 @@ public class TodoApp {
         } catch (HyperscaleDbException e) {
             ObjectNode err = MAPPER.createObjectNode();
             err.put("error", e.getMessage());
-            err.put("category", e.error().category().name());
+            err.put("category", e.error().category().getValue());
             sendJson(exchange, 500, err);
         } catch (Exception e) {
             sendJson(exchange, 500,
@@ -365,11 +382,6 @@ public class TodoApp {
             if (key.startsWith("hyperscaledb.auth.")) {
                 builder.auth(
                         key.substring("hyperscaledb.auth.".length()),
-                        props.getProperty(key));
-            }
-            if (key.startsWith("hyperscaledb.feature.")) {
-                builder.featureFlag(
-                        key.substring("hyperscaledb.feature.".length()),
                         props.getProperty(key));
             }
         }
