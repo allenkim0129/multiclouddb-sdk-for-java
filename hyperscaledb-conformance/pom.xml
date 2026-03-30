@@ -63,6 +63,21 @@
             <version>2.0.12</version>
             <scope>test</scope>
         </dependency>
+        <!--
+            netty-codec-compression is excluded from hyperscaledb-provider-cosmos to prevent
+            a JPMS split-package error: both netty-codec and netty-codec-compression export
+            io.netty.handler.codec.compression when placed on the module path together.
+            However, the conformance tests run in classpath mode (no module-info.java here),
+            so split-package is not an issue.  The Cosmos SDK 4.x requires classes from this
+            artifact (e.g. Snappy/LZ4 codecs used in the HTTP pipeline for real container
+            operations) — without it, pkranges and collection metadata requests hang
+            indefinitely, causing every CosmosConformanceTest to time out.
+        -->
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-codec-compression</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
