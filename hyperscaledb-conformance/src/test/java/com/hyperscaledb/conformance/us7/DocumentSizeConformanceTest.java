@@ -2,6 +2,7 @@ package com.hyperscaledb.conformance.us7;
 
 import java.util.Map;
 import com.hyperscaledb.api.*;
+import com.hyperscaledb.api.internal.DocumentSizeValidator;
 import com.hyperscaledb.conformance.ConformanceHarness;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -24,13 +25,13 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public class DocumentSizeConformanceTest {
 
-    /** 400 KB limit — same as {@code DocumentSizeValidator.MAX_BYTES}. */
-    private static final int MAX_BYTES = 400 * 1024;
+    /** 399 KB limit — same as {@code DocumentSizeValidator.MAX_BYTES}. */
+    private static final int MAX_BYTES = DocumentSizeValidator.MAX_BYTES;
 
     // -------------------------------------------- FR-061: within limit
 
     @Test
-    @DisplayName("FR-061: document within 400 KB limit is accepted on upsert")
+    @DisplayName("FR-061: document within 399 KB limit is accepted on upsert")
     void documentWithinLimitIsAccepted() throws Exception {
         try (HyperscaleDbClient client = ConformanceHarness.createClient(ProviderId.DYNAMO)) {
             ResourceAddress address = ConformanceHarness.defaultAddress(ProviderId.DYNAMO);
