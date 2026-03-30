@@ -22,23 +22,6 @@
         <dependency>
             <groupId>com.azure</groupId>
             <artifactId>azure-cosmos</artifactId>
-                <exclusions>
-                    <!-- Both netty-codec and netty-codec-compression export the package
-                         io.netty.handler.codec.compression, which is a JPMS split-package
-                         error when this module is placed on the module path.
-                         Excluding netty-codec-compression here removes one of the two
-                         conflicting artifacts so that the provider can run as a named
-                         JPMS module.
-                         IMPORTANT: consumers that run in classpath mode (e.g.
-                         hyperscaledb-conformance, which has no module-info.java) must
-                         re-add netty-codec-compression as a direct dependency so that
-                         the Cosmos SDK's HTTP pipeline can find the codec classes it
-                         needs for real container operations. -->
-                    <exclusion>
-                        <groupId>io.netty</groupId>
-                        <artifactId>netty-codec-compression</artifactId>
-                    </exclusion>
-                </exclusions>
         </dependency>
         <dependency>
             <groupId>com.azure</groupId>
@@ -73,16 +56,13 @@
                          Java versions beyond 22. Enable experimental mode so that
                          CosmosException (and other Azure SDK exception classes)
                          can be mocked on Java 23+.
-                         JPMS: allow the named module to read test-scoped
-                         dependencies (logback, Mockito) and allow reflective
-                         access for Mockito. -->
-                    <argLine>
-                        -Dnet.bytebuddy.experimental=true
-                        --add-reads com.hyperscaledb.provider.cosmos=ALL-UNNAMED
-                        --add-reads com.hyperscaledb.provider.cosmos=ch.qos.logback.classic
-                        --add-reads com.hyperscaledb.provider.cosmos=ch.qos.logback.core
-                        --add-opens com.hyperscaledb.provider.cosmos/com.hyperscaledb.provider.cosmos=ALL-UNNAMED
-                    </argLine>
+                         Run in classpath mode (not module path) so that Netty 4.2.x
+                         split-module issues are avoided: netty-codec-compression
+                         requires "io.netty.codec" but netty-codec 4.2.x exports the
+                         module as "io.netty.codec.unused", causing resolution failures
+                         when both are on the module path. -->
+                    <useModulePath>false</useModulePath>
+                    <argLine>-Dnet.bytebuddy.experimental=true</argLine>
                 </configuration>
             </plugin>
         </plugins>
