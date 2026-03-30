@@ -40,7 +40,12 @@ switch providers by changing a single properties file, with zero code changes.
 - [Supported Providers](#supported-providers)
 - [Configuration](#configuration)
 - [Capabilities & Portability](#capabilities--portability)
-- [Sample Application](#sample-application)
+- [Result Set Control](#result-set-control)
+- [Document TTL](#document-ttl)
+- [Document Metadata](#document-metadata)
+- [Document Size Enforcement](#document-size-enforcement)
+- [Provider Diagnostics](#provider-diagnostics)
+- [Sample Applications](#sample-applications)
 - [Building from Source](#building-from-source)
 - [Testing](#testing)
 - [Project Structure](#project-structure)
@@ -142,7 +147,8 @@ ResourceAddress todos = new ResourceAddress("mydb", "todos");
 Key key = Key.of("todo-1", "todo-1");   // partitionKey + sortKey
 
 client.upsert(todos, key, doc);                  // Create or replace (upsert)
-JsonNode result = client.read(todos, key);       // Point read
+DocumentResult result = client.read(todos, key); // Point read → returns DocumentResult
+ObjectNode document = result.document();         // The document payload
 client.delete(todos, key);                       // Delete
 
 // Query with portable expressions - automatically translated per provider
@@ -285,14 +291,18 @@ All application code depends on `hyperscaledb-api`. The core types are:
 | `HyperscaleDbClientConfig` | Builder-pattern config: provider selection, connection, auth, feature flags |
 | `ResourceAddress` | `(database, collection)` pair targeting a container/table |
 | `Key` | `(partitionKey, sortKey)` pair - every document needs at least a partition key |
-| `QueryRequest` | Portable expression, native expression, parameters, page size, continuation token, partition key scoping |
-| `QueryPage` | Result page: items + optional continuation token |
+| `QueryRequest` | Portable expression, native expression, parameters, page size, continuation token, partition key scoping, `limit`, `orderBy` |
+| `QueryPage` | Result page: items + optional continuation token + optional `OperationDiagnostics` |
+| `SortOrder` | `(field, direction)` sort specification for `orderBy` — validates field names against injection |
+| `SortDirection` | `ASC` or `DESC` |
+| `DocumentResult` | Result of `read()`: document payload + optional `DocumentMetadata` |
+| `DocumentMetadata` | Write-metadata on demand: `lastModified`, `ttlExpiry`, `version` |
 | `CapabilitySet` | Runtime introspection of provider capabilities |
 | `Capability` | Named capability with `supported` flag and notes |
 | `HyperscaleDbException` | Structured error with `HyperscaleDbError` (category, provider, native code) |
 | `PortabilityWarning` | Signals when an operation uses non-portable behavior |
-| `OperationOptions` | Timeout, consistency, custom headers |
-| `OperationDiagnostics` | Latency, request units, activity ID |
+| `OperationOptions` | Timeout, TTL (`ttlSeconds`), metadata flag (`includeMetadata`) |
+| `OperationDiagnostics` | Latency, request units/charge, request ID, ETag, item count |
 | `Expression` | AST node interface for parsed query expressions |
 | `ExpressionParser` | Parses portable expression strings into an AST |
 | `ExpressionValidator` | Validates parameter bindings and function usage |
@@ -458,6 +468,121 @@ for (Capability cap : caps.all()) {
 | Batch operations | ✓ | ✓ | ✓ |
 | Strong consistency | ✓ | ✓ | ✓ |
 | Change feed | ✓ | ✓ | ✓ |
+| **Result limit** (`Top N`) | ✓ | ✓ (per-page) | ✓ |
+| **ORDER BY** | ✓ | ✗ | ✓ |
+| **Row-level TTL** | ✓ | ✓ | ✗ |
+| **Write timestamp / metadata** | ✓ | ✗ | ✗ |
+
+---
+
+## Result Set Control
+
+Limit and sort results portably across providers:
+
+```java
+QueryRequest q = QueryRequest.builder()
+        .expression("status = @s")
+        .parameter("s", "active")
+        .limit(25)                                    // top 25 results
+        .orderBy("createdAt", SortDirection.DESC)     // newest first
+        .build();
+
+QueryPage page = client.query(address, q);
+```
+
+Check capabilities before using `ORDER BY` — DynamoDB does not support server-side ordering:
+
+```java
+if (client.capabilities().supports(Capability.ORDER_BY)) {
+    // use orderBy()
+}
+```
+
+---
+
+## Document TTL
+
+Set a per-document TTL at write time using `OperationOptions`:
+
+```java
+OperationOptions opts = OperationOptions.builder()
+        .ttlSeconds(3_600)      // expire in 1 hour
+        .build();
+
+client.create(address, key, doc, opts);
+client.upsert(address, key, doc, opts);
+client.update(address, key, updatedDoc, opts);
+```
+
+TTL requires collection-level configuration first (enable "Default TTL" on the
+Cosmos DB container; enable TTL on the DynamoDB table using `ttlExpiry` as the
+attribute name). Spanner ignores `ttlSeconds` (`ROW_LEVEL_TTL=false`).
+
+---
+
+## Document Metadata
+
+Read write-metadata (last-modified timestamp, TTL expiry, version/ETag) on demand:
+
+```java
+OperationOptions opts = OperationOptions.builder()
+        .includeMetadata(true)
+        .build();
+
+DocumentResult result = client.read(address, key, opts);
+DocumentMetadata meta = result.metadata();   // null if provider doesn't support it
+
+if (meta != null) {
+    System.out.println("Last modified: " + meta.lastModified());
+    System.out.println("Expires at   : " + meta.ttlExpiry());
+    System.out.println("ETag/version : " + meta.version());
+}
+```
+
+| Metadata field | Cosmos DB | DynamoDB | Spanner |
+|----------------|:---------:|:--------:|:-------:|
+| `lastModified` | ✓ (`_ts`) | ✗ | ✗ |
+| `ttlExpiry` | ✗ | ✓ | ✗ |
+| `version` | ✓ (ETag) | ✗ | ✗ |
+
+---
+
+## Document Size Enforcement
+
+All write operations are validated against a **399 KB** limit before any network
+call is made. Documents that exceed the limit are rejected with
+`HyperscaleDbErrorCategory.INVALID_REQUEST`:
+
+```java
+try {
+    client.create(address, key, largeDoc);
+} catch (HyperscaleDbException e) {
+    if (e.error().category() == HyperscaleDbErrorCategory.INVALID_REQUEST) {
+        System.out.println("Document exceeds 399 KB limit");
+    }
+}
+```
+
+The limit is 399 KB (not 400 KB) because providers inject additional fields
+before writing — see [Developer Guide](docs/guide.md#document-size-enforcement)
+for details.
+
+---
+
+## Provider Diagnostics
+
+`QueryPage` carries `OperationDiagnostics` with latency, request charge, and
+provider correlation IDs:
+
+```java
+QueryPage page = client.query(address, q);
+OperationDiagnostics diag = page.diagnostics();
+if (diag != null) {
+    System.out.printf("%s %s latency=%dms ruCharge=%.2f%n",
+        diag.provider().id(), diag.operation(),
+        diag.duration().toMillis(), diag.requestCharge());
+}
+```
 
 ---
 

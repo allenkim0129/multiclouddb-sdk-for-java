@@ -46,6 +46,24 @@ provider compatibility matrix and feature-flag reference, see
   - [Partition-Scoped Queries with QueryRequest.partitionKey()](#partition-scoped-queries-with-queryrequestpartitionkey)
 - [Multi-Tenant Architecture Patterns](#multi-tenant-architecture-patterns)
 - [Error Handling](#error-handling)
+- [Result Set Control](#result-set-control)
+  - [Checking Capabilities](#checking-capabilities)
+  - [Limiting Results](#limiting-results)
+  - [Ordering Results](#ordering-results)
+  - [Combining with Native Expressions](#combining-with-native-expressions)
+- [Document TTL (Time-to-Live)](#document-ttl-time-to-live)
+  - [Prerequisite: Enable Container-Level TTL](#prerequisite-enable-container-level-ttl)
+  - [Writing with TTL](#writing-with-ttl)
+  - [Checking TTL Support](#checking-ttl-support)
+- [Document Metadata](#document-metadata)
+  - [Reading Metadata](#reading-metadata)
+  - [Provider Metadata Availability](#provider-metadata-availability)
+  - [System Property Stripping](#system-property-stripping)
+- [Document Size Enforcement](#document-size-enforcement)
+- [Provider Diagnostics](#provider-diagnostics)
+  - [Query Diagnostics](#query-diagnostics)
+  - [Provider Field Availability](#provider-field-availability)
+  - [Structured Logging](#structured-logging)
 
 ---
 
@@ -1121,3 +1139,244 @@ try {
 
 See [compatibility.md](compatibility.md) for the full error category mapping
 table across all providers.
+
+---
+
+## Result Set Control
+
+The SDK supports portable `limit` (Top N) and `orderBy` on providers that declare the respective capabilities. Both are **capability-gated** — query silently against non-supporting providers without error, and the SDK enforces the limit client-side when the provider cannot.
+
+### Checking Capabilities
+
+```java
+CapabilitySet caps = client.capabilities();
+boolean canLimit  = caps.supports(Capability.RESULT_LIMIT);
+boolean canOrder  = caps.supports(Capability.ORDER_BY);
+```
+
+| Capability | Cosmos DB | DynamoDB | Spanner |
+|------------|:---------:|:--------:|:-------:|
+| `result_limit` (Top N) | ✓ (`SELECT TOP N`) | ✓ (per-page) | ✓ (`LIMIT`) |
+| `order_by` | ✓ | ✗ | ✓ |
+
+> **Note:** DynamoDB's `result_limit=true` caps the _current scan page_, not
+> the total result set. Use continuation tokens to iterate all matching items.
+
+### Limiting Results
+
+```java
+QueryRequest q = QueryRequest.builder()
+        .expression("score >= @min")
+        .parameter("min", 80)
+        .limit(10)                        // top 10 results
+        .build();
+
+QueryPage page = client.query(address, q);
+System.out.println("Got " + page.items().size() + " items");
+```
+
+### Ordering Results
+
+```java
+QueryRequest q = QueryRequest.builder()
+        .expression("portfolioId = @pid")
+        .parameter("pid", "portfolio-42")
+        .orderBy("marketValue", SortDirection.DESC)   // sort descending
+        .orderBy("symbol",      SortDirection.ASC)    // secondary sort
+        .limit(20)
+        .build();
+```
+
+`SortOrder` validates field names against `[A-Za-z_][A-Za-z0-9_.]*` at construction time, rejecting any character that could be used for injection.
+
+### Combining with Native Expressions
+
+`orderBy` and `limit` are silently discarded when `nativeExpression` is used — the native query string is passed through unmodified. Use provider-native syntax for full control:
+
+```java
+// Cosmos DB native — full SQL control
+QueryRequest q = QueryRequest.builder()
+        .nativeExpression(
+            "SELECT TOP 10 c.symbol, c.marketValue FROM c " +
+            "ORDER BY c.marketValue DESC")
+        .build();
+```
+
+---
+
+## Document TTL (Time-to-Live)
+
+Set a per-document expiry at write time using `OperationOptions.ttlSeconds()`. Supported on `create()`, `upsert()`, and `update()`.
+
+### Prerequisite: Enable Container-Level TTL
+
+TTL is enforced at the provider level and requires the collection to be configured with TTL support before writing TTL-bearing documents.
+
+| Provider | Required Setup |
+|----------|----------------|
+| Cosmos DB | Enable "Default Time to Live" on the container (set to `-1` for item-level control) |
+| DynamoDB | Enable TTL on the table specifying `ttlExpiry` as the TTL attribute |
+| Spanner | No native row-level TTL — `ROW_LEVEL_TTL=false`; `ttlSeconds` is silently ignored |
+
+### Writing with TTL
+
+```java
+OperationOptions opts = OperationOptions.builder()
+        .ttlSeconds(3_600)          // expire in 1 hour
+        .build();
+
+// TTL on create
+client.create(address, key, doc, opts);
+
+// TTL on upsert (create-or-replace)
+client.upsert(address, key, doc, opts);
+
+// TTL on update — carries TTL forward through the full-replace write
+client.update(address, key, updatedDoc, opts);
+```
+
+### Checking TTL Support
+
+```java
+if (client.capabilities().supports(Capability.ROW_LEVEL_TTL)) {
+    client.create(address, key, doc, OperationOptions.builder()
+            .ttlSeconds(86_400)
+            .build());
+} else {
+    // Provider will ignore ttlSeconds; write without TTL
+    client.create(address, key, doc);
+}
+```
+
+> **Important:** If you omit `ttlSeconds` on an `update()` call, the previously
+> stored TTL attribute will be overwritten with no TTL (documents become
+> permanent). Always pass the same `OperationOptions` on every write if you
+> want TTL to persist.
+
+---
+
+## Document Metadata
+
+Read write-metadata (last-modified timestamp, TTL expiry, version/ETag) by setting `includeMetadata(true)` on read operations. Metadata is **null by default** to avoid unnecessary overhead.
+
+### Reading Metadata
+
+```java
+OperationOptions opts = OperationOptions.builder()
+        .includeMetadata(true)
+        .build();
+
+DocumentResult result = client.read(address, key, opts);
+DocumentMetadata meta = result.metadata();
+
+if (meta != null) {
+    System.out.println("Last modified : " + meta.lastModified());
+    System.out.println("Expires at    : " + meta.ttlExpiry());    // null if no TTL
+    System.out.println("Version/ETag  : " + meta.version());
+}
+```
+
+### Provider Metadata Availability
+
+| Field | Cosmos DB | DynamoDB | Spanner |
+|-------|:---------:|:--------:|:-------:|
+| `lastModified` | ✓ (from `_ts`) | ✗ | ✗ |
+| `ttlExpiry` | ✗ | ✓ (stored attribute) | ✗ |
+| `version` | ✓ (ETag) | ✗ | ✗ |
+
+Fields the provider cannot supply are returned as `null`. Use
+`Capability.WRITE_TIMESTAMP` to check before accessing `metadata()`.
+
+```java
+if (client.capabilities().supports(Capability.WRITE_TIMESTAMP)) {
+    DocumentResult r = client.read(address, key,
+            OperationOptions.builder().includeMetadata(true).build());
+    System.out.println(r.metadata().lastModified());
+}
+```
+
+### System Property Stripping
+
+The `document()` field of `DocumentResult` is always stripped of provider
+system properties (`_ts`, `_etag`, `_rid`, `_self`, `_attachments`, `partitionKey`) before being returned, ensuring the same document shape regardless of which provider it was read from.
+
+---
+
+## Document Size Enforcement
+
+The SDK enforces a **399 KB** (408,576 bytes) maximum document size before any
+data leaves the client. This limit applies to `create()`, `upsert()`, and
+`update()` on all providers.
+
+### Why 399 KB, not 400 KB?
+
+Providers inject additional fields (`partitionKey`, `sortKey`, `id`, `ttlExpiry`) before writing. DynamoDB measures its 400 KB limit against the internal wire format, which can be larger than raw JSON bytes. The 1 KB safety margin prevents valid-looking documents from exceeding the wire limit after field injection.
+
+### Validation Behaviour
+
+```java
+try {
+    client.create(address, key, hugeDoc);
+} catch (HyperscaleDbException e) {
+    if (e.error().category() == HyperscaleDbErrorCategory.INVALID_REQUEST) {
+        // Document rejected before reaching any provider
+        System.out.println("Document too large: " + e.getMessage());
+    }
+}
+```
+
+Oversized documents are rejected **at the SDK layer** — no network call is made.
+The error category is always `INVALID_REQUEST`.
+
+---
+
+## Provider Diagnostics
+
+Every operation can return structured diagnostics via `OperationDiagnostics`. Diagnostics are available on `QueryPage` and can be accessed after read/write operations through provider-specific logging (SLF4J).
+
+### Query Diagnostics
+
+```java
+QueryRequest q = QueryRequest.builder()
+        .expression("status = @s")
+        .parameter("s", "active")
+        .build();
+
+QueryPage page = client.query(address, q);
+
+OperationDiagnostics diag = page.diagnostics();  // may be null
+if (diag != null) {
+    System.out.printf("Provider  : %s%n", diag.provider().id());
+    System.out.printf("Operation : %s%n", diag.operation());
+    System.out.printf("Latency   : %s ms%n", diag.duration().toMillis());
+    System.out.printf("Request ID: %s%n", diag.requestId());
+    System.out.printf("RU charge : %.2f%n", diag.requestCharge());
+    System.out.printf("Item count: %d%n", diag.itemCount());
+    System.out.printf("ETag      : %s%n", diag.etag());
+}
+```
+
+### Provider Field Availability
+
+| Field | Cosmos DB | DynamoDB | Spanner |
+|-------|:---------:|:--------:|:-------:|
+| `requestId` | activityId | x-amzn-RequestId | — |
+| `statusCode` | HTTP status | HTTP status | gRPC code |
+| `requestCharge` | RU cost | consumed capacity | — |
+| `etag` | `_etag` | — | commit timestamp |
+| `sessionToken` | session token | — | — |
+| `itemCount` | ✓ | ✓ | ✓ |
+| `duration` | ✓ | ✓ | ✓ |
+
+### Structured Logging
+
+All providers emit structured SLF4J log lines at `ERROR` (failures) and
+`DEBUG` (slow operations) levels with a consistent key=value format:
+
+```
+cosmos.error op=read db=mydb col=users statusCode=408 subStatus=20001 activityId=abc message=...
+dynamo.error op=upsert table=mydb__users requestId=xyz awsErrorCode=ProvisionedThroughputExceededException
+```
+
+This format is grep-friendly and compatible with log aggregation systems
+(e.g., Azure Monitor, CloudWatch, Google Cloud Logging).
