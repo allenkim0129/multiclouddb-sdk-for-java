@@ -3,11 +3,11 @@
 
 package com.hyperscaledb.conformance.us6;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.hyperscaledb.api.*;
 import com.hyperscaledb.conformance.ConformanceHarness;
 import org.junit.jupiter.api.*;
+
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -37,8 +37,6 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 public abstract class TtlAndMetadataConformanceTest {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
     /** Override to return {@code true} if the provider populates {@code lastModified}. */
     protected abstract boolean supportsLastModified();
 
@@ -59,9 +57,8 @@ public abstract class TtlAndMetadataConformanceTest {
     @Order(1)
     @DisplayName("FR-054: create() with ttlSeconds is accepted without error")
     void createWithTtlIsAccepted() {
-        Key key = ConformanceHarness.uniqueKey("ttl-create");
-        ObjectNode doc = MAPPER.createObjectNode();
-        doc.put("name", "ttl-create-test");
+        HyperscaleDbKey key = ConformanceHarness.uniqueKey("ttl-create");
+        Map<String, Object> doc = Map.of("name", "ttl-create-test");
 
         OperationOptions opts = OperationOptions.builder().ttlSeconds(3600).build();
         assertDoesNotThrow(
@@ -75,9 +72,8 @@ public abstract class TtlAndMetadataConformanceTest {
     @Order(2)
     @DisplayName("FR-055: upsert() with ttlSeconds is accepted without error")
     void upsertWithTtlIsAccepted() {
-        Key key = ConformanceHarness.uniqueKey("ttl-upsert");
-        ObjectNode doc = MAPPER.createObjectNode();
-        doc.put("name", "ttl-upsert-test");
+        HyperscaleDbKey key = ConformanceHarness.uniqueKey("ttl-upsert");
+        Map<String, Object> doc = Map.of("name", "ttl-upsert-test");
 
         OperationOptions opts = OperationOptions.builder().ttlSeconds(3600).build();
         assertDoesNotThrow(
@@ -91,15 +87,13 @@ public abstract class TtlAndMetadataConformanceTest {
     @Order(3)
     @DisplayName("FR-056: update() with ttlSeconds is accepted without error")
     void updateWithTtlIsAccepted() {
-        Key key = ConformanceHarness.uniqueKey("ttl-update");
-        ObjectNode doc = MAPPER.createObjectNode();
-        doc.put("name", "ttl-update-seed");
+        HyperscaleDbKey key = ConformanceHarness.uniqueKey("ttl-update");
+        Map<String, Object> seed = Map.of("name", "ttl-update-seed");
 
         // Create first so update() has something to replace
-        client.create(getAddress(), key, doc, OperationOptions.defaults());
+        client.create(getAddress(), key, seed, OperationOptions.defaults());
 
-        ObjectNode updated = MAPPER.createObjectNode();
-        updated.put("name", "ttl-update-test");
+        Map<String, Object> updated = Map.of("name", "ttl-update-test");
         OperationOptions opts = OperationOptions.builder().ttlSeconds(7200).build();
         assertDoesNotThrow(
                 () -> client.update(getAddress(), key, updated, opts),
@@ -112,9 +106,8 @@ public abstract class TtlAndMetadataConformanceTest {
     @Order(4)
     @DisplayName("FR-057: read() with includeMetadata=true returns non-null metadata")
     void readWithMetadataReturnsMetadata() {
-        Key key = ConformanceHarness.uniqueKey("meta-test");
-        ObjectNode doc = MAPPER.createObjectNode();
-        doc.put("value", 42);
+        HyperscaleDbKey key = ConformanceHarness.uniqueKey("meta-test");
+        Map<String, Object> doc = Map.of("value", 42);
         client.upsert(getAddress(), key, doc, OperationOptions.defaults());
 
         OperationOptions readOpts = OperationOptions.builder().includeMetadata(true).build();
@@ -131,9 +124,8 @@ public abstract class TtlAndMetadataConformanceTest {
     @Order(5)
     @DisplayName("FR-058: metadata.version() is non-null for providers that support it")
     void metadataVersionIsPopulated() {
-        Key key = ConformanceHarness.uniqueKey("version-test");
-        ObjectNode doc = MAPPER.createObjectNode();
-        doc.put("value", 99);
+        HyperscaleDbKey key = ConformanceHarness.uniqueKey("version-test");
+        Map<String, Object> doc = Map.of("value", 99);
         client.upsert(getAddress(), key, doc, OperationOptions.defaults());
 
         OperationOptions readOpts = OperationOptions.builder().includeMetadata(true).build();
@@ -141,8 +133,6 @@ public abstract class TtlAndMetadataConformanceTest {
 
         assertNotNull(result, "read() must return a result");
         assertNotNull(result.metadata(), "metadata() must be non-null");
-        // version (ETag/session token) must be present — providers that declare
-        // WRITE_TIMESTAMP=true should always have a version string.
         assertNotNull(result.metadata().version(),
                 "metadata.version() must be non-null for this provider");
     }
@@ -156,9 +146,8 @@ public abstract class TtlAndMetadataConformanceTest {
         assumeTrue(supportsLastModified(),
                 "Skipped — provider does not populate lastModified");
 
-        Key key = ConformanceHarness.uniqueKey("lastmod-test");
-        ObjectNode doc = MAPPER.createObjectNode();
-        doc.put("value", 7);
+        HyperscaleDbKey key = ConformanceHarness.uniqueKey("lastmod-test");
+        Map<String, Object> doc = Map.of("value", 7);
         client.upsert(getAddress(), key, doc, OperationOptions.defaults());
 
         OperationOptions readOpts = OperationOptions.builder().includeMetadata(true).build();
@@ -176,9 +165,8 @@ public abstract class TtlAndMetadataConformanceTest {
     @Order(7)
     @DisplayName("FR-060: read() without includeMetadata returns null metadata")
     void readWithoutMetadataFlagReturnsNullMetadata() {
-        Key key = ConformanceHarness.uniqueKey("no-meta-test");
-        ObjectNode doc = MAPPER.createObjectNode();
-        doc.put("value", 1);
+        HyperscaleDbKey key = ConformanceHarness.uniqueKey("no-meta-test");
+        Map<String, Object> doc = Map.of("value", 1);
         client.upsert(getAddress(), key, doc, OperationOptions.defaults());
 
         // Default options — includeMetadata is false
