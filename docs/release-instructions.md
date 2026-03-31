@@ -38,7 +38,7 @@ inter-module dependencies from **source** (reactor build). This means:
 - Changes to `hyperscaledb-api` are immediately visible to all providers in the
   same build — no need for a published artifact during development.
 - Version properties in the root `pom.xml` (e.g., `hyperscaledb-api.version`)
-  always reflect the **next release version**, not a SNAPSHOT. The reactor
+  always reflect the **next release version** (beta or GA). The reactor
   resolves these from the local build.
 - When a PR changes both `hyperscaledb-api` and a provider, the CI reactor build
   validates them together.
@@ -70,7 +70,7 @@ Create & push a per-module version tag
 ┌───────────▼──────────────┐
 │   Publish single module  │  (automatic)
 │   • Verify POM version   │
-│   • Verify no SNAPSHOTs  │
+│   • Verify deps released │
 │   • Build & verify JARs  │
 │   • GitHub Release       │
 └──────────────────────────┘
@@ -165,7 +165,7 @@ To approve: **Actions → Release → (your run) → Review deployments → Appr
 After approval, the publish job:
 
 1. Verifies the module's POM version matches the tag version
-2. Verifies no SNAPSHOT dependencies on sibling modules
+2. Verifies sibling dependency versions are valid releases (beta or GA)
 3. Builds the full reactor, deploys only the target module
 4. Verifies pom/jar/sources/javadoc artifacts
 5. Uploads the Maven staging repository (90-day retention)
@@ -231,10 +231,11 @@ git push origin hyperscaledb-provider-spanner-v0.1.0-beta.1
 The module's POM version doesn't match the tag. Update the version property in
 root `pom.xml`, merge to `main`, delete the old tag, and re-tag.
 
-### "SNAPSHOT dependencies" error in publish job
+### "Non-release dependency version" error in publish job
 
-The module depends on an unreleased sibling. Release the dependency first
-(usually `hyperscaledb-api`), update the version property, then retry.
+The module depends on a sibling with a non-release version. Only beta
+(`X.Y.Z-beta.N`) and GA (`X.Y.Z`) versions are supported. Release the
+dependency first (usually `hyperscaledb-api`), update the version property, then retry.
 
 ### Pipeline didn't trigger
 

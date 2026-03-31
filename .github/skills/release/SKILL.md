@@ -2,7 +2,7 @@
 name: release
 description: >
   Manages releases for hyperscaledb-sdk-for-java modules. Validates release
-  readiness (POM versions, changelog entries, SNAPSHOT dependencies, tag
+  readiness (POM versions, changelog entries, sibling dependency versions, tag
   uniqueness), updates changelogs, creates and pushes per-module version tags
   that trigger the automated release pipeline. Use when releasing modules,
   preparing a release, validating release readiness, creating release tags,
@@ -145,5 +145,5 @@ POM properties must be updated and committed to `main` before releasing provider
 ## Troubleshooting
 
 Read `<THIS_SKILL_DIRECTORY>/references/release-process.md` for detailed
-troubleshooting guidance covering version mismatches, SNAPSHOT dependencies,
+troubleshooting guidance covering version mismatches, dependency versions,
 pipeline trigger failures, and approval issues.

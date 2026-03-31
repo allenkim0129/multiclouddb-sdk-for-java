@@ -91,7 +91,7 @@ The `release.yml` workflow is triggered by pushing a matching tag. It:
 1. Parses module name + version from the tag
 2. Runs conditional test gates per module
 3. Verifies POM version matches tag
-4. Verifies no SNAPSHOT sibling dependencies
+4. Verifies sibling dependency versions are valid releases
 5. Builds reactor, deploys only the target module
 6. Creates GitHub Release with JARs
 
@@ -102,8 +102,9 @@ The `production` environment has a manual approval gate.
 ### "Version mismatch" error
 Update the version property in root `pom.xml`, merge to `main`, delete old tag, re-tag.
 
-### "SNAPSHOT dependencies" error
+### "Invalid sibling dependency version" error
 Release the dependency first (usually `hyperscaledb-api`), update version property, retry.
+Only beta (`X.Y.Z-beta.N`) and GA (`X.Y.Z`) versions are valid for release.
 
 ### Pipeline didn't trigger
 - Verify tag matches `hyperscaledb-*-v<semver>` or `hyperscaledb-*-v<semver>-beta.<N>`

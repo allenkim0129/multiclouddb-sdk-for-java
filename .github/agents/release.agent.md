@@ -67,9 +67,6 @@ If any check fails, stop and help the user fix the issue. Common fixes:
 
 - **POM version mismatch**: Update the version property in root `pom.xml`
 - **Empty changelog**: Add entries under `[Unreleased]` in `<module>/CHANGELOG.md`
-- **SNAPSHOT deps**: A SNAPSHOT version (e.g., `1.0.0-SNAPSHOT`) indicates an
-  unreleased in-development dependency. Release the dependency module first, then
-  update the version property in the root `pom.xml` to point to the released version.
 - **Not on main**: Run `git checkout main && git pull origin main`
 - **Tag exists**: Instruct the user to manually delete the tag — do NOT delete
   tags yourself. The user should verify no release was already published for that

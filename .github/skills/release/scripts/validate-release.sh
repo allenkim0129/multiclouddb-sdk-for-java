@@ -82,21 +82,23 @@ else
     fail "Changelog not found at $CHANGELOG"
 fi
 
-# ── Check 5: No SNAPSHOT sibling dependencies ────────────────────────────────
+# ── Check 5: Sibling dependency versions are valid releases ──────────────────
 if [[ -f "$POM" ]]; then
-    SNAPSHOT_DEPS=""
+    INVALID_DEPS=""
     for DEP in $VALID_MODULES; do
         if [[ "$DEP" == "$MODULE" ]]; then continue; fi
         DEP_PROP="${DEP}.version"
         DEP_VER=$(sed -n "s/.*<${DEP_PROP}>\([^<]*\)<.*/\1/p" "$POM" 2>/dev/null | head -1)
-        if [[ "$DEP_VER" == *"SNAPSHOT"* ]]; then
-            SNAPSHOT_DEPS="$SNAPSHOT_DEPS $DEP=$DEP_VER"
+        if [[ -z "$DEP_VER" ]]; then continue; fi
+        # Verify sibling version is a valid release (semver or semver-beta.N)
+        if ! [[ "$DEP_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
+            INVALID_DEPS="$INVALID_DEPS $DEP=$DEP_VER"
         fi
     done
-    if [[ -z "$SNAPSHOT_DEPS" ]]; then
-        pass "No SNAPSHOT sibling dependencies"
+    if [[ -z "$INVALID_DEPS" ]]; then
+        pass "All sibling dependency versions are valid releases"
     else
-        fail "SNAPSHOT sibling dependencies found:$SNAPSHOT_DEPS. Release those modules first."
+        fail "Sibling modules have non-release versions:$INVALID_DEPS. Only beta (X.Y.Z-beta.N) and GA (X.Y.Z) versions are supported."
     fi
 fi
 

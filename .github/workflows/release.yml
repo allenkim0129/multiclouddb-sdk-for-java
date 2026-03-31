@@ -298,19 +298,20 @@ jobs:
           fi
           echo "Version verified: $MODULE = $EXPECTED"
 
-      - name: Verify no SNAPSHOT dependencies
+      - name: Verify sibling dependencies are released versions
         run: |
           MODULE="${{ needs.parse-tag.outputs.module }}"
-          SNAPSHOTS=$(mvn dependency:list -pl "$MODULE" -DincludeScope=compile -q -DoutputFile=/dev/stdout 2>/dev/null \
-            | grep "com.hyperscaledb" | grep "SNAPSHOT" || true)
+          # Check for any non-release versions (SNAPSHOT or other non-semver) in sibling deps
+          INVALID=$(mvn dependency:list -pl "$MODULE" -DincludeScope=compile -q -DoutputFile=/dev/stdout 2>/dev/null \
+            | grep "com.hyperscaledb" | grep -v -E ':[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?:' || true)
 
-          if [ -n "$SNAPSHOTS" ]; then
-            echo "::error::Module $MODULE has SNAPSHOT dependencies on internal modules:"
-            echo "$SNAPSHOTS"
-            echo "Release the dependency modules first, then update their version properties."
+          if [ -n "$INVALID" ]; then
+            echo "::error::Module $MODULE has non-release dependencies on internal modules:"
+            echo "$INVALID"
+            echo "Only beta (X.Y.Z-beta.N) and GA (X.Y.Z) versions are supported. Release the dependency modules first."
             exit 1
           fi
-          echo "No SNAPSHOT dependencies on internal modules"
+          echo "All sibling dependencies are valid release versions"
 
       - name: Build reactor and deploy target module
         run: |
