@@ -75,7 +75,7 @@ jobs:
         with:
           name: unit-test-reports
           path: '**/surefire-reports/**'
-          retention-days: 7
+          retention-days: 30
 
   # ──────────────────────────────────────────────────────────
   #  Gate 2 — Cosmos DB emulator (only for api and provider-cosmos)
@@ -194,7 +194,7 @@ jobs:
         with:
           name: cosmos-test-reports
           path: '**/surefire-reports/**'
-          retention-days: 7
+          retention-days: 30
 
   # ──────────────────────────────────────────────────────────
   #  Gate 3 — DynamoDB Local (only for api and provider-dynamo)
@@ -258,7 +258,7 @@ jobs:
         with:
           name: dynamo-test-reports
           path: '**/surefire-reports/**'
-          retention-days: 7
+          retention-days: 30
 
   # ──────────────────────────────────────────────────────────
   #  Publish — runs after all applicable gates pass

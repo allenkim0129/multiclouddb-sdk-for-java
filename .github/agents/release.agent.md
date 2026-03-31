@@ -22,7 +22,7 @@ release individual modules by walking them through a structured, safe workflow.
 The repository uses **independent module versioning** — each of the four
 publishable modules has its own version and release cadence. Releases are
 triggered by pushing per-module version tags that match the pattern
-`hyperscaledb-<module>-v<version>`.
+`<module>-v<version>` (e.g., `hyperscaledb-api-v0.1.0-beta.1`).
 
 ## Publishable Modules
 
@@ -67,11 +67,19 @@ If any check fails, stop and help the user fix the issue. Common fixes:
 
 - **POM version mismatch**: Update the version property in root `pom.xml`
 - **Empty changelog**: Add entries under `[Unreleased]` in `<module>/CHANGELOG.md`
-- **SNAPSHOT deps**: Release the dependency module first
+- **SNAPSHOT deps**: A SNAPSHOT version (e.g., `1.0.0-SNAPSHOT`) indicates an
+  unreleased in-development dependency. Release the dependency module first, then
+  update the version property in the root `pom.xml` to point to the released version.
 - **Not on main**: Run `git checkout main && git pull origin main`
-- **Tag exists**: Delete it with `git tag -d <tag> && git push origin :refs/tags/<tag>`
+- **Tag exists**: Instruct the user to manually delete the tag — do NOT delete
+  tags yourself. The user should verify no release was already published for that
+  tag before deleting: `git tag -d <tag> && git push origin :refs/tags/<tag>`
 
 ### Step 3: Update Changelog
+
+Changelogs follow the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+format. The changelog is NOT bundled in the shipped JAR artifacts, so it is safe
+to update it before tagging.
 
 For each module, update the changelog:
 

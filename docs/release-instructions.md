@@ -30,6 +30,24 @@ Providers depend on a released version of `hyperscaledb-api`. If you change the
 API, release it first, update the `hyperscaledb-api.version` property in the
 root `pom.xml`, then release the providers.
 
+### Development Cycle
+
+During development, all modules live in a single Maven reactor and resolve
+inter-module dependencies from **source** (reactor build). This means:
+
+- Changes to `hyperscaledb-api` are immediately visible to all providers in the
+  same build — no need for a published artifact during development.
+- Version properties in the root `pom.xml` (e.g., `hyperscaledb-api.version`)
+  always reflect the **next release version**, not a SNAPSHOT. The reactor
+  resolves these from the local build.
+- When a PR changes both `hyperscaledb-api` and a provider, the CI reactor build
+  validates them together.
+
+At **release time**, the dependency ordering matters: if `hyperscaledb-api`
+changed, it must be released (tagged) first so the provider release pipeline can
+resolve the published artifact. Providers that don't need the new API version can
+be released independently.
+
 ## Release Process
 
 ```
