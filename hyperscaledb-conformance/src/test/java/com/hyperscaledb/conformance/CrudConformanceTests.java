@@ -54,11 +54,11 @@ public abstract class CrudConformanceTests {
         client.upsert(getAddress(), key,
                 Map.of("title", "Conformance Test Item", "value", 42, "active", true));
 
-        Map<String, Object> result = client.read(getAddress(), key);
+        DocumentResult result = client.read(getAddress(), key);
         assertNotNull(result, "Document should be returned after upsert");
-        assertEquals("Conformance Test Item", str(result, "title"));
-        assertEquals(42, num(result, "value"));
-        assertTrue(bool(result, "active"));
+        assertEquals("Conformance Test Item", result.document().get("title").asText());
+        assertEquals(42, result.document().get("value").asInt());
+        assertTrue(result.document().get("active").asBoolean());
     }
 
     @Test @Order(2)
@@ -68,10 +68,10 @@ public abstract class CrudConformanceTests {
         client.upsert(getAddress(), key, Map.of("version", 1));
         client.upsert(getAddress(), key, Map.of("version", 2, "extra", "field"));
 
-        Map<String, Object> result = client.read(getAddress(), key);
+        DocumentResult result = client.read(getAddress(), key);
         assertNotNull(result);
-        assertEquals(2, num(result, "version"));
-        assertTrue(result.containsKey("extra"));
+        assertEquals(2, result.document().get("version").asInt());
+        assertTrue(result.document().has("extra"));
         client.delete(getAddress(), key);
     }
 

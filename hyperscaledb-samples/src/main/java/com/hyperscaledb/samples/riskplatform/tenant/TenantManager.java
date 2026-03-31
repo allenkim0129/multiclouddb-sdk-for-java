@@ -3,6 +3,7 @@
 
 package com.hyperscaledb.samples.riskplatform.tenant;
 
+import com.hyperscaledb.api.DocumentResult;
 import com.hyperscaledb.api.HyperscaleDbClient;
 import com.hyperscaledb.api.HyperscaleDbKey;
 import com.hyperscaledb.api.QueryPage;
@@ -95,8 +96,8 @@ public class TenantManager {
     public JsonNode getTenant(String tenantId) {
         ResourceAddress addr = new ResourceAddress(ADMIN_DB, TENANTS_COLLECTION);
         HyperscaleDbKey key = HyperscaleDbKey.of(tenantId, tenantId);
-        Map<String, Object> result = client.read(addr, key);
-        return result != null ? MAPPER.valueToTree(result) : null;
+        DocumentResult result = client.read(addr, key);
+        return result != null ? result.document() : null;
     }
 
     // ── Per-tenant resource addressing ──────────────────────────────────────
@@ -140,8 +141,8 @@ public class TenantManager {
      * Read a document from a tenant-scoped collection.
      */
     public JsonNode read(String tenantId, String collection, HyperscaleDbKey key) {
-        Map<String, Object> result = client.read(addressFor(tenantId, collection), key);
-        return result != null ? MAPPER.valueToTree(result) : null;
+        DocumentResult result = client.read(addressFor(tenantId, collection), key);
+        return result != null ? result.document() : null;
     }
 
     /**

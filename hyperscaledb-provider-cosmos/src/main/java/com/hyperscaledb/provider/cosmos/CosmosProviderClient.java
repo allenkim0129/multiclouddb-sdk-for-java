@@ -18,6 +18,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.URI;
+import java.time.Instant;
 import java.util.*;
 
 /**
@@ -125,6 +127,9 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             ObjectNode doc = toObjectNode(document);
             doc.put(CosmosConstants.FIELD_ID, key.sortKey() != null ? key.sortKey() : key.partitionKey());
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
+            if (options != null && options.ttlSeconds() != null) {
+                doc.put(CosmosConstants.FIELD_TTL, options.ttlSeconds());
+            }
             PartitionKey pk = resolvePartitionKey(key);
             CosmosItemResponse<ObjectNode> response = container.createItem(doc, pk, new CosmosItemRequestOptions());
             logItemDiagnostics(OperationNames.CREATE, address, response);
@@ -149,14 +154,36 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
      * @throws com.hyperscaledb.api.HyperscaleDbException for any non-404 Cosmos error
      */
     @Override
-    public Map<String, Object> read(ResourceAddress address, HyperscaleDbKey key, OperationOptions options) {
+    public DocumentResult read(ResourceAddress address, HyperscaleDbKey key, OperationOptions options) {
         try {
             CosmosContainer container = getContainer(address);
             PartitionKey pk = resolvePartitionKey(key);
             String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
-            CosmosItemResponse<JsonNode> response = container.readItem(cosmosId, pk, JsonNode.class);
+            CosmosItemResponse<ObjectNode> response = container.readItem(cosmosId, pk, ObjectNode.class);
             logItemDiagnostics(OperationNames.READ, address, response);
-            return toMap(response.getItem());
+            ObjectNode raw = response.getItem();
+            if (raw == null) return null;
+
+            // Strip Cosmos system properties so the returned document is portable
+            // across providers (Cosmos-only fields like _rid, _self, _ts, etc. must
+            // not appear in a DocumentResult that callers compare across providers).
+            ObjectNode item = raw.deepCopy();
+            CosmosConstants.SYSTEM_FIELDS.forEach(item::remove);
+
+            DocumentMetadata metadata = null;
+            if (options != null && options.includeMetadata()) {
+                DocumentMetadata.Builder metaBuilder = DocumentMetadata.builder();
+                if (response.getETag() != null) {
+                    metaBuilder.version(response.getETag());
+                }
+                // _ts is a Unix epoch second — expose as lastModified
+                JsonNode tsNode = raw.get(CosmosConstants.SYS_TIMESTAMP);
+                if (tsNode != null && tsNode.isNumber()) {
+                    metaBuilder.lastModified(Instant.ofEpochSecond(tsNode.longValue()));
+                }
+                metadata = metaBuilder.build();
+            }
+            return new DocumentResult(item, metadata);
         } catch (CosmosException e) {
             if (e.getStatusCode() == 404) {
                 return null;
@@ -189,6 +216,9 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
             doc.put(CosmosConstants.FIELD_ID, cosmosId);
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
+            if (options != null && options.ttlSeconds() != null) {
+                doc.put(CosmosConstants.FIELD_TTL, options.ttlSeconds());
+            }
             PartitionKey pk = resolvePartitionKey(key);
             CosmosItemResponse<ObjectNode> response = container.replaceItem(doc, cosmosId, pk, new CosmosItemRequestOptions());
             logItemDiagnostics(OperationNames.UPDATE, address, response);
@@ -218,6 +248,9 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             ObjectNode doc = toObjectNode(document);
             doc.put(CosmosConstants.FIELD_ID, key.sortKey() != null ? key.sortKey() : key.partitionKey());
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
+            if (options != null && options.ttlSeconds() != null) {
+                doc.put(CosmosConstants.FIELD_TTL, options.ttlSeconds());
+            }
             PartitionKey pk = resolvePartitionKey(key);
             CosmosItemResponse<ObjectNode> response = container.upsertItem(doc, pk, new CosmosItemRequestOptions());
             logItemDiagnostics(OperationNames.UPSERT, address, response);
@@ -300,6 +333,11 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
             String expression = query.nativeExpression() != null ? query.nativeExpression() : query.expression();
             if (expression == null || expression.isBlank()) {
                 expression = CosmosConstants.QUERY_SELECT_ALL;
+            }
+
+            // Apply TOP N and ORDER BY for non-native expressions
+            if (query.nativeExpression() == null) {
+                expression = applyResultSetControl(expression, query);
             }
 
             List<SqlParameter> sqlParams = new ArrayList<>();
@@ -387,7 +425,8 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
                 sqlParams.add(new SqlParameter(entry.getKey(), entry.getValue()));
             }
 
-            SqlQuerySpec sqlQuery = new SqlQuerySpec(translated.queryString(), sqlParams);
+            String sql = applyResultSetControl(translated.queryString(), query);
+            SqlQuerySpec sqlQuery = new SqlQuerySpec(sql, sqlParams);
             int pageSize = query.maxPageSize() != null ? query.maxPageSize() : CosmosConstants.PAGE_SIZE_DEFAULT;
             List<Map<String, Object>> items = new ArrayList<>();
             String continuationToken = null;
@@ -516,6 +555,65 @@ public class CosmosProviderClient implements HyperscaleDbProviderClient {
         return new PartitionKey(key.partitionKey());
     }
 
+    /**
+     * Applies TOP N (limit) and ORDER BY from the query request to a Cosmos SQL string.
+     * <p>
+     * For TOP N: rewrites {@code SELECT} to {@code SELECT TOP N} when limit is set.
+     * For ORDER BY: appends {@code ORDER BY c.field ASC/DESC} clause.
+     */
+    private String applyResultSetControl(String sql, QueryRequest query) {
+        String result = sql;
+
+        // Apply TOP N — rewrite SELECT to SELECT TOP N using a boolean flag to
+        // track success, avoiding false positives from field names that contain
+        // the substring "TOP" (e.g. "topic", "topology", "stopper").
+        if (query.limit() != null) {
+            boolean topApplied = false;
+
+            // Pattern 1: "SELECT VALUE c ..." — Cosmos scalar projection
+            String r1 = result.replaceFirst("(?i)^SELECT\\s+VALUE\\s+c\\b",
+                    "SELECT TOP " + query.limit() + " VALUE c");
+            if (!r1.equals(result)) {
+                result = r1;
+                topApplied = true;
+            }
+
+            // Pattern 2: "SELECT * ..." — full document projection
+            if (!topApplied) {
+                String r2 = result.replaceFirst("(?i)^SELECT\\s+\\*",
+                        "SELECT TOP " + query.limit() + " *");
+                if (!r2.equals(result)) {
+                    result = r2;
+                    topApplied = true;
+                }
+            }
+
+            // Pattern 3: any other SELECT (custom projections, aliases, etc.)
+            if (!topApplied) {
+                result = result.replaceFirst("(?i)^SELECT\\b",
+                        "SELECT TOP " + query.limit());
+            }
+        }
+
+        // Apply ORDER BY
+        if (query.orderBy() != null && !query.orderBy().isEmpty()) {
+            StringBuilder orderClause = new StringBuilder(" ORDER BY ");
+            for (int i = 0; i < query.orderBy().size(); i++) {
+                SortOrder so = query.orderBy().get(i);
+                if (i > 0) orderClause.append(", ");
+                orderClause.append("c.").append(so.field()).append(" ").append(so.direction().name());
+            }
+            result = result + orderClause;
+        }
+
+        return result;
+    }
+
+    /**
+     * Logs per-operation diagnostics from a {@link CosmosItemResponse} at DEBUG
+     * level: activity ID (request correlation), request charge (RU cost), and
+     * HTTP status code.
+     */
     private void logItemDiagnostics(String operation, ResourceAddress address,
             CosmosItemResponse<?> response) {
         CosmosDiagnosticsLogger.logItem(operation, address, response);

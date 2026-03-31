@@ -31,7 +31,7 @@ public abstract class CapabilitiesConformanceTest {
     void allKnownCapabilityNamesPresent() throws Exception {
         try (HyperscaleDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            // All 13 well-known capability names must be declared
+            // All 16 well-known capability names must be declared
             String[] knownNames = {
                     Capability.CONTINUATION_TOKEN_PAGING,
                     Capability.CROSS_PARTITION_QUERY,
@@ -45,7 +45,10 @@ public abstract class CapabilitiesConformanceTest {
                     Capability.ORDER_BY,
                     Capability.ENDS_WITH,
                     Capability.REGEX_MATCH,
-                    Capability.CASE_FUNCTIONS
+                    Capability.CASE_FUNCTIONS,
+                    Capability.RESULT_LIMIT,
+                    Capability.ROW_LEVEL_TTL,
+                    Capability.WRITE_TIMESTAMP
             };
             for (String name : knownNames) {
                 assertNotNull(caps.get(name),
@@ -55,11 +58,11 @@ public abstract class CapabilitiesConformanceTest {
     }
 
     @Test
-    void capabilityCountIs13() throws Exception {
+    void capabilityCountIs16() throws Exception {
         try (HyperscaleDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            assertEquals(13, caps.all().size(),
-                    "Provider " + provider().id() + " should declare exactly 13 capabilities");
+            assertEquals(16, caps.all().size(),
+                    "Provider " + provider().id() + " should declare exactly 16 capabilities");
         }
     }
 

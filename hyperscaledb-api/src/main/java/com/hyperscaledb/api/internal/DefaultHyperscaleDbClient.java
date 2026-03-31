@@ -5,6 +5,7 @@ package com.hyperscaledb.api.internal;
 
 import com.hyperscaledb.api.Capability;
 import com.hyperscaledb.api.CapabilitySet;
+import com.hyperscaledb.api.DocumentResult;
 import com.hyperscaledb.api.HyperscaleDbClient;
 import com.hyperscaledb.api.HyperscaleDbClientConfig;
 import com.hyperscaledb.api.HyperscaleDbError;
@@ -12,6 +13,7 @@ import com.hyperscaledb.api.HyperscaleDbErrorCategory;
 import com.hyperscaledb.api.HyperscaleDbException;
 import com.hyperscaledb.api.HyperscaleDbKey;
 import com.hyperscaledb.api.OperationDiagnostics;
+import com.hyperscaledb.api.OperationNames;
 import com.hyperscaledb.api.OperationOptions;
 import com.hyperscaledb.api.ProviderId;
 import com.hyperscaledb.api.QueryPage;
@@ -66,6 +68,7 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
     public void create(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options) {
         Instant start = Instant.now();
         try {
+            DocumentSizeValidator.validate(document, OperationNames.CREATE);
             providerClient.create(address, key, document, options);
             LOG.debug("create completed: address={}, key={}, duration={}ms",
                     address, key, Duration.between(start, Instant.now()).toMillis());
@@ -77,10 +80,10 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
     }
 
     @Override
-    public Map<String, Object> read(ResourceAddress address, HyperscaleDbKey key, OperationOptions options) {
+    public DocumentResult read(ResourceAddress address, HyperscaleDbKey key, OperationOptions options) {
         Instant start = Instant.now();
         try {
-            Map<String, Object> result = providerClient.read(address, key, options);
+            DocumentResult result = providerClient.read(address, key, options);
             LOG.debug("read completed: address={}, key={}, found={}, duration={}ms",
                     address, key, result != null, Duration.between(start, Instant.now()).toMillis());
             return result;
@@ -95,6 +98,7 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
     public void update(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options) {
         Instant start = Instant.now();
         try {
+            DocumentSizeValidator.validate(document, OperationNames.UPDATE);
             providerClient.update(address, key, document, options);
             LOG.debug("update completed: address={}, key={}, duration={}ms",
                     address, key, Duration.between(start, Instant.now()).toMillis());
@@ -109,6 +113,7 @@ public final class DefaultHyperscaleDbClient implements HyperscaleDbClient {
     public void upsert(ResourceAddress address, HyperscaleDbKey key, Map<String, Object> document, OperationOptions options) {
         Instant start = Instant.now();
         try {
+            DocumentSizeValidator.validate(document, OperationNames.UPSERT);
             providerClient.upsert(address, key, document, options);
             LOG.debug("upsert completed: address={}, key={}, duration={}ms",
                     address, key, Duration.between(start, Instant.now()).toMillis());

@@ -30,5 +30,14 @@ public final class SpannerCapabilities {
             Capability.ORDER_BY_CAP.withNotes("ORDER BY supported in GoogleSQL queries"),
             Capability.ENDS_WITH_CAP.withNotes("ENDS_WITH function available in GoogleSQL"),
             Capability.REGEX_MATCH_CAP.withNotes("REGEXP_CONTAINS available in GoogleSQL"),
-            Capability.CASE_FUNCTIONS_CAP.withNotes("UPPER/LOWER functions available in GoogleSQL")));
+            Capability.CASE_FUNCTIONS_CAP.withNotes("UPPER/LOWER functions available in GoogleSQL"),
+            Capability.of(Capability.RESULT_LIMIT, true,
+                    "Per-page LIMIT N supported in GoogleSQL queries; "
+                    + "cap is per-page only, not a hard total across pagination"),
+            Capability.of(Capability.ROW_LEVEL_TTL, false,
+                    "Spanner TTL requires ROW_DELETION_POLICY DDL on the table schema; "
+                    + "not implementable as a runtime write — SDK does not manage schema"),
+            Capability.of(Capability.WRITE_TIMESTAMP, false,
+                    "Full commit-timestamp metadata requires allow_commit_timestamp=true DDL; "
+                    + "deferred — current impl returns empty metadata shell")));
 }

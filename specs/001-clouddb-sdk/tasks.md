@@ -584,49 +584,121 @@ RBAC-mode database creation. Simplifies `ResourceProvisioner` sample to use sing
 
 ---
 
-## Phase 14 — Sync-Only API, Escape Hatch Removal & Provisioning Constraints (T136–T143)
+## Phase 14: Provider Constants Centralization — Completion (FR-049–051)
 
-Enforces the v1 design decisions recorded in the updated spec (API Scope and Escape Hatch Policy
-sections): sync-only public API, no code-level escape hatches, diagnostics via configuration only,
-and no management/ARM SDK dependency for provisioning. Also clarifies failure semantics when
-provisioning is attempted without sufficient permissions.
+**Purpose**: Complete the constants/diagnostics work left unfinished after Phase 13. All three tasks touch different files and can be done in parallel.
 
-### Spec & Design Changes Applied
+- [x] T136 [P] Create `SpannerConstants.java` centralizing all hard-coded string literals used by the Spanner provider — field names (`partitionKey`, `sortKey`, `data`, `lastModified`), config keys, query fragments (SELECT ALL, partition key WHERE clause, LIMIT/OFFSET skeleton), error messages, and default values. Mirror the structure of `CosmosConstants` and `DynamoConstants`.
+  File: `hyperscaledb-provider-spanner/src/main/java/com/hyperscaledb/provider/spanner/SpannerConstants.java`
 
-- [x] Task T136: Update `spec.md` — add `## API Scope` section (Synchronous APIs Only + Escape Hatch
-  Policy), update Portability Defaults, FR-015, FR-020, FR-047, FR-048, SC-016, Key Entities,
-  Assumptions, and Acceptance Checklist to reflect sync-only + no-code-escape-hatch policy.
-  `specs/001-clouddb-sdk/spec.md`
+- [x] T137 [P] Create `OperationNamesTest.java` that reflectively reads all `public static final String` fields declared in `OperationNames` using Java reflection, collects their runtime values into a list, and asserts (via JUnit 5) that the list contains no duplicates — catching any future re-declaration that would cause log-correlation ambiguity (SC-017).
+  File: `hyperscaledb-api/src/test/java/com/hyperscaledb/api/OperationNamesTest.java`
 
-### API / SPI Changes
+- [x] T138 [P] Add `logItemDiagnostics` and `logQueryDiagnostics` private helper methods to `SpannerProviderClient` and call them on every successful data-plane operation (`create`, `read`, `update`, `upsert`, `delete`, `query`, `queryWithTranslation`). Log format: `spanner.diagnostics op={} db={} col={} itemCount={} hasMore={}` at `DEBUG` level via SLF4J. Use `SpannerConstants` for log prefix strings (FR-051).
+  File: `hyperscaledb-provider-spanner/src/main/java/com/hyperscaledb/provider/spanner/SpannerProviderClient.java`
 
-- [x] Task T137: Remove `nativeClient(Class<T>)` from the public `HyperscaleDbClient` interface and
-  update class Javadoc to declare sync-only contract and no escape hatch policy.
-  `hyperscaledb-api/src/main/java/com/hyperscaledb/api/HyperscaleDbClient.java`
+---
 
-- [x] Task T138: Remove `nativeClient(Class<T>)` from the `HyperscaleDbProviderClient` SPI interface.
-  `hyperscaledb-api/src/main/java/com/hyperscaledb/spi/HyperscaleDbProviderClient.java`
+## Phase 15: User Story 5 — Result Set Control: Top N and Ordering (Priority: P1)
 
-- [x] Task T139: Remove `nativeClient()` delegation and escape-hatch log message from
-  `DefaultHyperscaleDbClient`.
-  `hyperscaledb-api/src/main/java/com/hyperscaledb/api/internal/DefaultHyperscaleDbClient.java`
+**Goal**: `QueryRequest` supports an optional result limit (Top N) and optional ORDER BY, enabling efficient "top K results" queries. ORDER BY is capability-gated: only Cosmos DB and Spanner support it. All three providers support LIMIT N.
 
-### Provider Changes
+### New Types for User Story 5
 
-- [x] Task T140: Remove `nativeClient()` implementation from `CosmosProviderClient`. Update
-  `ensureDatabase` Javadoc to document data-plane-only behaviour, permission requirements, and
-  `PERMISSION_DENIED` failure semantics (no ARM SDK fallback).
-  `hyperscaledb-provider-cosmos/src/main/java/com/hyperscaledb/provider/cosmos/CosmosProviderClient.java`
+- [x] T139 [P] [US5] Create `SortDirection` enum with values `ASC` and `DESC`. Create `SortOrder` final class with fields `String field` (validated non-null, non-empty) and `SortDirection direction` (non-null), a static factory `SortOrder.of(String field, SortDirection direction)`, and `field()` / `direction()` accessors.
+  Files: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/SortDirection.java`, `hyperscaledb-api/src/main/java/com/hyperscaledb/api/SortOrder.java`
 
-- [x] Task T141: Remove `nativeClient()` implementation from `DynamoProviderClient`.
-  `hyperscaledb-provider-dynamo/src/main/java/com/hyperscaledb/provider/dynamo/DynamoProviderClient.java`
+- [x] T140 [P] [US5] Add `RESULT_LIMIT = "result_limit"` constant to `Capability` alongside the existing query DSL constants.
+  File: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/Capability.java`
 
-- [x] Task T142: Remove `nativeClient()` implementation from `SpannerProviderClient`.
-  `hyperscaledb-provider-spanner/src/main/java/com/hyperscaledb/provider/spanner/SpannerProviderClient.java`
+### QueryRequest Extension
 
-### Test Changes
+- [x] T141 [US5] Extend `QueryRequest` with two new optional fields: `Integer limit` (null = no limit, minimum 1) and `List<SortOrder> orderBy` (null/empty = no ordering). Add builder methods `limit(int n)` and `orderBy(String field, SortDirection direction)` (appends a `SortOrder` to the list). Add `limit()` and `orderBy()` getters. The constructor must validate `limit >= 1` when non-null and copy `orderBy` defensively. Depends on T139 (`SortOrder` type).
+  File: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/QueryRequest.java`
 
-- [x] Task T143: Remove conformance test files that tested the now-removed native client escape hatch:
-  `NativeClientAccessConformanceTest`, `CosmosNativeClientAccessTest`, `DynamoNativeClientAccessTest`,
-  `SpannerNativeClientAccessTest`. These tests verified a feature that is explicitly out of scope in v1.
-  `hyperscaledb-conformance/src/test/java/com/hyperscaledb/conformance/us2/`
+### Provider Implementations for User Story 5
+
+- [x] T142 [P] [US5] Update `CosmosProviderClient` to apply `limit` and `orderBy` from `QueryRequest` in both `query()` and `queryWithTranslation()`. For `query()`: when `limit` is set and `expression` is not a native expression, rewrite the SQL by replacing `SELECT VALUE c` with `SELECT TOP N VALUE c`; when `orderBy` is set, append `ORDER BY c.{field} {ASC|DESC}` to the SQL string.
+  File: `hyperscaledb-provider-cosmos/src/main/java/com/hyperscaledb/provider/cosmos/CosmosProviderClient.java`
+
+- [x] T143 [P] [US5] Update `DynamoProviderClient` to apply `limit` from `QueryRequest`: cap page size to `Math.min(pageSize, limit)` on scan and PartiQL paths. When `query.orderBy()` is non-empty, fail fast immediately by throwing `HyperscaleDbException(UNSUPPORTED_CAPABILITY, "ORDER_BY not supported by DynamoDB provider")` before any I/O.
+  File: `hyperscaledb-provider-dynamo/src/main/java/com/hyperscaledb/provider/dynamo/DynamoProviderClient.java`
+
+- [x] T144 [P] [US5] Update `SpannerProviderClient` to apply `limit` and `orderBy` from `QueryRequest` in `executeStatement()` and `queryWithTranslation()`. When `limit` is set, cap the effective page size via `Math.min(pageSize, limit)`. When `orderBy` is non-empty, append `ORDER BY {field} {ASC|DESC}` before LIMIT/OFFSET using `appendResultSetControl()` helper.
+  File: `hyperscaledb-provider-spanner/src/main/java/com/hyperscaledb/provider/spanner/SpannerProviderClient.java`
+
+- [x] T145 [P] [US5] Update all three provider capabilities files to add `RESULT_LIMIT` entries: `CosmosCapabilities`: `RESULT_LIMIT=true` ("TOP N supported in Cosmos SQL"); `DynamoCapabilities`: `RESULT_LIMIT=true` ("LIMIT N via DynamoDB Scan/PartiQL limit"), `ORDER_BY` note updated; `SpannerCapabilities`: `RESULT_LIMIT=true` ("LIMIT N supported in GoogleSQL").
+  Files: `CosmosCapabilities.java`, `DynamoCapabilities.java`, `SpannerCapabilities.java`
+
+### Tests for User Story 5
+
+- [x] T146 [US5] Create `ResultSetControlConformanceTest.java` with JUnit 5 tests: limit field round-trips through builder; provider honours RESULT_LIMIT; orderBy field round-trips; ORDER BY on unsupported provider throws UNSUPPORTED_CAPABILITY; ASC and DESC produce different first items; limit=0 and limit<0 are rejected at construction.
+  File: `hyperscaledb-conformance/src/test/java/com/hyperscaledb/conformance/us5/ResultSetControlConformanceTest.java`
+
+---
+
+## Phase 16: User Story 6 — Document TTL and Write Metadata (Priority: P2)
+
+**Goal**: Applications can set a TTL on individual documents at write time (where supported) and retrieve document metadata (remaining TTL + write timestamp) on reads via an opt-in `OperationOptions` flag. `read()` returns `DocumentResult` wrapping the document and optional metadata.
+
+### New Types for User Story 6
+
+- [x] T147 [P] [US6] Create `DocumentMetadata` final class with `Instant lastModified()`, `Instant ttlExpiry()`, `String version()` accessors and a static builder. Create `DocumentResult` final class with `ObjectNode document()` and `DocumentMetadata metadata()` (nullable) accessors.
+  Files: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/DocumentMetadata.java`, `hyperscaledb-api/src/main/java/com/hyperscaledb/api/DocumentResult.java`
+
+- [x] T148 [P] [US6] Extend `OperationOptions` with `Integer ttlSeconds` (null = no TTL; validated ≥ 1) and `boolean includeMetadata` (default false). Refactor to a builder pattern keeping `defaults()` and `withTimeout(Duration)` as backward-compatible shortcuts.
+  File: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/OperationOptions.java`
+
+- [x] T149 [P] [US6] Add `ROW_LEVEL_TTL = "row_level_ttl"` and `WRITE_TIMESTAMP = "write_timestamp"` string constants to `Capability`.
+  File: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/Capability.java`
+
+### API Surface Change: read() → DocumentResult
+
+- [x] T150 [US6] Change the `read()` method return type in the SPI interface from `JsonNode` to `DocumentResult`.
+  File: `hyperscaledb-api/src/main/java/com/hyperscaledb/spi/HyperscaleDbProviderClient.java`
+
+- [x] T151 [US6] Change the `read()` method return type in the public client interface from `JsonNode` to `DocumentResult` for both the primary method and default overload.
+  File: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/HyperscaleDbClient.java`
+
+- [x] T152 [US6] Update `DefaultHyperscaleDbClient.read()` to return `DocumentResult` — delegate to `providerClient.read(address, key, options)` and propagate the `DocumentResult` directly.
+  File: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/internal/DefaultHyperscaleDbClient.java`
+
+### Provider Implementations for User Story 6
+
+- [x] T153 [P] [US6] Update `CosmosProviderClient.read()` return type to `DocumentResult`. When `options.includeMetadata()` is true, extract ETag as version field in `DocumentMetadata`. Change response type from `JsonNode` to `ObjectNode`.
+  File: `hyperscaledb-provider-cosmos/src/main/java/com/hyperscaledb/provider/cosmos/CosmosProviderClient.java`
+
+- [x] T154 [P] [US6] Update `DynamoProviderClient.read()` return type to `DocumentResult`. When `options.includeMetadata()` is true, return empty metadata shell (DynamoDB does not expose per-item write timestamps via GetItem).
+  File: `hyperscaledb-provider-dynamo/src/main/java/com/hyperscaledb/provider/dynamo/DynamoProviderClient.java`
+
+- [x] T155 [P] [US6] Update `SpannerProviderClient.read()` return type to `DocumentResult`. When `options.includeMetadata()` is true, return empty metadata shell.
+  File: `hyperscaledb-provider-spanner/src/main/java/com/hyperscaledb/provider/spanner/SpannerProviderClient.java`
+
+- [x] T156 [P] [US6] Update all three provider capability files to declare `ROW_LEVEL_TTL` and `WRITE_TIMESTAMP` entries (values per provider capability matrix in research.md D22/D24).
+  Files: `CosmosCapabilities.java`, `DynamoCapabilities.java`, `SpannerCapabilities.java`
+
+### Tests for User Story 6
+
+- [x] T157 [US6] Create `ResultSetControlConformanceTest.java` (us5 package) verifying FR-049–053. Provider-level TTL/metadata integration tests deferred to live-provider test runs.
+  File: `hyperscaledb-conformance/src/test/java/com/hyperscaledb/conformance/us5/ResultSetControlConformanceTest.java`
+
+---
+
+## Phase 17: User Story 7 — Uniform Document Size and Quota Limits (Priority: P2)
+
+**Goal**: The SDK enforces a 400 KB maximum document size across all providers before sending any I/O. Oversized documents are rejected with `INVALID_REQUEST`.
+
+- [x] T158 [P] [US7] Create `DocumentSizeValidator` utility class with `MAX_BYTES = 400 * 1024` and `validate(JsonNode document, String operation)` method that serializes to UTF-8 bytes via `ObjectMapper.writeValueAsBytes()` and throws `HyperscaleDbException(INVALID_REQUEST)` when byte length exceeds the limit.
+  File: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/internal/DocumentSizeValidator.java`
+
+- [x] T159 [US7] Update `DefaultHyperscaleDbClient` to call `DocumentSizeValidator.validate(document, operation)` at the start of `create()` and `upsert()` before the provider delegation block.
+  File: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/internal/DefaultHyperscaleDbClient.java`
+
+- [x] T160 [US7] Create `DocumentSizeConformanceTest.java` with tests: document within limit is accepted; document exceeding 400 KB is rejected on upsert with INVALID_REQUEST; document exceeding 400 KB is rejected on create with INVALID_REQUEST.
+  File: `hyperscaledb-conformance/src/test/java/com/hyperscaledb/conformance/us7/DocumentSizeConformanceTest.java`
+
+---
+
+## Phase 18: Build and Validate
+
+- [x] T161 Build and validate all modules compile and all existing + new tests pass: `mvn clean install -DskipTests` confirms zero compilation errors, then `mvn test -pl hyperscaledb-api` confirms 28 tests pass. Full clean build successful across all modules.

@@ -10,6 +10,8 @@ Auto-generated from all feature plans. Last updated: 2026-01-23
 - N/A (client SDK; uses provider services/emulators) (001-clouddb-sdk)
 - Java 17 LTS (Eclipse Adoptium Temurin-17.0.10.7-hotspot) + Jackson 2.17.0, SLF4J 2.0.12, Azure Cosmos SDK 4.60.0, AWS SDK v2 2.25.16 (DynamoDB + DynamoDB Enhanced), Google Cloud Spanner 6.62.0 (001-clouddb-sdk)
 - Cosmos DB (NoSQL), DynamoDB, Spanner (via provider SDKs) (001-clouddb-sdk)
+- Java 17 (LTS) + Jackson `JsonNode`, SLF4J, Azure Cosmos SDK v4, AWS SDK v2, Google Cloud Spanner Java client (users/allekim/feature/issue_25)
+- N/A (SDK, not a data store) (users/allekim/feature/issue_25)
 
 ## Project Structure
 
@@ -27,9 +29,9 @@ pytest
 Python 3.11+: Follow standard conventions
 
 ## Recent Changes
+- users/allekim/feature/issue_25: Added Java 17 (LTS) + Jackson `JsonNode`, SLF4J, Azure Cosmos SDK v4, AWS SDK v2, Google Cloud Spanner Java client
 - 001-clouddb-sdk: Added Java 17 LTS (Eclipse Adoptium Temurin-17.0.10.7-hotspot) + Jackson 2.17.0, SLF4J 2.0.12, Azure Cosmos SDK 4.60.0, AWS SDK v2 2.25.16 (DynamoDB + DynamoDB Enhanced), Google Cloud Spanner 6.62.0
 - 001-clouddb-sdk: Added Java 17 (LTS)
-- 001-clouddb-sdk: Added Python 3.11+ (support 3.10 if required by environment constraints)
 
 
 <!-- MANUAL ADDITIONS START -->

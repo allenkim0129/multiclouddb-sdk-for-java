@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package com.hyperscaledb.api.internal;
 
 import com.hyperscaledb.api.*;
@@ -40,7 +43,7 @@ class DefaultHyperscaleDbClientProvisionSchemaTest {
     private static HyperscaleDbProviderClient providerThrowing(RuntimeException ex) {
         return new HyperscaleDbProviderClient() {
             @Override public void create(ResourceAddress a, HyperscaleDbKey k, Map<String, Object> d, OperationOptions o) {}
-            @Override public Map<String, Object> read(ResourceAddress a, HyperscaleDbKey k, OperationOptions o) { return null; }
+            @Override public DocumentResult read(ResourceAddress a, HyperscaleDbKey k, OperationOptions o) { return null; }
             @Override public void update(ResourceAddress a, HyperscaleDbKey k, Map<String, Object> d, OperationOptions o) {}
             @Override public void upsert(ResourceAddress a, HyperscaleDbKey k, Map<String, Object> d, OperationOptions o) {}
             @Override public void delete(ResourceAddress a, HyperscaleDbKey k, OperationOptions o) {}
@@ -56,7 +59,7 @@ class DefaultHyperscaleDbClientProvisionSchemaTest {
     private static HyperscaleDbProviderClient providerSucceeding() {
         return new HyperscaleDbProviderClient() {
             @Override public void create(ResourceAddress a, HyperscaleDbKey k, Map<String, Object> d, OperationOptions o) {}
-            @Override public Map<String, Object> read(ResourceAddress a, HyperscaleDbKey k, OperationOptions o) { return null; }
+            @Override public DocumentResult read(ResourceAddress a, HyperscaleDbKey k, OperationOptions o) { return null; }
             @Override public void update(ResourceAddress a, HyperscaleDbKey k, Map<String, Object> d, OperationOptions o) {}
             @Override public void upsert(ResourceAddress a, HyperscaleDbKey k, Map<String, Object> d, OperationOptions o) {}
             @Override public void delete(ResourceAddress a, HyperscaleDbKey k, OperationOptions o) {}

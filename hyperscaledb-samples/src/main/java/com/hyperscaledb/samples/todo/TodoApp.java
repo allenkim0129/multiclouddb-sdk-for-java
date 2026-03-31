@@ -5,6 +5,7 @@ package com.hyperscaledb.samples.todo;
 
 import com.hyperscaledb.api.Capability;
 import com.hyperscaledb.api.CapabilitySet;
+import com.hyperscaledb.api.DocumentResult;
 import com.hyperscaledb.api.HyperscaleDbClient;
 import com.hyperscaledb.api.HyperscaleDbClientConfig;
 import com.hyperscaledb.api.HyperscaleDbClientFactory;
@@ -80,24 +81,22 @@ public class TodoApp {
 
     public JsonNode getTodo(String id) {
         HyperscaleDbKey key = HyperscaleDbKey.of(id, id);
-        Map<String, Object> result = client.read(address, key);
-        return result != null ? MAPPER.valueToTree(result) : null;
+        DocumentResult result = client.read(address, key);
+        return result != null ? result.document() : null;
     }
 
     public JsonNode updateTodo(String id, JsonNode updates) {
         HyperscaleDbKey key = HyperscaleDbKey.of(id, id);
-        Map<String, Object> existing = client.read(address, key);
+        DocumentResult existing = client.read(address, key);
         if (existing == null) {
             return null;
         }
 
-        // Merge updates into existing map
-        Map<String, Object> updated = new java.util.LinkedHashMap<>(existing);
-        updates.fields().forEachRemaining(field ->
-                updated.put(field.getKey(), MAPPER.convertValue(field.getValue(), Object.class)));
+        ObjectNode updated = existing.document().deepCopy();
+        updates.fields().forEachRemaining(field -> updated.set(field.getKey(), field.getValue()));
         updated.put("updatedAt", Instant.now().toString());
-        client.upsert(address, key, updated);
-        return MAPPER.valueToTree(updated);
+        client.upsert(address, key, MAPPER.convertValue(updated, MAP_TYPE));
+        return updated;
     }
 
     public void deleteTodo(String id) {

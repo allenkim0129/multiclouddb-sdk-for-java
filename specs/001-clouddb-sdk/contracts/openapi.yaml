@@ -479,3 +479,122 @@ components:
           type: boolean
         notes:
           type: string
+
+# =============================================================================
+# Issue 25 API Delta: Result Set Control, TTL/Write Metadata, Document Size
+# =============================================================================
+
+    SortDirection:
+      type: string
+      enum: [ASC, DESC]
+      description: Sort direction for ORDER BY clauses (FR-050).
+
+    SortOrder:
+      type: object
+      required: [field, direction]
+      properties:
+        field:
+          type: string
+          minLength: 1
+          description: Name of the field to sort on.
+        direction:
+          $ref: '#/components/schemas/SortDirection'
+
+    QueryRequestExtended:
+      description: |
+        QueryRequest extended with result set control (issue 25).
+        New fields added to the existing QueryRequest: `limit` and `orderBy`.
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: |
+            Maximum number of items to return (Top N). Applied after filter and partition scope.
+            Null means no limit. Validated >= 1 at construction time (FR-049).
+        orderBy:
+          type: array
+          items:
+            $ref: '#/components/schemas/SortOrder'
+          description: |
+            Zero or more sort specifications. Empty means no ordering.
+            ORDER BY is capability-gated (Capability.ORDER_BY) — throws UNSUPPORTED_CAPABILITY on DynamoDB (FR-053).
+
+    DocumentMetadata:
+      type: object
+      description: |
+        Optional system-managed properties returned alongside a document when
+        OperationOptions.includeMetadata is true (FR-058).
+      properties:
+        lastModified:
+          type: string
+          format: date-time
+          nullable: true
+          description: Last write timestamp (Cosmos via _ts; Spanner via lastModified column; DynamoDB not available).
+        ttlExpiry:
+          type: string
+          format: date-time
+          nullable: true
+          description: TTL expiry timestamp (Cosmos via _ttl+_ts; DynamoDB via ttlExpiry attribute; Spanner not available).
+        version:
+          type: string
+          nullable: true
+          description: Provider-native version/ETag string (Cosmos ETag; others null).
+
+    DocumentResult:
+      type: object
+      required: [document]
+      description: |
+        Return type for read() operations as of issue 25 (FR-057).
+        Wraps document payload and optional metadata. Existing callers use .document() to get the payload.
+      properties:
+        document:
+          type: object
+          additionalProperties: true
+          description: The document payload (JSON object).
+        metadata:
+          $ref: '#/components/schemas/DocumentMetadata'
+          nullable: true
+          description: Present only when OperationOptions.includeMetadata is true.
+
+    OperationOptionsExtended:
+      description: |
+        OperationOptions extended with TTL and metadata retrieval (issue 25).
+        New fields added to the existing OperationOptions.
+      properties:
+        ttlSeconds:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: |
+            TTL in seconds for write operations (create, upsert). Capability-gated (ROW_LEVEL_TTL).
+            Throws UNSUPPORTED_CAPABILITY on Spanner (FR-054).
+        includeMetadata:
+          type: boolean
+          default: false
+          description: When true, read operations return DocumentMetadata alongside the document payload (FR-058).
+
+    DocumentSizeLimit:
+      type: object
+      description: Uniform document size limit enforced across all providers (FR-061).
+      properties:
+        maxDocumentSizeBytes:
+          type: integer
+          const: 409600
+          description: 400 KB = 400 × 1024 bytes. DynamoDB hard limit — lowest common denominator.
+
+  x-capability-additions-issue25:
+    ROW_LEVEL_TTL:
+      name: row_level_ttl
+      description: Provider supports per-document time-to-live expiry.
+      supported_by: [cosmos, dynamo]
+      unsupported_by: [spanner]
+    WRITE_TIMESTAMP:
+      name: write_timestamp
+      description: Provider exposes the last-write timestamp in document metadata.
+      supported_by: [cosmos, spanner]
+      unsupported_by: [dynamo]
+    RESULT_LIMIT:
+      name: result_limit
+      description: Provider supports Top N result capping in queries.
+      supported_by: [cosmos, dynamo, spanner]

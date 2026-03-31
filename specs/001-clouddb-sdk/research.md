@@ -260,3 +260,104 @@ This appendix is **non-normative**. It records Java SDK behaviors that impact th
 - Both providers can surface errors during iteration over paged results (reactive paging in Cosmos; paginators/iterables in AWS). Cancellation/timeout can occur mid-stream.
 
 **Normalization implication**: portable `query()` must be allowed to fail during page retrieval/iteration, not just at “query start”.
+
+---
+
+## Decision 16: SpannerConstants class
+
+- **Decision**: Add `SpannerConstants` to `hyperscaledb-provider-spanner` mirroring the structure of `CosmosConstants` and `DynamoConstants`.
+- **Rationale**: FR-049 requires all hard-coded string literals in each provider to be centralized in a provider-specific constants class. The Spanner provider was missing this class.
+- **Alternatives considered**: Inline constants (status quo) — violates FR-049.
+
+---
+
+## Decision 17: OperationNamesTest for duplicate prevention
+
+- **Decision**: Add `OperationNamesTest` in `hyperscaledb-api` that reflectively reads all `public static final String` fields in `OperationNames` and asserts no two fields share the same value.
+- **Rationale**: SC-017 requires that no provider adapter re-declares a shared operation name string. A test catches duplicates at CI time. Reflective field scan avoids manually maintaining the test list.
+- **Alternatives considered**: Code review only — not machine-enforceable.
+
+---
+
+## Decision 18: Spanner structured diagnostics
+
+- **Decision**: Add `logItemDiagnostics` and `logQueryDiagnostics` helpers to `SpannerProviderClient`, emitting `spanner.diagnostics op=... db=... col=... itemCount=... hasMore=...` at `DEBUG` level. Spanner does not expose a per-RPC request ID at the Java client level in the same form as Cosmos activityId or DynamoDB requestId, so the log line includes `op`, `db`, `col`, and query result metrics only.
+- **Rationale**: FR-051 requires DEBUG-level structured diagnostics on every successful data-plane operation. Spanner had only no-op provisioning debug logs.
+- **Alternatives considered**: Skip Spanner diagnostics — violates FR-051.
+
+---
+
+## Decision 19: Result limit (Top N) implementation per provider
+
+- **Decision**: Add `Integer limit` and `List<SortOrder> orderBy` to `QueryRequest.Builder`.
+  - **Cosmos DB**: Render `SELECT TOP N VALUE c ...` when limit is set; append `ORDER BY c.{field} ASC/DESC` to the generated SQL.
+  - **DynamoDB**: Cap page size to `Math.min(pageSize, limit)` on scan and PartiQL paths. ORDER BY capability is absent (DynamoDB PartiQL has no ORDER BY).
+  - **Spanner**: Append `ORDER BY {field} ASC/DESC` and cap limit via `Math.min(pageSize, limit)` in generated GoogleSQL.
+- **Rationale**: All three providers support LIMIT natively. ORDER BY is a documented capability-gated feature on Cosmos and Spanner only (absent on DynamoDB). Keeping limit and orderBy in `QueryRequest` is consistent with the existing builder pattern.
+- **Alternatives considered**:
+  - Client-side limit: wasteful at scale, violates spec intent.
+  - Separate `LimitedQueryRequest` subtype: unnecessary complexity, breaks the existing builder pattern.
+
+---
+
+## Decision 20: SortOrder and SortDirection types
+
+- **Decision**: Add `SortDirection` enum (`ASC`, `DESC`) and `SortOrder` final class (`field: String`, `direction: SortDirection`) to `hyperscaledb-api` in the `com.hyperscaledb.api` package.
+- **Rationale**: A typed representation prevents string-based errors and supports future multi-field ORDER BY.
+- **Alternatives considered**: String direction only — less type-safe, no IDE completions.
+
+---
+
+## Decision 21: Document TTL representation
+
+- **Decision**: Add `Integer ttlSeconds` field to `OperationOptions`.
+  - **Cosmos DB**: Set `_ttl` field on the document JSON node before writing (Cosmos evaluates `_ttl` as seconds from document creation).
+  - **DynamoDB**: Add a `ttlExpiry` attribute set to `Instant.now().plus(ttlSeconds).getEpochSecond()` (epoch seconds). Attribute name defined in `DynamoConstants`.
+  - **Spanner**: No native row-level TTL. Capability check at request time → `UNSUPPORTED_CAPABILITY` error.
+- **Rationale**: `OperationOptions` is the established per-request options carrier. TTL is a per-request option for writes.
+- **Alternatives considered**: TTL as a separate method parameter — would break all write method signatures.
+
+---
+
+## Decision 22: DocumentMetadata and DocumentResult return type
+
+- **Decision**: Add `DocumentMetadata` class to `hyperscaledb-api` with fields:
+  - `Instant lastModified` (null if unavailable)
+  - `Instant ttlExpiry` (null if no TTL or provider doesn't expose it)
+  - `String version` (null if unavailable — ETag on Cosmos)
+  Provider mappings:
+  - **Cosmos DB**: ETag → `version`; `_ts` → `lastModified`.
+  - **DynamoDB**: No per-item write timestamp at GetItem level; empty metadata shell.
+  - **Spanner**: Empty metadata shell (commit timestamp requires schema column; deferred).
+- **Decision on opt-in**: Metadata retrieval is opt-in via `OperationOptions.includeMetadata(boolean)`. Default false.
+  Read return type changes: `HyperscaleDbClient.read()` returns `DocumentResult` wrapping both the `ObjectNode` payload and nullable `DocumentMetadata`.
+- **Rationale**: Opt-in avoids breaking existing callers. `DocumentResult` keeps backward compatibility by providing a `.document()` accessor.
+- **Alternatives considered**: Always return metadata — extra provider overhead, breaks existing API contracts.
+
+---
+
+## Decision 23: Uniform document size enforcement (400 KB)
+
+- **Decision**: Add a `DocumentSizeValidator` utility in `hyperscaledb-api/internal` that serializes `JsonNode` to UTF-8 bytes via `ObjectMapper.writeValueAsBytes()` and checks against `MAX_BYTES = 400 * 1024`. Validation occurs in `DefaultHyperscaleDbClient` before delegating to the provider adapter — once, provider-agnostically.
+- **Rationale**: DynamoDB's 400 KB limit is the lowest common denominator. Enforcing at the `DefaultHyperscaleDbClient` layer means no provider adapter needs to duplicate the check. Serializing to check size is deterministic and requires no provider I/O.
+- **Alternatives considered**:
+  - Enforce per-provider adapter: duplicates logic, inconsistent enforcement.
+  - Enforce at SPI layer: coupling SPI to a specific limit.
+
+---
+
+## Decision 24: Capability additions for new features
+
+- **Decision**: Add capability constants to `Capability`:
+  - `ROW_LEVEL_TTL = "row_level_ttl"` — row-level document TTL support
+  - `WRITE_TIMESTAMP = "write_timestamp"` — write timestamp metadata
+  - `RESULT_LIMIT = "result_limit"` — Top N result limiting (all three providers support this)
+- **Rationale**: Follows the constitution's capability-based API principle. FR-054 and FR-057 explicitly require capability gating.
+- Provider support matrix (new caps):
+
+  | Capability | Cosmos | DynamoDB | Spanner |
+  |---|---|---|---|
+  | `ROW_LEVEL_TTL` | ✅ | ✅ | ❌ |
+  | `WRITE_TIMESTAMP` | ✅ | ❌ | ✅ |
+  | `ORDER_BY` | ✅ (existing) | ❌ (existing) | ✅ (existing) |
+  | `RESULT_LIMIT` | ✅ | ✅ | ✅ |

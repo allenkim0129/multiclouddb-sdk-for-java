@@ -5,6 +5,7 @@ package com.hyperscaledb.samples;
 
 import com.hyperscaledb.api.Capability;
 import com.hyperscaledb.api.CapabilitySet;
+import com.hyperscaledb.api.DocumentResult;
 import com.hyperscaledb.api.HyperscaleDbClient;
 import com.hyperscaledb.api.HyperscaleDbClientFactory;
 import com.hyperscaledb.api.HyperscaleDbKey;
@@ -76,10 +77,9 @@ public class PortableCrudQuerySample {
             // === 2. READ: Retrieve a document ===
             System.out.println("--- READ: Retrieve document ---");
             HyperscaleDbKey getKey = HyperscaleDbKey.of("sample-1", "sample-1");
-            Map<String, Object> retrieved = client.read(address, getKey);
-            if (retrieved != null) {
-                JsonNode prettyNode = MAPPER.valueToTree(retrieved);
-                System.out.println("  Retrieved: " + prettyNode.toPrettyString());
+            DocumentResult readResult = client.read(address, getKey);
+            if (readResult != null) {
+                System.out.println("  Retrieved: " + readResult.document().toPrettyString());
             }
             System.out.println();
 

@@ -4,6 +4,7 @@
 package com.hyperscaledb.spi;
 
 import com.hyperscaledb.api.CapabilitySet;
+import com.hyperscaledb.api.DocumentResult;
 import com.hyperscaledb.api.HyperscaleDbError;
 import com.hyperscaledb.api.HyperscaleDbErrorCategory;
 import com.hyperscaledb.api.HyperscaleDbException;
@@ -41,9 +42,9 @@ public interface HyperscaleDbProviderClient extends AutoCloseable {
     /**
      * Read a document by key.
      *
-     * @return the document as a map, or null if not found
+     * @return the document result (document + optional metadata), or {@code null} if not found
      */
-    Map<String, Object> read(ResourceAddress address, HyperscaleDbKey key, OperationOptions options);
+    DocumentResult read(ResourceAddress address, HyperscaleDbKey key, OperationOptions options);
 
     /**
      * Update an existing document. Fails if the key does not exist.

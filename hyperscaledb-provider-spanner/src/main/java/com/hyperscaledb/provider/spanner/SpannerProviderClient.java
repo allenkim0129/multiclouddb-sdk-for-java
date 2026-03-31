@@ -4,7 +4,12 @@
 package com.hyperscaledb.provider.spanner;
 
 import com.hyperscaledb.api.CapabilitySet;
+import com.hyperscaledb.api.DocumentMetadata;
+import com.hyperscaledb.api.DocumentResult;
 import com.hyperscaledb.api.HyperscaleDbClientConfig;
+import com.hyperscaledb.api.HyperscaleDbError;
+import com.hyperscaledb.api.HyperscaleDbErrorCategory;
+import com.hyperscaledb.api.HyperscaleDbException;
 import com.hyperscaledb.api.HyperscaleDbKey;
 import com.hyperscaledb.api.OperationDiagnostics;
 import com.hyperscaledb.api.OperationNames;
@@ -13,8 +18,11 @@ import com.hyperscaledb.api.ProviderId;
 import com.hyperscaledb.api.QueryPage;
 import com.hyperscaledb.api.QueryRequest;
 import com.hyperscaledb.api.ResourceAddress;
+import com.hyperscaledb.api.SortOrder;
 import com.hyperscaledb.api.query.TranslatedQuery;
 import com.hyperscaledb.spi.HyperscaleDbProviderClient;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.cloud.spanner.DatabaseAdminClient;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
@@ -76,16 +84,16 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
      */
     public SpannerProviderClient(HyperscaleDbClientConfig config) {
         this.config = config;
-        this.projectId = config.connection().getOrDefault("projectId", "test-project");
-        this.instanceId = config.connection().get("instanceId");
-        this.databaseId = config.connection().get("databaseId");
-        String emulatorHost = config.connection().get("emulatorHost");
+        this.projectId = config.connection().getOrDefault(SpannerConstants.CONFIG_PROJECT_ID, SpannerConstants.CONFIG_PROJECT_ID_DEFAULT);
+        this.instanceId = config.connection().get(SpannerConstants.CONFIG_INSTANCE_ID);
+        this.databaseId = config.connection().get(SpannerConstants.CONFIG_DATABASE_ID);
+        String emulatorHost = config.connection().get(SpannerConstants.CONFIG_EMULATOR_HOST);
 
         if (instanceId == null || instanceId.isBlank()) {
-            throw new IllegalArgumentException("Spanner connection.instanceId is required");
+            throw new IllegalArgumentException(SpannerConstants.ERR_INSTANCE_ID_REQUIRED);
         }
         if (databaseId == null || databaseId.isBlank()) {
-            throw new IllegalArgumentException("Spanner connection.databaseId is required");
+            throw new IllegalArgumentException(SpannerConstants.ERR_DATABASE_ID_REQUIRED);
         }
 
         SpannerOptions.Builder builder = SpannerOptions.newBuilder()
@@ -129,13 +137,14 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
         try {
             String table = address.collection();
             Mutation.WriteBuilder mutation = Mutation.newInsertBuilder(table)
-                    .set("partitionKey").to(key.partitionKey())
-                    .set("sortKey").to(key.sortKey() != null ? key.sortKey() : key.partitionKey());
+                    .set(SpannerConstants.FIELD_PARTITION_KEY).to(key.partitionKey())
+                    .set(SpannerConstants.FIELD_SORT_KEY).to(key.sortKey() != null ? key.sortKey() : key.partitionKey());
 
             writeMutationFields(mutation, document);
             databaseClient.write(List.of(mutation.build()));
+            logItemDiagnostics(OperationNames.CREATE, address);
         } catch (SpannerException e) {
-            throw SpannerErrorMapper.map(e, "create");
+            throw SpannerErrorMapper.map(e, OperationNames.CREATE);
         }
     }
 
@@ -160,13 +169,14 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
         try {
             String table = address.collection();
             Mutation.WriteBuilder mutation = Mutation.newUpdateBuilder(table)
-                    .set("partitionKey").to(key.partitionKey())
-                    .set("sortKey").to(key.sortKey() != null ? key.sortKey() : key.partitionKey());
+                    .set(SpannerConstants.FIELD_PARTITION_KEY).to(key.partitionKey())
+                    .set(SpannerConstants.FIELD_SORT_KEY).to(key.sortKey() != null ? key.sortKey() : key.partitionKey());
 
             writeMutationFields(mutation, document);
             databaseClient.write(List.of(mutation.build()));
+            logItemDiagnostics(OperationNames.UPDATE, address);
         } catch (SpannerException e) {
-            throw SpannerErrorMapper.map(e, "update");
+            throw SpannerErrorMapper.map(e, OperationNames.UPDATE);
         }
     }
 
@@ -187,13 +197,14 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
         try {
             String table = address.collection();
             Mutation.WriteBuilder mutation = Mutation.newInsertOrUpdateBuilder(table)
-                    .set("partitionKey").to(key.partitionKey())
-                    .set("sortKey").to(key.sortKey() != null ? key.sortKey() : key.partitionKey());
+                    .set(SpannerConstants.FIELD_PARTITION_KEY).to(key.partitionKey())
+                    .set(SpannerConstants.FIELD_SORT_KEY).to(key.sortKey() != null ? key.sortKey() : key.partitionKey());
 
             writeMutationFields(mutation, document);
             databaseClient.write(List.of(mutation.build()));
+            logItemDiagnostics(OperationNames.UPSERT, address);
         } catch (SpannerException e) {
-            throw SpannerErrorMapper.map(e, "upsert");
+            throw SpannerErrorMapper.map(e, OperationNames.UPSERT);
         }
     }
 
@@ -214,7 +225,8 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
                 Object value = entry.getValue();
 
                 // Skip primary key fields — already set by caller
-                if ("sortKey".equals(name) || "partitionKey".equals(name)) continue;
+                if (SpannerConstants.FIELD_SORT_KEY.equals(name) || SpannerConstants.FIELD_PARTITION_KEY.equals(name))
+                    continue;
 
                 setMutationValue(mutation, name, value);
             }
@@ -235,26 +247,41 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
      * @throws com.hyperscaledb.api.HyperscaleDbException on any Spanner error
      */
     @Override
-    public Map<String, Object> read(ResourceAddress address, HyperscaleDbKey key, OperationOptions options) {
+    public DocumentResult read(ResourceAddress address, HyperscaleDbKey key, OperationOptions options) {
         try {
             String table = address.collection();
             String partitionKeyVal = key.partitionKey();
             String sortKeyVal = key.sortKey() != null ? key.sortKey() : key.partitionKey();
 
             Statement statement = Statement.newBuilder(
-                    "SELECT * FROM " + table + " WHERE partitionKey = @partitionKey AND sortKey = @sortKey")
-                    .bind("partitionKey").to(partitionKeyVal)
-                    .bind("sortKey").to(sortKeyVal)
+                    String.format(SpannerConstants.QUERY_READ_BY_KEY, table))
+                    .bind(SpannerConstants.FIELD_PARTITION_KEY).to(partitionKeyVal)
+                    .bind(SpannerConstants.FIELD_SORT_KEY).to(sortKeyVal)
                     .build();
 
             try (ResultSet rs = databaseClient.singleUse().executeQuery(statement)) {
                 if (rs.next()) {
-                    return SpannerRowMapper.toMap(rs);
+                    JsonNode rawItem = SpannerRowMapper.toJsonNode(rs);
+                    if (!(rawItem instanceof ObjectNode item)) {
+                        throw new HyperscaleDbException(new HyperscaleDbError(
+                                HyperscaleDbErrorCategory.PROVIDER_ERROR,
+                                "SpannerRowMapper.toJsonNode returned a non-ObjectNode: "
+                                        + rawItem.getClass().getSimpleName(),
+                                ProviderId.SPANNER, OperationNames.READ, false, null));
+                    }
+
+                    DocumentMetadata metadata = null;
+                    if (options != null && options.includeMetadata()) {
+                        // Spanner does not expose per-row commit timestamps via query unless
+                        // the table has allow_commit_timestamp=true. Return empty shell.
+                        metadata = DocumentMetadata.builder().build();
+                    }
+                    return new DocumentResult(item, metadata);
                 }
                 return null;
             }
         } catch (SpannerException e) {
-            throw SpannerErrorMapper.map(e, "read");
+            throw SpannerErrorMapper.map(e, OperationNames.READ);
         }
     }
 
@@ -280,12 +307,13 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
             Mutation deleteMutation = Mutation.delete(table, KeySet.singleKey(spannerKey));
 
             databaseClient.write(List.of(deleteMutation));
+            logItemDiagnostics(OperationNames.DELETE, address);
         } catch (SpannerException e) {
             // Delete is idempotent — NOT_FOUND is not an error
             if (e.getErrorCode() == ErrorCode.NOT_FOUND) {
                 return;
             }
-            throw SpannerErrorMapper.map(e, "delete");
+            throw SpannerErrorMapper.map(e, OperationNames.DELETE);
         }
     }
 
@@ -333,7 +361,7 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
                     if (params != null) {
                         combined.putAll(params);
                     }
-                    combined.put("_pkval", query.partitionKey());
+                    combined.put(SpannerConstants.PARAM_PK_VAL, query.partitionKey());
                     params = combined;
                 }
                 return executeStatement(stmt, params, query.maxPageSize(), offset);
@@ -342,16 +370,16 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
             // Expression-based query or full scan
             String expression = query.expression();
             if (expression == null || expression.isBlank()
-                    || expression.trim().equalsIgnoreCase("SELECT * FROM c")) {
+                    || expression.trim().equalsIgnoreCase(SpannerConstants.QUERY_SELECT_ALL_COSMOS)) {
                 if (query.partitionKey() != null) {
                     // Scope scan to items with matching partitionKey
                     return executeStatement(
-                            "SELECT * FROM " + table + " WHERE partitionKey = @_pkval",
-                            Map.of("_pkval", query.partitionKey()),
-                            query.maxPageSize(), offset);
+                            String.format(SpannerConstants.QUERY_SCOPED_FULL_SCAN, table),
+                            Map.of(SpannerConstants.PARAM_PK_VAL, query.partitionKey()),
+                            query.maxPageSize(), offset, query);
                 }
                 // Full scan
-                return executeStatement("SELECT * FROM " + table, null, query.maxPageSize(), offset);
+                return executeStatement(SpannerConstants.QUERY_SELECT_ALL_PREFIX + table, null, query.maxPageSize(), offset, query);
             }
 
             // Legacy: pass through as-is
@@ -361,12 +389,12 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
                 if (query.parameters() != null) {
                     combined.putAll(query.parameters());
                 }
-                combined.put("_pkval", query.partitionKey());
-                return executeStatement(stmt, combined, query.maxPageSize(), offset);
+                combined.put(SpannerConstants.PARAM_PK_VAL, query.partitionKey());
+                return executeStatement(stmt, combined, query.maxPageSize(), offset, query);
             }
-            return executeStatement(expression, query.parameters(), query.maxPageSize(), offset);
+            return executeStatement(expression, query.parameters(), query.maxPageSize(), offset, query);
         } catch (SpannerException e) {
-            throw SpannerErrorMapper.map(e, "query");
+            throw SpannerErrorMapper.map(e, OperationNames.QUERY);
         }
     }
 
@@ -398,13 +426,20 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
             QueryRequest query, OperationOptions options) {
         try {
             long offset = SpannerContinuationToken.decode(query.continuationToken());
-            int pageSize = query.maxPageSize() != null ? query.maxPageSize() : 100;
+            int pageSize = query.maxPageSize() != null ? query.maxPageSize() : SpannerConstants.PAGE_SIZE_DEFAULT;
+            // Respect Top N limit
+            if (query.limit() != null) {
+                pageSize = Math.min(pageSize, query.limit());
+            }
 
-            // Inject partition key condition before pagination
+            // Inject partition key condition before ORDER BY / pagination
             String sql = translated.queryString();
             if (query.partitionKey() != null) {
                 sql = appendPartitionKeyConditionSQL(sql);
             }
+
+            // Apply ORDER BY before LIMIT/OFFSET
+            sql = appendResultSetControl(sql, query);
 
             // Append LIMIT/OFFSET to the translated SQL for pagination
             String pagedSql = sql + " LIMIT " + (pageSize + 1) + " OFFSET " + offset;
@@ -423,7 +458,7 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
 
             // Bind partition key parameter if present
             if (query.partitionKey() != null) {
-                stmtBuilder.bind("_pkval").to(query.partitionKey());
+                stmtBuilder.bind(SpannerConstants.PARAM_PK_VAL).to(query.partitionKey());
             }
 
             Statement stmt = stmtBuilder.build();
@@ -443,15 +478,10 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
             String continuationToken = hasMore
                     ? SpannerContinuationToken.encode(offset + pageSize)
                     : null;
-
-            OperationDiagnostics diag = OperationDiagnostics
-                    .builder(ProviderId.SPANNER, OperationNames.QUERY_WITH_TRANSLATION, java.time.Duration.ZERO)
-                    .itemCount(items.size())
-                    .build();
-            LOG.debug("spanner.diagnostics op={} itemCount={} hasMore={}", OperationNames.QUERY_WITH_TRANSLATION, items.size(), hasMore);
-            return new QueryPage(items, continuationToken, diag);
+            logQueryDiagnostics(OperationNames.QUERY_WITH_TRANSLATION, address, items.size(), hasMore);
+            return new QueryPage(items, continuationToken);
         } catch (SpannerException e) {
-            throw SpannerErrorMapper.map(e, "query");
+            throw SpannerErrorMapper.map(e, OperationNames.QUERY_WITH_TRANSLATION);
         }
     }
 
@@ -512,7 +542,7 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
         try {
             // Check if table already exists by attempting a trivial query
             Statement checkStmt = Statement.of(
-                    "SELECT 1 FROM " + tableName + " LIMIT 1");
+                    String.format(SpannerConstants.QUERY_TABLE_EXISTS_PROBE, tableName));
             try (ResultSet rs = databaseClient.singleUse().executeQuery(checkStmt)) {
                 // If we get here, table exists
                 LOG.info("Spanner table already exists: {}", tableName);
@@ -528,16 +558,12 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
 
         try {
             DatabaseAdminClient adminClient = spanner.getDatabaseAdminClient();
-            String ddl = "CREATE TABLE " + tableName + " ("
-                    + "partitionKey STRING(MAX) NOT NULL, "
-                    + "sortKey STRING(MAX) NOT NULL, "
-                    + "data STRING(MAX)"
-                    + ") PRIMARY KEY (partitionKey, sortKey)";
+            String ddl = String.format(SpannerConstants.DDL_CREATE_TABLE, tableName);
             adminClient.updateDatabaseDdl(
                     instanceId, databaseId, List.of(ddl), null).get();
             LOG.info("Created Spanner table: {}", tableName);
         } catch (Exception e) {
-            if (e.getMessage() != null && e.getMessage().contains("Duplicate name in schema")) {
+            if (e.getMessage() != null && e.getMessage().contains(SpannerConstants.DDL_ERR_DUPLICATE_NAME)) {
                 LOG.debug("Spanner table already exists (race): {}", tableName);
             } else if (e instanceof SpannerException se) {
                 throw SpannerErrorMapper.map(se, "ensureContainer");
@@ -561,10 +587,27 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
      * @return the statement with the partition key condition appended
      */
     private String appendPartitionKeyConditionSQL(String sql) {
-        if (sql.toUpperCase().contains("WHERE")) {
-            return sql + " AND partitionKey = @_pkval";
+        if (sql.toUpperCase().contains(SpannerConstants.SQL_WHERE)) {
+            return sql + SpannerConstants.QUERY_PARTITION_KEY_AND;
         }
-        return sql + " WHERE partitionKey = @_pkval";
+        return sql + SpannerConstants.QUERY_PARTITION_KEY_WHERE;
+    }
+
+    /**
+     * Appends ORDER BY and LIMIT N clauses for result-set control.
+     * ORDER BY is appended before LIMIT/OFFSET is applied in {@link #executeStatement}.
+     */
+    private String appendResultSetControl(String sql, QueryRequest query) {
+        StringBuilder result = new StringBuilder(sql);
+        if (query != null && query.orderBy() != null && !query.orderBy().isEmpty()) {
+            result.append(" ORDER BY ");
+            for (int i = 0; i < query.orderBy().size(); i++) {
+                SortOrder so = query.orderBy().get(i);
+                if (i > 0) result.append(", ");
+                result.append(so.field()).append(" ").append(so.direction().name());
+            }
+        }
+        return result.toString();
     }
 
     /**
@@ -581,16 +624,28 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
      */
     private QueryPage executeStatement(String sql, Map<String, Object> parameters,
             Integer pageSize, long offset) {
-        int limit = pageSize != null ? pageSize : 100;
+        return executeStatement(sql, parameters, pageSize, offset, null);
+    }
+
+    private QueryPage executeStatement(String sql, Map<String, Object> parameters,
+            Integer pageSize, long offset, QueryRequest query) {
+        int limit = pageSize != null ? pageSize : SpannerConstants.PAGE_SIZE_DEFAULT;
+        // Respect Top N limit: cap the page size
+        if (query != null && query.limit() != null) {
+            limit = Math.min(limit, query.limit());
+        }
+
+        // Append ORDER BY before LIMIT/OFFSET
+        String baseSQL = appendResultSetControl(sql, query);
 
         // Append LIMIT/OFFSET for pagination
-        String pagedSql = sql + " LIMIT " + (limit + 1) + " OFFSET " + offset;
+        String pagedSql = baseSQL + " LIMIT " + (limit + 1) + " OFFSET " + offset;
 
         Statement.Builder stmtBuilder = Statement.newBuilder(pagedSql);
 
         if (parameters != null) {
             for (Map.Entry<String, Object> entry : parameters.entrySet()) {
-                String paramName = entry.getKey().startsWith("@")
+                String paramName = entry.getKey().startsWith(SpannerConstants.PARAM_PREFIX)
                         ? entry.getKey().substring(1)
                         : entry.getKey();
                 bindParameter(stmtBuilder, paramName, entry.getValue());
@@ -605,7 +660,6 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
             }
         }
 
-        // If we fetched more than pageSize, there are additional pages
         boolean hasMore = items.size() > limit;
         if (hasMore) {
             items = items.subList(0, limit);
@@ -613,13 +667,8 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
         String continuationToken = hasMore
                 ? SpannerContinuationToken.encode(offset + limit)
                 : null;
-
-        OperationDiagnostics diag = OperationDiagnostics
-                .builder(ProviderId.SPANNER, OperationNames.QUERY, java.time.Duration.ZERO)
-                .itemCount(items.size())
-                .build();
-        LOG.debug("spanner.diagnostics op=query itemCount={} hasMore={}", items.size(), hasMore);
-        return new QueryPage(items, continuationToken, diag);
+        logQueryDiagnostics(OperationNames.QUERY, null, items.size(), hasMore);
+        return new QueryPage(items, continuationToken);
     }
 
     /**
@@ -651,6 +700,29 @@ public class SpannerProviderClient implements HyperscaleDbProviderClient {
         } else {
             // Fallback: convert to string
             builder.bind(name).to(value.toString());
+        }
+    }
+
+    /**
+     * Logs per-item-operation diagnostics at DEBUG level.
+     */
+    private void logItemDiagnostics(String op, ResourceAddress address) {
+        if (LOG.isDebugEnabled()) {
+            String db = address != null ? address.database() : "unknown";
+            String col = address != null ? address.collection() : "unknown";
+            LOG.debug("{} op={} db={} col={}", SpannerConstants.DIAG_PREFIX, op, db, col);
+        }
+    }
+
+    /**
+     * Logs per-query diagnostics at DEBUG level.
+     */
+    private void logQueryDiagnostics(String op, ResourceAddress address, int itemCount, boolean hasMore) {
+        if (LOG.isDebugEnabled()) {
+            String db = address != null ? address.database() : "unknown";
+            String col = address != null ? address.collection() : "unknown";
+            LOG.debug("{} op={} db={} col={} itemCount={} hasMore={}",
+                    SpannerConstants.DIAG_PREFIX, op, db, col, itemCount, hasMore);
         }
     }
 

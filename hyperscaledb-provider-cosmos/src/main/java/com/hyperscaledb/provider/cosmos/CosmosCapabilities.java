@@ -30,5 +30,11 @@ public final class CosmosCapabilities {
             Capability.ORDER_BY_CAP.withNotes("ORDER BY supported in Cosmos SQL queries"),
             Capability.ENDS_WITH_CAP.withNotes("ENDSWITH function available in Cosmos SQL"),
             Capability.REGEX_MATCH_CAP.withNotes("RegexMatch function available in Cosmos SQL"),
-            Capability.CASE_FUNCTIONS_CAP.withNotes("UPPER/LOWER functions available in Cosmos SQL")));
+            Capability.CASE_FUNCTIONS_CAP.withNotes("UPPER/LOWER functions available in Cosmos SQL"),
+            Capability.of(Capability.RESULT_LIMIT, true, "TOP N supported in Cosmos SQL (SELECT TOP N)"),
+            Capability.of(Capability.ROW_LEVEL_TTL, true,
+                    "Document-level TTL via _ttl field; requires the container to have TTL enabled "
+                    + "(set container default TTL to -1 or a positive value in the portal)"),
+            Capability.of(Capability.WRITE_TIMESTAMP, true,
+                    "ETag exposed as version field in DocumentMetadata on read")));
 }

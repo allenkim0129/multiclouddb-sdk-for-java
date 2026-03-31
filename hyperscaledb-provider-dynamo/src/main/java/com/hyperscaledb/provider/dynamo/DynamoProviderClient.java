@@ -4,6 +4,8 @@
 package com.hyperscaledb.provider.dynamo;
 
 import com.hyperscaledb.api.CapabilitySet;
+import com.hyperscaledb.api.DocumentMetadata;
+import com.hyperscaledb.api.DocumentResult;
 import com.hyperscaledb.api.HyperscaleDbClientConfig;
 import com.hyperscaledb.api.HyperscaleDbError;
 import com.hyperscaledb.api.HyperscaleDbErrorCategory;
@@ -18,6 +20,8 @@ import com.hyperscaledb.api.QueryRequest;
 import com.hyperscaledb.api.ResourceAddress;
 import com.hyperscaledb.api.query.TranslatedQuery;
 import com.hyperscaledb.spi.HyperscaleDbProviderClient;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -54,6 +58,7 @@ import software.amazon.awssdk.services.dynamodb.waiters.DynamoDbWaiter;
 import software.amazon.awssdk.http.SdkHttpResponse;
 
 import java.net.URI;
+import java.time.Instant;
 import java.util.*;
 
 /**
@@ -162,6 +167,10 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             item.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));
+            if (options != null && options.ttlSeconds() != null) {
+                long expiryEpoch = Instant.now().getEpochSecond() + options.ttlSeconds();
+                item.put(DynamoConstants.ATTR_TTL_EXPIRY, AttributeValue.fromN(String.valueOf(expiryEpoch)));
+            }
 
             PutItemRequest request = PutItemRequest.builder()
                     .tableName(resolveTableName(address))
@@ -193,7 +202,7 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
      * @throws com.hyperscaledb.api.HyperscaleDbException on any DynamoDB error
      */
     @Override
-    public Map<String, Object> read(ResourceAddress address, HyperscaleDbKey key, OperationOptions options) {
+    public DocumentResult read(ResourceAddress address, HyperscaleDbKey key, OperationOptions options) {
         try {
             Map<String, AttributeValue> keyMap = new LinkedHashMap<>();
             keyMap.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
@@ -212,7 +221,26 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
             if (!response.hasItem() || response.item().isEmpty()) {
                 return null;
             }
-            return DynamoItemMapper.attributeMapToMap(response.item());
+            JsonNode rawDoc = DynamoItemMapper.attributeMapToJsonNode(response.item());
+            if (!(rawDoc instanceof ObjectNode doc)) {
+                throw new HyperscaleDbException(new HyperscaleDbError(
+                        HyperscaleDbErrorCategory.PROVIDER_ERROR,
+                        "DynamoItemMapper.attributeMapToJsonNode returned a non-ObjectNode: "
+                                + rawDoc.getClass().getSimpleName(),
+                        ProviderId.DYNAMO, OperationNames.READ, false, null));
+            }
+
+            DocumentMetadata metadata = null;
+            if (options != null && options.includeMetadata()) {
+                DocumentMetadata.Builder metaBuilder = DocumentMetadata.builder();
+                // Extract TTL expiry if the attribute is present on the item.
+                JsonNode ttlNode = doc.get(DynamoConstants.ATTR_TTL_EXPIRY);
+                if (ttlNode != null && ttlNode.isNumber()) {
+                    metaBuilder.ttlExpiry(Instant.ofEpochSecond(ttlNode.longValue()));
+                }
+                metadata = metaBuilder.build();
+            }
+            return new DocumentResult(doc, metadata);
         } catch (DynamoDbException e) {
             throw DynamoErrorMapper.map(e, OperationNames.READ);
         }
@@ -240,6 +268,10 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             item.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));
+            if (options != null && options.ttlSeconds() != null) {
+                long expiryEpoch = Instant.now().getEpochSecond() + options.ttlSeconds();
+                item.put(DynamoConstants.ATTR_TTL_EXPIRY, AttributeValue.fromN(String.valueOf(expiryEpoch)));
+            }
 
             PutItemRequest request = PutItemRequest.builder()
                     .tableName(resolveTableName(address))
@@ -291,6 +323,10 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             item.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));
+            if (options != null && options.ttlSeconds() != null) {
+                long expiryEpoch = Instant.now().getEpochSecond() + options.ttlSeconds();
+                item.put(DynamoConstants.ATTR_TTL_EXPIRY, AttributeValue.fromN(String.valueOf(expiryEpoch)));
+            }
 
             PutItemRequest request = PutItemRequest.builder()
                     .tableName(resolveTableName(address))
@@ -370,8 +406,13 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
     @Override
     public QueryPage query(ResourceAddress address, QueryRequest query, OperationOptions options) {
         try {
+            validateResultSetControl(query, OperationNames.QUERY);
             String tableName = resolveTableName(address);
             int pageSize = query.maxPageSize() != null ? query.maxPageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
+            // Respect Top N limit: cap the page size to avoid over-fetching
+            if (query.limit() != null) {
+                pageSize = Math.min(pageSize, query.limit());
+            }
 
             // Deserialize continuation token if present
             Map<String, AttributeValue> exclusiveStartKey = null;
@@ -449,7 +490,12 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
     public QueryPage queryWithTranslation(ResourceAddress address, TranslatedQuery translated,
             QueryRequest query, OperationOptions options) {
         try {
+            validateResultSetControl(query, OperationNames.QUERY_WITH_TRANSLATION);
             int pageSize = query.maxPageSize() != null ? query.maxPageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
+            // Respect Top N limit
+            if (query.limit() != null) {
+                pageSize = Math.min(pageSize, query.limit());
+            }
             List<AttributeValue> params = new ArrayList<>();
             for (Object val : translated.positionalParameters()) {
                 params.add(DynamoItemMapper.toAttributeValue(val));
@@ -753,6 +799,26 @@ public class DynamoProviderClient implements HyperscaleDbProviderClient {
             return stmt + " AND " + DynamoConstants.PARTIQL_PARTITION_KEY_CONDITION;
         }
         return stmt + " WHERE " + DynamoConstants.PARTIQL_PARTITION_KEY_CONDITION;
+    }
+
+    /**
+     * Validates result-set control fields in a query request.
+     * <p>
+     * DynamoDB does not support server-side ORDER BY; any non-empty {@code orderBy}
+     * list throws {@link HyperscaleDbException} with
+     * {@link HyperscaleDbErrorCategory#UNSUPPORTED_CAPABILITY}.
+     * {@code limit} is supported via the DynamoDB Scan/PartiQL {@code LIMIT} parameter.
+     */
+    private void validateResultSetControl(QueryRequest query, String operation) {
+        if (query.orderBy() != null && !query.orderBy().isEmpty()) {
+            throw new HyperscaleDbException(new HyperscaleDbError(
+                    HyperscaleDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    "DynamoDB does not support ORDER BY. Check Capability.ORDER_BY before calling query().",
+                    ProviderId.DYNAMO,
+                    operation,
+                    false,
+                    null));
+        }
     }
 
     @Override

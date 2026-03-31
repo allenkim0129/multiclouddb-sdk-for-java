@@ -162,3 +162,110 @@ Fields:
 - Client operations use ResourceAddress + Key/Document/Query.
 - Query returns QueryPage and may emit PortabilityWarnings.
 - Errors are raised/returned as HyperscaleDbError.
+
+---
+
+## Issue 25 Extensions (FR-049–FR-064)
+
+The following entities were added or modified as part of issue 25 (Result Set Control, TTL/Write Metadata, Uniform Document Size, Provider Diagnostics).
+
+### SortDirection (new enum)
+
+Location: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/SortDirection.java`
+
+Values:
+- `ASC` — ascending order
+- `DESC` — descending order
+
+### SortOrder (new class)
+
+Location: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/SortOrder.java`
+
+Fields:
+- `field: String` (required, non-empty — field name to sort on)
+- `direction: SortDirection` (required)
+
+Factory: `SortOrder.of(String field, SortDirection direction)`
+
+### QueryRequest (modified)
+
+New optional fields:
+- `limit: Integer` — maximum number of items to return (Top N). `null` means no limit. Must be ≥ 1 when set.
+- `orderBy: List<SortOrder>` — zero or more sort specifications. Empty list means no ordering.
+
+Builder methods added:
+- `limit(int n)` — sets Top N
+- `orderBy(String field, SortDirection direction)` — appends a sort specification
+
+Constraints:
+- `limit` ≥ 1 when set (validated at construction time)
+- `orderBy` is capability-gated; throws `HyperscaleDbException(UNSUPPORTED_CAPABILITY)` at query time on providers that do not support ORDER BY (DynamoDB)
+
+### DocumentMetadata (new class)
+
+Location: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/DocumentMetadata.java`
+
+Fields:
+- `lastModified: Instant` — last write timestamp (null if unavailable)
+- `ttlExpiry: Instant` — TTL expiry timestamp (null if no TTL or provider doesn't expose it)
+- `version: String` — provider-native version/ETag (null if unavailable; ETag on Cosmos)
+
+Provider availability:
+| Field | Cosmos DB | DynamoDB | Spanner |
+|---|---|---|---|
+| `lastModified` | ✅ via `_ts` | ❌ | ✅ (schema column) |
+| `ttlExpiry` | ✅ via `_ttl`+`_ts` | ✅ via `ttlExpiry` attr | ❌ |
+| `version` | ✅ ETag | ❌ | ❌ |
+
+### DocumentResult (new class)
+
+Location: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/DocumentResult.java`
+
+Fields:
+- `document: ObjectNode` (required — the document payload)
+- `metadata: DocumentMetadata` — null when `OperationOptions.includeMetadata()` is false (the default)
+
+**API impact**: `HyperscaleDbClient.read()` return type changed from `JsonNode` to `DocumentResult`. Existing callers use `.document()` to get the payload.
+
+### OperationOptions (modified)
+
+New optional fields:
+- `ttlSeconds: Integer` — per-request TTL for write operations (`create`, `upsert`). `null` means no TTL. Must be ≥ 1 when set.
+- `includeMetadata: boolean` — whether to return `DocumentMetadata` on read. Default `false`.
+
+Builder methods added:
+- `ttlSeconds(int seconds)` — sets TTL for write operations
+- `includeMetadata(boolean include)` — enables metadata retrieval on reads
+- `OperationOptions.builder()` — entry point for full builder pattern
+
+Backward-compatible factory methods retained:
+- `OperationOptions.defaults()` — no timeout, no TTL, no metadata
+- `OperationOptions.withTimeout(Duration)` — timeout only shortcut
+
+### Capability (modified — new constants)
+
+New constants added to `Capability`:
+- `ROW_LEVEL_TTL = "row_level_ttl"` — provider supports per-document expiry
+- `WRITE_TIMESTAMP = "write_timestamp"` — provider exposes last-write timestamp in document metadata
+- `RESULT_LIMIT = "result_limit"` — provider supports Top N result capping
+
+### DocumentSizeValidator (new utility)
+
+Location: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/internal/DocumentSizeValidator.java`
+
+Static utility:
+- `MAX_BYTES = 400 * 1024` (400 KB — DynamoDB hard limit, lowest common denominator)
+- `validate(JsonNode document, String operation)` — throws `HyperscaleDbException(INVALID_REQUEST)` when serialized UTF-8 size exceeds limit
+
+Applied in `DefaultHyperscaleDbClient.create()` and `upsert()` before provider delegation.
+
+### Provider Schema Changes
+
+#### Cosmos DB
+No schema change. `_ttl` and `_ts` are system-managed properties read from the response.
+
+#### DynamoDB
+`ttlExpiry` attribute (Number, epoch seconds) written when TTL is set. Attribute name defined in `DynamoConstants.ATTR_TTL_EXPIRY`.
+
+#### Spanner
+`SpannerConstants` class added centralizing all provider string literals (mirrors `CosmosConstants`/`DynamoConstants`).
