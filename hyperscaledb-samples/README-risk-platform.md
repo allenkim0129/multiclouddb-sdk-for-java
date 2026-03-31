@@ -1907,7 +1907,7 @@ $env:COSMOS_ENDPOINT     = (az cosmosdb show --name $env:COSMOS_ACCOUNT --resour
 cat > hyperscaledb-samples/src/main/resources/risk-platform-cosmos-cloud.properties << EOF
 hyperscaledb.provider=cosmos
 hyperscaledb.connection.endpoint=$COSMOS_ENDPOINT
-hyperscaledb.connection.connectionMode=direct
+hyperscaledb.connection.connectionMode=gateway
 hyperscaledb.connection.subscriptionId=$COSMOS_SUBSCRIPTION
 hyperscaledb.connection.resourceGroupName=$COSMOS_RG
 hyperscaledb.connection.tenantId=$COSMOS_TENANT
@@ -1924,7 +1924,7 @@ cat hyperscaledb-samples/src/main/resources/risk-platform-cosmos-cloud.propertie
 @"
 hyperscaledb.provider=cosmos
 hyperscaledb.connection.endpoint=$($env:COSMOS_ENDPOINT)
-hyperscaledb.connection.connectionMode=direct
+hyperscaledb.connection.connectionMode=gateway
 hyperscaledb.connection.subscriptionId=$($env:COSMOS_SUBSCRIPTION)
 hyperscaledb.connection.resourceGroupName=$($env:COSMOS_RG)
 hyperscaledb.connection.tenantId=$($env:COSMOS_TENANT)
