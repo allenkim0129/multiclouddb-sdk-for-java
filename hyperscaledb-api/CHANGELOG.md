@@ -112,5 +112,3 @@ Initial public beta of the portable API and SPI layer.
   (`ensureDatabase`, `ensureContainer`, `provisionSchema` with default parallel
   two-phase implementation using bounded thread pool), capabilities, provider
   identity, and `AutoCloseable` lifecycle
-
-[#39]: https://github.com/microsoft/hyperscaledb-sdk-for-java/pull/39
