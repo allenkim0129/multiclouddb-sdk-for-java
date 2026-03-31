@@ -6,18 +6,19 @@
 
     <parent>
         <groupId>com.hyperscaledb</groupId>
-        <artifactId>hyperscaledb-sdk-java</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <artifactId>hyperscaledb-sdk-java-parent</artifactId>
+        <version>1-SNAPSHOT</version>
     </parent>
 
     <artifactId>hyperscaledb-provider-cosmos</artifactId>
+    <version>${hyperscaledb-provider-cosmos.version}</version>
     <name>Hyperscale DB Cosmos DB Provider</name>
     <description>Azure Cosmos DB provider adapter for Hyperscale DB SDK</description>
 
     <dependencies>
         <dependency>
             <groupId>com.hyperscaledb</groupId>
-            <artifactId>hyperscaledb-spi</artifactId>
+            <artifactId>hyperscaledb-api</artifactId>
         </dependency>
         <dependency>
             <groupId>com.azure</groupId>
@@ -47,6 +48,18 @@
     </dependencies>
 
     <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <resource>
+                <directory>${project.basedir}</directory>
+                <targetPath>META-INF</targetPath>
+                <includes>
+                    <include>CHANGELOG.md</include>
+                </includes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -64,6 +77,14 @@
                     <useModulePath>false</useModulePath>
                     <argLine>-Dnet.bytebuddy.experimental=true</argLine>
                 </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
             </plugin>
         </plugins>
     </build>

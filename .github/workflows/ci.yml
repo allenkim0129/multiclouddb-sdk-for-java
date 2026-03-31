@@ -32,8 +32,6 @@ jobs:
         run: |
           # Modules that produce .pom + .jar + -sources.jar + -javadoc.jar
           FULL_MODULES="hyperscaledb-api hyperscaledb-provider-cosmos hyperscaledb-provider-dynamo hyperscaledb-provider-spanner"
-          # Modules that only produce .pom + .jar (no sources)
-          MINIMAL_MODULES="hyperscaledb-spi"
           ERRORS=0
 
           check_artifact() {
@@ -52,12 +50,6 @@ jobs:
             check_artifact "$module" jar    "$(find staging -path "*/${module}/*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" 2>/dev/null | head -1)"
             check_artifact "$module" sources "$(find staging -path "*/${module}/*-sources.jar" 2>/dev/null | head -1)"
             check_artifact "$module" javadoc "$(find staging -path "*/${module}/*-javadoc.jar" 2>/dev/null | head -1)"
-          done
-
-          for module in $MINIMAL_MODULES; do
-            echo "--- Checking $module (minimal) ---"
-            check_artifact "$module" pom "$(find staging -path "*/${module}/*.pom" 2>/dev/null | head -1)"
-            check_artifact "$module" jar "$(find staging -path "*/${module}/*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" 2>/dev/null | head -1)"
           done
 
           if [ "$ERRORS" -gt 0 ]; then
@@ -85,7 +77,7 @@ jobs:
   emulator-cosmos:
     name: Cosmos DB Emulator Tests
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -192,7 +184,7 @@ jobs:
         shell: bash
         run: |
           mvn verify -Pemulator-cosmos -pl hyperscaledb-conformance -am \
-            -Djunit.jupiter.execution.timeout.default=60s
+            -Djunit.jupiter.execution.timeout.default=120s
 
       - name: Upload test reports
         if: always()
@@ -205,11 +197,6 @@ jobs:
   emulator-dynamo:
     name: DynamoDB Local Tests
     runs-on: ubuntu-latest
-    services:
-      dynamodb-local:
-        image: amazon/dynamodb-local:latest
-        ports:
-          - 8000:8000
     steps:
       - uses: actions/checkout@v4
 
@@ -219,6 +206,26 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
           cache: 'maven'
+
+      - name: Start DynamoDB Local
+        run: |
+          # Pull with retry + exponential backoff to handle Docker Hub rate limits
+          IMAGE="amazon/dynamodb-local:2.5.3"
+          for i in 1 2 3 4 5; do
+            echo "Attempt $i: pulling $IMAGE..."
+            if docker pull "$IMAGE" 2>&1; then
+              echo "Pull succeeded"
+              break
+            fi
+            if [ "$i" -eq 5 ]; then
+              echo "::error::Failed to pull $IMAGE after 5 attempts"
+              exit 1
+            fi
+            WAIT=$((i * 15))
+            echo "Pull failed, waiting ${WAIT}s before retry..."
+            sleep "$WAIT"
+          done
+          docker run -d --name dynamodb-local -p 8000:8000 "$IMAGE"
 
       - name: Wait for DynamoDB Local
         run: |
@@ -233,6 +240,10 @@ jobs:
 
       - name: Run DynamoDB integration tests
         run: mvn verify -Pemulator-dynamo -pl hyperscaledb-conformance -am
+
+      - name: Stop DynamoDB Local
+        if: always()
+        run: docker rm -f dynamodb-local 2>/dev/null || true
 
       - name: Upload test reports
         if: always()

@@ -6,18 +6,19 @@
 
     <parent>
         <groupId>com.hyperscaledb</groupId>
-        <artifactId>hyperscaledb-sdk-java</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <artifactId>hyperscaledb-sdk-java-parent</artifactId>
+        <version>1-SNAPSHOT</version>
     </parent>
 
     <artifactId>hyperscaledb-provider-spanner</artifactId>
+    <version>${hyperscaledb-provider-spanner.version}</version>
     <name>Hyperscale DB Spanner Provider</name>
     <description>Google Cloud Spanner provider adapter for Hyperscale DB SDK</description>
 
     <dependencies>
         <dependency>
             <groupId>com.hyperscaledb</groupId>
-            <artifactId>hyperscaledb-spi</artifactId>
+            <artifactId>hyperscaledb-api</artifactId>
         </dependency>
         <dependency>
             <groupId>com.google.cloud</groupId>
@@ -41,4 +42,29 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <resource>
+                <directory>${project.basedir}</directory>
+                <targetPath>META-INF</targetPath>
+                <includes>
+                    <include>CHANGELOG.md</include>
+                </includes>
+            </resource>
+        </resources>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
 </project>

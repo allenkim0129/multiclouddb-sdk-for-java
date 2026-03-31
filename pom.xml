@@ -5,8 +5,8 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.hyperscaledb</groupId>
-    <artifactId>hyperscaledb-sdk-java</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <artifactId>hyperscaledb-sdk-java-parent</artifactId>
+    <version>1-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>Hyperscale DB SDK for Java</name>
@@ -14,7 +14,6 @@
 
     <modules>
         <module>hyperscaledb-api</module>
-        <module>hyperscaledb-spi</module>
         <module>hyperscaledb-provider-cosmos</module>
         <module>hyperscaledb-provider-dynamo</module>
         <module>hyperscaledb-provider-spanner</module>
@@ -27,6 +26,12 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- Publishable module versions (independent release cadence) -->
+        <hyperscaledb-api.version>0.1.0-beta.1</hyperscaledb-api.version>
+        <hyperscaledb-provider-cosmos.version>0.1.0-beta.1</hyperscaledb-provider-cosmos.version>
+        <hyperscaledb-provider-dynamo.version>0.1.0-beta.1</hyperscaledb-provider-dynamo.version>
+        <hyperscaledb-provider-spanner.version>0.1.0-beta.1</hyperscaledb-provider-spanner.version>
 
         <!-- Dependency versions -->
         <jackson.version>2.18.6</jackson.version>
@@ -53,31 +58,27 @@
 
     <dependencyManagement>
         <dependencies>
-            <!-- Internal modules -->
+            <!-- Internal modules (independently versioned) -->
             <dependency>
                 <groupId>com.hyperscaledb</groupId>
                 <artifactId>hyperscaledb-api</artifactId>
-                <version>${project.version}</version>
+                <version>${hyperscaledb-api.version}</version>
             </dependency>
-            <dependency>
-                <groupId>com.hyperscaledb</groupId>
-                <artifactId>hyperscaledb-spi</artifactId>
-                <version>${project.version}</version>
-            </dependency>
+
             <dependency>
                 <groupId>com.hyperscaledb</groupId>
                 <artifactId>hyperscaledb-provider-cosmos</artifactId>
-                <version>${project.version}</version>
+                <version>${hyperscaledb-provider-cosmos.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.hyperscaledb</groupId>
                 <artifactId>hyperscaledb-provider-dynamo</artifactId>
-                <version>${project.version}</version>
+                <version>${hyperscaledb-provider-dynamo.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.hyperscaledb</groupId>
                 <artifactId>hyperscaledb-provider-spanner</artifactId>
-                <version>${project.version}</version>
+                <version>${hyperscaledb-provider-spanner.version}</version>
             </dependency>
 
             <!-- Jackson -->
@@ -167,6 +168,11 @@
                 <version>${logback.version}</version>
                 <scope>test</scope>
             </dependency>
+            <dependency>
+                <groupId>org.slf4j</groupId>
+                <artifactId>jcl-over-slf4j</artifactId>
+                <version>${slf4j.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -217,6 +223,26 @@
                         </execution>
                     </executions>
                 </plugin>
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>flatten-maven-plugin</artifactId>
+                    <version>1.6.0</version>
+                    <configuration>
+                        <flattenMode>oss</flattenMode>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <id>flatten</id>
+                            <phase>process-resources</phase>
+                            <goals><goal>flatten</goal></goals>
+                        </execution>
+                        <execution>
+                            <id>flatten.clean</id>
+                            <phase>clean</phase>
+                            <goals><goal>clean</goal></goals>
+                        </execution>
+                    </executions>
+                </plugin>
             </plugins>
         </pluginManagement>
         <plugins>
@@ -243,12 +269,8 @@
                 </executions>
             </plugin>
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-source-plugin</artifactId>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-javadoc-plugin</artifactId>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
             </plugin>
         </plugins>
     </build>

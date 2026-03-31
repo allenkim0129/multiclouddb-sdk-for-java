@@ -6,8 +6,8 @@
 
     <parent>
         <groupId>com.hyperscaledb</groupId>
-        <artifactId>hyperscaledb-sdk-java</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <artifactId>hyperscaledb-sdk-java-parent</artifactId>
+        <version>1-SNAPSHOT</version>
     </parent>
 
     <artifactId>hyperscaledb-conformance</artifactId>
@@ -18,10 +18,6 @@
         <dependency>
             <groupId>com.hyperscaledb</groupId>
             <artifactId>hyperscaledb-api</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.hyperscaledb</groupId>
-            <artifactId>hyperscaledb-spi</artifactId>
         </dependency>
 
         <!-- Provider modules (runtime scope for ServiceLoader) -->
@@ -60,7 +56,6 @@
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>jcl-over-slf4j</artifactId>
-            <version>2.0.12</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
