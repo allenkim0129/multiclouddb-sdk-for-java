@@ -1,8 +1,8 @@
 # Hyperscale DB SDK for Java
 
-> **⚠️ Private Preview Notice**
-> This repository is currently available for **private preview only** and is **not yet fully ready for production use**.
-> We plan to make it available for **public preview** soon. Expect breaking changes, incomplete features, and limited support during this phase.
+> **⚠️ Public Preview Notice**
+> This repository is currently available as a **public preview** and is **not yet fully ready for production use**.
+> Expect breaking changes, incomplete features, and limited support during this phase.
 
 A **portable database SDK** that lets you write CRUD and query logic once and run it
 against **Azure Cosmos DB**, **Amazon DynamoDB**, or **Google Cloud Spanner** -
