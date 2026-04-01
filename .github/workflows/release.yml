@@ -5,6 +5,12 @@ on:
     tags:
       - 'hyperscaledb-*-v[0-9]*.[0-9]*.[0-9]*'              # stable: hyperscaledb-api-v1.2.3
       - 'hyperscaledb-*-v[0-9]*.[0-9]*.[0-9]*-beta.[0-9]*'  # beta:   hyperscaledb-api-v1.2.3-beta.1
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. hyperscaledb-api-v0.1.0-beta.1)'
+        required: true
+        type: string
 
 # Only one release at a time
 concurrency:
@@ -31,7 +37,7 @@ jobs:
       - name: Parse module and version from tag
         id: parse
         run: |
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${{ inputs.tag || github.ref_name }}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
           # Extract version: everything after the last '-v'
