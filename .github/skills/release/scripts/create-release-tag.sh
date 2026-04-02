@@ -29,9 +29,15 @@ echo ""
 git tag -a "$TAG" -m "Release ${MODULE} ${VERSION}"
 echo "✅ Created annotated tag: $TAG"
 
-# Push tag to origin
-git push origin "$TAG"
-echo "✅ Pushed tag to origin"
+# Push tag to upstream (the primary repo where release workflows run).
+# IMPORTANT: Push only this single tag — pushing multiple tags in one command
+# can silently fail to trigger GitHub Actions workflows.
+PUSH_REMOTE="upstream"
+if ! git remote get-url "$PUSH_REMOTE" &>/dev/null; then
+    PUSH_REMOTE="origin"
+fi
+git push "$PUSH_REMOTE" "$TAG"
+echo "✅ Pushed tag to $PUSH_REMOTE"
 
 # Report details
 COMMIT_SHA=$(git rev-parse HEAD)
@@ -43,7 +49,7 @@ echo "  Module:  $MODULE"
 echo "  Version: $VERSION"
 
 # Construct GitHub Actions URL
-REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+REMOTE_URL=$(git remote get-url "$PUSH_REMOTE" 2>/dev/null || echo "")
 if [[ "$REMOTE_URL" =~ github\.com[:/](.+)/(.+?)(\.git)?$ ]]; then
     OWNER="${BASH_REMATCH[1]}"
     REPO="${BASH_REMATCH[2]}"

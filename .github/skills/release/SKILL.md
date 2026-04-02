@@ -139,6 +139,11 @@ When releasing multiple modules, enforce dependency order:
 2. Then release providers in any order (they are independent of each other)
 3. Run the full workflow (validate → changelog → tag) for each module sequentially
 
+**Critical:** Push each tag individually with a separate `git push upstream <tag>`
+command. Pushing multiple tags in a single `git push` silently fails to trigger
+GitHub Actions workflows. Wait for each workflow run to appear in the Actions tab
+before pushing the next tag.
+
 If the API version changed and providers depend on the new version, the provider
 POM properties must be updated and committed to `main` before releasing providers.
 

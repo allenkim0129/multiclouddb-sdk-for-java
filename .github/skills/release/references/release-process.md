@@ -86,7 +86,8 @@ release date appended.
 
 ## Release Pipeline
 
-The `release.yml` workflow is triggered by pushing a matching tag. It:
+The `release.yml` workflow is triggered by pushing a matching tag (one tag per
+`git push` — see Troubleshooting) or via `workflow_dispatch`. It:
 
 1. Parses module name + version from the tag
 2. Runs conditional test gates per module
@@ -109,6 +110,11 @@ Only beta (`X.Y.Z-beta.N`) and GA (`X.Y.Z`) versions are valid for release.
 ### Pipeline didn't trigger
 - Verify tag matches `hyperscaledb-*-v<semver>` or `hyperscaledb-*-v<semver>-beta.<N>`
 - Check tag points to a commit on `main`
+- **Push tags one at a time.** Pushing multiple tags in a single `git push` command
+  may cause GitHub to silently skip workflow triggers. Always push each tag with a
+  separate `git push upstream <tag>` command.
+- The workflow also supports `workflow_dispatch` as a fallback — manually trigger
+  from the Actions tab with the tag name as input.
 
 ### Approval is stuck
 Go to **Actions → Release → (your run)** and check if the publish job shows
