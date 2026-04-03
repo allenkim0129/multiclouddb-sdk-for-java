@@ -14,6 +14,7 @@
     <version>${hyperscaledb-provider-cosmos.version}</version>
     <name>Hyperscale DB Cosmos DB Provider</name>
     <description>Azure Cosmos DB provider adapter for Hyperscale DB SDK</description>
+    <url>https://github.com/microsoft/hyperscaledb-sdk-for-java</url>
 
     <dependencies>
         <dependency>

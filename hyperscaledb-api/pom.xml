@@ -14,6 +14,7 @@
     <version>${hyperscaledb-api.version}</version>
     <name>Hyperscale DB API</name>
     <description>Portable contract types and client interface for Hyperscale DB SDK</description>
+    <url>https://github.com/microsoft/hyperscaledb-sdk-for-java</url>
 
     <dependencies>
         <dependency>
