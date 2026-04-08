@@ -121,15 +121,22 @@ public final class CosmosConstants {
     /**
      * WARN threshold for point-read / write latency (ms).
      * Operations slower than this emit a WARN log with full diagnostics.
-     * Cosmos DB SLA for point reads in the same region is ~10 ms.
+     *
+     * <p>Set to 100 ms to account for typical client-to-Azure network latency
+     * (~30–60 ms round-trip from outside the datacenter). The Cosmos DB SLA for
+     * point reads within the same region is ~10 ms, but that only applies to
+     * co-located compute (e.g., Azure VMs in the same region). Callers running
+     * from outside Azure will always exceed 10 ms; 100 ms provides a meaningful
+     * signal for genuine slowness (throttling, large documents, retry storms)
+     * without flooding logs with false positives.
      */
-    public static final long DIAG_THRESHOLD_POINT_MS = 10L;
+    public static final long DIAG_THRESHOLD_POINT_MS = 100L;
 
     /**
      * WARN threshold for query latency (ms).
      * Single-partition queries slower than this emit a WARN log with full diagnostics.
      */
-    public static final long DIAG_THRESHOLD_QUERY_MS = 100L;
+    public static final long DIAG_THRESHOLD_QUERY_MS = 500L;
 
     /**
      * ERROR threshold for query latency (ms).
