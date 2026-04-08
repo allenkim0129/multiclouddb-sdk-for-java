@@ -77,6 +77,16 @@ public class Main {
         System.out.println("  Database and collection are ready.");
         System.out.println();
 
+        // ── SDK warm-up ───────────────────────────────────────────────
+        // Trigger a no-op query so the SDK caches container metadata and
+        // partition key ranges before the timed test operations begin.
+        // Without this, the first upsert/read incurs ~80ms of metadata
+        // lookup overhead and fires cosmos.slow WARN logs.
+        System.out.println("── SDK warm-up ────────────────────────────────────────────────");
+        client.query(address, QueryRequest.builder().maxPageSize(1).build());
+        System.out.println("  Metadata cached.");
+        System.out.println();
+
         // ── CREATE ────────────────────────────────────────────────────
         System.out.println("── CREATE ─────────────────────────────────────────────────────");
         upsert("prod-001", "Laptop Pro 15",    "electronics", 1299.99, true);
