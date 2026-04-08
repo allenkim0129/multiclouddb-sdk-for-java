@@ -6,7 +6,6 @@ package com.microsoft.hyperscaledb.e2e;
 import com.hyperscaledb.api.HyperscaleDbClientConfig;
 import com.hyperscaledb.api.ProviderId;
 
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -94,7 +93,7 @@ public final class ConfigLoader {
         Properties props = new Properties();
         Path filePath = Path.of(name);
         if (Files.exists(filePath)) {
-            try (InputStream is = new FileInputStream(filePath.toFile())) {
+            try (InputStream is = Files.newInputStream(filePath)) {
                 props.load(is);
                 System.out.println("[config] Loaded from file: " + filePath.toAbsolutePath());
             }
