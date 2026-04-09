@@ -128,15 +128,15 @@ class CosmosConstantsTest {
     // ── Diagnostic thresholds ─────────────────────────────────────────────────
 
     @Test
-    @DisplayName("DIAG_THRESHOLD_POINT_MS is 10 ms")
+    @DisplayName("DIAG_THRESHOLD_POINT_MS is 100 ms")
     void diagThresholdPointMs() {
-        assertEquals(10L, CosmosConstants.DIAG_THRESHOLD_POINT_MS);
+        assertEquals(100L, CosmosConstants.DIAG_THRESHOLD_POINT_MS);
     }
 
     @Test
-    @DisplayName("DIAG_THRESHOLD_QUERY_MS is 100 ms")
+    @DisplayName("DIAG_THRESHOLD_QUERY_MS is 500 ms")
     void diagThresholdQueryMs() {
-        assertEquals(100L, CosmosConstants.DIAG_THRESHOLD_QUERY_MS);
+        assertEquals(500L, CosmosConstants.DIAG_THRESHOLD_QUERY_MS);
     }
 
     @Test
@@ -146,9 +146,9 @@ class CosmosConstantsTest {
     }
 
     @Test
-    @DisplayName("DIAG_THRESHOLD_POINT_RU is 10.0")
+    @DisplayName("DIAG_THRESHOLD_POINT_RU is 30.0")
     void diagThresholdPointRu() {
-        assertEquals(10.0, CosmosConstants.DIAG_THRESHOLD_POINT_RU);
+        assertEquals(30.0, CosmosConstants.DIAG_THRESHOLD_POINT_RU);
     }
 
     @Test

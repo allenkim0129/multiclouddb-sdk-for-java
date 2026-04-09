@@ -1,0 +1,2 @@
+# Credentials — never commit these (templates are *.properties.template and are tracked)
+src/main/resources/*.properties
