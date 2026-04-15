@@ -1,52 +1,52 @@
 # Release Process Reference
 
-This document describes the release conventions for the Hyperscale DB SDK for Java.
+This document describes the release conventions for the Multicloud DB SDK for Java.
 
 ## Publishable Modules
 
 | Module | Artifact ID | Description |
 |--------|-------------|-------------|
-| API | `hyperscaledb-api` | Portable contracts, SPI, query model |
-| Cosmos | `hyperscaledb-provider-cosmos` | Azure Cosmos DB adapter |
-| DynamoDB | `hyperscaledb-provider-dynamo` | Amazon DynamoDB adapter |
-| Spanner | `hyperscaledb-provider-spanner` | Google Cloud Spanner adapter |
+| API | `multiclouddb-api` | Portable contracts, SPI, query model |
+| Cosmos | `multiclouddb-provider-cosmos` | Azure Cosmos DB adapter |
+| DynamoDB | `multiclouddb-provider-dynamo` | Amazon DynamoDB adapter |
+| Spanner | `multiclouddb-provider-spanner` | Google Cloud Spanner adapter |
 
 ## Dependency Order
 
 ```
-hyperscaledb-api  ← must be released first if API changed
+multiclouddb-api  ← must be released first if API changed
     ↑
-    ├── hyperscaledb-provider-cosmos   ← independent of each other
-    ├── hyperscaledb-provider-dynamo   ← independent of each other
-    └── hyperscaledb-provider-spanner  ← independent of each other
+    ├── multiclouddb-provider-cosmos   ← independent of each other
+    ├── multiclouddb-provider-dynamo   ← independent of each other
+    └── multiclouddb-provider-spanner  ← independent of each other
 ```
 
-Providers depend on a released version of `hyperscaledb-api`. If you change the
-API, release it first, update the `hyperscaledb-api.version` property in the root
+Providers depend on a released version of `multiclouddb-api`. If you change the
+API, release it first, update the `multiclouddb-api.version` property in the root
 `pom.xml`, then release the providers.
 
 ## Tag Format
 
 ```
-hyperscaledb-<module-name>-v<version>
+multiclouddb-<module-name>-v<version>
 ```
 
 | Pattern | Example | Use case |
 |---------|---------|----------|
-| Stable | `hyperscaledb-api-v1.0.0` | GA release |
-| Beta | `hyperscaledb-provider-cosmos-v0.2.0-beta.1` | Pre-release |
+| Stable | `multiclouddb-api-v1.0.0` | GA release |
+| Beta | `multiclouddb-provider-cosmos-v0.2.0-beta.1` | Pre-release |
 
 Tags that will NOT trigger the release pipeline:
 - `v1.0.0` — missing module prefix
-- `hyperscaledb-conformance-v1.0.0` — not a publishable module
-- `hyperscaledb-api-v1.0.0-rc1` — release candidates not supported
+- `multiclouddb-conformance-v1.0.0` — not a publishable module
+- `multiclouddb-api-v1.0.0-rc1` — release candidates not supported
 
 ## Version Management
 
 | Location | Purpose |
 |----------|---------|
-| Root `pom.xml` → `<hyperscaledb-api.version>` | API version used by all modules |
-| Root `pom.xml` → `<hyperscaledb-provider-*.version>` | Each provider's version |
+| Root `pom.xml` → `<multiclouddb-api.version>` | API version used by all modules |
+| Root `pom.xml` → `<multiclouddb-provider-*.version>` | Each provider's version |
 | Module `pom.xml` → `<version>` | References property from root |
 | `<dependencyManagement>` | Uses properties for inter-module deps |
 
@@ -56,8 +56,8 @@ Tags that will NOT trigger the release pipeline:
    ```bash
    git checkout -b release/<version>
    ```
-2. Update the property in root `pom.xml` (e.g., `hyperscaledb-api.version`)
-3. The module POM picks it up automatically via `${hyperscaledb-api.version}`
+2. Update the property in root `pom.xml` (e.g., `multiclouddb-api.version`)
+3. The module POM picks it up automatically via `${multiclouddb-api.version}`
 4. Update changelogs: stamp `[Unreleased]` with version and date, then add a new `## [Unreleased]` section with a blank line above the released section
 5. Commit and push to origin (fork)
 6. Create a PR against `upstream/main` — the release PR
@@ -140,11 +140,11 @@ The `production` environment has a manual approval gate.
 Update the version property in root `pom.xml`, merge to `main`, delete old tag, re-tag.
 
 ### "Invalid sibling dependency version" error
-Release the dependency first (usually `hyperscaledb-api`), update version property, retry.
+Release the dependency first (usually `multiclouddb-api`), update version property, retry.
 Only beta (`X.Y.Z-beta.N`) and GA (`X.Y.Z`) versions are valid for release.
 
 ### Pipeline didn't trigger
-- Verify tag matches `hyperscaledb-*-v<semver>` or `hyperscaledb-*-v<semver>-beta.<N>`
+- Verify tag matches `multiclouddb-*-v<semver>` or `multiclouddb-*-v<semver>-beta.<N>`
 - Check tag points to a commit on `main`
 - **Push tags one at a time.** Pushing multiple tags in a single `git push` command
   may cause GitHub to silently skip workflow triggers. Always push each tag with a

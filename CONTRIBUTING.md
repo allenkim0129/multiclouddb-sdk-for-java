@@ -1,4 +1,4 @@
-# Contributing to Hyperscale DB SDK for Java
+# Contributing to Multicloud DB SDK for Java
 
 Thank you for your interest in contributing! This document explains how to
 participate in the project — from reporting bugs and requesting features to
@@ -93,8 +93,8 @@ Open a GitHub issue with the `enhancement` label. Please describe:
 
 ```bash
 # Fork the repository on GitHub first, then clone your fork:
-git clone https://github.com/<your-username>/hyperscale-db-sdk-for-java.git
-cd hyperscale-db-sdk-for-java
+git clone https://github.com/<your-username>/multiclouddb-sdk-for-java.git
+cd multiclouddb-sdk-for-java
 mvn clean install -DskipTests
 ```
 
@@ -118,24 +118,24 @@ mvn clean install -DskipTests
 mvn test
 
 # Run unit tests for a specific module
-mvn test -pl hyperscaledb-provider-cosmos
+mvn test -pl multiclouddb-provider-cosmos
 
 # Run a specific test class
-mvn test -pl hyperscaledb-api -Dtest=CapabilityTest
+mvn test -pl multiclouddb-api -Dtest=CapabilityTest
 ```
 
-Integration tests (against live emulators) live in the `hyperscaledb-conformance`
+Integration tests (against live emulators) live in the `multiclouddb-conformance`
 module and require the relevant emulator to be running locally. See the emulator
 table above for setup commands. Once your emulator is up, run:
 
 ```bash
 # Run conformance (integration) tests against all running emulators
-mvn test -pl hyperscaledb-conformance
+mvn test -pl multiclouddb-conformance
 
 # Run conformance tests for a single provider
-mvn test -pl hyperscaledb-conformance -Dtest=CosmosConformanceTest
-mvn test -pl hyperscaledb-conformance -Dtest=DynamoConformanceTest
-mvn test -pl hyperscaledb-conformance -Dtest=SpannerConformanceTest
+mvn test -pl multiclouddb-conformance -Dtest=CosmosConformanceTest
+mvn test -pl multiclouddb-conformance -Dtest=DynamoConformanceTest
+mvn test -pl multiclouddb-conformance -Dtest=SpannerConformanceTest
 ```
 
 ---
@@ -160,7 +160,7 @@ mvn test -pl hyperscaledb-conformance -Dtest=SpannerConformanceTest
 - [ ] `mvn clean install` passes
 - [ ] New or changed public API methods have Javadoc
 - [ ] Tests added or updated to cover the change
-- [ ] No provider-specific types exposed on the `com.hyperscaledb.api.*` surface
+- [ ] No provider-specific types exposed on the `com.multiclouddb.api.*` surface
 - [ ] `docs/compatibility.md` updated if capabilities changed
 - [ ] CLA signed
 
@@ -173,10 +173,10 @@ mvn test -pl hyperscaledb-conformance -Dtest=SpannerConformanceTest
 - Prefer immutable value types: use `Map.copyOf()` / `List.copyOf()` for
   public API return values; document mutability clearly in Javadoc.
 - Avoid Jackson or provider-specific types on the public API surface
-  (`com.hyperscaledb.api.*`). Documents are `Map<String, Object>`.
+  (`com.multiclouddb.api.*`). Documents are `Map<String, Object>`.
   > **Note:** The current API uses `JsonNode` (Jackson). Migration to
   > `Map<String, Object>` is tracked in
-  > [issue #9](https://github.com/microsoft/hyperscale-db-sdk-for-java/issues/9).
+  > [issue #9](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/9).
   > Until that migration is complete, new code may use `JsonNode` on the
   > public surface while following this guideline in spirit.
 - Keep the public API surface minimal. Only expose what has a demonstrated

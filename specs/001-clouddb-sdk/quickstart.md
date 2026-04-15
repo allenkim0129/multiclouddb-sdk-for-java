@@ -1,4 +1,4 @@
-# Quickstart: Hyperscale DB SDK (Java)
+# Quickstart: Multicloud DB SDK (Java)
 
 This quickstart describes intended usage of the SDK’s portable contract in Java.
 
@@ -11,8 +11,8 @@ Maven (example coordinates; final artifact names may differ):
 
 ```xml
 <dependency>
-	<groupId>com.microsoft.hyperscaledb</groupId>
-	<artifactId>hyperscaledb-bundle</artifactId>
+	<groupId>com.microsoft.multiclouddb</groupId>
+	<artifactId>multiclouddb-bundle</artifactId>
 	<version>0.1.0</version>
 </dependency>
 ```
@@ -21,20 +21,20 @@ Gradle:
 
 ```gradle
 dependencies {
-	implementation "com.microsoft.hyperscaledb:hyperscaledb-bundle:0.1.0"
+	implementation "com.microsoft.multiclouddb:multiclouddb-bundle:0.1.0"
 }
 ```
 
 ## Minimal portable usage (planned)
 
 1. Load configuration (provider selection + connection/auth details).
-2. Construct `HyperscaleDbClient` from configuration.
+2. Construct `MulticloudDbClient` from configuration.
 3. Use portable operations: `create`, `read`, `update`, `upsert`, `delete`, `query`.
 
 ### Example (illustrative)
 
 ```java
-HyperscaleDbClient client = HyperscaleDbClientFactory.create(config);
+MulticloudDbClient client = MulticloudDbClientFactory.create(config);
 
 ResourceAddress resource = new ResourceAddress("db", "collection");
 Key key = Key.of("partitionKey-123", "sortKey-456");
@@ -166,7 +166,7 @@ Environment variables / system properties:
 | `COSMOS_CONTAINER` | `cosmos.container` | Container name (default: `items`) |
 
 ```java
-HyperscaleDbClientConfig cosmosConfig = HyperscaleDbClientConfig.builder()
+MulticloudDbClientConfig cosmosConfig = MulticloudDbClientConfig.builder()
 	.provider(ProviderId.COSMOS)
 	.connection(Map.of(
 		"endpoint", "https://myaccount.documents.azure.com:443/",
@@ -189,7 +189,7 @@ Environment variables / system properties:
 | `AWS_SECRET_ACCESS_KEY` | — | AWS secret key |
 
 ```java
-HyperscaleDbClientConfig dynamoConfig = HyperscaleDbClientConfig.builder()
+MulticloudDbClientConfig dynamoConfig = MulticloudDbClientConfig.builder()
 	.provider(ProviderId.DYNAMO)
 	.connection(Map.of(
 		"region", "us-west-2",
@@ -211,7 +211,7 @@ Environment variables / system properties:
 | `SPANNER_EMULATOR_HOST` | — | Emulator host (e.g., `localhost:9010`) |
 
 ```java
-HyperscaleDbClientConfig spannerConfig = HyperscaleDbClientConfig.builder()
+MulticloudDbClientConfig spannerConfig = MulticloudDbClientConfig.builder()
 	.provider(ProviderId.SPANNER)
 	.connection(Map.of(
 		"project", "my-project",
@@ -257,7 +257,7 @@ QueryRequest badRequest = QueryRequest.builder()
     .parameters(Map.of("s", "active"))
     .orderBy("createdAt", SortDirection.ASC)  // capability-gated
     .build();
-// On DynamoDB: throws HyperscaleDbException(UNSUPPORTED_CAPABILITY)
+// On DynamoDB: throws MulticloudDbException(UNSUPPORTED_CAPABILITY)
 ```
 
 ```java
@@ -282,7 +282,7 @@ OperationOptions optionsWithTtl = OperationOptions.builder()
     .build();
 
 client.create(address, key, document, optionsWithTtl);
-// On Spanner: throws HyperscaleDbException(UNSUPPORTED_CAPABILITY) — Spanner does not support row-level TTL
+// On Spanner: throws MulticloudDbException(UNSUPPORTED_CAPABILITY) — Spanner does not support row-level TTL
 ```
 
 ### Reading document metadata
@@ -320,8 +320,8 @@ The SDK enforces a **400 KB** maximum document size across all providers (driven
 ObjectNode largeDoc = buildLargeDocument();  // >400 KB
 try {
     client.create(address, key, largeDoc, OperationOptions.defaults());
-} catch (HyperscaleDbException e) {
-    if (e.error().category() == HyperscaleDbErrorCategory.INVALID_REQUEST) {
+} catch (MulticloudDbException e) {
+    if (e.error().category() == MulticloudDbErrorCategory.INVALID_REQUEST) {
         System.out.println("Document too large: " + e.error().message());
     }
 }

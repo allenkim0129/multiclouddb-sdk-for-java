@@ -1,0 +1,33 @@
+# =============================================================================
+#  Multicloud DB E2E Test — Azure Cosmos DB
+# =============================================================================
+#
+#  1. Copy this file:
+#       cp cosmos.properties.template cosmos.properties
+#  2. Replace placeholder values with your Azure Cosmos DB account details.
+#  3. Run:
+#       mvn -pl multiclouddb-e2e process-resources exec:java
+#       mvn -pl multiclouddb-e2e process-resources exec:java -Dmulticlouddb.config=cosmos.properties
+#
+#  Where to find these values:
+#    Azure Portal → Cosmos DB account → Keys
+#      URI         → endpoint
+#      Primary Key → key
+# =============================================================================
+
+multiclouddb.provider=cosmos
+
+# --- Application ---------------------------------------------------------------
+multiclouddb.database=e2etest
+multiclouddb.collection=products
+
+# --- Azure Cosmos DB -----------------------------------------------------------
+multiclouddb.connection.endpoint=https://<your-account>.documents.azure.com:443/
+multiclouddb.connection.key=<your-primary-key>
+multiclouddb.connection.connectionMode=gateway
+multiclouddb.connection.requestTimeoutSeconds=30
+
+# --- Alternative: Azure AD / Managed Identity (no key needed) ------------------
+# Comment out the key line above and uncomment the tenantId below.
+# Auth falls back to DefaultAzureCredential (Azure CLI, env vars, managed identity).
+# multiclouddb.connection.tenantId=<your-aad-tenant-id>

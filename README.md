@@ -1,4 +1,6 @@
-# Hyperscale DB SDK for Java
+# Multicloud DB SDK for Java
+
+<img src="docs/images/multiclouddb-banner.png" alt="MultiCloudDB — Unified Data Access Layer for Best-of-Breed Cloud DBs" width="800"/>
 
 > **⚠️ Public Preview Notice**
 > This repository is currently available as a **public preview** and is **not yet fully ready for production use**.
@@ -11,12 +13,12 @@ switch providers by changing a single properties file, with zero code changes.
 ```
 ┌───────────────────────────────────────────────────┐
 │                 Your Application                  │
-│          (code against Hyperscale DB API)         │
+│          (code against Multicloud DB API)         │
 └────────────────────────┬──────────────────────────┘
                          │
             ┌────────────▼─────────────┐
-            │    HyperscaleDbClient    │   Portable contract
-            │     (hyperscaledb-api)   │   CRUD · Query · Capabilities
+            │    MulticloudDbClient    │   Portable contract
+            │     (multiclouddb-api)   │   CRUD · Query · Capabilities
             └────────────┬─────────────┘
                          │  ServiceLoader
             ┌────────────┼───────────────┐
@@ -31,7 +33,7 @@ switch providers by changing a single properties file, with zero code changes.
 
 ## Table of Contents
 
-- [Why Hyperscale DB?](#why-clouddb)
+- [Why Multicloud DB?](#why-clouddb)
 - [Quick Start](#quick-start)
 - [Portable Query DSL](#portable-query-dsl)
 - [Architecture](#architecture)
@@ -59,13 +61,13 @@ switch providers by changing a single properties file, with zero code changes.
 
 ---
 
-## Why Hyperscale DB?
+## Why Multicloud DB?
 
-| Problem | Hyperscale DB Solution |
+| Problem | Multicloud DB Solution |
 |---------|------------------|
-| Vendor lock-in - each cloud DB has its own SDK, data model, and query language | Single `HyperscaleDbClient` interface with portable CRUD + query |
+| Vendor lock-in - each cloud DB has its own SDK, data model, and query language | Single `MulticloudDbClient` interface with portable CRUD + query |
 | Each provider has a different query language (Cosmos SQL, PartiQL, GoogleSQL) | **Portable query DSL** - write `status = @status AND priority > @min`, auto-translated per provider |
-| Migrating between providers requires rewriting data-access code | Change **one property** (`hyperscaledb.provider=dynamo` → `cosmos`) |
+| Migrating between providers requires rewriting data-access code | Change **one property** (`multiclouddb.provider=dynamo` → `cosmos`) |
 | Understanding which features are portable vs. provider-specific | Runtime `CapabilitySet` introspection; `PortabilityWarning` on non-portable use |
 | Testing across providers | Conformance test suite runs identical tests against every provider |
 
@@ -85,15 +87,15 @@ mvn clean install -DskipTests
 ```xml
 <!-- Portable API (compile scope) -->
 <dependency>
-    <groupId>com.microsoft.hyperscaledb</groupId>
-    <artifactId>hyperscaledb-api</artifactId>
+    <groupId>com.microsoft.multiclouddb</groupId>
+    <artifactId>multiclouddb-api</artifactId>
     <version>0.1.0-SNAPSHOT</version>
 </dependency>
 
 <!-- Pick one or more providers (runtime scope - swap without recompiling) -->
 <dependency>
-    <groupId>com.microsoft.hyperscaledb</groupId>
-    <artifactId>hyperscaledb-provider-cosmos</artifactId>
+    <groupId>com.microsoft.multiclouddb</groupId>
+    <artifactId>multiclouddb-provider-cosmos</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <scope>runtime</scope>
 </dependency>
@@ -103,14 +105,14 @@ mvn clean install -DskipTests
      Include as many as your application needs: -->
 <!--
 <dependency>
-    <groupId>com.microsoft.hyperscaledb</groupId>
-    <artifactId>hyperscaledb-provider-dynamo</artifactId>
+    <groupId>com.microsoft.multiclouddb</groupId>
+    <artifactId>multiclouddb-provider-dynamo</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <scope>runtime</scope>
 </dependency>
 <dependency>
-    <groupId>com.microsoft.hyperscaledb</groupId>
-    <artifactId>hyperscaledb-provider-spanner</artifactId>
+    <groupId>com.microsoft.multiclouddb</groupId>
+    <artifactId>multiclouddb-provider-spanner</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <scope>runtime</scope>
 </dependency>
@@ -120,7 +122,7 @@ mvn clean install -DskipTests
 ### 3. Write portable code
 
 ```java
-import com.hyperscaledb.api.*;
+import com.multiclouddb.api.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -129,17 +131,17 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 Properties props = new Properties();
 props.load(getClass().getResourceAsStream("/todo-app-cosmos.properties"));
 
-String providerName = props.getProperty("hyperscaledb.provider");   // "cosmos", "dynamo", etc.
+String providerName = props.getProperty("multiclouddb.provider");   // "cosmos", "dynamo", etc.
 ProviderId provider = ProviderId.fromId(providerName);
 
-HyperscaleDbClientConfig config = HyperscaleDbClientConfig.builder()
+MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
         .provider(provider)
-        .connection("endpoint", props.getProperty("hyperscaledb.connection.endpoint"))
-        .connection("key", props.getProperty("hyperscaledb.connection.key"))
+        .connection("endpoint", props.getProperty("multiclouddb.connection.endpoint"))
+        .connection("key", props.getProperty("multiclouddb.connection.key"))
         .build();
 
 // Create client via ServiceLoader discovery
-HyperscaleDbClient client = HyperscaleDbClientFactory.create(config);
+MulticloudDbClient client = MulticloudDbClientFactory.create(config);
 
 // CRUD - same code for every provider
 ObjectMapper mapper = new ObjectMapper();
@@ -200,34 +202,34 @@ Change **only** the properties file - no code changes:
 
 ```properties
 # Cosmos DB
-hyperscaledb.provider=cosmos
-hyperscaledb.connection.endpoint=https://localhost:8081
-hyperscaledb.connection.key=...
+multiclouddb.provider=cosmos
+multiclouddb.connection.endpoint=https://localhost:8081
+multiclouddb.connection.key=...
 
 # --- OR ---
 
 # DynamoDB
-hyperscaledb.provider=dynamo
-hyperscaledb.connection.endpoint=http://localhost:8000
-hyperscaledb.connection.region=us-east-1
-hyperscaledb.auth.accessKeyId=fakeMyKeyId
-hyperscaledb.auth.secretAccessKey=fakeSecretAccessKey
+multiclouddb.provider=dynamo
+multiclouddb.connection.endpoint=http://localhost:8000
+multiclouddb.connection.region=us-east-1
+multiclouddb.auth.accessKeyId=fakeMyKeyId
+multiclouddb.auth.secretAccessKey=fakeSecretAccessKey
 
 # --- OR ---
 
 # Google Cloud Spanner
-hyperscaledb.provider=spanner
-hyperscaledb.connection.projectId=my-gcp-project
-hyperscaledb.connection.instanceId=my-instance
-hyperscaledb.connection.databaseId=my-database
-# hyperscaledb.connection.emulatorHost=localhost:9010   # Optional - for emulator
+multiclouddb.provider=spanner
+multiclouddb.connection.projectId=my-gcp-project
+multiclouddb.connection.instanceId=my-instance
+multiclouddb.connection.databaseId=my-database
+# multiclouddb.connection.emulatorHost=localhost:9010   # Optional - for emulator
 ```
 
 ---
 
 ## Portable Query DSL
 
-Hyperscale DB includes a **portable query expression language** that lets you write WHERE-clause filters once and have them automatically translated to each provider's native query language.
+Multicloud DB includes a **portable query expression language** that lets you write WHERE-clause filters once and have them automatically translated to each provider's native query language.
 
 ### Expression Syntax
 
@@ -276,22 +278,22 @@ This is fully transparent - you never see the translated SQL. For direct control
 
 | Module | Artifact | Description |
 |--------|----------|-------------|
-| **hyperscaledb-api** | `com.microsoft.hyperscaledb:hyperscaledb-api` | Portable client interface, types, error model, factory, and SPI contracts. The only compile-time dependency your app needs. |
-| **hyperscaledb-provider-cosmos** | `com.microsoft.hyperscaledb:hyperscaledb-provider-cosmos` | Azure Cosmos DB adapter (Java SDK v4) |
-| **hyperscaledb-provider-dynamo** | `com.microsoft.hyperscaledb:hyperscaledb-provider-dynamo` | Amazon DynamoDB adapter (AWS SDK v2) |
-| **hyperscaledb-provider-spanner** | `com.microsoft.hyperscaledb:hyperscaledb-provider-spanner` | Google Cloud Spanner adapter (Google Cloud Spanner 6.62.0) |
-| **hyperscaledb-conformance** | `com.microsoft.hyperscaledb:hyperscaledb-conformance` | Cross-provider integration tests |
-| **hyperscaledb-samples** | `com.microsoft.hyperscaledb:hyperscaledb-samples` | Sample apps: TODO web app + multi-tenant Risk Analysis Platform |
+| **multiclouddb-api** | `com.microsoft.multiclouddb:multiclouddb-api` | Portable client interface, types, error model, factory, and SPI contracts. The only compile-time dependency your app needs. |
+| **multiclouddb-provider-cosmos** | `com.microsoft.multiclouddb:multiclouddb-provider-cosmos` | Azure Cosmos DB adapter (Java SDK v4) |
+| **multiclouddb-provider-dynamo** | `com.microsoft.multiclouddb:multiclouddb-provider-dynamo` | Amazon DynamoDB adapter (AWS SDK v2) |
+| **multiclouddb-provider-spanner** | `com.microsoft.multiclouddb:multiclouddb-provider-spanner` | Google Cloud Spanner adapter (Google Cloud Spanner 6.62.0) |
+| **multiclouddb-conformance** | `com.microsoft.multiclouddb:multiclouddb-conformance` | Cross-provider integration tests |
+| **multiclouddb-samples** | `com.microsoft.multiclouddb:multiclouddb-samples` | Sample apps: TODO web app + multi-tenant Risk Analysis Platform |
 
 ### API Surface
 
-All application code depends on `hyperscaledb-api`. The core types are:
+All application code depends on `multiclouddb-api`. The core types are:
 
 | Type | Purpose |
 |------|---------|
-| `HyperscaleDbClient` | Portable interface: `create`, `read`, `update`, `delete`, `upsert`, `query`, `provisionSchema`, `capabilities`, `nativeClient` |
-| `HyperscaleDbClientFactory` | Creates a `HyperscaleDbClient` by discovering providers via `ServiceLoader` |
-| `HyperscaleDbClientConfig` | Builder-pattern config: provider selection, connection, auth, feature flags |
+| `MulticloudDbClient` | Portable interface: `create`, `read`, `update`, `delete`, `upsert`, `query`, `provisionSchema`, `capabilities`, `nativeClient` |
+| `MulticloudDbClientFactory` | Creates a `MulticloudDbClient` by discovering providers via `ServiceLoader` |
+| `MulticloudDbClientConfig` | Builder-pattern config: provider selection, connection, auth, feature flags |
 | `ResourceAddress` | `(database, collection)` pair targeting a container/table |
 | `Key` | `(partitionKey, sortKey)` pair - every document needs at least a partition key |
 | `QueryRequest` | Portable expression, native expression, parameters, page size, continuation token, partition key scoping, `limit`, `orderBy` |
@@ -302,7 +304,7 @@ All application code depends on `hyperscaledb-api`. The core types are:
 | `DocumentMetadata` | Write-metadata on demand: `lastModified`, `ttlExpiry`, `version` |
 | `CapabilitySet` | Runtime introspection of provider capabilities |
 | `Capability` | Named capability with `supported` flag and notes |
-| `HyperscaleDbException` | Structured error with `HyperscaleDbError` (category, provider, native code) |
+| `MulticloudDbException` | Structured error with `MulticloudDbError` (category, provider, native code) |
 | `PortabilityWarning` | Signals when an operation uses non-portable behavior |
 | `OperationOptions` | Timeout, TTL (`ttlSeconds`), metadata flag (`includeMetadata`) |
 | `OperationDiagnostics` | Latency, request units/charge, request ID, ETag, item count |
@@ -318,17 +320,17 @@ Provider modules implement two SPI contracts without importing each other:
 
 | SPI Interface | Responsibility |
 |---------------|---------------|
-| `HyperscaleDbProviderAdapter` | Factory - creates a `HyperscaleDbProviderClient` from config; registered via `META-INF/services` |
-| `HyperscaleDbProviderClient` | CRUD + query + provisioning + capabilities - called by `DefaultHyperscaleDbClient` |
+| `MulticloudDbProviderAdapter` | Factory - creates a `MulticloudDbProviderClient` from config; registered via `META-INF/services` |
+| `MulticloudDbProviderClient` | CRUD + query + provisioning + capabilities - called by `DefaultMulticloudDbClient` |
 
 ### Provider Discovery
 
 Providers are discovered at runtime via Java's `ServiceLoader`:
 
-1. Your app calls `HyperscaleDbClientFactory.create(config)`
-2. The factory scans `META-INF/services/com.hyperscaledb.spi.HyperscaleDbProviderAdapter`
+1. Your app calls `MulticloudDbClientFactory.create(config)`
+2. The factory scans `META-INF/services/com.multiclouddb.spi.MulticloudDbProviderAdapter`
 3. The matching adapter's `createClient()` builds a native SDK client
-4. A `DefaultHyperscaleDbClient` wraps it with error mapping, diagnostics, and the portable contract
+4. A `DefaultMulticloudDbClient` wraps it with error mapping, diagnostics, and the portable contract
 
 **No provider imports in application code.** Just drop the provider JAR on the classpath (or add it as a `<scope>runtime</scope>` Maven dependency).
 
@@ -348,7 +350,7 @@ client.upsert(addr, Key.of("tenant-1", "pos-42"), doc);
 ```
 
 Some database SDKs (notably the Azure Cosmos DB SDK) extract the partition key
-and ID from the document body automatically. Hyperscale DB deliberately does **not**
+and ID from the document body automatically. Multicloud DB deliberately does **not**
 do this, for several reasons:
 
 1. **Each provider maps Key fields differently.** Cosmos DB stores `Key.sortKey()` as the built-in `id` field, while DynamoDB and Spanner store it as a `sortKey` attribute/column. A convention-based extractor would need provider-specific logic, undermining portability.
@@ -367,48 +369,48 @@ See the [developer guide](docs/guide.md#why-key-is-an-explicit-parameter) for th
 
 | Provider | Module | Status | Native SDK |
 |----------|--------|--------|------------|
-| **Azure Cosmos DB** | `hyperscaledb-provider-cosmos` | Full | Azure Cosmos Java SDK 4.60.0 |
-| **Amazon DynamoDB** | `hyperscaledb-provider-dynamo` | Full | AWS SDK for Java 2.25.16 |
-| **Google Cloud Spanner** | `hyperscaledb-provider-spanner` | Full | Google Cloud Spanner 6.62.0 |
+| **Azure Cosmos DB** | `multiclouddb-provider-cosmos` | Full | Azure Cosmos Java SDK 4.60.0 |
+| **Amazon DynamoDB** | `multiclouddb-provider-dynamo` | Full | AWS SDK for Java 2.25.16 |
+| **Google Cloud Spanner** | `multiclouddb-provider-spanner` | Full | Google Cloud Spanner 6.62.0 |
 
 ---
 
 ## Configuration
 
-All configuration flows through `HyperscaleDbClientConfig` or a `.properties` file:
+All configuration flows through `MulticloudDbClientConfig` or a `.properties` file:
 
 | Property | Description | Example |
 |----------|-------------|---------|
-| `hyperscaledb.provider` | Provider ID | `cosmos`, `dynamo`, `spanner` |
-| `hyperscaledb.connection.*` | Connection properties | `endpoint`, `key`, `region`, `connectionMode` |
-| `hyperscaledb.auth.*` | Authentication properties | `accessKeyId`, `secretAccessKey` |
-| `hyperscaledb.feature.*` | Feature flags | Provider-specific opt-ins |
+| `multiclouddb.provider` | Provider ID | `cosmos`, `dynamo`, `spanner` |
+| `multiclouddb.connection.*` | Connection properties | `endpoint`, `key`, `region`, `connectionMode` |
+| `multiclouddb.auth.*` | Authentication properties | `accessKeyId`, `secretAccessKey` |
+| `multiclouddb.feature.*` | Feature flags | Provider-specific opt-ins |
 
 ### Cosmos DB connection properties
 
 | Key | Value |
 |-----|-------|
-| `hyperscaledb.connection.endpoint` | `https://localhost:8081` (emulator) or your Cosmos account URI |
-| `hyperscaledb.connection.key` | Master key or Cosmos emulator well-known key |
-| `hyperscaledb.connection.connectionMode` | `gateway` or `direct` |
+| `multiclouddb.connection.endpoint` | `https://localhost:8081` (emulator) or your Cosmos account URI |
+| `multiclouddb.connection.key` | Master key or Cosmos emulator well-known key |
+| `multiclouddb.connection.connectionMode` | `gateway` or `direct` |
 
 ### DynamoDB connection properties
 
 | Key | Value |
 |-----|-------|
-| `hyperscaledb.connection.endpoint` | `http://localhost:8000` (DynamoDB Local) or omit for AWS |
-| `hyperscaledb.connection.region` | AWS region, e.g. `us-east-1` |
-| `hyperscaledb.auth.accessKeyId` | AWS access key (or any string for DynamoDB Local) |
-| `hyperscaledb.auth.secretAccessKey` | AWS secret key (or any string for DynamoDB Local) |
+| `multiclouddb.connection.endpoint` | `http://localhost:8000` (DynamoDB Local) or omit for AWS |
+| `multiclouddb.connection.region` | AWS region, e.g. `us-east-1` |
+| `multiclouddb.auth.accessKeyId` | AWS access key (or any string for DynamoDB Local) |
+| `multiclouddb.auth.secretAccessKey` | AWS secret key (or any string for DynamoDB Local) |
 
 ### Spanner connection properties
 
 | Key | Value |
 |-----|-------|
-| `hyperscaledb.connection.projectId` | GCP project ID |
-| `hyperscaledb.connection.instanceId` | Spanner instance ID |
-| `hyperscaledb.connection.databaseId` | Spanner database ID |
-| `hyperscaledb.connection.emulatorHost` | `localhost:9010` (Spanner Emulator) or omit for GCP |
+| `multiclouddb.connection.projectId` | GCP project ID |
+| `multiclouddb.connection.instanceId` | Spanner instance ID |
+| `multiclouddb.connection.databaseId` | Spanner database ID |
+| `multiclouddb.connection.emulatorHost` | `localhost:9010` (Spanner Emulator) or omit for GCP |
 
 ---
 
@@ -554,13 +556,13 @@ if (meta != null) {
 
 All write operations are validated against a **399 KB** limit before any network
 call is made. Documents that exceed the limit are rejected with
-`HyperscaleDbErrorCategory.INVALID_REQUEST`:
+`MulticloudDbErrorCategory.INVALID_REQUEST`:
 
 ```java
 try {
     client.create(address, key, largeDoc);
-} catch (HyperscaleDbException e) {
-    if (e.error().category() == HyperscaleDbErrorCategory.INVALID_REQUEST) {
+} catch (MulticloudDbException e) {
+    if (e.error().category() == MulticloudDbErrorCategory.INVALID_REQUEST) {
         System.out.println("Document exceeds 399 KB limit");
     }
 }
@@ -591,12 +593,12 @@ if (diag != null) {
 
 ## Sample Applications
 
-The `hyperscaledb-samples` module includes two sample applications:
+The `multiclouddb-samples` module includes two sample applications:
 
 | Sample | Description | Port | README |
 |--------|-------------|------|--------|
-| **TODO App** | Simple CRUD web app with browser UI | `8080` | [README-todo-app.md](hyperscaledb-samples/README-todo-app.md) |
-| **Risk Analysis Platform** | Multi-tenant portfolio risk analytics with executive dashboard | `8090` | [README-risk-platform.md](hyperscaledb-samples/README-risk-platform.md) |
+| **TODO App** | Simple CRUD web app with browser UI | `8080` | [README-todo-app.md](multiclouddb-samples/README-todo-app.md) |
+| **Risk Analysis Platform** | Multi-tenant portfolio risk analytics with executive dashboard | `8090` | [README-risk-platform.md](multiclouddb-samples/README-risk-platform.md) |
 
 ### TODO App
 
@@ -610,7 +612,7 @@ The `hyperscaledb-samples` module includes two sample applications:
 │  Embedded Java HttpServer       │
 │  TodoApp.java                   │
 └──────────────┬──────────────────┘
-               │ HyperscaleDbClient
+               │ MulticloudDbClient
      ┌─────────┼──────────┐
      ▼         ▼          ▼
  Cosmos DB  DynamoDB   Spanner
@@ -619,15 +621,15 @@ The `hyperscaledb-samples` module includes two sample applications:
 
 ```powershell
 # Cosmos DB
-mvn -pl hyperscaledb-samples exec:java `
-  "-Dexec.mainClass=com.hyperscaledb.samples.todo.TodoApp" `
+mvn -pl multiclouddb-samples exec:java `
+  "-Dexec.mainClass=com.multiclouddb.samples.todo.TodoApp" `
   "-Dtodo.config=todo-app-cosmos.properties" `
   "-Djavax.net.ssl.trustStore=$PWD/.tools/cacerts-local" `
   "-Djavax.net.ssl.trustStorePassword=changeit"
 
 # DynamoDB
-mvn -pl hyperscaledb-samples exec:java `
-  "-Dexec.mainClass=com.hyperscaledb.samples.todo.TodoApp" `
+mvn -pl multiclouddb-samples exec:java `
+  "-Dexec.mainClass=com.multiclouddb.samples.todo.TodoApp" `
   "-Dtodo.config=todo-app-dynamo.properties"
 ```
 
@@ -647,23 +649,23 @@ portfolio risk analytics, and an executive dashboard. Demonstrates:
 
 ```powershell
 # Cosmos DB (port 8090)
-mvn -pl hyperscaledb-samples exec:java `
-  "-Dexec.mainClass=com.hyperscaledb.samples.riskplatform.RiskPlatformApp" `
+mvn -pl multiclouddb-samples exec:java `
+  "-Dexec.mainClass=com.multiclouddb.samples.riskplatform.RiskPlatformApp" `
   "-Drisk.config=risk-platform-cosmos.properties" `
   "-Djavax.net.ssl.trustStore=$PWD/.tools/cacerts-local" `
   "-Djavax.net.ssl.trustStorePassword=changeit"
 
 # DynamoDB (port 8090)
-mvn -pl hyperscaledb-samples exec:java `
-  "-Dexec.mainClass=com.hyperscaledb.samples.riskplatform.RiskPlatformApp" `
+mvn -pl multiclouddb-samples exec:java `
+  "-Dexec.mainClass=com.multiclouddb.samples.riskplatform.RiskPlatformApp" `
   "-Drisk.config=risk-platform-dynamo.properties"
 ```
 
 Then open **http://localhost:8090** in your browser.
 
-For full setup instructions, see [hyperscaledb-samples/README-risk-platform.md](hyperscaledb-samples/README-risk-platform.md).
+For full setup instructions, see [multiclouddb-samples/README-risk-platform.md](multiclouddb-samples/README-risk-platform.md).
 
-For full emulator setup instructions, see [hyperscaledb-samples/README.md](hyperscaledb-samples/README.md).
+For full emulator setup instructions, see [multiclouddb-samples/README.md](multiclouddb-samples/README.md).
 
 ---
 
@@ -677,7 +679,7 @@ mvn clean verify
 mvn clean install -DskipTests
 
 # Build a single module
-mvn -pl hyperscaledb-provider-dynamo clean install
+mvn -pl multiclouddb-provider-dynamo clean install
 ```
 
 > **Note**: JDK 17+ is required. Set `JAVA_HOME` accordingly:
@@ -705,7 +707,7 @@ and cross-provider conformance and integration tests.
 ```bash
 # Requires Cosmos DB emulator on localhost:8081, DynamoDB Local on localhost:8000,
 # and Spanner Emulator on localhost:9010
-mvn -pl hyperscaledb-conformance verify
+mvn -pl multiclouddb-conformance verify
 ```
 
 The conformance suite runs identical CRUD + portable query tests against each
@@ -743,25 +745,25 @@ provider emulator, verifying portable behavior with real data.
 ## Project Structure
 
 ```
-hyperscaledb-sdk-java/
+multiclouddb-sdk-java/
 ├── pom.xml                          # Parent POM (aggregator)
-├── hyperscaledb-api/                    # Portable API + SPI contracts
-│   └── src/main/java/com/hyperscaledb/
-│       ├── api/                     # Public types (HyperscaleDbClient, Key, etc.)
-│       │   ├── internal/            # DefaultHyperscaleDbClient
+├── multiclouddb-api/                    # Portable API + SPI contracts
+│   └── src/main/java/com/multiclouddb/
+│       ├── api/                     # Public types (MulticloudDbClient, Key, etc.)
+│       │   ├── internal/            # DefaultMulticloudDbClient
 │       │   └── query/               # Portable expression AST, parser, validator, translator SPI
 │       └── spi/                     # Provider SPI interfaces
-├── hyperscaledb-provider-cosmos/        # Azure Cosmos DB adapter
+├── multiclouddb-provider-cosmos/        # Azure Cosmos DB adapter
 │   └── src/main/
 │       ├── java/.../cosmos/         # CosmosProviderClient, error mapper, capabilities
 │       └── resources/META-INF/services/  # ServiceLoader registration
-├── hyperscaledb-provider-dynamo/        # Amazon DynamoDB adapter
+├── multiclouddb-provider-dynamo/        # Amazon DynamoDB adapter
 │   └── src/main/
 │       ├── java/.../dynamo/         # DynamoProviderClient, item mapper, error mapper
 │       └── resources/META-INF/services/
-├── hyperscaledb-provider-spanner/       # Google Cloud Spanner adapter
-├── hyperscaledb-conformance/            # Cross-provider integration test suite
-├── hyperscaledb-samples/                # Sample applications
+├── multiclouddb-provider-spanner/       # Google Cloud Spanner adapter
+├── multiclouddb-conformance/            # Cross-provider integration test suite
+├── multiclouddb-samples/                # Sample applications
 │   ├── README.md                    # Sample overview & emulator setup
 │   ├── README-todo-app.md           # TODO app instructions
 │   ├── README-risk-platform.md      # Risk Platform instructions

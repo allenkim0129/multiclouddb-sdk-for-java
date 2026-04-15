@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a bug in the Hyperscale DB SDK for Java
+about: Report a bug in the Multicloud DB SDK for Java
 title: '[BUG] '
 labels: bug
 assignees: ''
@@ -21,7 +21,7 @@ assignees: ''
 
 | Field | Value |
 |-------|-------|
-| SDK version (e.g. `hyperscaledb-api:0.1.0`) | |
+| SDK version (e.g. `multiclouddb-api:0.1.0`) | |
 | Java version | |
 | OS | |
 | Provider SDK version | |

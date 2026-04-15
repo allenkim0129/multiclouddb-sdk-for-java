@@ -1,24 +1,24 @@
-# hyperscaledb Constitution
+# multiclouddb Constitution
 
-This constitution defines the minimum, non-negotiable requirements for `hyperscaledb`: a unifying client SDK that wraps provider SDKs for cloud native databases.
+This constitution defines the minimum, non-negotiable requirements for `multiclouddb`: a unifying client SDK that wraps provider SDKs for cloud native databases.
 
 Initial providers: Azure Cosmos DB, AWS DynamoDB, Google Cloud Spanner.
 
 ## Core Principles
 
 ### 0) Portability-First Default
-- The default usage of `hyperscaledb` MUST be centered on portability: the same application code should run across supported providers by changing configuration only.
+- The default usage of `multiclouddb` MUST be centered on portability: the same application code should run across supported providers by changing configuration only.
 - The provider-neutral API surface MUST represent a portable contract: features and behaviors that are intended to be consistent across supported providers.
-- If consistent behavior cannot be achieved for a provider-neutral API, `hyperscaledb` MUST NOT silently diverge; it MUST either normalize to a consistent outcome or clearly flag the difference and require explicit user opt-in to accept non-portable behavior.
+- If consistent behavior cannot be achieved for a provider-neutral API, `multiclouddb` MUST NOT silently diverge; it MUST either normalize to a consistent outcome or clearly flag the difference and require explicit user opt-in to accept non-portable behavior.
 
 ### 1) Thin Wrapper, Not a Re-implementation
-- `hyperscaledb` MUST delegate all network I/O and auth signing to the underlying provider SDKs.
-- `hyperscaledb` MUST provide an explicit “escape hatch” to access the native provider client for advanced features.
-- `hyperscaledb` MUST NOT attempt to create a lowest-common-denominator database; it is a portability layer with capability discovery.
+- `multiclouddb` MUST delegate all network I/O and auth signing to the underlying provider SDKs.
+- `multiclouddb` MUST provide an explicit “escape hatch” to access the native provider client for advanced features.
+- `multiclouddb` MUST NOT attempt to create a lowest-common-denominator database; it is a portability layer with capability discovery.
 
 ### 2) Capability-Based API (No False Promises)
 - Any cross-provider feature MUST be guarded by explicit capability checks (e.g., “supports transactions”, “supports server-side paging tokens”).
-- If a capability is unavailable, `hyperscaledb` MUST fail fast with a typed, actionable error (not silent no-ops).
+- If a capability is unavailable, `multiclouddb` MUST fail fast with a typed, actionable error (not silent no-ops).
 - Provider-specific features MUST be accessible either via (a) capability-gated extensions or (b) the escape hatch.
 - Provider-specific features and behaviors MUST NOT appear in the default provider-neutral surface unless they can be enabled in a way that preserves the portable contract.
 
@@ -40,15 +40,15 @@ Initial providers: Azure Cosmos DB, AWS DynamoDB, Google Cloud Spanner.
 - Retries MUST be configurable and MUST default to safe behavior:
 	- Retry only idempotent operations by default.
 	- Never retry non-idempotent operations unless explicitly enabled.
-- `hyperscaledb` MUST expose throttling/backoff information when the provider supplies it.
+- `multiclouddb` MUST expose throttling/backoff information when the provider supplies it.
 
 ### 5) Diagnostics by Default (Without Leaking Secrets)
 - All requests MUST emit structured diagnostics hooks (e.g., operation name, duration, provider, status category).
 - Errors MUST include a provider-neutral summary plus the original provider error/details (sanitized).
-- `hyperscaledb` MUST NOT log secrets, raw auth headers, or user payloads by default.
+- `multiclouddb` MUST NOT log secrets, raw auth headers, or user payloads by default.
 
 ### 5.1) Layered Diagnostics (Portable First, Provider Available)
-- `hyperscaledb` MUST provide a portable diagnostics surface suitable for the common case (portable events/metrics/error categories).
+- `multiclouddb` MUST provide a portable diagnostics surface suitable for the common case (portable events/metrics/error categories).
 - When the portable diagnostics surface is insufficient for debugging, users MUST be able to access provider-specific diagnostics.
 - Enabling provider-specific diagnostics SHOULD be configuration-driven when possible (consistent with configuration-only portability), rather than requiring code changes.
 - Provider-specific diagnostics access MUST NOT weaken security defaults (no secrets by default).
@@ -56,7 +56,7 @@ Initial providers: Azure Cosmos DB, AWS DynamoDB, Google Cloud Spanner.
 ## Minimum Public API Contract
 
 ### Client & Provider Selection
-- The SDK MUST expose a single entry client (e.g., `HyperscaleDbClient`) constructed with:
+- The SDK MUST expose a single entry client (e.g., `MulticloudDbClient`) constructed with:
 	- a provider identifier (Cosmos/Dynamo/Spanner)
 	- provider-specific configuration (endpoint/region/project instance, etc.)
 	- credentials/auth configuration delegated to provider SDK conventions
@@ -126,7 +126,7 @@ Notes:
 	- expose the native provider client via the escape hatch
 
 ## Testing (Minimum)
-- `hyperscaledb` MUST include cross-provider contract tests for the minimum API contract.
+- `multiclouddb` MUST include cross-provider contract tests for the minimum API contract.
 - Each provider adapter MUST pass the same contract suite.
 - Provider-specific behavior differences MUST be covered by explicit tests and documented.
 
@@ -136,7 +136,7 @@ Notes:
 - Each release MUST state the supported versions of provider SDKs.
 
 ## Governance
-- This constitution supersedes all other local conventions for `hyperscaledb`.
+- This constitution supersedes all other local conventions for `multiclouddb`.
 - A PR that changes public APIs MUST:
 	- update contract tests
 	- update provider adapters (or explicitly gate the change behind capabilities)

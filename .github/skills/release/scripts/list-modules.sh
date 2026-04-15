@@ -12,10 +12,10 @@ if [[ ! -f "$POM" ]]; then
 fi
 
 VALID_MODULES=(
-    "hyperscaledb-api"
-    "hyperscaledb-provider-cosmos"
-    "hyperscaledb-provider-dynamo"
-    "hyperscaledb-provider-spanner"
+    "multiclouddb-api"
+    "multiclouddb-provider-cosmos"
+    "multiclouddb-provider-dynamo"
+    "multiclouddb-provider-spanner"
 )
 
 echo "=== Publishable Modules ==="
@@ -24,7 +24,7 @@ printf "%-35s %-20s %s\n" "Module" "Current Version" "Tag"
 printf "%-35s %-20s %s\n" "------" "---------------" "---"
 
 for MODULE in "${VALID_MODULES[@]}"; do
-    # Extract version property: <hyperscaledb-api.version>0.1.0-beta.1</...>
+    # Extract version property: <multiclouddb-api.version>0.1.0-beta.1</...>
     PROP_NAME="${MODULE}.version"
     VERSION=$(sed -n "s/.*<${PROP_NAME}>\([^<]*\)<.*/\1/p" "$POM" 2>/dev/null | head -1)
     VERSION="${VERSION:-NOT FOUND}"
@@ -40,7 +40,7 @@ done
 
 echo ""
 echo "=== Dependency Order ==="
-echo "1. hyperscaledb-api             ← release FIRST if API changed"
-echo "2. hyperscaledb-provider-cosmos  ← then providers (independent of each other)"
-echo "3. hyperscaledb-provider-dynamo"
-echo "4. hyperscaledb-provider-spanner"
+echo "1. multiclouddb-api             ← release FIRST if API changed"
+echo "2. multiclouddb-provider-cosmos  ← then providers (independent of each other)"
+echo "3. multiclouddb-provider-dynamo"
+echo "4. multiclouddb-provider-spanner"

@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Suggest a new feature or improvement for the Hyperscale DB SDK for Java
+about: Suggest a new feature or improvement for the Multicloud DB SDK for Java
 title: '[FEATURE] '
 labels: enhancement
 assignees: ''

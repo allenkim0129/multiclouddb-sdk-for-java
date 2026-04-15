@@ -1,6 +1,6 @@
-# Hyperscale DB SDK — Developer Guide
+# Multicloud DB SDK — Developer Guide
 
-Comprehensive reference for the Hyperscale DB SDK's key management, CRUD operations,
+Comprehensive reference for the Multicloud DB SDK's key management, CRUD operations,
 query DSL, and provider-specific storage behavior. For a quick-start tutorial
 and architecture overview, see the main [README](../README.md). For the
 provider compatibility matrix and feature-flag reference, see
@@ -71,12 +71,12 @@ provider compatibility matrix and feature-flag reference, see
 
 ### The Key Model
 
-Every document stored through Hyperscale DB is identified by a **`Key`** — a portable
+Every document stored through Multicloud DB is identified by a **`Key`** — a portable
 representation of the minimum key material needed to uniquely identify a record
 across all three supported providers.
 
 ```java
-import com.hyperscaledb.api.Key;
+import com.multiclouddb.api.Key;
 
 // 1. Simple partition-key-only key
 Key simple = Key.of("order-123");
@@ -301,7 +301,7 @@ choice.
 Some database SDKs (notably the Azure Cosmos DB Java SDK) can extract the
 partition key and document ID automatically because the container's metadata
 tells the SDK which JSON path holds the partition key, and `id` is a fixed
-Cosmos convention. Hyperscale DB cannot replicate this approach portably because the
+Cosmos convention. Multicloud DB cannot replicate this approach portably because the
 key field names differ across providers.
 
 When a provider writes a document, it injects key fields using **different
@@ -354,7 +354,7 @@ A `ResourceAddress` identifies the target database and collection for any
 operation:
 
 ```java
-import com.hyperscaledb.api.ResourceAddress;
+import com.multiclouddb.api.ResourceAddress;
 
 ResourceAddress addr = new ResourceAddress("my-database", "my-collection");
 ```
@@ -1120,13 +1120,13 @@ Each tenant's data is completely isolated at the storage level:
 
 ## Error Handling
 
-All provider exceptions are caught and wrapped in `HyperscaleDbException` with a
+All provider exceptions are caught and wrapped in `MulticloudDbException` with a
 portable error category:
 
 ```java
 try {
     client.upsert(addr, key, doc);
-} catch (HyperscaleDbException e) {
+} catch (MulticloudDbException e) {
     switch (e.error().category()) {
         case THROTTLED -> retryWithBackoff();
         case NOT_FOUND -> createResource();
@@ -1317,8 +1317,8 @@ Providers inject additional fields (`partitionKey`, `sortKey`, `id`, `ttlExpiry`
 ```java
 try {
     client.create(address, key, hugeDoc);
-} catch (HyperscaleDbException e) {
-    if (e.error().category() == HyperscaleDbErrorCategory.INVALID_REQUEST) {
+} catch (MulticloudDbException e) {
+    if (e.error().category() == MulticloudDbErrorCategory.INVALID_REQUEST) {
         // Document rejected before reaching any provider
         System.out.println("Document too large: " + e.getMessage());
     }

@@ -2,6 +2,7 @@
 .agents/
 .skills/
 skills-lock.json
+.github/agents/architecture-context.md
 
 # ── IDE / editor ────────────────────────────────────────
 .vscode/

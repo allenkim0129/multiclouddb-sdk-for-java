@@ -32,7 +32,7 @@ jobs:
       - name: Verify required artifacts
         run: |
           # Modules that produce .pom + .jar + -sources.jar + -javadoc.jar
-          FULL_MODULES="hyperscaledb-api hyperscaledb-provider-cosmos hyperscaledb-provider-dynamo hyperscaledb-provider-spanner"
+          FULL_MODULES="multiclouddb-api multiclouddb-provider-cosmos multiclouddb-provider-dynamo multiclouddb-provider-spanner"
           ERRORS=0
 
           check_artifact() {
@@ -184,7 +184,7 @@ jobs:
       - name: Run Cosmos DB integration tests
         shell: bash
         run: |
-          mvn verify -Pemulator-cosmos -pl hyperscaledb-conformance -am \
+          mvn verify -Pemulator-cosmos -pl multiclouddb-conformance -am \
             -Djunit.jupiter.execution.timeout.default=20s
 
       - name: Upload test reports
@@ -242,7 +242,7 @@ jobs:
 
       - name: Run DynamoDB integration tests
         run: |
-          mvn verify -Pemulator-dynamo -pl hyperscaledb-conformance -am \
+          mvn verify -Pemulator-dynamo -pl multiclouddb-conformance -am \
             -Djunit.jupiter.execution.timeout.default=20s
 
       - name: Stop DynamoDB Local

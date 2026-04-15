@@ -1,6 +1,6 @@
 # Query & Filter Expression Research: Portable Query DSL Design
 
-**Purpose**: Document the query/filter expression capabilities of Azure Cosmos DB, Amazon DynamoDB (including PartiQL), and Google Cloud Spanner to inform the design of a portable query DSL for the Hyperscale DB SDK.
+**Purpose**: Document the query/filter expression capabilities of Azure Cosmos DB, Amazon DynamoDB (including PartiQL), and Google Cloud Spanner to inform the design of a portable query DSL for the Multicloud DB SDK.
 
 **Date**: 2026-02-27  
 **Status**: Research  
@@ -939,7 +939,7 @@ However, the key insight is: **the intersection of what all three support is sma
 The current `DynamoProviderClient` passes the expression directly as a DynamoDB `FilterExpression` on a Scan. This means the current API already requires provider-native syntax for DynamoDB filters, which defeats portability.
 
 **Recommended changes:**
-1. Add a portable expression parser/translator to `hyperscaledb-api` (or a new `hyperscaledb-query` module)
+1. Add a portable expression parser/translator to `multiclouddb-api` (or a new `multiclouddb-query` module)
 2. Each provider adapter implements a `translateExpression(portableExpr)` method
 3. The Dynamo adapter should optionally support PartiQL via `executeStatement` as an alternative to Scan + FilterExpression
 4. The `QueryRequest` should distinguish between `expression` (portable) and `nativeExpression` (passthrough)

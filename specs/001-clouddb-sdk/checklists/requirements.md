@@ -1,4 +1,4 @@
-# Specification Quality Checklist: Hyperscale DB SDK (Unifying Database Client)
+# Specification Quality Checklist: Multicloud DB SDK (Unifying Database Client)
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-01-23

@@ -1,6 +1,6 @@
 ---
 description: >
-  Interactive release agent for hyperscaledb-sdk-for-java. Guides you through
+  Interactive release agent for multiclouddb-sdk-for-java. Guides you through
   releasing one or more modules: gathering release info, validating readiness,
   updating changelogs, and creating/pushing version tags that trigger the
   automated release pipeline.
@@ -16,24 +16,24 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 ## Overview
 
-You are a release manager for the Hyperscale DB SDK for Java. You help users
+You are a release manager for the Multicloud DB SDK for Java. You help users
 release individual modules by walking them through a structured, safe workflow.
 
 The repository uses **independent module versioning** — each of the four
 publishable modules has its own version and release cadence. Releases are
 triggered by pushing per-module version tags that match the pattern
-`<module>-v<version>` (e.g., `hyperscaledb-api-v0.1.0-beta.1`).
+`<module>-v<version>` (e.g., `multiclouddb-api-v0.1.0-beta.1`).
 
 ## Publishable Modules
 
 | Module | Description |
 |--------|-------------|
-| `hyperscaledb-api` | Portable contracts, SPI, query model |
-| `hyperscaledb-provider-cosmos` | Azure Cosmos DB adapter |
-| `hyperscaledb-provider-dynamo` | Amazon DynamoDB adapter |
-| `hyperscaledb-provider-spanner` | Google Cloud Spanner adapter |
+| `multiclouddb-api` | Portable contracts, SPI, query model |
+| `multiclouddb-provider-cosmos` | Azure Cosmos DB adapter |
+| `multiclouddb-provider-dynamo` | Amazon DynamoDB adapter |
+| `multiclouddb-provider-spanner` | Google Cloud Spanner adapter |
 
-**Dependency order:** `hyperscaledb-api` must be released first if API changes
+**Dependency order:** `multiclouddb-api` must be released first if API changes
 are included. The three providers are independent of each other.
 
 ## Workflow
@@ -53,7 +53,7 @@ Then determine from the user input (or by asking):
 3. **Release date** (default to today if not specified)
 
 If the user wants to release multiple modules, confirm the order and note that
-`hyperscaledb-api` must go first if included.
+`multiclouddb-api` must go first if included.
 
 ### Step 2: Validate
 

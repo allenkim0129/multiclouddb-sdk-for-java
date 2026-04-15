@@ -21,7 +21,7 @@ Closes #<!-- issue number -->
 - [ ] `mvn clean install` passes locally
 - [ ] New or changed public API methods have Javadoc
 - [ ] Tests added or updated to cover the change
-- [ ] No provider-specific types exposed on the `com.hyperscaledb.api.*` surface
+- [ ] No provider-specific types exposed on the `com.multiclouddb.api.*` surface
 - [ ] `docs/compatibility.md` updated if capabilities changed
 - [ ] **CLA signed** — by submitting this PR I confirm I have signed the [Microsoft CLA](https://cla.opensource.microsoft.com) (the CLA bot will verify automatically)
 
