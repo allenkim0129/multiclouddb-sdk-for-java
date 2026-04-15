@@ -78,7 +78,7 @@ jobs:
   emulator-cosmos:
     name: Cosmos DB Emulator Tests
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
