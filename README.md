@@ -1,8 +1,6 @@
 # Multicloud DB SDK for Java
 
-<p align="center">
-  <img src="docs/images/multiclouddb-banner.png" alt="MultiCloudDB — Unified Data Access Layer for Best-of-Breed Cloud DBs" width="800"/>
-</p>
+<img src="docs/images/multiclouddb-banner.png" alt="MultiCloudDB — Unified Data Access Layer for Best-of-Breed Cloud DBs" width="800"/>
 
 > **⚠️ Public Preview Notice**
 > This repository is currently available as a **public preview** and is **not yet fully ready for production use**.
