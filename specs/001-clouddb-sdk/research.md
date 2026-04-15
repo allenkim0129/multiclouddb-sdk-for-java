@@ -1,6 +1,6 @@
-# Research: Hyperscale DB SDK
+# Research: Multicloud DB SDK
 
-This document resolves key design choices for the Hyperscale DB SDK and records rationale + alternatives.
+This document resolves key design choices for the Multicloud DB SDK and records rationale + alternatives.
 
 ## Decision 1: Implementation language and packaging
 - Decision: Implement the initial SDK in **Java** (targeting Java 17 LTS) and publish as Maven artifacts.
@@ -131,7 +131,7 @@ This document resolves key design choices for the Hyperscale DB SDK and records 
 - Rationale: Developers need an escape hatch for provider-specific query features (`LIKE` on Cosmos, regex on Spanner, DynamoDB-specific PartiQL). A separate field prevents accidental cross-provider execution and makes the non-portable intent explicit in code.
 - Alternatives considered:
   - A flag on the existing `expression` field (e.g., `isNative=true`): less explicit, easy to forget, and mixes portable and native expressions in the same field.
-  - A separate `nativeQuery()` method on `HyperscaleDbClient`: changes the client interface. Keeping it in `QueryRequest` preserves the existing client API shape.
+  - A separate `nativeQuery()` method on `MulticloudDbClient`: changes the client interface. Keeping it in `QueryRequest` preserves the existing client API shape.
 
 ## Decision 15: Capability-gated query features
 - Decision: Features available on only some providers (`LIKE`, `ORDER BY`, `ends_with`, regex, `LOWER`/`UPPER`) are guarded by new `Capability` constants. The expression validator checks capabilities at translation time and fails fast with a typed error if the feature is unsupported.
@@ -237,7 +237,7 @@ This appendix is **non-normative**. It records Java SDK behaviors that impact th
 - Retries are handled by the SDK retry strategy and interact with total/per-attempt timeouts.
 - Some errors (throttling/provisioned throughput) are retryable; others (validation/conditional check failures) are not.
 
-**Normalization implication**: adapters should use the provider’s retry strategy configuration and surface retryability through `HyperscaleDbError.retryable`.
+**Normalization implication**: adapters should use the provider’s retry strategy configuration and surface retryability through `MulticloudDbError.retryable`.
 
 #### Spanner
 
@@ -265,7 +265,7 @@ This appendix is **non-normative**. It records Java SDK behaviors that impact th
 
 ## Decision 16: SpannerConstants class
 
-- **Decision**: Add `SpannerConstants` to `hyperscaledb-provider-spanner` mirroring the structure of `CosmosConstants` and `DynamoConstants`.
+- **Decision**: Add `SpannerConstants` to `multiclouddb-provider-spanner` mirroring the structure of `CosmosConstants` and `DynamoConstants`.
 - **Rationale**: FR-049 requires all hard-coded string literals in each provider to be centralized in a provider-specific constants class. The Spanner provider was missing this class.
 - **Alternatives considered**: Inline constants (status quo) — violates FR-049.
 
@@ -273,7 +273,7 @@ This appendix is **non-normative**. It records Java SDK behaviors that impact th
 
 ## Decision 17: OperationNamesTest for duplicate prevention
 
-- **Decision**: Add `OperationNamesTest` in `hyperscaledb-api` that reflectively reads all `public static final String` fields in `OperationNames` and asserts no two fields share the same value.
+- **Decision**: Add `OperationNamesTest` in `multiclouddb-api` that reflectively reads all `public static final String` fields in `OperationNames` and asserts no two fields share the same value.
 - **Rationale**: SC-017 requires that no provider adapter re-declares a shared operation name string. A test catches duplicates at CI time. Reflective field scan avoids manually maintaining the test list.
 - **Alternatives considered**: Code review only — not machine-enforceable.
 
@@ -302,7 +302,7 @@ This appendix is **non-normative**. It records Java SDK behaviors that impact th
 
 ## Decision 20: SortOrder and SortDirection types
 
-- **Decision**: Add `SortDirection` enum (`ASC`, `DESC`) and `SortOrder` final class (`field: String`, `direction: SortDirection`) to `hyperscaledb-api` in the `com.hyperscaledb.api` package.
+- **Decision**: Add `SortDirection` enum (`ASC`, `DESC`) and `SortOrder` final class (`field: String`, `direction: SortDirection`) to `multiclouddb-api` in the `com.multiclouddb.api` package.
 - **Rationale**: A typed representation prevents string-based errors and supports future multi-field ORDER BY.
 - **Alternatives considered**: String direction only — less type-safe, no IDE completions.
 
@@ -321,7 +321,7 @@ This appendix is **non-normative**. It records Java SDK behaviors that impact th
 
 ## Decision 22: DocumentMetadata and DocumentResult return type
 
-- **Decision**: Add `DocumentMetadata` class to `hyperscaledb-api` with fields:
+- **Decision**: Add `DocumentMetadata` class to `multiclouddb-api` with fields:
   - `Instant lastModified` (null if unavailable)
   - `Instant ttlExpiry` (null if no TTL or provider doesn't expose it)
   - `String version` (null if unavailable — ETag on Cosmos)
@@ -330,7 +330,7 @@ This appendix is **non-normative**. It records Java SDK behaviors that impact th
   - **DynamoDB**: No per-item write timestamp at GetItem level; empty metadata shell.
   - **Spanner**: Empty metadata shell (commit timestamp requires schema column; deferred).
 - **Decision on opt-in**: Metadata retrieval is opt-in via `OperationOptions.includeMetadata(boolean)`. Default false.
-  Read return type changes: `HyperscaleDbClient.read()` returns `DocumentResult` wrapping both the `ObjectNode` payload and nullable `DocumentMetadata`.
+  Read return type changes: `MulticloudDbClient.read()` returns `DocumentResult` wrapping both the `ObjectNode` payload and nullable `DocumentMetadata`.
 - **Rationale**: Opt-in avoids breaking existing callers. `DocumentResult` keeps backward compatibility by providing a `.document()` accessor.
 - **Alternatives considered**: Always return metadata — extra provider overhead, breaks existing API contracts.
 
@@ -338,8 +338,8 @@ This appendix is **non-normative**. It records Java SDK behaviors that impact th
 
 ## Decision 23: Uniform document size enforcement (400 KB)
 
-- **Decision**: Add a `DocumentSizeValidator` utility in `hyperscaledb-api/internal` that serializes `JsonNode` to UTF-8 bytes via `ObjectMapper.writeValueAsBytes()` and checks against `MAX_BYTES = 400 * 1024`. Validation occurs in `DefaultHyperscaleDbClient` before delegating to the provider adapter — once, provider-agnostically.
-- **Rationale**: DynamoDB's 400 KB limit is the lowest common denominator. Enforcing at the `DefaultHyperscaleDbClient` layer means no provider adapter needs to duplicate the check. Serializing to check size is deterministic and requires no provider I/O.
+- **Decision**: Add a `DocumentSizeValidator` utility in `multiclouddb-api/internal` that serializes `JsonNode` to UTF-8 bytes via `ObjectMapper.writeValueAsBytes()` and checks against `MAX_BYTES = 400 * 1024`. Validation occurs in `DefaultMulticloudDbClient` before delegating to the provider adapter — once, provider-agnostically.
+- **Rationale**: DynamoDB's 400 KB limit is the lowest common denominator. Enforcing at the `DefaultMulticloudDbClient` layer means no provider adapter needs to duplicate the check. Serializing to check size is deterministic and requires no provider I/O.
 - **Alternatives considered**:
   - Enforce per-provider adapter: duplicates logic, inconsistent enforcement.
   - Enforce at SPI layer: coupling SPI to a specific limit.

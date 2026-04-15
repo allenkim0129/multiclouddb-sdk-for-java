@@ -1,11 +1,11 @@
-# Implementation Plan: Hyperscale DB SDK — Portable Query Expression Language, Resource Provisioning & Partition-Key-Scoped Queries
+# Implementation Plan: Multicloud DB SDK — Portable Query Expression Language, Resource Provisioning & Partition-Key-Scoped Queries
 
 **Branch**: `001-clouddb-sdk` | **Date**: 2026-01-24 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `/specs/001-clouddb-sdk/spec.md` (FR-022 through FR-038, SC-006 through SC-012)
 
 ## Summary
 
-Add a portable query expression language to the Hyperscale DB SDK. Developers write WHERE-clause filters using a SQL-subset syntax with named `@param` parameters and five portable functions (`starts_with`, `contains`, `field_exists`, `string_length`, `collection_size`). Each provider adapter translates portable expressions into the provider's native query format:
+Add a portable query expression language to the Multicloud DB SDK. Developers write WHERE-clause filters using a SQL-subset syntax with named `@param` parameters and five portable functions (`starts_with`, `contains`, `field_exists`, `string_length`, `collection_size`). Each provider adapter translates portable expressions into the provider's native query format:
 
 - **Cosmos DB** → Cosmos SQL (`SELECT * FROM c WHERE c.<field> ...`)
 - **DynamoDB** → PartiQL (`SELECT * FROM "<table>" WHERE <field> ...`)
@@ -37,15 +37,15 @@ The SDK is fully implemented with CRUD + query + paging + conformance tests (47 
 
 ### What Must Change
 
-1. New expression parser and AST types in `hyperscaledb-api`
+1. New expression parser and AST types in `multiclouddb-api`
 2. `ExpressionTranslator` SPI interface and per-provider implementations
 3. `QueryRequest` gains `nativeExpression` field; `expression` becomes the portable input
 4. DynamoDB backend switches from Scan + FilterExpression to PartiQL `executeStatement`
 5. New `Capability` constants for query DSL features
 6. Conformance tests for expression translation across all providers
-7. `ensureDatabase` and `ensureContainer` methods on `HyperscaleDbClient` (public API) and `HyperscaleDbProviderClient` (SPI with default no-ops)
+7. `ensureDatabase` and `ensureContainer` methods on `MulticloudDbClient` (public API) and `MulticloudDbProviderClient` (SPI with default no-ops)
 8. Per-provider provisioning implementations (Cosmos, DynamoDB, Spanner)
-9. Provisioning delegation with diagnostics/timing in `DefaultHyperscaleDbClient`
+9. Provisioning delegation with diagnostics/timing in `DefaultMulticloudDbClient`
 10. `QueryRequest` gains optional `partitionKey` field for partition-scoped queries
 11. Provider query methods use native partition-scoping when `partitionKey` is set
 12. Sample app data model updated to use `Key.of(partitionKey, sortKey)` for co-location
@@ -100,8 +100,8 @@ specs/001-clouddb-sdk/
 ### Source Code (repository root)
 
 ```text
-hyperscaledb-api/src/main/java/com/hyperscaledb/api/
-├── HyperscaleDbClient.java              # MODIFIED: add ensureDatabase + ensureContainer + provisionSchema
+multiclouddb-api/src/main/java/com/multiclouddb/api/
+├── MulticloudDbClient.java              # MODIFIED: add ensureDatabase + ensureContainer + provisionSchema
 ├── QueryRequest.java               # MODIFIED: add nativeExpression field + partitionKey field
 ├── QueryPage.java                  # Unchanged (already supports warnings)
 ├── Capability.java                 # MODIFIED: add query DSL capabilities
@@ -124,35 +124,35 @@ hyperscaledb-api/src/main/java/com/hyperscaledb/api/
 ├── spi/
 │   └── ExpressionTranslator.java   # NEW: SPI — translate Expression AST → native string
 
-hyperscaledb-api/src/main/java/com/hyperscaledb/api/internal/
-└── DefaultHyperscaleDbClient.java       # MODIFIED: provisioning delegation (ensureDatabase/ensureContainer/provisionSchema) with diagnostics/timing
+multiclouddb-api/src/main/java/com/multiclouddb/api/internal/
+└── DefaultMulticloudDbClient.java       # MODIFIED: provisioning delegation (ensureDatabase/ensureContainer/provisionSchema) with diagnostics/timing
 
-hyperscaledb-api/src/main/java/com/hyperscaledb/api/spi/  (NOTE: SPI interface lives in hyperscaledb-api)
-└── HyperscaleDbProviderClient.java      # MODIFIED: add default no-op ensureDatabase + ensureContainer; add default parallel provisionSchema
+multiclouddb-api/src/main/java/com/multiclouddb/api/spi/  (NOTE: SPI interface lives in multiclouddb-api)
+└── MulticloudDbProviderClient.java      # MODIFIED: add default no-op ensureDatabase + ensureContainer; add default parallel provisionSchema
 
-hyperscaledb-provider-cosmos/src/main/java/com/hyperscaledb/provider/cosmos/
+multiclouddb-provider-cosmos/src/main/java/com/multiclouddb/provider/cosmos/
 ├── CosmosProviderClient.java       # MODIFIED: use translator for portable expressions + provisioning + DefaultAzureCredential + ARM management SDK
 ├── CosmosExpressionTranslator.java # NEW: AST → Cosmos SQL
 └── CosmosCapabilities.java         # MODIFIED: add query DSL capabilities
 
-hyperscaledb-provider-dynamo/src/main/java/com/hyperscaledb/provider/dynamo/
+multiclouddb-provider-dynamo/src/main/java/com/multiclouddb/provider/dynamo/
 ├── DynamoProviderClient.java       # MODIFIED: switch to PartiQL + provisioning (CreateTable)
 ├── DynamoExpressionTranslator.java # NEW: AST → DynamoDB PartiQL
 └── DynamoCapabilities.java         # MODIFIED: add query DSL capabilities
 
-hyperscaledb-provider-spanner/src/main/java/com/hyperscaledb/provider/spanner/
+multiclouddb-provider-spanner/src/main/java/com/multiclouddb/provider/spanner/
 ├── SpannerProviderClient.java      # MODIFIED: implement query with translator + provisioning (DDL)
 ├── SpannerExpressionTranslator.java# NEW: AST → Spanner GoogleSQL
 └── SpannerCapabilities.java        # MODIFIED: add query DSL capabilities
 
-hyperscaledb-conformance/src/test/java/com/hyperscaledb/conformance/
+multiclouddb-conformance/src/test/java/com/multiclouddb/conformance/
 ├── ExpressionParserTest.java       # NEW: parser unit tests
 ├── ExpressionTranslationTest.java  # NEW: per-provider translation tests
 └── PortableQueryConformanceTest.java # NEW: cross-provider query equivalence tests
 ```
 
-**Structure Decision**: Expression types and parser live in `hyperscaledb-api` (no new module needed — they are part of the public API surface). `ExpressionTranslator` SPI interface lives in `hyperscaledb-api/spi`. Each provider module adds its own translator implementation. This avoids adding a new module and keeps the dependency graph unchanged.
+**Structure Decision**: Expression types and parser live in `multiclouddb-api` (no new module needed — they are part of the public API surface). `ExpressionTranslator` SPI interface lives in `multiclouddb-api/spi`. Each provider module adds its own translator implementation. This avoids adding a new module and keeps the dependency graph unchanged.
 
 ## Complexity Tracking
 
-No constitution violations to justify. The design adds ~15 new types to `hyperscaledb-api`, which is consistent with the thin wrapper principle (lightweight data types and a single parser, not a re-implementation of database query processing). The provisioning API (`ensureDatabase`/`ensureContainer`/`provisionSchema`) adds 3 methods to the public client and SPI with default implementations (no-op for ensureDatabase/ensureContainer, parallel executor for provisionSchema), maintaining the thin wrapper principle by delegating directly to each provider's native idempotent creation calls. The Cosmos provider has additional complexity for `DefaultAzureCredential` support and ARM management SDK integration for RBAC-mode provisioning, but this is provider-internal and does not affect the portable surface.
+No constitution violations to justify. The design adds ~15 new types to `multiclouddb-api`, which is consistent with the thin wrapper principle (lightweight data types and a single parser, not a re-implementation of database query processing). The provisioning API (`ensureDatabase`/`ensureContainer`/`provisionSchema`) adds 3 methods to the public client and SPI with default implementations (no-op for ensureDatabase/ensureContainer, parallel executor for provisionSchema), maintaining the thin wrapper principle by delegating directly to each provider's native idempotent creation calls. The Cosmos provider has additional complexity for `DefaultAzureCredential` support and ARM management SDK integration for RBAC-mode provisioning, but this is provider-internal and does not affect the portable surface.

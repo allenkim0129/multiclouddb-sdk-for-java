@@ -1,0 +1,30 @@
+# =============================================================================
+#  Multicloud DB E2E Test — Google Cloud Spanner
+# =============================================================================
+#
+#  1. Copy this file:
+#       cp spanner.properties.template spanner.properties
+#  2. Replace placeholder values with your GCP project details.
+#  3. Authenticate:
+#       gcloud auth application-default login
+#     Or set: GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+#  4. Run:
+#       mvn -pl multiclouddb-e2e process-resources exec:java -Dmulticlouddb.config=spanner.properties
+#
+#  Prerequisites:
+#    - A Spanner instance and database already created in your GCP project.
+#    - IAM role: roles/spanner.databaseUser (or spanner.admin for schema ops)
+# =============================================================================
+
+multiclouddb.provider=spanner
+
+# --- Application ---------------------------------------------------------------
+multiclouddb.database=e2etest
+multiclouddb.collection=products
+
+# --- Google Cloud Spanner ------------------------------------------------------
+multiclouddb.connection.projectId=<your-gcp-project-id>
+multiclouddb.connection.instanceId=<your-spanner-instance-id>
+multiclouddb.connection.databaseId=<your-spanner-database-id>
+
+# Auth uses Application Default Credentials automatically — no key property needed.

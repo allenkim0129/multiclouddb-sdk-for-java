@@ -31,7 +31,7 @@ echo "=== Validating release: $MODULE v$VERSION ==="
 echo ""
 
 # ── Check 1: Valid publishable module ────────────────────────────────────────
-VALID_MODULES="hyperscaledb-api hyperscaledb-provider-cosmos hyperscaledb-provider-dynamo hyperscaledb-provider-spanner"
+VALID_MODULES="multiclouddb-api multiclouddb-provider-cosmos multiclouddb-provider-dynamo multiclouddb-provider-spanner"
 if echo "$VALID_MODULES" | grep -qw "$MODULE"; then
     pass "Module '$MODULE' is a valid publishable module"
 else

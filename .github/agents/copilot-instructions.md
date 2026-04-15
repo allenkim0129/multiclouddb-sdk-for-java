@@ -1,4 +1,4 @@
-# hyperscaledb-sdk Development Guidelines
+# multiclouddb-sdk Development Guidelines
 
 Auto-generated from all feature plans. Last updated: 2026-01-23
 

@@ -1,4 +1,4 @@
-# Data Model: Hyperscale DB SDK
+# Data Model: Multicloud DB SDK
 
 This is a technology-agnostic model for the portable contract.
 
@@ -146,7 +146,7 @@ Fields:
 - `scope`: operation/resource
 - `provider`: provider id
 
-### HyperscaleDbError
+### MulticloudDbError
 Provider-neutral error category.
 
 Fields:
@@ -161,7 +161,7 @@ Fields:
 - ClientConfig selects Provider and influences capabilities.
 - Client operations use ResourceAddress + Key/Document/Query.
 - Query returns QueryPage and may emit PortabilityWarnings.
-- Errors are raised/returned as HyperscaleDbError.
+- Errors are raised/returned as MulticloudDbError.
 
 ---
 
@@ -171,7 +171,7 @@ The following entities were added or modified as part of issue 25 (Result Set Co
 
 ### SortDirection (new enum)
 
-Location: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/SortDirection.java`
+Location: `multiclouddb-api/src/main/java/com/multiclouddb/api/SortDirection.java`
 
 Values:
 - `ASC` — ascending order
@@ -179,7 +179,7 @@ Values:
 
 ### SortOrder (new class)
 
-Location: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/SortOrder.java`
+Location: `multiclouddb-api/src/main/java/com/multiclouddb/api/SortOrder.java`
 
 Fields:
 - `field: String` (required, non-empty — field name to sort on)
@@ -199,11 +199,11 @@ Builder methods added:
 
 Constraints:
 - `limit` ≥ 1 when set (validated at construction time)
-- `orderBy` is capability-gated; throws `HyperscaleDbException(UNSUPPORTED_CAPABILITY)` at query time on providers that do not support ORDER BY (DynamoDB)
+- `orderBy` is capability-gated; throws `MulticloudDbException(UNSUPPORTED_CAPABILITY)` at query time on providers that do not support ORDER BY (DynamoDB)
 
 ### DocumentMetadata (new class)
 
-Location: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/DocumentMetadata.java`
+Location: `multiclouddb-api/src/main/java/com/multiclouddb/api/DocumentMetadata.java`
 
 Fields:
 - `lastModified: Instant` — last write timestamp (null if unavailable)
@@ -219,13 +219,13 @@ Provider availability:
 
 ### DocumentResult (new class)
 
-Location: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/DocumentResult.java`
+Location: `multiclouddb-api/src/main/java/com/multiclouddb/api/DocumentResult.java`
 
 Fields:
 - `document: ObjectNode` (required — the document payload)
 - `metadata: DocumentMetadata` — null when `OperationOptions.includeMetadata()` is false (the default)
 
-**API impact**: `HyperscaleDbClient.read()` return type changed from `JsonNode` to `DocumentResult`. Existing callers use `.document()` to get the payload.
+**API impact**: `MulticloudDbClient.read()` return type changed from `JsonNode` to `DocumentResult`. Existing callers use `.document()` to get the payload.
 
 ### OperationOptions (modified)
 
@@ -251,13 +251,13 @@ New constants added to `Capability`:
 
 ### DocumentSizeValidator (new utility)
 
-Location: `hyperscaledb-api/src/main/java/com/hyperscaledb/api/internal/DocumentSizeValidator.java`
+Location: `multiclouddb-api/src/main/java/com/multiclouddb/api/internal/DocumentSizeValidator.java`
 
 Static utility:
 - `MAX_BYTES = 400 * 1024` (400 KB — DynamoDB hard limit, lowest common denominator)
-- `validate(JsonNode document, String operation)` — throws `HyperscaleDbException(INVALID_REQUEST)` when serialized UTF-8 size exceeds limit
+- `validate(JsonNode document, String operation)` — throws `MulticloudDbException(INVALID_REQUEST)` when serialized UTF-8 size exceeds limit
 
-Applied in `DefaultHyperscaleDbClient.create()` and `upsert()` before provider delegation.
+Applied in `DefaultMulticloudDbClient.create()` and `upsert()` before provider delegation.
 
 ### Provider Schema Changes
 

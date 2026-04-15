@@ -1,7 +1,7 @@
 ---
 name: release
 description: >
-  Manages releases for hyperscaledb-sdk-for-java modules. Validates release
+  Manages releases for multiclouddb-sdk-for-java modules. Validates release
   readiness, updates POM versions and changelogs, prepares a release branch
   for a PR against upstream/main, and after merge creates and pushes
   per-module version tags that trigger the automated release pipeline.
@@ -11,8 +11,8 @@ arguments:
     type: string
     required: true
     description: >
-      Module to release. One of: hyperscaledb-api, hyperscaledb-provider-cosmos,
-      hyperscaledb-provider-dynamo, hyperscaledb-provider-spanner.
+      Module to release. One of: multiclouddb-api, multiclouddb-provider-cosmos,
+      multiclouddb-provider-dynamo, multiclouddb-provider-spanner.
   version:
     type: string
     required: true
@@ -26,10 +26,10 @@ arguments:
       Release date in YYYY-MM-DD format. Defaults to today.
 argument-hints:
   module:
-    - hyperscaledb-api
-    - hyperscaledb-provider-cosmos
-    - hyperscaledb-provider-dynamo
-    - hyperscaledb-provider-spanner
+    - multiclouddb-api
+    - multiclouddb-provider-cosmos
+    - multiclouddb-provider-dynamo
+    - multiclouddb-provider-spanner
   version:
     - 0.1.0-beta.1
     - 0.1.0
@@ -40,7 +40,7 @@ argument-hints:
 
 # Release
 
-Orchestrates the release of hyperscaledb-sdk-for-java modules through a
+Orchestrates the release of multiclouddb-sdk-for-java modules through a
 PR-based workflow: prepare a release branch with version bumps and changelog
 updates, merge via PR, then create tags to trigger the release pipeline.
 
@@ -94,7 +94,7 @@ Create a feature branch on the fork with all release preparation changes:
 2. **Update POM versions** — If the version in root `pom.xml` properties differs
    from the target release version, update the module-specific property in root
    `pom.xml` using the `<module-name>.version` naming scheme (for example,
-   `<hyperscaledb-api.version>` or `<hyperscaledb-provider-cosmos.version>`).
+   `<multiclouddb-api.version>` or `<multiclouddb-provider-cosmos.version>`).
    The module POMs inherit via `${property}`.
 
 3. **Update changelogs** — For each module being released:
@@ -159,7 +159,7 @@ After each tag is pushed:
 
 When releasing multiple modules, enforce dependency order:
 
-1. Release `hyperscaledb-api` FIRST if it is in the release set
+1. Release `multiclouddb-api` FIRST if it is in the release set
 2. Then release providers in any order (they are independent of each other)
 3. All modules can share a single release branch and PR (Phase 3)
 4. In Phase 4, push tags one at a time in dependency order

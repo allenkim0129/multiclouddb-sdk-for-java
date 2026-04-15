@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.microsoft.multiclouddb</groupId>
+        <artifactId>multiclouddb-sdk-java-parent</artifactId>
+        <version>1-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>multiclouddb-provider-spanner</artifactId>
+    <version>${multiclouddb-provider-spanner.version}</version>
+    <name>Multicloud DB Spanner Provider</name>
+    <description>Google Cloud Spanner provider adapter for Multicloud DB SDK</description>
+    <url>https://github.com/microsoft/multiclouddb-sdk-for-java</url>
+
+    <licenses>
+        <license>
+            <name>MIT License</name>
+            <url>https://opensource.org/licenses/MIT</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <scm>
+        <url>https://github.com/microsoft/multiclouddb-sdk-for-java</url>
+        <connection>scm:git:https://github.com/microsoft/multiclouddb-sdk-for-java.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/microsoft/multiclouddb-sdk-for-java.git</developerConnection>
+    </scm>
+
+    <developers>
+        <developer>
+            <id>microsoft</id>
+            <name>Microsoft Corporation</name>
+            <url>https://github.com/microsoft</url>
+        </developer>
+    </developers>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.microsoft.multiclouddb</groupId>
+            <artifactId>multiclouddb-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-spanner</artifactId>
+        </dependency>
+
+        <!-- Test -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <resource>
+                <directory>${project.basedir}</directory>
+                <targetPath>META-INF</targetPath>
+                <includes>
+                    <include>CHANGELOG.md</include>
+                </includes>
+            </resource>
+        </resources>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -1,0 +1,34 @@
+# =============================================================================
+#  Multicloud DB E2E Test — Amazon DynamoDB
+# =============================================================================
+#
+#  1. Copy this file:
+#       cp dynamo.properties.template dynamo.properties
+#  2. Replace placeholder values with your AWS credentials.
+#  3. Run:
+#       mvn -pl multiclouddb-e2e process-resources exec:java -Dmulticlouddb.config=dynamo.properties
+#
+#  Where to find these values:
+#    AWS Console → IAM → Users → Security credentials → Create access key
+#    Required permissions: dynamodb:* on the target region
+#
+#  Alternatively, omit the auth.* lines entirely to use the AWS default
+#  credential chain (~/.aws/credentials, IAM role, env vars, AWS SSO, etc.)
+# =============================================================================
+
+multiclouddb.provider=dynamo
+
+# --- Application ---------------------------------------------------------------
+# DynamoDB has no native database concept; the SDK maps
+# ResourceAddress(database, collection) to a physical table "database__collection"
+multiclouddb.database=e2etest
+multiclouddb.collection=products
+
+# --- Connection ----------------------------------------------------------------
+multiclouddb.connection.region=us-east-1
+multiclouddb.connection.requestTimeoutSeconds=30
+
+# --- Auth (static credentials) -------------------------------------------------
+# Leave these commented out to use the default AWS credential chain instead.
+# multiclouddb.auth.accessKeyId=<your-access-key-id>
+# multiclouddb.auth.secretAccessKey=<your-secret-access-key>

@@ -1,4 +1,4 @@
-# Hyperscale DB SDK — Provider Compatibility Matrix
+# Multicloud DB SDK — Provider Compatibility Matrix
 
 This document describes the portable capabilities supported by each provider and the
 provider-specific extensions (feature flags) that are available.
@@ -24,7 +24,7 @@ provider-specific extensions (feature flags) that are available.
 ### Capability Discovery at Runtime
 
 ```java
-HyperscaleDbClient client = HyperscaleDbClientFactory.create(config);
+MulticloudDbClient client = MulticloudDbClientFactory.create(config);
 CapabilitySet caps = client.capabilities();
 
 if (caps.isSupported(Capability.LIKE_OPERATOR)) {
@@ -70,7 +70,7 @@ QueryRequest q2 = QueryRequest.builder()
 
 ## Error Category Mapping
 
-All provider exceptions are mapped to portable `HyperscaleDbErrorCategory` values.
+All provider exceptions are mapped to portable `MulticloudDbErrorCategory` values.
 The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 
 | Category  | Cosmos DB  | DynamoDB  | Spanner  |
@@ -101,4 +101,4 @@ providers by configuration alone.
 
 For provider-specific features not covered by the portable API, file a feature
 request or implement the operation using the provider's own SDK alongside
-(not through) the `HyperscaleDbClient`.
+(not through) the `MulticloudDbClient`.

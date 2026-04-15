@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.microsoft.multiclouddb</groupId>
+        <artifactId>multiclouddb-sdk-java-parent</artifactId>
+        <version>1-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>multiclouddb-conformance</artifactId>
+    <name>Multicloud DB Conformance Tests</name>
+    <description>Shared conformance test suite for Multicloud DB provider adapters</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.microsoft.multiclouddb</groupId>
+            <artifactId>multiclouddb-api</artifactId>
+        </dependency>
+
+        <!-- Provider modules (runtime scope for ServiceLoader) -->
+        <dependency>
+            <groupId>com.microsoft.multiclouddb</groupId>
+            <artifactId>multiclouddb-provider-cosmos</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.microsoft.multiclouddb</groupId>
+            <artifactId>multiclouddb-provider-dynamo</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.microsoft.multiclouddb</groupId>
+            <artifactId>multiclouddb-provider-spanner</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Test -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Bridge commons-logging (used by Apache HttpClient in AWS SDK) to SLF4J -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>jcl-over-slf4j</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- Force emulator endpoints so env vars don't override -->
+                    <systemPropertyVariables>
+                        <cosmos.endpoint>https://127.0.0.1:8081</cosmos.endpoint>
+                        <cosmos.key>C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw==</cosmos.key>
+                    </systemPropertyVariables>
+                    <forkedProcessExitTimeoutInSeconds>30</forkedProcessExitTimeoutInSeconds>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

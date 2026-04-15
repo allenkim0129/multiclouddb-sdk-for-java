@@ -4,14 +4,14 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.microsoft.hyperscaledb</groupId>
-    <artifactId>hyperscaledb-sdk-java-parent</artifactId>
+    <groupId>com.microsoft.multiclouddb</groupId>
+    <artifactId>multiclouddb-sdk-java-parent</artifactId>
     <version>1-SNAPSHOT</version>
     <packaging>pom</packaging>
 
-    <name>Hyperscale DB SDK for Java</name>
+    <name>Multicloud DB SDK for Java</name>
     <description>Portable database SDK for Azure Cosmos DB, AWS DynamoDB, and Google Cloud Spanner</description>
-    <url>https://github.com/microsoft/hyperscaledb-sdk-for-java</url>
+    <url>https://github.com/microsoft/multiclouddb-sdk-for-java</url>
 
     <licenses>
         <license>
@@ -22,9 +22,9 @@
     </licenses>
 
     <scm>
-        <url>https://github.com/microsoft/hyperscaledb-sdk-for-java</url>
-        <connection>scm:git:https://github.com/microsoft/hyperscaledb-sdk-for-java.git</connection>
-        <developerConnection>scm:git:ssh://git@github.com/microsoft/hyperscaledb-sdk-for-java.git</developerConnection>
+        <url>https://github.com/microsoft/multiclouddb-sdk-for-java</url>
+        <connection>scm:git:https://github.com/microsoft/multiclouddb-sdk-for-java.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/microsoft/multiclouddb-sdk-for-java.git</developerConnection>
     </scm>
 
     <developers>
@@ -36,13 +36,13 @@
     </developers>
 
     <modules>
-        <module>hyperscaledb-api</module>
-        <module>hyperscaledb-provider-cosmos</module>
-        <module>hyperscaledb-provider-dynamo</module>
-        <module>hyperscaledb-provider-spanner</module>
-        <module>hyperscaledb-conformance</module>
-        <module>hyperscaledb-samples</module>
-        <module>hyperscaledb-e2e</module>
+        <module>multiclouddb-api</module>
+        <module>multiclouddb-provider-cosmos</module>
+        <module>multiclouddb-provider-dynamo</module>
+        <module>multiclouddb-provider-spanner</module>
+        <module>multiclouddb-conformance</module>
+        <module>multiclouddb-samples</module>
+        <module>multiclouddb-e2e</module>
     </modules>
 
     <properties>
@@ -52,10 +52,10 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!-- Publishable module versions (independent release cadence) -->
-        <hyperscaledb-api.version>0.1.0-beta.2</hyperscaledb-api.version>
-        <hyperscaledb-provider-cosmos.version>0.1.0-beta.2</hyperscaledb-provider-cosmos.version>
-        <hyperscaledb-provider-dynamo.version>0.1.0-beta.2</hyperscaledb-provider-dynamo.version>
-        <hyperscaledb-provider-spanner.version>0.1.0-beta.2</hyperscaledb-provider-spanner.version>
+        <multiclouddb-api.version>0.1.0-beta.2</multiclouddb-api.version>
+        <multiclouddb-provider-cosmos.version>0.1.0-beta.2</multiclouddb-provider-cosmos.version>
+        <multiclouddb-provider-dynamo.version>0.1.0-beta.2</multiclouddb-provider-dynamo.version>
+        <multiclouddb-provider-spanner.version>0.1.0-beta.2</multiclouddb-provider-spanner.version>
 
         <!-- Dependency versions -->
         <jackson.version>2.18.6</jackson.version>
@@ -84,25 +84,25 @@
         <dependencies>
             <!-- Internal modules (independently versioned) -->
             <dependency>
-                <groupId>com.microsoft.hyperscaledb</groupId>
-                <artifactId>hyperscaledb-api</artifactId>
-                <version>${hyperscaledb-api.version}</version>
+                <groupId>com.microsoft.multiclouddb</groupId>
+                <artifactId>multiclouddb-api</artifactId>
+                <version>${multiclouddb-api.version}</version>
             </dependency>
 
             <dependency>
-                <groupId>com.microsoft.hyperscaledb</groupId>
-                <artifactId>hyperscaledb-provider-cosmos</artifactId>
-                <version>${hyperscaledb-provider-cosmos.version}</version>
+                <groupId>com.microsoft.multiclouddb</groupId>
+                <artifactId>multiclouddb-provider-cosmos</artifactId>
+                <version>${multiclouddb-provider-cosmos.version}</version>
             </dependency>
             <dependency>
-                <groupId>com.microsoft.hyperscaledb</groupId>
-                <artifactId>hyperscaledb-provider-dynamo</artifactId>
-                <version>${hyperscaledb-provider-dynamo.version}</version>
+                <groupId>com.microsoft.multiclouddb</groupId>
+                <artifactId>multiclouddb-provider-dynamo</artifactId>
+                <version>${multiclouddb-provider-dynamo.version}</version>
             </dependency>
             <dependency>
-                <groupId>com.microsoft.hyperscaledb</groupId>
-                <artifactId>hyperscaledb-provider-spanner</artifactId>
-                <version>${hyperscaledb-provider-spanner.version}</version>
+                <groupId>com.microsoft.multiclouddb</groupId>
+                <artifactId>multiclouddb-provider-spanner</artifactId>
+                <version>${multiclouddb-provider-spanner.version}</version>
             </dependency>
 
             <!-- Jackson -->

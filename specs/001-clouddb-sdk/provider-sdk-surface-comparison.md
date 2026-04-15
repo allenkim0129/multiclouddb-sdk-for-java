@@ -1,6 +1,6 @@
 # Provider SDK Surface Comparison (Java) — Cosmos DB vs DynamoDB vs Spanner
 
-This is **supporting, non-normative research** for the Hyperscale DB SDK spec. It documents how the *official Java SDKs* expose common operations and diagnostic signals, to help design a portable contract.
+This is **supporting, non-normative research** for the Multicloud DB SDK spec. It documents how the *official Java SDKs* expose common operations and diagnostic signals, to help design a portable contract.
 
 Providers / SDKs:
 - **Azure Cosmos DB (SQL API)**: `com.azure:azure-cosmos`
@@ -22,7 +22,7 @@ Providers / SDKs:
 | Not found | Cosmos 404 `CosmosException` | Item missing often returns empty `GetItemResponse` rather than an exception; missing table surfaces service errors | `NOT_FOUND` errors for missing database/table (depending on call) |
 | Conflict | Cosmos 409 / precondition failures | Conditional check failures (`ConditionalCheckFailedException`) | `ALREADY_EXISTS` / `FAILED_PRECONDITION` / `ABORTED` (ABORTED is usually retryable) |
 
-## Portability Pitfalls (What the Hyperscale DB SDK must normalize or flag)
+## Portability Pitfalls (What the Multicloud DB SDK must normalize or flag)
 
 - **Key model mismatch**
   - Cosmos DB point ops require both `id` and `partition_key`.
@@ -48,7 +48,7 @@ Providers / SDKs:
   - Spanner is transaction-centric; read-write work is typically wrapped in `run_in_transaction()` and may retry on `Aborted`.
   - DynamoDB and Cosmos have more limited/structured transactional semantics (e.g., per-item conditionals; Cosmos transactional batches are scoped).
 
-## Design Implications for Hyperscale DB’s Portable Contract
+## Design Implications for Multicloud DB’s Portable Contract
 
 - Treat **continuation** as an opaque `continuation_token` string in the portable API, even if the provider uses a structured key (DynamoDB) or has no native token (Spanner).
 - Consider making **delete-by-key idempotent** in the portable contract (normalize Cosmos 404-on-delete into success), and provide an opt-in “strict delete” mode.
