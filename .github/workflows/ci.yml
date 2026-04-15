@@ -107,12 +107,14 @@ jobs:
           }
 
           # Readiness probe: wait until the HTTPS endpoint responds
+          $ready = $false
           $deadline = (Get-Date).AddMinutes(2)
           do {
             try {
               Invoke-RestMethod -Uri "https://localhost:8081/_explorer/emulator.pem" `
                 -SkipCertificateCheck -TimeoutSec 5 | Out-Null
               Write-Host "Cosmos DB Emulator endpoint is responding"
+              $ready = $true
               break
             } catch {
               Write-Host "Emulator not ready yet; sleeping 5s..."
@@ -120,7 +122,7 @@ jobs:
             }
           } while ((Get-Date) -lt $deadline)
 
-          if ((Get-Date) -ge $deadline) {
+          if (-not $ready) {
             Write-Error "Cosmos DB Emulator did not become ready in time"
             exit 1
           }
