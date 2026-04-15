@@ -96,7 +96,7 @@ jobs:
           Import-Module "$env:ProgramFiles\Azure Cosmos DB Emulator\PSModules\Microsoft.Azure.CosmosDB.Emulator"
 
           Start-CosmosDbEmulator -NoUI `
-            -Timeout 600 `
+            -Timeout 360 `
             -Key "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw=="
 
           # Fast-fail if the emulator process didn't even launch
@@ -107,7 +107,7 @@ jobs:
           }
 
           # Readiness probe: wait until the HTTPS endpoint responds
-          $deadline = (Get-Date).AddMinutes(5)
+          $deadline = (Get-Date).AddMinutes(2)
           do {
             try {
               Invoke-RestMethod -Uri "https://localhost:8081/_explorer/emulator.pem" `
