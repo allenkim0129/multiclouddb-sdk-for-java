@@ -93,41 +93,49 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "Launching Azure Cosmos DB Emulator"
-          Import-Module "$env:ProgramFiles\Azure Cosmos DB Emulator\PSModules\Microsoft.Azure.CosmosDB.Emulator"
+          $Emulator = "$env:ProgramFiles\Azure Cosmos DB Emulator\Microsoft.Azure.Cosmos.Emulator.exe"
 
-          Start-CosmosDbEmulator -NoUI `
-            -Timeout 360 `
-            -Key "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw=="
-
-          # Fast-fail if the emulator process didn't even launch
-          Start-Sleep -Seconds 10
-          if (-not (Get-Process -Name "CosmosDB.Emulator" -ErrorAction SilentlyContinue)) {
-            Write-Error "Emulator process not found - installation may be broken"
+          if (!(Test-Path $Emulator)) {
+            Write-Error "Emulator not found at '$Emulator'"
             exit 1
           }
 
-          # Readiness probe: wait until the HTTPS endpoint responds
-          $ready = $false
-          $deadline = (Get-Date).AddMinutes(2)
+          # Match Java/Python SDK emulator parameters:
+          #   /noexplorer   - skip data explorer UI
+          #   /noui         - no system tray icon
+          #   /enablepreview - enable preview features
+          #   /disableratelimiting - prevent 429s during tests
+          #   /partitioncount=50  - more realistic partition layout
+          #   /consistency=Session - Cosmos DB default consistency
+          $startArgs = "/noexplorer /noui /enablepreview /disableratelimiting /partitioncount=50 /consistency=Session"
+          Write-Host "Starting emulator: $Emulator $startArgs"
+          $process = Start-Process $Emulator -ArgumentList $startArgs -ErrorAction Stop -PassThru
+          Write-Host "Emulator process started: PID=$($process.Id)"
+
+          # Poll /getstatus until running (exit code 2) or timeout
+          # Matches the approach used by azure-sdk-for-java and azure-sdk-for-python
+          $Timeout = 600
+          $start = [DateTimeOffset]::Now
+          $stop = $start.AddSeconds($Timeout)
           do {
-            try {
-              Invoke-RestMethod -Uri "https://localhost:8081/_explorer/emulator.pem" `
-                -SkipCertificateCheck -TimeoutSec 5 | Out-Null
-              Write-Host "Cosmos DB Emulator endpoint is responding"
-              $ready = $true
-              break
-            } catch {
-              Write-Host "Emulator not ready yet; sleeping 5s..."
-              Start-Sleep -Seconds 5
+            $status = Start-Process $Emulator -ArgumentList "/getstatus" -PassThru -Wait
+            switch ($status.ExitCode) {
+              1 { Write-Host "Emulator is starting..." }
+              2 {
+                Write-Host "Cosmos DB Emulator is running"
+                break
+              }
+              3 { Write-Host "Emulator is stopped" }
+              default { Write-Host "Unrecognized status exit code: $($status.ExitCode)" }
             }
-          } while ((Get-Date) -lt $deadline)
+            if ($status.ExitCode -eq 2) { break }
+            Start-Sleep -Seconds 5
+          } while ([DateTimeOffset]::Now -lt $stop)
 
-          if (-not $ready) {
-            Write-Error "Cosmos DB Emulator did not become ready in time"
+          if ($status.ExitCode -ne 2) {
+            Write-Error "Emulator failed to reach Running status within $Timeout seconds"
             exit 1
           }
-
-          Write-Host "Cosmos DB Emulator is running"
 
       - name: Cosmos emulator diagnostics (on failure)
         if: failure()
