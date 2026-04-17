@@ -45,7 +45,7 @@ public final class SdkUserAgent {
                 }
             }
         } catch (IOException e) {
-            LOG.warn("Failed to read SDK version from {}: {}", VERSION_RESOURCE, e.getMessage());
+            LOG.warn("Failed to read SDK version from {}", VERSION_RESOURCE, e);
         }
         SDK_VERSION = version;
     }
