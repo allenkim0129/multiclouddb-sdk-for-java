@@ -186,8 +186,8 @@ public final class MulticloudDbClientConfig {
          * {@code multiclouddb-sdk-java/<version> <suffix>}.
          * Pass {@code null} to clear a previously set suffix.
          * <p>
-         * The suffix is trimmed of leading/trailing whitespace; if the trimmed
-         * value is empty it is treated as {@code null}.
+         * The suffix is trimmed of leading/trailing whitespace; an empty
+         * (or whitespace-only) suffix is omitted from the resulting user agent.
          * <p>
          * The suffix must contain only printable ASCII characters (0x20-0x7E)
          * or HTAB (0x09), and must not exceed {@value #USER_AGENT_SUFFIX_MAX_LENGTH}
@@ -202,11 +202,6 @@ public final class MulticloudDbClientConfig {
         public Builder userAgentSuffix(String suffix) {
             if (suffix != null) {
                 suffix = suffix.trim();
-                if (suffix.isEmpty()) {
-                    suffix = null;
-                }
-            }
-            if (suffix != null) {
                 if (suffix.length() > USER_AGENT_SUFFIX_MAX_LENGTH) {
                     throw new IllegalArgumentException(
                             "userAgentSuffix length must be <= " + USER_AGENT_SUFFIX_MAX_LENGTH
