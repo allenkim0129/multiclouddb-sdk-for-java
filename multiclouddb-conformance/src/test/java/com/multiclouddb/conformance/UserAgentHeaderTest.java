@@ -146,7 +146,6 @@ class UserAgentHeaderTest {
     //
 
     @Test
-    @Tag("cosmos")
     void cosmosClientIncludesSdkUserAgentInDiagnostics() {
         MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
                 .provider(ProviderId.COSMOS)
