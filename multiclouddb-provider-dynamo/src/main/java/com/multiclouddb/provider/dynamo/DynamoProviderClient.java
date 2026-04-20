@@ -108,6 +108,11 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         String region   = config.connection().getOrDefault(DynamoConstants.CONFIG_REGION, DynamoConstants.REGION_DEFAULT);
         String endpoint = config.connection().get(DynamoConstants.CONFIG_ENDPOINT);
 
+        // NOTE: DynamoDbClientBuilder.overrideConfiguration(...) fully REPLACES any prior override
+        // configuration on the builder. When adding new overrides (retry policy, API call timeout,
+        // metric publishers, additional advanced options, etc.), append them to the same
+        // ClientOverrideConfiguration.builder() chain below rather than making a second
+        // .overrideConfiguration(...) call, which would clobber the user-agent suffix.
         DynamoDbClientBuilder builder = DynamoDbClient.builder()
                 .region(Region.of(region))
                 .overrideConfiguration(
