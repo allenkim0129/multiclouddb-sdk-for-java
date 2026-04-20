@@ -176,17 +176,46 @@ public final class MulticloudDbClientConfig {
             return this;
         }
 
+        /** Maximum allowed length for {@link #userAgentSuffix}. */
+        private static final int USER_AGENT_SUFFIX_MAX_LENGTH = 256;
+
         /**
          * Set a custom suffix that is appended to the SDK's user agent string.
          * <p>
          * The resulting user agent sent with every request is:
          * {@code azsdk-java-multiclouddb/<version> <suffix>}.
          * Pass {@code null} to clear a previously set suffix.
+         * <p>
+         * The suffix must contain only printable ASCII characters (0x20-0x7E)
+         * or HTAB (0x09), and must not exceed {@value #USER_AGENT_SUFFIX_MAX_LENGTH}
+         * characters. Control characters such as CR, LF, and NUL are rejected to
+         * prevent HTTP header injection.
          *
          * @param suffix the application-specific identifier to append
          * @return this builder
+         * @throws IllegalArgumentException if {@code suffix} exceeds the maximum
+         *         length or contains disallowed characters
          */
         public Builder userAgentSuffix(String suffix) {
+            if (suffix != null) {
+                if (suffix.length() > USER_AGENT_SUFFIX_MAX_LENGTH) {
+                    throw new IllegalArgumentException(
+                            "userAgentSuffix length must be <= " + USER_AGENT_SUFFIX_MAX_LENGTH
+                                    + " characters (was " + suffix.length() + ")");
+                }
+                for (int i = 0; i < suffix.length(); i++) {
+                    char c = suffix.charAt(i);
+                    if (c == '\t') {
+                        continue;
+                    }
+                    if (c < 0x20 || c > 0x7E) {
+                        throw new IllegalArgumentException(
+                                "userAgentSuffix contains invalid character at index " + i
+                                        + " (0x" + Integer.toHexString(c)
+                                        + "); only printable ASCII (0x20-0x7E) and HTAB are allowed");
+                    }
+                }
+            }
             this.userAgentSuffix = suffix;
             return this;
         }
