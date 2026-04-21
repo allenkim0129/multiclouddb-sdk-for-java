@@ -43,6 +43,12 @@
     font-size: 1rem;
 }
 
+.feature-grid .card h3 .twemoji,
+.feature-grid .card h3 .card-icon {
+    margin-right: 0.3rem;
+    vertical-align: -0.15em;
+}
+
 .feature-grid .card p {
     margin-bottom: 0;
     font-size: 0.85rem;

@@ -12,7 +12,7 @@ Each sample runs against **Azure Cosmos DB**, **Amazon DynamoDB**, or
 
 <div class="card" markdown>
 
-### :material-checkbox-marked-outline: TODO App
+### :material-checkbox-marked-outline:{ .card-icon } TODO App
 
 A simple CRUD web application with a browser-based UI for creating, reading,
 updating, and deleting TODO items.
@@ -25,7 +25,7 @@ updating, and deleting TODO items.
 
 <div class="card" markdown>
 
-### :material-chart-line: Risk Analysis Platform
+### :material-chart-line:{ .card-icon } Risk Analysis Platform
 
 A multi-tenant portfolio risk analytics platform with an executive dashboard.
 Demonstrates database-per-tenant isolation, partition-scoped queries, and
