@@ -562,12 +562,13 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      * <p>
      * For TOP N: rewrites {@code SELECT} to {@code SELECT TOP N} when limit is set.
      * For ORDER BY: appends {@code ORDER BY c.field ASC/DESC} clause when explicit
-     * ordering is requested, or appends {@code ORDER BY c.id ASC} for partition-scoped
-     * queries without an explicit order (to match DynamoDB's implicit range-key ordering).
+     * ordering is requested, or appends {@code ORDER BY c.id ASC} for all queries
+     * without an explicit order (to match DynamoDB's implicit range-key ordering for
+     * partition-scoped queries and per-page sort for cross-partition scans).
      * <p>
-     * Package-private for unit testing.
+     * Package-private and static for unit testing.
      */
-    String applyResultSetControl(String sql, QueryRequest query) {
+    static String applyResultSetControl(String sql, QueryRequest query) {
         String result = sql;
 
         // Apply TOP N — rewrite SELECT to SELECT TOP N using a boolean flag to
@@ -610,12 +611,14 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
                 orderClause.append("c.").append(so.field()).append(" ").append(so.direction().name());
             }
             result = result + orderClause;
-        } else if (query.partitionKey() != null) {
-            // DynamoDB Query implicitly returns items sorted by sort key (range key) ASC
-            // within a partition. Cosmos DB has no implicit ordering, so only apply the
-            // default id-based ordering for partition-scoped queries to preserve that
-            // behavior without imposing cross-partition ORDER BY cost and pagination
-            // changes on full-container or cross-partition queries.
+        } else {
+            // DynamoDB Query implicitly sorts by range key within a partition; DynamoDB
+            // Scan sorts per-page in memory. Cosmos has no implicit ordering, so always
+            // append ORDER BY c.id ASC to ensure sorted results on every query.
+            // For single-page results both providers return identically sorted output.
+            // For multi-page cross-partition queries Cosmos is globally sorted server-side,
+            // which is strictly better than DynamoDB's per-page sort — this is a documented
+            // capability difference, not a bug.
             result = result + " ORDER BY c.id ASC";
         }
 
