@@ -1,0 +1,86 @@
+/* Hero section on landing page */
+.hero-banner {
+    text-align: center;
+    padding: 1rem 0 2rem;
+}
+
+.hero-banner img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 8px;
+}
+
+.hero-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 1rem;
+    margin-top: 1.5rem;
+    flex-wrap: wrap;
+}
+
+/* Feature grid */
+.feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1.2rem;
+    margin: 1.5rem 0;
+}
+
+.feature-grid .card {
+    border: 1px solid var(--md-default-fg-color--lightest);
+    border-radius: 0.5rem;
+    padding: 1.25rem 1.5rem;
+    transition: box-shadow 0.2s, border-color 0.2s;
+}
+
+.feature-grid .card:hover {
+    border-color: var(--md-accent-fg-color);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+
+.feature-grid .card h3 {
+    margin-top: 0;
+    font-size: 1rem;
+}
+
+.feature-grid .card p {
+    margin-bottom: 0;
+    font-size: 0.85rem;
+    color: var(--md-default-fg-color--light);
+}
+
+/* Provider comparison tables */
+.md-typeset table:not([class]) th {
+    white-space: nowrap;
+}
+
+/* Architecture diagram — keep monospace blocks readable */
+.md-typeset .architecture-diagram pre {
+    font-size: 0.78rem;
+    line-height: 1.4;
+}
+
+/* Provider badges */
+.provider-badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 1rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-right: 0.3rem;
+}
+
+.provider-badge.cosmos {
+    background: #0078d4;
+    color: white;
+}
+
+.provider-badge.dynamo {
+    background: #ff9900;
+    color: white;
+}
+
+.provider-badge.spanner {
+    background: #4285f4;
+    color: white;
+}

@@ -1,0 +1,214 @@
+# Quick Start
+
+Get up and running with the Multicloud DB SDK in minutes.
+
+---
+
+## Prerequisites
+
+| Tool | Version | Required For |
+|------|---------|-------------|
+| JDK  | 17+     | Build and run |
+| Maven | 3.9+   | Build |
+
+```bash
+java -version    # must be 17.x
+mvn -version     # must be 3.9+
+```
+
+---
+
+## 1. Build from Source
+
+```bash
+git clone https://github.com/microsoft/multiclouddb-sdk-for-java.git
+cd multiclouddb-sdk-for-java
+mvn clean install -DskipTests
+```
+
+---
+
+## 2. Add Dependencies
+
+Add the portable API as a compile dependency and one or more providers as
+runtime dependencies:
+
+```xml
+<!-- Portable API (compile scope) -->
+<dependency>
+    <groupId>com.microsoft.multiclouddb</groupId>
+    <artifactId>multiclouddb-api</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+</dependency>
+
+<!-- Pick a provider (runtime scope — swap without recompiling) -->
+<dependency>
+    <groupId>com.microsoft.multiclouddb</groupId>
+    <artifactId>multiclouddb-provider-cosmos</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <scope>runtime</scope>
+</dependency>
+```
+
+??? note "Add more providers"
+
+    You can include multiple providers in the same project. Each is discovered
+    via `ServiceLoader` and selected by `ProviderId` at runtime:
+
+    ```xml
+    <dependency>
+        <groupId>com.microsoft.multiclouddb</groupId>
+        <artifactId>multiclouddb-provider-dynamo</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <scope>runtime</scope>
+    </dependency>
+    <dependency>
+        <groupId>com.microsoft.multiclouddb</groupId>
+        <artifactId>multiclouddb-provider-spanner</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <scope>runtime</scope>
+    </dependency>
+    ```
+
+---
+
+## 3. Write Portable Code
+
+```java
+import com.multiclouddb.api.*;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+// Configure — provider selected entirely by config, not code
+Properties props = new Properties();
+props.load(getClass().getResourceAsStream("/todo-app-cosmos.properties"));
+
+String providerName = props.getProperty("multiclouddb.provider");
+ProviderId provider = ProviderId.fromId(providerName);
+
+MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
+        .provider(provider)
+        .connection("endpoint", props.getProperty("multiclouddb.connection.endpoint"))
+        .connection("key", props.getProperty("multiclouddb.connection.key"))
+        .build();
+
+// Create client via ServiceLoader discovery
+MulticloudDbClient client = MulticloudDbClientFactory.create(config);
+
+// CRUD — same code for every provider
+ObjectMapper mapper = new ObjectMapper();
+ObjectNode doc = mapper.createObjectNode();
+doc.put("title", "Buy groceries");
+doc.put("completed", false);
+
+ResourceAddress todos = new ResourceAddress("mydb", "todos");
+Key key = Key.of("todo-1", "todo-1");
+
+client.upsert(todos, key, doc);                  // Create or replace
+DocumentResult result = client.read(todos, key); // Point read
+ObjectNode document = result.document();         // The document payload
+client.delete(todos, key);                       // Delete
+```
+
+---
+
+## 4. Query with Portable Expressions
+
+Write a WHERE-clause filter once — the SDK translates it for each provider:
+
+```java
+QueryRequest query = QueryRequest.builder()
+        .expression("status = @status AND category = @cat")
+        .parameters(Map.of("status", "active", "cat", "shopping"))
+        .pageSize(25)
+        .build();
+
+QueryPage page = client.query(todos, query);
+for (JsonNode item : page.items()) {
+    System.out.println(item);
+}
+```
+
+The same expression produces different native queries per provider:
+
+| Provider | Generated Native Query |
+|----------|----------------------|
+| **Cosmos DB** | `SELECT * FROM c WHERE (c.status = @status AND c.category = @cat)` |
+| **DynamoDB** | `SELECT * FROM "todos" WHERE (status = ? AND category = ?)` |
+| **Spanner** | `SELECT * FROM todos WHERE (status = @status AND category = @cat)` |
+
+---
+
+## 5. Native Query Escape Hatch
+
+When you need provider-specific query syntax, use `nativeExpression()`:
+
+=== "Cosmos DB"
+
+    ```java
+    QueryRequest q = QueryRequest.builder()
+            .nativeExpression("SELECT * FROM c WHERE c.title LIKE '%flight%'")
+            .pageSize(25)
+            .build();
+    ```
+
+=== "DynamoDB"
+
+    ```java
+    QueryRequest q = QueryRequest.builder()
+            .nativeExpression("SELECT * FROM \"todos\" WHERE begins_with(title, 'Ship')")
+            .pageSize(25)
+            .build();
+    ```
+
+=== "Spanner"
+
+    ```java
+    QueryRequest q = QueryRequest.builder()
+            .nativeExpression("SELECT * FROM todos WHERE STARTS_WITH(title, 'Ship')")
+            .pageSize(25)
+            .build();
+    ```
+
+---
+
+## 6. Switch Providers
+
+Change **only** the properties file — no code changes required:
+
+=== "Cosmos DB"
+
+    ```properties
+    multiclouddb.provider=cosmos
+    multiclouddb.connection.endpoint=https://localhost:8081
+    multiclouddb.connection.key=C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw==
+    ```
+
+=== "DynamoDB"
+
+    ```properties
+    multiclouddb.provider=dynamo
+    multiclouddb.connection.endpoint=http://localhost:8000
+    multiclouddb.connection.region=us-east-1
+    multiclouddb.auth.accessKeyId=fakeMyKeyId
+    multiclouddb.auth.secretAccessKey=fakeSecretAccessKey
+    ```
+
+=== "Spanner"
+
+    ```properties
+    multiclouddb.provider=spanner
+    multiclouddb.connection.projectId=my-gcp-project
+    multiclouddb.connection.instanceId=my-instance
+    multiclouddb.connection.databaseId=my-database
+    ```
+
+---
+
+## Next Steps
+
+- [Configuration Reference](configuration.md) — full connection and auth properties per provider
+- [Developer Guide](guide.md) — keys, CRUD semantics, query DSL, partitioning, multi-tenant patterns
+- [Provider Compatibility](compatibility.md) — capability matrix and error mapping
+- [Samples](samples/index.md) — TODO app and Risk Analysis Platform

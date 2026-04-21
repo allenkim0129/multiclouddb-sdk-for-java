@@ -2,9 +2,9 @@
 
 Comprehensive reference for the Multicloud DB SDK's key management, CRUD operations,
 query DSL, and provider-specific storage behavior. For a quick-start tutorial
-and architecture overview, see the main [README](../README.md). For the
+and architecture overview, see the [Getting Started](getting-started.md) guide. For the
 provider compatibility matrix and feature-flag reference, see
-[compatibility.md](compatibility.md).
+[Compatibility](compatibility.md).
 
 ---
 
