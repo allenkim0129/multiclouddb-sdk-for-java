@@ -155,9 +155,9 @@ configure via properties.
 
 | Provider | Module | Status | Native SDK |
 |----------|--------|--------|------------|
-| **Azure Cosmos DB** | `multiclouddb-provider-cosmos` | Full | Azure Cosmos Java SDK 4.60.0 |
-| **Amazon DynamoDB** | `multiclouddb-provider-dynamo` | Full | AWS SDK for Java 2.25.16 |
-| **Google Cloud Spanner** | `multiclouddb-provider-spanner` | Source only* | Google Cloud Spanner 6.62.0 |
+| **Azure Cosmos DB** | `multiclouddb-provider-cosmos` | Full | Azure Cosmos Java SDK |
+| **Amazon DynamoDB** | `multiclouddb-provider-dynamo` | Full | AWS SDK for Java 2.x |
+| **Google Cloud Spanner** | `multiclouddb-provider-spanner` | Source only* | Google Cloud Spanner |
 
 > \* The Spanner provider source code and conformance tests are included in the repository,
 > but **Maven artifacts are not yet published**. Spanner artifacts will be available in a future release.
