@@ -97,6 +97,13 @@ The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 Starting from this release, all Cosmos DB and DynamoDB query paths return results
 sorted by the document's sort key ascending.
 
+> **Design note:** The default `ORDER BY` is applied to **all** Cosmos queries
+> (both partition-scoped and cross-partition), not just partition-scoped ones.
+> This gives the strongest consistency guarantee: every query, on every provider,
+> returns items sorted by sort key. The early PR description mentioned
+> partition-scoped only as a starting point; the final implementation was
+> intentionally broadened to cover all queries.
+
 ### Cosmos DB
 
 Cosmos DB appends `ORDER BY c.id ASC` to every query that does not already carry
@@ -138,10 +145,9 @@ The Spanner provider does not yet implement default sort-key ordering.
 Consumers relying on consistent cross-provider sort behavior should not use
 the Spanner provider until this gap is addressed.
 
-> **Tracking issue**: Default sort-key ordering for the Spanner provider is
-> tracked in [GitHub Issue #55](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/55)
-> (to be created). Until resolved, do not mix Spanner with Cosmos or DynamoDB
-> in conformance-sensitive workloads.
+> **Tracking**: A follow-up issue will be filed to implement default sort-key
+> ordering for the Spanner provider. Until resolved, do not mix Spanner with
+> Cosmos or DynamoDB in conformance-sensitive workloads.
 
 ## Escape Hatch Policy
 

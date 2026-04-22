@@ -554,13 +554,19 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      * @param key the portable document key
      * @return the Cosmos SDK partition key object
      */
+    private PartitionKey resolvePartitionKey(MulticloudDbKey key) {
+        return new PartitionKey(key.partitionKey());
+    }
+
     /**
      * Returns {@code true} if the SQL string already contains a syntactic
      * {@code ORDER BY} clause.
      * <p>
      * Uses a word-boundary regex rather than a plain {@code contains()} call so that
      * string literals in the query (e.g. {@code WHERE c.note = 'place order by friday'})
-     * do not produce false positives. String literals are stripped before the check.
+     * do not produce false positives. String literals are stripped before the check via
+     * {@link #stripStringLiterals(String)}, which correctly handles SQL-escaped quotes
+     * (doubled single quotes: {@code ''}).
      */
     private static final Pattern ORDER_BY_PATTERN =
             Pattern.compile("(?i)\\bORDER\\s+BY\\b");
@@ -582,15 +588,19 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
 
     /**
      * Replaces all single-quoted string literals in a SQL fragment with empty
-     * placeholders so that content inside literals does not interfere with
-     * keyword detection.
+     * placeholders so that keyword detection is not confused by literal content.
+     * <p>
+     * Handles SQL-style escaped single quotes (doubled: {@code ''}) via the
+     * pattern {@code '(?:[^']|'')*'}, which matches the entire literal including
+     * any embedded {@code ''} sequences as a single token.
+     * <p>
+     * Example: {@code 'it''s order by'} is stripped to {@code ''} rather than
+     * leaving {@code s order by'} unstripped as the naive {@code [^']*} regex would.
      */
     private static String stripStringLiterals(String sql) {
-        return sql.replaceAll("'[^']*'", "''");
-    }
-
-    private PartitionKey resolvePartitionKey(MulticloudDbKey key) {
-        return new PartitionKey(key.partitionKey());
+        // '(?:[^']|'')*' matches SQL string literals that may contain escaped
+        // single quotes (represented as '' in SQL).
+        return sql.replaceAll("'(?:[^']|'')*'", "''");
     }
 
     /**

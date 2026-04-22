@@ -552,7 +552,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
             // Sort by sort key (ascending) to match the implicit ordering of
             // DynamoDB Query within a partition and the Cosmos provider's default
             // ORDER BY c.id ASC. Ordering applies within this page only; see
-            // sortBySortKeyAsc() for the multi-page limitation note.
+            // SORT_KEY_ASC for the multi-page limitation note.
             items.sort(SORT_KEY_ASC);
 
             OperationDiagnostics diag = buildQueryDiagnostics(OperationNames.QUERY_WITH_TRANSLATION, address,
@@ -721,7 +721,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         // DynamoDB Scan returns items in undefined hash-key order. Sort by sort key
         // (ascending) to match the implicit ordering of DynamoDB Query within a
         // partition and the Cosmos provider's default ORDER BY c.id ASC. Ordering
-        // applies within this page only; see sortBySortKeyAsc() for the multi-page
+        // applies within this page only; see SORT_KEY_ASC for the multi-page
         // limitation note.
         items.sort(SORT_KEY_ASC);
 
@@ -787,7 +787,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         // DynamoDB Scan returns items in undefined hash-key order. Sort by sort key
         // (ascending) to match the implicit ordering of DynamoDB Query within a
         // partition and the Cosmos provider's default ORDER BY c.id ASC. Ordering
-        // applies within this page only; see sortBySortKeyAsc() for the multi-page
+        // applies within this page only; see SORT_KEY_ASC for the multi-page
         // limitation note.
         items.sort(SORT_KEY_ASC);
 

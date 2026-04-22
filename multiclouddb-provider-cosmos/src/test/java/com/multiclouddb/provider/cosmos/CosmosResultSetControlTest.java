@@ -18,8 +18,13 @@ import static org.junit.jupiter.api.Assertions.*;
  *   <li>All queries without an explicit {@code orderBy} get
  *       {@code ORDER BY c.id ASC} appended — both partition-scoped and
  *       cross-partition — so that Cosmos results are always sorted, matching
- *       DynamoDB's per-page sort behaviour.</li>
+ *       DynamoDB's implicit sort behaviour. This is intentional: applying the
+ *       default to all queries gives the strongest cross-provider consistency
+ *       guarantee.</li>
  *   <li>An explicit {@code orderBy} is always honoured, overriding the default.</li>
+ *   <li>SQL that already contains {@code ORDER BY} is not modified (idempotent).</li>
+ *   <li>Aggregate and {@code GROUP BY} queries are exempt — Cosmos rejects
+ *       {@code ORDER BY} on them.</li>
  *   <li>{@code limit} is correctly rewritten to Cosmos {@code TOP N}.</li>
  * </ul>
  * <p>
@@ -177,5 +182,17 @@ class CosmosResultSetControlTest {
         String result = CosmosProviderClient.applyResultSetControl(sql, query);
         assertTrue(result.endsWith("ORDER BY c.id ASC"),
                 "String literal containing 'order by' must not suppress the default ORDER BY; got: " + result);
+    }
+
+    @Test
+    @DisplayName("String literal with SQL-escaped single quotes (doubled '') is fully stripped before keyword detection")
+    void escapedQuoteStringLiteralDoesNotSuppressDefault() {
+        QueryRequest query = QueryRequest.builder().build();
+        // 'it''s order by' uses SQL escaped quote (''). The naive '[^']*' regex strips only
+        // 'it' and leaves "s order by'" unstripped, falsely suppressing the default ORDER BY.
+        String sql = "SELECT * FROM c WHERE c.note = 'it''s order by'";
+        String result = CosmosProviderClient.applyResultSetControl(sql, query);
+        assertTrue(result.endsWith("ORDER BY c.id ASC"),
+                "SQL-escaped single quote literal must be fully stripped; got: " + result);
     }
 }
