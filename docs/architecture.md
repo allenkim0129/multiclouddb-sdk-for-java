@@ -44,7 +44,7 @@ All application code depends on `multiclouddb-api`. The core types are:
 | `MulticloudDbClientFactory` | Creates a `MulticloudDbClient` by discovering providers via `ServiceLoader` |
 | `MulticloudDbClientConfig` | Builder-pattern config: provider selection, connection, auth, feature flags |
 | `ResourceAddress` | `(database, collection)` pair targeting a container/table |
-| `Key` | `(partitionKey, sortKey)` pair — every document needs at least a partition key |
+| `MulticloudDbKey` | `(partitionKey, sortKey)` pair — every document needs at least a partition key |
 | `QueryRequest` | Portable expression, native expression, parameters, page size, continuation token, partition key scoping, `limit`, `orderBy` |
 | `QueryPage` | Result page: items + optional continuation token + optional diagnostics |
 | `SortOrder` / `SortDirection` | Sort specification for `orderBy` — validates field names against injection |
@@ -134,20 +134,20 @@ multiclouddb-sdk-java/
 
 ## Design Decisions
 
-### Why Key Is an Explicit Parameter
+### Why MulticloudDbKey Is an Explicit Parameter
 
-Every CRUD operation requires an explicit `Key` parameter — the SDK never
+Every CRUD operation requires an explicit `MulticloudDbKey` parameter — the SDK never
 extracts key material from the document body:
 
 ```java
-client.upsert(addr, Key.of("tenant-1", "pos-42"), doc);
+client.upsert(addr, MulticloudDbKey.of("tenant-1", "pos-42"), doc);
 ```
 
 **Why not extract from the document?**
 
 Each provider stores key fields using **different names**:
 
-| Provider | `Key.partitionKey()` stored as | `Key.sortKey()` stored as |
+| Provider | `MulticloudDbKey.partitionKey()` stored as | `MulticloudDbKey.sortKey()` stored as |
 |----------|-------------------------------|---------------------------|
 | **Cosmos DB** | `partitionKey` (custom field) | `id` (built-in Cosmos field) |
 | **DynamoDB** | `partitionKey` (hash key) | `sortKey` (range key) |
@@ -156,7 +156,7 @@ Each provider stores key fields using **different names**:
 A convention-based extractor would need provider-specific logic in what is
 supposed to be a provider-agnostic interface, which defeats portability.
 
-| Concern | Explicit Key | Extracted from Document |
+| Concern | Explicit MulticloudDbKey | Extracted from Document |
 |---------|-------------|------------------------|
 | `read()` / `delete()` | Works — no document needed | Impossible — no document |
 | Consistency | All 5 operations use the same pattern | Writes differ from reads |

@@ -38,14 +38,14 @@ runtime dependencies:
 <dependency>
     <groupId>com.microsoft.multiclouddb</groupId>
     <artifactId>multiclouddb-api</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.0-beta.2</version>
 </dependency>
 
 <!-- Pick a provider (runtime scope — swap without recompiling) -->
 <dependency>
     <groupId>com.microsoft.multiclouddb</groupId>
     <artifactId>multiclouddb-provider-cosmos</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.0-beta.2</version>
     <scope>runtime</scope>
 </dependency>
 ```
@@ -59,7 +59,7 @@ runtime dependencies:
     <dependency>
         <groupId>com.microsoft.multiclouddb</groupId>
         <artifactId>multiclouddb-provider-dynamo</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>0.1.0-beta.2</version>
         <scope>runtime</scope>
     </dependency>
     ```
@@ -120,7 +120,7 @@ Write a WHERE-clause filter once — the SDK translates it for each provider:
 QueryRequest query = QueryRequest.builder()
         .expression("status = @status AND category = @cat")
         .parameters(Map.of("status", "active", "cat", "shopping"))
-        .pageSize(25)
+        .maxPageSize(25)
         .build();
 
 QueryPage page = client.query(todos, query);
@@ -148,7 +148,7 @@ When you need provider-specific query syntax, use `nativeExpression()`:
     ```java
     QueryRequest q = QueryRequest.builder()
             .nativeExpression("SELECT * FROM c WHERE c.title LIKE '%flight%'")
-            .pageSize(25)
+            .maxPageSize(25)
             .build();
     ```
 
@@ -157,7 +157,7 @@ When you need provider-specific query syntax, use `nativeExpression()`:
     ```java
     QueryRequest q = QueryRequest.builder()
             .nativeExpression("SELECT * FROM \"todos\" WHERE begins_with(title, 'Ship')")
-            .pageSize(25)
+            .maxPageSize(25)
             .build();
     ```
 
@@ -166,7 +166,7 @@ When you need provider-specific query syntax, use `nativeExpression()`:
     ```java
     QueryRequest q = QueryRequest.builder()
             .nativeExpression("SELECT * FROM todos WHERE STARTS_WITH(title, 'Ship')")
-            .pageSize(25)
+            .maxPageSize(25)
             .build();
     ```
 

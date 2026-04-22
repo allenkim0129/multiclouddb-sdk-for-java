@@ -18,7 +18,7 @@ contract.
 | `MulticloudDbClientFactory` | Creates a client by discovering providers via `ServiceLoader` |
 | `MulticloudDbClientConfig` | Builder-pattern configuration for provider, connection, and auth |
 | `ResourceAddress` | A `(database, collection)` pair targeting a container/table |
-| `Key` | A `(partitionKey, sortKey)` identity for every document |
+| `MulticloudDbKey` | A `(partitionKey, sortKey)` identity for every document |
 | `QueryRequest` | Query input with expression, parameters, pagination, and partition scoping |
 | `QueryPage` | Query result: items, continuation token, and diagnostics |
 | `DocumentResult` | Read result: document payload and optional metadata |
