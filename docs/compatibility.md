@@ -1,10 +1,11 @@
 # Portable API Surface
 
-The Multicloud DB SDK ships **only capabilities that work identically across all
-three providers**. If a feature cannot be delivered portably on Azure Cosmos DB,
-Amazon DynamoDB, *and* Google Cloud Spanner, it is not part of the public API.
-This strict portability guarantee means every line of code you write against the
-SDK runs unchanged on any supported provider.
+The Multicloud DB SDK's portable API surface covers capabilities that work
+identically across all three providers. The features listed below require no
+runtime capability checks — they are guaranteed to work on Azure Cosmos DB,
+Amazon DynamoDB, and Google Cloud Spanner. Some providers offer additional
+capabilities (e.g., `CROSS_PARTITION_QUERY`, `ORDER_BY`, `LIKE`); use
+`client.capabilities()` to discover what the current provider supports.
 
 ---
 
@@ -109,7 +110,7 @@ allows passing a raw query string directly to the underlying provider. This is t
 ```java
 QueryRequest q = QueryRequest.builder()
     .nativeExpression("SELECT * FROM c WHERE c.title LIKE '%flight%'")
-    .pageSize(25)
+    .maxPageSize(25)
     .build();
 ```
 

@@ -36,7 +36,7 @@ Initial public beta of the portable API and SPI layer.
 - `MulticloudDbClientConfig` — immutable builder-pattern configuration
 - `QueryRequest` — portable expression or native expression passthrough with
   named parameters, pagination, partition key scoping, limit, and orderBy
-- `Key` — portable `(partitionKey, sortKey)` identity
+- `MulticloudDbKey` — portable `(partitionKey, sortKey)` identity
 - `ResourceAddress` — `(database, collection)` targeting
 - Portable expression parser, validator, and translator SPI
 - `CapabilitySet` — runtime capability introspection
