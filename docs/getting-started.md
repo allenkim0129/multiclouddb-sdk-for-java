@@ -96,17 +96,17 @@ MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
 MulticloudDbClient client = MulticloudDbClientFactory.create(config);
 
 // CRUD — same code for every provider
-ObjectMapper mapper = new ObjectMapper();
-ObjectNode doc = mapper.createObjectNode();
-doc.put("title", "Buy groceries");
-doc.put("completed", false);
+Map<String, Object> doc = Map.of(
+        "title", "Buy groceries",
+        "completed", false
+);
 
 ResourceAddress todos = new ResourceAddress("mydb", "todos");
-Key key = Key.of("todo-1", "todo-1");
+MulticloudDbKey key = MulticloudDbKey.of("todo-1", "todo-1");
 
 client.upsert(todos, key, doc);                  // Create or replace
 DocumentResult result = client.read(todos, key); // Point read
-ObjectNode document = result.document();         // The document payload
+JsonNode document = result.document();           // The document payload
 client.delete(todos, key);                       // Delete
 ```
 
