@@ -587,20 +587,27 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
+     * Matches SQL single-quoted string literals, including those that contain
+     * SQL-escaped single quotes (doubled: {@code ''}).
+     * <p>
+     * Pattern: {@code '(?:[^']|'')*'} — matches the opening quote, then zero or
+     * more of either a non-quote character or a doubled-quote escape, then the
+     * closing quote. This correctly handles {@code 'it''s order by'} as a single
+     * token, preventing {@code s order by'} from leaking into keyword detection.
+     * <p>
+     * Pre-compiled as a {@code static final} field to avoid per-call regex
+     * compilation overhead.
+     */
+    private static final Pattern STRING_LITERAL_PATTERN =
+            Pattern.compile("'(?:[^']|'')*'");
+
+    /**
      * Replaces all single-quoted string literals in a SQL fragment with empty
      * placeholders so that keyword detection is not confused by literal content.
-     * <p>
-     * Handles SQL-style escaped single quotes (doubled: {@code ''}) via the
-     * pattern {@code '(?:[^']|'')*'}, which matches the entire literal including
-     * any embedded {@code ''} sequences as a single token.
-     * <p>
-     * Example: {@code 'it''s order by'} is stripped to {@code ''} rather than
-     * leaving {@code s order by'} unstripped as the naive {@code [^']*} regex would.
+     * Uses the pre-compiled {@link #STRING_LITERAL_PATTERN}.
      */
     private static String stripStringLiterals(String sql) {
-        // '(?:[^']|'')*' matches SQL string literals that may contain escaped
-        // single quotes (represented as '' in SQL).
-        return sql.replaceAll("'(?:[^']|'')*'", "''");
+        return STRING_LITERAL_PATTERN.matcher(sql).replaceAll("''");
     }
 
     /**

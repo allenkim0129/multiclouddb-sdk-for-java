@@ -3,7 +3,6 @@
 
 package com.multiclouddb.provider.dynamo;
 
-import com.multiclouddb.api.OperationOptions;
 import software.amazon.awssdk.services.dynamodb.model.DynamoDbResponseMetadata;
 import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
