@@ -7,6 +7,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.1.0-beta.1] — 2026-04-23
+
 ### Added
 
 - Default sort-key ordering: all DynamoDB scan paths (`executeScan`,
@@ -31,12 +33,6 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `ClientOverrideConfiguration` API user-agent suffix. When
   `MulticloudDbClientConfig.Builder.userAgentSuffix(String)` is configured,
   the suffix is appended to the header.
-
-## [0.1.0-beta.1] — 2026-04-03
-
-Initial public beta of the Amazon DynamoDB provider.
-
-### Added
 
 #### Provider adapter and client
 

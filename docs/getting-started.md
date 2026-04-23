@@ -38,14 +38,14 @@ runtime dependencies:
 <dependency>
     <groupId>com.microsoft.multiclouddb</groupId>
     <artifactId>multiclouddb-api</artifactId>
-    <version>0.1.0-beta.2</version>
+    <version>0.1.0-beta.1</version>
 </dependency>
 
 <!-- Pick a provider (runtime scope — swap without recompiling) -->
 <dependency>
     <groupId>com.microsoft.multiclouddb</groupId>
     <artifactId>multiclouddb-provider-cosmos</artifactId>
-    <version>0.1.0-beta.2</version>
+    <version>0.1.0-beta.1</version>
     <scope>runtime</scope>
 </dependency>
 ```
@@ -59,7 +59,7 @@ runtime dependencies:
     <dependency>
         <groupId>com.microsoft.multiclouddb</groupId>
         <artifactId>multiclouddb-provider-dynamo</artifactId>
-        <version>0.1.0-beta.2</version>
+        <version>0.1.0-beta.1</version>
         <scope>runtime</scope>
     </dependency>
     ```
