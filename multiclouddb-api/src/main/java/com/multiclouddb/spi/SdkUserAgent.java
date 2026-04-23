@@ -72,7 +72,7 @@ public final class SdkUserAgent {
     /**
      * Returns the SDK user agent base string without any customer suffix.
      *
-     * @return the base user agent string, e.g. {@code "multiclouddb-sdk-java/0.1.0-beta.2"}
+     * @return the base user agent string, e.g. {@code "multiclouddb-sdk-java/0.1.0-beta.1"}
      */
     public static String userAgentBase() {
         return SDK_NAME + "/" + SDK_VERSION;

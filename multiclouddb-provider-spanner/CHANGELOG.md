@@ -7,7 +7,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-## [0.1.0-beta.1] — 2026-04-03
+## [0.1.0-beta.1] — 2026-04-23
 
 Initial public beta of the Google Cloud Spanner provider.
 
