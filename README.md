@@ -283,8 +283,8 @@ This is fully transparent - you never see the translated SQL. For direct control
 | **multiclouddb-provider-dynamo** | `com.microsoft.multiclouddb:multiclouddb-provider-dynamo` | Amazon DynamoDB adapter (AWS SDK v2) |
 | **multiclouddb-provider-spanner** | `com.microsoft.multiclouddb:multiclouddb-provider-spanner` | Google Cloud Spanner adapter (Google Cloud Spanner 6.62.0) |
 | **multiclouddb-conformance** | `com.microsoft.multiclouddb:multiclouddb-conformance` | Cross-provider integration tests |
-| **multiclouddb-samples** | — | Sample apps (see [separate samples repo](https://github.com/microsoft/multiclouddb-sdk-for-java-samples)) |
 
+Samples: see the [separate samples repo](https://github.com/microsoft/multiclouddb-sdk-for-java-samples).
 ### API Surface
 
 All application code depends on `multiclouddb-api`. The core types are:
