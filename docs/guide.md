@@ -1154,7 +1154,7 @@ table across all providers.
 
 ## Result Set Control
 
-The SDK supports portable `limit` (Top N) and `orderBy` on providers that declare the respective capabilities. Both are **capability-gated** - query silently against non-supporting providers without error, and the SDK enforces the limit client-side when the provider cannot.
+The SDK supports portable `limit` (Top N) and `orderBy` on providers that declare the respective capabilities. Both are **capability-gated**: callers should check provider capabilities before using them. Unsupported options are not guaranteed to be silently ignored; providers may fail fast with `UNSUPPORTED_CAPABILITY` (for example, DynamoDB when `orderBy` is specified). Also note that DynamoDB's `result_limit` support is **per-page**, not a global Top N across the full logical result set.
 
 ### Checking Capabilities
 
@@ -1201,7 +1201,7 @@ QueryRequest q = QueryRequest.builder()
 
 ### Combining with Native Expressions
 
-`orderBy` and `limit` are silently discarded when `nativeExpression` is used - the native query string is passed through unmodified. Use provider-native syntax for full control:
+Handling of `orderBy` and `limit` with `nativeExpression` is provider-specific. For Cosmos DB and Spanner native passthrough, these fields are ignored and the native query string is sent as provided. For DynamoDB `ExecuteStatement`, `limit` is still applied, and setting `orderBy` causes an error. Use provider-native syntax for ordering/limiting when you need exact control over native query execution:
 
 ```java
 // Cosmos DB native - full SQL control

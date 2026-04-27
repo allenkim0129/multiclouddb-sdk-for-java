@@ -185,7 +185,7 @@ MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
     // identity-based auth patterns for each provider.
     .build();
 
-MulticloudDbClient client = MulticloudDbClientFactory.create(config);
+try (MulticloudDbClient client = MulticloudDbClientFactory.create(config)) {
 
 // CRUD - same code for every provider
 ResourceAddress todos = new ResourceAddress("mydb", "todos");
@@ -204,6 +204,7 @@ QueryRequest query = QueryRequest.builder()
     .maxPageSize(25)
     .build();
 QueryPage page = client.query(todos, query);
+}
 ```
 
 [Get started →](getting-started.md){ .md-button .md-button--primary }

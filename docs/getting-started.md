@@ -75,8 +75,6 @@ runtime dependencies:
 ```java
 import com.multiclouddb.api.*;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 
 // Configure - provider selected entirely by config, not code
 Properties props = new Properties();
@@ -93,7 +91,7 @@ MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
         .build();
 
 // Create client via ServiceLoader discovery
-MulticloudDbClient client = MulticloudDbClientFactory.create(config);
+try (MulticloudDbClient client = MulticloudDbClientFactory.create(config)) {
 
 // CRUD - same code for every provider
 Map<String, Object> doc = Map.of(
@@ -108,6 +106,7 @@ client.upsert(todos, key, doc);                  // Create or replace
 DocumentResult result = client.read(todos, key); // Point read
 JsonNode document = result.document();           // The document payload
 client.delete(todos, key);                       // Delete
+}
 ```
 
 ---
