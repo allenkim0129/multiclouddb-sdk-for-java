@@ -426,6 +426,7 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 #### Read Consistency Level Requirements
 
 - **FR-077**: Read operations (`read` and `query`) MUST support an optional consistency level override that specifies the desired read consistency for that individual operation.
+  - *Implementation status (2026-04):* delivered as a per-client-instance override via Cosmos DB connection config (`consistencyLevel`); a portable per-call override on `OperationOptions` is tracked as deferred future work (see Edge Cases — *default consistency behaviors*).
 - **FR-078**: The SDK MUST define a portable consistency model with at minimum two levels: `STRONG` (linearizable / strongly consistent read) and `EVENTUAL` (eventually consistent read). Providers MAY also expose additional provider-specific consistency levels, but those levels are non-portable and MUST be selectable only through provider-specific configuration so that applications using only the portable SDK surface remain switchable by configuration only.
 - **FR-079**: Each provider adapter MUST map the portable consistency levels to the provider's native equivalent:
   - **Cosmos DB**: `STRONG` → `Strong` consistency level; `EVENTUAL` → `Eventual` consistency level.

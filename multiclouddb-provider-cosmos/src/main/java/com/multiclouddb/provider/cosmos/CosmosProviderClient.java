@@ -176,8 +176,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             CosmosContainer container = getContainer(address);
             PartitionKey pk = resolvePartitionKey(key);
             String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
-            CosmosItemRequestOptions readOpts = new CosmosItemRequestOptions();
-            applyReadConsistencyTo(readOpts);
+            CosmosItemRequestOptions readOpts = buildReadOptions(readConsistencyOverride);
             CosmosItemResponse<ObjectNode> response = container.readItem(cosmosId, pk, readOpts, ObjectNode.class);
             logItemDiagnostics(OperationNames.READ, address, response);
             ObjectNode raw = response.getItem();
@@ -587,23 +586,11 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
-     * Applies the client-level read consistency override to {@code opts} when one
-     * is configured; no-op when {@link #readConsistencyOverride} is {@code null}.
-     * Overloaded for {@link CosmosItemRequestOptions} used by point-reads.
-     */
-    private void applyReadConsistencyTo(CosmosItemRequestOptions opts) {
-        if (readConsistencyOverride != null) {
-            opts.setConsistencyLevel(readConsistencyOverride);
-        }
-    }
-
-    /**
-     * Builds {@link CosmosItemRequestOptions} with the given consistency level.
+     * Builds {@link CosmosItemRequestOptions} with the given consistency level applied,
+     * or no override when {@code consistencyLevel} is {@code null}.
      *
-     * <p><strong>Note:</strong> This method is not called from production code paths.
-     * {@link #read} uses {@link #applyReadConsistencyTo(CosmosItemRequestOptions)} directly.
-     * This method is retained for unit tests that need to exercise the options-building
-     * logic in isolation.
+     * <p>Used by {@link #read} to construct per-request options and exercised directly
+     * by unit tests to assert the options-building contract in isolation.
      */
     static CosmosItemRequestOptions buildReadOptions(ConsistencyLevel consistencyLevel) {
         CosmosItemRequestOptions opts = new CosmosItemRequestOptions();

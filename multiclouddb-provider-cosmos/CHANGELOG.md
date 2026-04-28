@@ -9,8 +9,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
-- `consistencyLevel` connection config key for opt-in per-request read consistency override.
-  Valid values (case-insensitive): `STRONG`, `BOUNDED_STALENESS`, `SESSION`,
+- `consistencyLevel` connection config key for opt-in client-level read consistency
+  override (applied uniformly to every read from a given client instance; per-operation
+  overrides via `OperationOptions` are deferred to a future release per spec edge-case
+  resolution). Valid values (case-insensitive): `STRONG`, `BOUNDED_STALENESS`, `SESSION`,
   `CONSISTENT_PREFIX`, `EVENTUAL`. When absent, read requests inherit the Cosmos DB
   account's configured default. See `docs/configuration.md` — *Consistency Level*.
 
