@@ -113,11 +113,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
 
         this.cosmosClient = builder.buildClient();
         LOG.info("Cosmos client created for endpoint: {}", endpoint);
-        if (readConsistencyOverride != null) {
-            LOG.info("Cosmos read consistency override: {}", readConsistencyOverride);
-        } else {
-            LOG.info("Cosmos read consistency: using account default");
-        }
+        LOG.info("Cosmos read consistency: {}", readConsistencyOverride != null ? readConsistencyOverride : "account default");
     }
 
     /**
@@ -352,9 +348,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             if (query.maxPageSize() != null) {
                 queryOptions.setMaxBufferedItemCount(query.maxPageSize());
             }
-            if (readConsistencyOverride != null) {
-                queryOptions.setConsistencyLevel(readConsistencyOverride);
-            }
+            applyReadConsistencyTo(queryOptions);
 
             String expression = query.nativeExpression() != null ? query.nativeExpression() : query.expression();
             if (expression == null || expression.isBlank()) {
@@ -445,9 +439,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             if (query.maxPageSize() != null) {
                 queryOptions.setMaxBufferedItemCount(query.maxPageSize());
             }
-            if (readConsistencyOverride != null) {
-                queryOptions.setConsistencyLevel(readConsistencyOverride);
-            }
+            applyReadConsistencyTo(queryOptions);
 
             List<SqlParameter> sqlParams = new ArrayList<>();
             for (Map.Entry<String, Object> entry : translated.namedParameters().entrySet()) {
@@ -585,11 +577,24 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
+     * Applies the client-level read consistency override to {@code opts} when one
+     * is configured; no-op when {@link #readConsistencyOverride} is {@code null}.
+     */
+    private void applyReadConsistencyTo(CosmosQueryRequestOptions opts) {
+        if (readConsistencyOverride != null) {
+            opts.setConsistencyLevel(readConsistencyOverride);
+        }
+    }
+
+    /**
      * Creates {@link CosmosItemRequestOptions} with the given consistency level applied.
-     * When {@code consistencyLevel} is {@code null} (no override configured), the returned
-     * options carry no explicit consistency setting and Cosmos DB honours the account default.
+     * When {@code consistencyLevel} is {@code null}, the returned options carry no
+     * explicit consistency setting and Cosmos DB honours the account default.
      * <p>
-     * Package-private and static for unit testing.
+     * Package-private and static for unit testing only — in production the call site
+     * always guards {@code null} with a ternary and calls the 3-arg {@code readItem}
+     * overload instead. The null path here exists solely so tests can exercise
+     * {@code buildReadOptions} directly without constructing a full client.
      */
     static CosmosItemRequestOptions buildReadOptions(ConsistencyLevel consistencyLevel) {
         CosmosItemRequestOptions opts = new CosmosItemRequestOptions();

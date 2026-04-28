@@ -104,6 +104,11 @@ Writes are unaffected — Cosmos DB write durability is independent of the consi
     semantic change. If RYOW semantics are required, keep the override at `SESSION` or
     omit the property entirely.
 
+!!! note "Client-level setting"
+    `consistencyLevel` is a client-level setting applied uniformly to all read operations
+    from that client instance — it cannot vary per-call. To use different consistency levels
+    for different reads, create separate client instances with the desired override each.
+
 **Example** — use eventual consistency for reads while keeping the account default for everything else:
 
 ```properties

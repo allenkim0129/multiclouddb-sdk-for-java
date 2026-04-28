@@ -421,4 +421,94 @@ class CosmosConsistencyTest {
                     "queryWithTranslation() must set EVENTUAL consistency on CosmosQueryRequestOptions");
         }
     }
+
+    @Test
+    @DisplayName("query() with no override: CosmosQueryRequestOptions.getConsistencyLevel() returns null")
+    @SuppressWarnings("unchecked")
+    void queryWithNoOverrideDoesNotSetConsistencyLevel() {
+        MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
+                .provider(ProviderId.COSMOS)
+                .connection(CosmosConstants.CONFIG_ENDPOINT, DUMMY_ENDPOINT)
+                .connection(CosmosConstants.CONFIG_KEY, DUMMY_KEY)
+                .build();
+
+        CosmosContainer mockContainer = mock(CosmosContainer.class);
+        CosmosDatabase mockDatabase = mock(CosmosDatabase.class);
+        CosmosClient mockClient = mock(CosmosClient.class);
+        when(mockClient.getDatabase(anyString())).thenReturn(mockDatabase);
+        when(mockDatabase.getContainer(anyString())).thenReturn(mockContainer);
+
+        CosmosPagedIterable<com.fasterxml.jackson.databind.JsonNode> mockPagedIterable =
+                mock(CosmosPagedIterable.class);
+        when(mockPagedIterable.iterableByPage(anyInt())).thenReturn(Collections.emptyList());
+        when(mockPagedIterable.iterableByPage(anyString(), anyInt())).thenReturn(Collections.emptyList());
+        when(mockContainer.queryItems(any(SqlQuerySpec.class),
+                any(CosmosQueryRequestOptions.class),
+                eq(com.fasterxml.jackson.databind.JsonNode.class)))
+                .thenReturn(mockPagedIterable);
+
+        try (MockedConstruction<CosmosClientBuilder> ignored =
+                     mockConstruction(CosmosClientBuilder.class, builderAnswerWithClient(mockClient))) {
+
+            CosmosProviderClient providerClient = new CosmosProviderClient(config);
+            ResourceAddress address = new ResourceAddress("testdb", "testcol");
+            QueryRequest query = QueryRequest.builder().expression("c.id = '1'").build();
+            providerClient.query(address, query, null);
+
+            ArgumentCaptor<CosmosQueryRequestOptions> captor =
+                    ArgumentCaptor.forClass(CosmosQueryRequestOptions.class);
+            verify(mockContainer).queryItems(any(SqlQuerySpec.class),
+                    captor.capture(), eq(com.fasterxml.jackson.databind.JsonNode.class));
+            assertNull(captor.getValue().getConsistencyLevel(),
+                    "query() must not set a consistency level when no override is configured");
+        }
+    }
+
+    @Test
+    @DisplayName("queryWithTranslation() with no override: CosmosQueryRequestOptions.getConsistencyLevel() returns null")
+    @SuppressWarnings("unchecked")
+    void queryWithTranslationWithNoOverrideDoesNotSetConsistencyLevel() {
+        MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
+                .provider(ProviderId.COSMOS)
+                .connection(CosmosConstants.CONFIG_ENDPOINT, DUMMY_ENDPOINT)
+                .connection(CosmosConstants.CONFIG_KEY, DUMMY_KEY)
+                .build();
+
+        CosmosContainer mockContainer = mock(CosmosContainer.class);
+        CosmosDatabase mockDatabase = mock(CosmosDatabase.class);
+        CosmosClient mockClient = mock(CosmosClient.class);
+        when(mockClient.getDatabase(anyString())).thenReturn(mockDatabase);
+        when(mockDatabase.getContainer(anyString())).thenReturn(mockContainer);
+
+        CosmosPagedIterable<com.fasterxml.jackson.databind.JsonNode> mockPagedIterable =
+                mock(CosmosPagedIterable.class);
+        when(mockPagedIterable.iterableByPage(anyInt())).thenReturn(Collections.emptyList());
+        when(mockPagedIterable.iterableByPage(anyString(), anyInt())).thenReturn(Collections.emptyList());
+        when(mockContainer.queryItems(any(SqlQuerySpec.class),
+                any(CosmosQueryRequestOptions.class),
+                eq(com.fasterxml.jackson.databind.JsonNode.class)))
+                .thenReturn(mockPagedIterable);
+
+        try (MockedConstruction<CosmosClientBuilder> ignored =
+                     mockConstruction(CosmosClientBuilder.class, builderAnswerWithClient(mockClient))) {
+
+            CosmosProviderClient providerClient = new CosmosProviderClient(config);
+            ResourceAddress address = new ResourceAddress("testdb", "testcol");
+
+            com.multiclouddb.api.query.TranslatedQuery translated =
+                    com.multiclouddb.api.query.TranslatedQuery.withNamedParameters(
+                            "SELECT * FROM c WHERE c.id = @id ORDER BY c.id ASC",
+                            "c.id = @id",
+                            Map.of("@id", "1"));
+            QueryRequest query = QueryRequest.builder().build();
+            providerClient.queryWithTranslation(address, translated, query, null);
+
+            ArgumentCaptor<CosmosQueryRequestOptions> captor =
+                    ArgumentCaptor.forClass(CosmosQueryRequestOptions.class);
+            verify(mockContainer).queryItems(any(SqlQuerySpec.class),
+                    captor.capture(), eq(com.fasterxml.jackson.databind.JsonNode.class));
+            assertNull(captor.getValue().getConsistencyLevel(),
+                    "queryWithTranslation() must not set a consistency level when no override is configured");
+        }
+    }
 }

@@ -4,6 +4,7 @@
 package com.multiclouddb.provider.cosmos;
 
 import com.azure.cosmos.ConsistencyLevel;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -60,10 +61,17 @@ public final class CosmosConstants {
      */
     public static final String CONFIG_CONSISTENCY_LEVEL = "consistencyLevel";
 
+    /** Shared valid-values suffix reused in both consistency error messages. */
+    private static final String VALID_CONSISTENCY_VALUES_SUFFIX =
+            "Valid values (case-insensitive): STRONG, BOUNDED_STALENESS, SESSION, CONSISTENT_PREFIX, EVENTUAL";
+
     /** Error message for unrecognised consistency level config values. */
     static final String ERR_INVALID_CONSISTENCY_LEVEL =
-            "Invalid Cosmos consistencyLevel '%s'. Valid values (case-insensitive): "
-            + "STRONG, BOUNDED_STALENESS, SESSION, CONSISTENT_PREFIX, EVENTUAL";
+            "Invalid Cosmos consistencyLevel '%s'. " + VALID_CONSISTENCY_VALUES_SUFFIX;
+
+    /** Error message when a {@code null} value is passed to {@link #parseConsistencyLevel}. */
+    static final String ERR_NULL_CONSISTENCY_LEVEL =
+            "Cosmos consistencyLevel must not be null. " + VALID_CONSISTENCY_VALUES_SUFFIX;
 
     /**
      * Parses a consistency level string (case-insensitive, whitespace-trimmed)
@@ -74,17 +82,15 @@ public final class CosmosConstants {
      * @throws IllegalArgumentException if the value is {@code null}, blank, or does not match
      *                                  a known consistency level
      */
-    public static ConsistencyLevel parseConsistencyLevel(String value) {
+    static ConsistencyLevel parseConsistencyLevel(String value) {
         if (value == null) {
-            throw new IllegalArgumentException(
-                    "Cosmos consistencyLevel must not be null. "
-                    + "Valid values (case-insensitive): STRONG, BOUNDED_STALENESS, SESSION, CONSISTENT_PREFIX, EVENTUAL");
+            throw new IllegalArgumentException(ERR_NULL_CONSISTENCY_LEVEL);
         }
         if (value.isBlank()) {
             throw new IllegalArgumentException(
                     String.format(ERR_INVALID_CONSISTENCY_LEVEL, "<blank>"));
         }
-        String normalized = value.strip().toUpperCase(java.util.Locale.ROOT);
+        String normalized = value.strip().toUpperCase(Locale.ROOT);
         return switch (normalized) {
             case "STRONG"            -> ConsistencyLevel.STRONG;
             case "BOUNDED_STALENESS" -> ConsistencyLevel.BOUNDED_STALENESS;
