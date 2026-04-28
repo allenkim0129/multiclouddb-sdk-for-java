@@ -68,9 +68,73 @@ class CosmosConstantsTest {
     // ── Consistency ───────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("CONSISTENCY_LEVEL_DEFAULT is SESSION")
-    void consistencyLevelDefaultIsSession() {
-        assertEquals(ConsistencyLevel.SESSION, CosmosConstants.CONSISTENCY_LEVEL_DEFAULT);
+    @DisplayName("CONFIG_CONSISTENCY_LEVEL key value")
+    void configConsistencyLevelKey() {
+        assertEquals("consistencyLevel", CosmosConstants.CONFIG_CONSISTENCY_LEVEL);
+    }
+
+    @Test
+    @DisplayName("parseConsistencyLevel: SESSION (upper-case)")
+    void parseConsistencyLevelSession() {
+        assertEquals(ConsistencyLevel.SESSION, CosmosConstants.parseConsistencyLevel("SESSION"));
+    }
+
+    @Test
+    @DisplayName("parseConsistencyLevel: EVENTUAL (lower-case)")
+    void parseConsistencyLevelEventualLowerCase() {
+        assertEquals(ConsistencyLevel.EVENTUAL, CosmosConstants.parseConsistencyLevel("eventual"));
+    }
+
+    @Test
+    @DisplayName("parseConsistencyLevel: STRONG (mixed-case)")
+    void parseConsistencyLevelStrongMixedCase() {
+        assertEquals(ConsistencyLevel.STRONG, CosmosConstants.parseConsistencyLevel("Strong"));
+    }
+
+    @Test
+    @DisplayName("parseConsistencyLevel: BOUNDED_STALENESS")
+    void parseConsistencyLevelBoundedStaleness() {
+        assertEquals(ConsistencyLevel.BOUNDED_STALENESS,
+                CosmosConstants.parseConsistencyLevel("BOUNDED_STALENESS"));
+    }
+
+    @Test
+    @DisplayName("parseConsistencyLevel: CONSISTENT_PREFIX")
+    void parseConsistencyLevelConsistentPrefix() {
+        assertEquals(ConsistencyLevel.CONSISTENT_PREFIX,
+                CosmosConstants.parseConsistencyLevel("CONSISTENT_PREFIX"));
+    }
+
+    @Test
+    @DisplayName("parseConsistencyLevel: leading/trailing whitespace is stripped")
+    void parseConsistencyLevelStripsWhitespace() {
+        assertEquals(ConsistencyLevel.SESSION, CosmosConstants.parseConsistencyLevel("  SESSION  "));
+    }
+
+    @Test
+    @DisplayName("parseConsistencyLevel: unknown value throws IllegalArgumentException with helpful message")
+    void parseConsistencyLevelUnknownThrows() {
+        IllegalArgumentException ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> CosmosConstants.parseConsistencyLevel("LINEARIZABLE"));
+        assertTrue(ex.getMessage().contains("LINEARIZABLE"),
+                "Error message should include the bad value");
+        assertTrue(ex.getMessage().toLowerCase().contains("valid"),
+                "Error message should mention valid values");
+    }
+
+    @Test
+    @DisplayName("parseConsistencyLevel: blank string throws IllegalArgumentException")
+    void parseConsistencyLevelBlankThrows() {
+        assertThrows(IllegalArgumentException.class,
+                () -> CosmosConstants.parseConsistencyLevel("   "));
+    }
+
+    @Test
+    @DisplayName("parseConsistencyLevel: null throws IllegalArgumentException")
+    void parseConsistencyLevelNullThrows() {
+        assertThrows(IllegalArgumentException.class,
+                () -> CosmosConstants.parseConsistencyLevel(null));
     }
 
     // ── Document field names ──────────────────────────────────────────────────

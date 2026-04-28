@@ -29,11 +29,14 @@ import java.util.regex.Pattern;
  * <p>
  * Connection config keys:
  * <ul>
- * <li>{@code endpoint} - Cosmos account endpoint URL (required)</li>
- * <li>{@code key} - Cosmos account key (optional — when absent, the SDK
- * transparently uses {@link DefaultAzureCredentialBuilder} which supports
- * Managed Identity, Azure CLI, environment variables, and other credential
- * types in the DefaultAzureCredential chain)</li>
+ * <li>{@code endpoint} — Cosmos account endpoint URL (required)</li>
+ * <li>{@code key} — Cosmos account key (optional; omit to use
+ *     {@link DefaultAzureCredentialBuilder})</li>
+ * <li>{@code consistencyLevel} — read consistency override (optional; omit to
+ *     inherit the Cosmos account's default consistency level). Accepted values
+ *     (case-insensitive): {@code STRONG}, {@code BOUNDED_STALENESS},
+ *     {@code SESSION}, {@code CONSISTENT_PREFIX}, {@code EVENTUAL}.
+ *     The override must be equal to or weaker than the account's default.</li>
  * </ul>
  */
 public class CosmosProviderClient implements MulticloudDbProviderClient {
@@ -44,6 +47,8 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
 
     private final CosmosClient cosmosClient;
     private final MulticloudDbClientConfig config;
+    /** Consistency level override applied to all read operations, or {@code null} to use account default. */
+    private final ConsistencyLevel readConsistencyOverride;
 
 
     /**
@@ -58,7 +63,9 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      * </ul>
      *
      * @param config client configuration carrying connection, auth, and options
-     * @throws IllegalArgumentException if {@code connection.endpoint} is missing or blank
+     * @throws IllegalArgumentException if {@code connection.endpoint} is missing or blank,
+     *                                  or if {@code connection.consistencyLevel} is present
+     *                                  but not a valid consistency level value
      */
     public CosmosProviderClient(MulticloudDbClientConfig config) {
         this.config = config;
@@ -71,7 +78,6 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
 
         CosmosClientBuilder builder = new CosmosClientBuilder()
                 .endpoint(endpoint)
-                .consistencyLevel(CosmosConstants.CONSISTENCY_LEVEL_DEFAULT)
                 .contentResponseOnWriteEnabled(true);
 
         if (key != null && !key.isBlank()) {
@@ -94,6 +100,15 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             builder.directMode();
         } else {
             builder.gatewayMode();
+        }
+
+        String consistencyStr = config.connection().get(CosmosConstants.CONFIG_CONSISTENCY_LEVEL);
+        if (consistencyStr != null && !consistencyStr.isBlank()) {
+            this.readConsistencyOverride = CosmosConstants.parseConsistencyLevel(consistencyStr);
+            LOG.info("Cosmos read consistency override: {}", readConsistencyOverride);
+        } else {
+            this.readConsistencyOverride = null;
+            LOG.info("Cosmos read consistency: using account default");
         }
 
         builder.userAgentSuffix(SdkUserAgent.userAgent(config));
@@ -162,7 +177,8 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             CosmosContainer container = getContainer(address);
             PartitionKey pk = resolvePartitionKey(key);
             String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
-            CosmosItemResponse<ObjectNode> response = container.readItem(cosmosId, pk, ObjectNode.class);
+            CosmosItemResponse<ObjectNode> response = container.readItem(
+                    cosmosId, pk, buildReadOptions(readConsistencyOverride), ObjectNode.class);
             logItemDiagnostics(OperationNames.READ, address, response);
             ObjectNode raw = response.getItem();
             if (raw == null) return null;
@@ -332,6 +348,9 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             if (query.maxPageSize() != null) {
                 queryOptions.setMaxBufferedItemCount(query.maxPageSize());
             }
+            if (readConsistencyOverride != null) {
+                queryOptions.setConsistencyLevel(readConsistencyOverride);
+            }
 
             String expression = query.nativeExpression() != null ? query.nativeExpression() : query.expression();
             if (expression == null || expression.isBlank()) {
@@ -421,6 +440,9 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             }
             if (query.maxPageSize() != null) {
                 queryOptions.setMaxBufferedItemCount(query.maxPageSize());
+            }
+            if (readConsistencyOverride != null) {
+                queryOptions.setConsistencyLevel(readConsistencyOverride);
             }
 
             List<SqlParameter> sqlParams = new ArrayList<>();
@@ -556,6 +578,21 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     private PartitionKey resolvePartitionKey(MulticloudDbKey key) {
         return new PartitionKey(key.partitionKey());
+    }
+
+    /**
+     * Creates {@link CosmosItemRequestOptions} with the given consistency level applied.
+     * When {@code consistencyLevel} is {@code null} (no override configured), the returned
+     * options carry no explicit consistency setting and Cosmos DB honours the account default.
+     * <p>
+     * Package-private and static for unit testing.
+     */
+    static CosmosItemRequestOptions buildReadOptions(ConsistencyLevel consistencyLevel) {
+        CosmosItemRequestOptions opts = new CosmosItemRequestOptions();
+        if (consistencyLevel != null) {
+            opts.setConsistencyLevel(consistencyLevel);
+        }
+        return opts;
     }
 
     /**

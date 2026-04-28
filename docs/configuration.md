@@ -50,6 +50,7 @@ Select a provider and supply its connection and auth properties.
 | `multiclouddb.connection.key` | Master key (omit for Azure Identity auth) |
 | `multiclouddb.connection.connectionMode` | `gateway` (default) or `direct` |
 | `multiclouddb.connection.tenantId` | Azure AD tenant ID (optional, for Entra ID) |
+| `multiclouddb.connection.consistencyLevel` | Read consistency override (optional — see below) |
 
 ### Authentication Modes
 
@@ -69,6 +70,36 @@ Select a provider and supply its connection and auth properties.
 
 - **Gateway** (default) — HTTP-based routing through the Cosmos DB gateway. Required for the emulator.
 - **Direct** — TCP-based direct connectivity. Better performance for production workloads.
+
+### Consistency Level
+
+When `multiclouddb.connection.consistencyLevel` is **not** set, read requests inherit the account's
+configured default consistency level (set in the Azure portal or ARM template).
+
+When the property **is** set, the specified level is applied to every read request (point-reads and queries).
+Writes are unaffected — Cosmos DB write durability is independent of the consistency setting.
+
+**Valid values** (case-insensitive):
+
+| Value | Description |
+|-------|-------------|
+| `STRONG` | Linearizability — reads guaranteed to see the latest committed write |
+| `BOUNDED_STALENESS` | Reads lag behind writes by at most a configured number of versions or time |
+| `SESSION` | Consistent within a single client session (default for new accounts) |
+| `CONSISTENT_PREFIX` | Reads never see out-of-order writes but may lag behind |
+| `EVENTUAL` | Lowest latency; reads may return stale data |
+
+!!! warning "Override must be ≤ account default"
+    The request-level override must be **equal to or weaker** than the account's default consistency level.
+    For example, if the account is configured for `SESSION`, you may override to `CONSISTENT_PREFIX` or
+    `EVENTUAL`, but **not** to `BOUNDED_STALENESS` or `STRONG`. Specifying a stronger level than the
+    account default causes a runtime error from the Cosmos DB service.
+
+**Example** — use eventual consistency for reads while keeping the account default for everything else:
+
+```properties
+multiclouddb.connection.consistencyLevel=EVENTUAL
+```
 
 ---
 
