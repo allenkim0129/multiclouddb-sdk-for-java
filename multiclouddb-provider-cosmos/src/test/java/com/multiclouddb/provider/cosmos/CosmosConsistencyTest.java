@@ -3,9 +3,12 @@
 
 package com.multiclouddb.provider.cosmos;
 
+import com.azure.core.credential.TokenCredential;
 import com.azure.cosmos.ConsistencyLevel;
 import com.azure.cosmos.CosmosClient;
 import com.azure.cosmos.CosmosClientBuilder;
+import com.azure.identity.DefaultAzureCredential;
+import com.azure.identity.DefaultAzureCredentialBuilder;
 import com.azure.cosmos.CosmosDatabase;
 import com.azure.cosmos.CosmosContainer;
 import com.azure.cosmos.models.CosmosItemRequestOptions;
@@ -116,6 +119,7 @@ class CosmosConsistencyTest {
             when(mock.directMode()).thenReturn(mock);
             when(mock.userAgentSuffix(anyString())).thenReturn(mock);
             when(mock.consistencyLevel(any())).thenReturn(mock);
+            when(mock.credential(any(TokenCredential.class))).thenReturn(mock);
             // Explicit no-op client stub: construction-only tests don't invoke operations,
             // but stubbing explicitly prevents silent NullPointerException if a future test
             // accidentally calls an operation after construction.
@@ -188,6 +192,33 @@ class CosmosConsistencyTest {
         try (MockedConstruction<CosmosClientBuilder> ignored =
                      mockConstruction(CosmosClientBuilder.class, builderDefaultAnswer())) {
             assertDoesNotThrow(() -> new CosmosProviderClient(config));
+        }
+    }
+
+    @Test
+    @DisplayName("No key + consistencyLevel=EVENTUAL: construction succeeds using DefaultAzureCredential path")
+    void noKeyWithConsistencyLevelUsesDefaultAzureCredentialPath() {
+        MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
+                .provider(ProviderId.COSMOS)
+                .connection(CosmosConstants.CONFIG_ENDPOINT, DUMMY_ENDPOINT)
+                .connection(CosmosConstants.CONFIG_CONSISTENCY_LEVEL, "EVENTUAL")
+                .build();
+
+        DefaultAzureCredential mockCredential = mock(DefaultAzureCredential.class);
+        MockedConstruction.MockInitializer<DefaultAzureCredentialBuilder> credentialBuilderAnswer =
+                (mock, ctx) -> when(mock.build()).thenReturn(mockCredential);
+
+        try (MockedConstruction<CosmosClientBuilder> cosmosBuilderMocked =
+                     mockConstruction(CosmosClientBuilder.class, builderDefaultAnswer());
+             MockedConstruction<DefaultAzureCredentialBuilder> credentialBuilderMocked =
+                     mockConstruction(DefaultAzureCredentialBuilder.class, credentialBuilderAnswer)) {
+
+            assertDoesNotThrow(() -> new CosmosProviderClient(config));
+
+            List<CosmosClientBuilder> builders = cosmosBuilderMocked.constructed();
+            assertEquals(1, builders.size());
+            verify(builders.get(0)).buildClient();
+            verify(builders.get(0)).credential(mockCredential);
         }
     }
 

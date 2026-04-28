@@ -89,10 +89,12 @@ Writes are unaffected — Cosmos DB write durability is independent of the consi
 | `CONSISTENT_PREFIX` | Reads never see out-of-order writes but may lag behind |
 | `EVENTUAL` | Lowest latency; reads may return stale data |
 
-> **Note:** Cross-partition queries always have `ORDER BY c.id ASC` appended automatically
+> **Note:** Any non-aggregate query without an explicit `ORDER BY` has
+> `ORDER BY c.id ASC` appended automatically, including single-partition queries
 > (see [Compatibility — Result-set ordering](compatibility.md#result-set-ordering)).
-> Choosing `EVENTUAL` reduces per-item read cost but does **not** eliminate the sort-merge
-> RU overhead on cross-partition queries.
+> Aggregate and `GROUP BY` queries are excluded from this default ordering behavior.
+> Selecting EVENTUAL consistency reduces per-item read cost but does not eliminate
+> the sort-merge RU overhead introduced by this default ordering.
 
 !!! warning "Override must be ≤ account default"
     The request-level override must be **equal to or weaker** than the account's default consistency level.

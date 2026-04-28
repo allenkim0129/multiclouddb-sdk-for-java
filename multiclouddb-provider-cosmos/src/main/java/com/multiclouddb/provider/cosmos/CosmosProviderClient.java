@@ -598,12 +598,12 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
-     * Creates {@link CosmosItemRequestOptions} with the given consistency level applied.
-     * When {@code consistencyLevel} is {@code null}, the returned options carry no
-     * explicit consistency setting and Cosmos DB honours the account default.
-     * <p>
-     * Package-private and static for direct unit testing of option construction.
-     * Production code uses {@link #applyReadConsistencyTo(CosmosItemRequestOptions)} instead.
+     * Builds {@link CosmosItemRequestOptions} with the given consistency level.
+     *
+     * <p><strong>Note:</strong> This method is not called from production code paths.
+     * {@link #read} uses {@link #applyReadConsistencyTo(CosmosItemRequestOptions)} directly.
+     * This method is retained for unit tests that need to exercise the options-building
+     * logic in isolation.
      */
     static CosmosItemRequestOptions buildReadOptions(ConsistencyLevel consistencyLevel) {
         CosmosItemRequestOptions opts = new CosmosItemRequestOptions();

@@ -190,7 +190,13 @@ As an application developer, I experience consistent document size limits and qu
 
 - What happens when the key model differs by provider (e.g., partitioned keys vs composite primary keys)?
 - How does the SDK behave when a continuation token is expired/invalid or used against a different query?
-- What happens when the provider enforces different default consistency behaviors?
+- ~~What happens when the provider enforces different default consistency behaviors?~~
+  **Resolved (PR #66):** Cosmos DB now uses the account's configured default consistency
+  level when no override is specified, rather than hardcoding SESSION. An optional
+  `consistencyLevel` connection config key allows per-client-instance read overrides
+  (≤ account default). DynamoDB and other providers use their own native defaults;
+  consistency configuration is intentionally provider-specific at this time. A portable
+  consistency hint via `OperationOptions` is deferred to a future release.
 - How does the SDK handle throttling, quota exhaustion, and rate limits across providers?
 - What happens when a collection/database does not exist, or exists with incompatible settings? The SDK provides `ensureDatabase` and `ensureContainer` methods that create resources idempotently, but does not handle incompatible settings (e.g., different partition key paths on an existing container).
 - What happens when `ensureContainer` is called concurrently from multiple processes? Each provider implementation must handle race conditions gracefully (e.g., catching "already exists" exceptions).
