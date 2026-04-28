@@ -196,9 +196,9 @@ As an application developer, I can consume a chronologically ordered stream of i
 
 **Acceptance Scenarios**:
 
-1. **Given** a collection with change feed enabled, **When** items are created or updated, **Then** the change feed returns change events in chronological order containing at minimum the item key, change type (create/update), and the new item state.
+1. **Given** a collection with change feed enabled, **When** items are created or updated, **Then** the change feed returns change events ordered by provider commit/ingest time within the requested partition key scope (or equivalent provider partition/shard scope), and each event contains at minimum the item key, change type (create/update), the new item state, and an explicit commit/ingest timestamp.
 2. **Given** a change feed consumer that stores a checkpoint token, **When** the consumer restarts and resumes from the stored token, **Then** it receives only changes that occurred after the checkpoint.
-3. **Given** a change feed request scoped to a specific partition key, **When** changes occur across multiple partitions, **Then** only changes within the specified partition are returned.
+3. **Given** a change feed request scoped to a specific partition key, **When** changes occur across multiple partitions, **Then** only changes within the specified partition are returned, and ordering is guaranteed only within that partition-scoped feed rather than globally across all partitions.
 4. **Given** a provider that does not support delete detection in its change feed, **When** the application requests change feed with delete events, **Then** the SDK raises a clear error indicating the capability limitation.
 
 ---
@@ -402,9 +402,9 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 #### Change Data Capture / Change Feed Requirements
 
 - **FR-065**: The SDK MUST provide a portable change feed abstraction that enables applications to consume a chronologically ordered stream of item-level changes (creates, updates, and optionally deletes) from a collection.
-- **FR-066**: Change feed consumption MUST support starting from: (a) the beginning of available changes, (b) a specific point in time, or (c) a previously stored checkpoint/continuation token.
-- **FR-067**: Each change event MUST include at minimum: the item's key, the change type (create, update, or delete), and the new item state (for creates and updates). Delete events include the key but may not include the deleted item's prior state, depending on provider capabilities.
-- **FR-068**: Change feed MUST be a capability-gated feature. Delete detection within the change feed MUST be a separately gated capability, as not all providers or provider modes surface delete events.
+- **FR-066**: Change feed consumption MUST support starting from: (a) the beginning of available changes, (b) a specific point in time, or (c) a previously stored checkpoint/continuation token. For option (b), the "specific point in time" MUST be represented on the SDK API surface as a UTC instant encoded as an RFC 3339 / ISO 8601 timestamp with a `Z` suffix (for example, `2026-01-23T12:34:56.789Z`). The SDK MUST interpret this value against the provider's native change-record timestamp used to order and resume the provider's change feed; it MUST NOT use client-local time or an unspecified local timezone.
+- **FR-067**: Each change event MUST include at minimum the item's key and the change type (create, update, or delete). For create and update events, the SDK MUST include the new item state when the selected provider and its provisioned change feed/stream configuration expose the full post-change item image. This full-image configuration is a required provisioning prerequisite for providers that do not emit the new item state by default. Delete events include the key but may not include the deleted item's prior state, depending on provider capabilities.
+- **FR-068**: Change feed MUST be a capability-gated feature. Support for including the new item state in create/update change events MUST be a separately gated capability from basic change feed support, because some providers or provider configurations do not expose the full post-change item image. If an application requests change events that include new item state and the provider capability is unavailable or the provider-side feed is not configured to emit full item images, the SDK MUST fail with a clear, actionable error describing the required provider configuration. Time-based start support defined in FR-066(b) MUST also be a separately gated capability, as not all providers support arbitrary timestamp-based starts. If a provider cannot start from an arbitrary UTC instant, the SDK MUST fail that request with a clear provider-neutral capability error and MUST NOT silently substitute an approximate start position. Delete detection within the change feed MUST also be a separately gated capability, as not all providers or provider modes surface delete events.
 - **FR-069**: Change feed MUST support partition-scoped consumption, allowing applications to consume changes for a specific partition key value only.
 - **FR-070**: Change feed MUST return a checkpoint/continuation token after each batch of changes. Applications can persist this token and use it to resume consumption from where they left off.
 
@@ -457,7 +457,7 @@ The following operators and functions form the portable query subset, available 
 | Row-level TTL | Cosmos DB, DynamoDB |
 | Write timestamp metadata | Cosmos DB, DynamoDB, Spanner |
 | Change feed (create/update events) | Cosmos DB, DynamoDB, Spanner |
-| Change feed (delete detection) | Cosmos DB (all versions mode), DynamoDB, Spanner |
+| Change feed (delete detection) | Cosmos DB (all versions and deletes mode), DynamoDB, Spanner |
 | Bulk write | Cosmos DB, DynamoDB, Spanner |
 | Bulk read-by-key | Cosmos DB, DynamoDB, Spanner |
 | Read consistency override (`STRONG`/`EVENTUAL`) | Cosmos DB, DynamoDB, Spanner |
@@ -520,7 +520,7 @@ The following operators and functions form the portable query subset, available 
 - **SC-028**: A bulk write of 100 items completes successfully and reports per-item status on all supported providers, with the SDK automatically partitioning into provider-level batches as needed.
 - **SC-029**: A bulk read of 50 keys returns the corresponding items (or per-key not-found indicators) on all supported providers.
 - **SC-030**: A read operation with consistency level `STRONG` returns data reflecting all prior acknowledged writes on all supported providers.
-- **SC-031**: A read operation with consistency level `EVENTUAL` completes with lower latency than a strongly consistent read under normal operating conditions.
+- **SC-031**: A read operation with consistency level `EVENTUAL` is supported on all providers that offer eventual consistency semantics, and the SDK documentation states that choosing `EVENTUAL` may reduce latency or cost depending on provider and workload.
 - **SC-032**: A read or query operation with no consistency override continues to use the provider's default consistency behavior, maintaining backward compatibility.
 
 ## Assumptions
