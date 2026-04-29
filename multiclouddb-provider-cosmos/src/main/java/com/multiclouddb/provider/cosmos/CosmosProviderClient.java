@@ -47,8 +47,6 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
 
     private final CosmosClient cosmosClient;
     private final MulticloudDbClientConfig config;
-    /** Consistency level override applied to all read operations, or {@code null} to use account default. */
-    private final ConsistencyLevel readConsistencyOverride;
 
 
     /**
@@ -103,10 +101,14 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         }
 
         String consistencyStr = config.connection().get(CosmosConstants.CONFIG_CONSISTENCY_LEVEL);
+        ConsistencyLevel readConsistencyOverride = null;
         if (consistencyStr != null) {
-            this.readConsistencyOverride = CosmosConstants.parseConsistencyLevel(consistencyStr);
-        } else {
-            this.readConsistencyOverride = null;
+            readConsistencyOverride = CosmosConstants.parseConsistencyLevel(consistencyStr);
+            builder.consistencyLevel(readConsistencyOverride);
+            LOG.warn("Cosmos read consistency override set to '{}'. " +
+                    "This must be equal to or weaker than the account's default consistency level; " +
+                    "a stronger override will cause a runtime error from the Cosmos DB service.",
+                    readConsistencyOverride);
         }
 
         builder.userAgentSuffix(SdkUserAgent.userAgent(config));
@@ -176,7 +178,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             CosmosContainer container = getContainer(address);
             PartitionKey pk = resolvePartitionKey(key);
             String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
-            CosmosItemRequestOptions readOpts = buildReadOptions(readConsistencyOverride);
+            CosmosItemRequestOptions readOpts = new CosmosItemRequestOptions();
             CosmosItemResponse<ObjectNode> response = container.readItem(cosmosId, pk, readOpts, ObjectNode.class);
             logItemDiagnostics(OperationNames.READ, address, response);
             ObjectNode raw = response.getItem();
@@ -347,7 +349,6 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             if (query.maxPageSize() != null) {
                 queryOptions.setMaxBufferedItemCount(query.maxPageSize());
             }
-            applyReadConsistencyTo(queryOptions);
 
             String expression = query.nativeExpression() != null ? query.nativeExpression() : query.expression();
             if (expression == null || expression.isBlank()) {
@@ -438,7 +439,6 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             if (query.maxPageSize() != null) {
                 queryOptions.setMaxBufferedItemCount(query.maxPageSize());
             }
-            applyReadConsistencyTo(queryOptions);
 
             List<SqlParameter> sqlParams = new ArrayList<>();
             for (Map.Entry<String, Object> entry : translated.namedParameters().entrySet()) {
@@ -573,31 +573,6 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     private PartitionKey resolvePartitionKey(MulticloudDbKey key) {
         return new PartitionKey(key.partitionKey());
-    }
-
-    /**
-     * Applies the client-level read consistency override to {@code opts} when one
-     * is configured; no-op when {@link #readConsistencyOverride} is {@code null}.
-     */
-    private void applyReadConsistencyTo(CosmosQueryRequestOptions opts) {
-        if (readConsistencyOverride != null) {
-            opts.setConsistencyLevel(readConsistencyOverride);
-        }
-    }
-
-    /**
-     * Builds {@link CosmosItemRequestOptions} with the given consistency level applied,
-     * or no override when {@code consistencyLevel} is {@code null}.
-     *
-     * <p>Used by {@link #read} to construct per-request options and exercised directly
-     * by unit tests to assert the options-building contract in isolation.
-     */
-    static CosmosItemRequestOptions buildReadOptions(ConsistencyLevel consistencyLevel) {
-        CosmosItemRequestOptions opts = new CosmosItemRequestOptions();
-        if (consistencyLevel != null) {
-            opts.setConsistencyLevel(consistencyLevel);
-        }
-        return opts;
     }
 
     /**

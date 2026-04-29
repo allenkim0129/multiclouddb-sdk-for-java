@@ -41,13 +41,14 @@ import static org.mockito.Mockito.*;
  * <p>
  * Two groups of tests:
  * <ol>
- *   <li><b>{@code buildReadOptions} helper</b> — pure-function tests that verify
- *       the correct {@link CosmosItemRequestOptions} is produced for each
- *       combination of configured / unconfigured consistency level.</li>
  *   <li><b>Constructor / builder tests</b> — verify that
- *       {@link CosmosClientBuilder#consistencyLevel} is <em>never</em> called,
- *       regardless of configuration, because consistency overrides are applied
- *       per read-request rather than at client level.</li>
+ *       {@link CosmosClientBuilder#consistencyLevel} is called with the configured
+ *       value when a consistency level is specified, and is never called when no
+ *       consistency level is configured.</li>
+ *   <li><b>Operation-level invariants</b> — verify that per-request
+ *       {@link CosmosItemRequestOptions} and {@link CosmosQueryRequestOptions} never
+ *       carry a consistency level (reads rely on the client-level setting; writes must
+ *       never carry a per-request consistency override regardless of configuration).</li>
  * </ol>
  */
 class CosmosConsistencyTest {
@@ -55,54 +56,6 @@ class CosmosConsistencyTest {
     private static final String DUMMY_ENDPOINT = "https://example.documents.azure.com:443/";
     private static final String DUMMY_KEY =
             "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw==";
-
-    // ── buildReadOptions helper ───────────────────────────────────────────────
-
-    @Test
-    @DisplayName("buildReadOptions(null): options carry no consistency override")
-    void buildReadOptionsNullConsistency() {
-        CosmosItemRequestOptions opts = CosmosProviderClient.buildReadOptions(null);
-        assertNotNull(opts);
-        assertNull(opts.getConsistencyLevel(),
-                "No consistency should be set when override is null");
-    }
-
-    @Test
-    @DisplayName("buildReadOptions(SESSION): options carry SESSION override")
-    void buildReadOptionsSession() {
-        CosmosItemRequestOptions opts = CosmosProviderClient.buildReadOptions(ConsistencyLevel.SESSION);
-        assertEquals(ConsistencyLevel.SESSION, opts.getConsistencyLevel());
-    }
-
-    @Test
-    @DisplayName("buildReadOptions(EVENTUAL): options carry EVENTUAL override")
-    void buildReadOptionsEventual() {
-        CosmosItemRequestOptions opts = CosmosProviderClient.buildReadOptions(ConsistencyLevel.EVENTUAL);
-        assertEquals(ConsistencyLevel.EVENTUAL, opts.getConsistencyLevel());
-    }
-
-    @Test
-    @DisplayName("buildReadOptions(STRONG): options carry STRONG override")
-    void buildReadOptionsStrong() {
-        CosmosItemRequestOptions opts = CosmosProviderClient.buildReadOptions(ConsistencyLevel.STRONG);
-        assertEquals(ConsistencyLevel.STRONG, opts.getConsistencyLevel());
-    }
-
-    @Test
-    @DisplayName("buildReadOptions(BOUNDED_STALENESS): options carry BOUNDED_STALENESS override")
-    void buildReadOptionsBoundedStaleness() {
-        CosmosItemRequestOptions opts =
-                CosmosProviderClient.buildReadOptions(ConsistencyLevel.BOUNDED_STALENESS);
-        assertEquals(ConsistencyLevel.BOUNDED_STALENESS, opts.getConsistencyLevel());
-    }
-
-    @Test
-    @DisplayName("buildReadOptions(CONSISTENT_PREFIX): options carry CONSISTENT_PREFIX override")
-    void buildReadOptionsConsistentPrefix() {
-        CosmosItemRequestOptions opts =
-                CosmosProviderClient.buildReadOptions(ConsistencyLevel.CONSISTENT_PREFIX);
-        assertEquals(ConsistencyLevel.CONSISTENT_PREFIX, opts.getConsistencyLevel());
-    }
 
     // ── Constructor / CosmosClientBuilder verification ────────────────────────
 
@@ -161,8 +114,8 @@ class CosmosConsistencyTest {
     }
 
     @Test
-    @DisplayName("consistencyLevel=SESSION in config: CosmosClientBuilder.consistencyLevel() is still never called (per-request override, not client-level)")
-    void consistencyConfigDoesNotSetClientLevelConsistency() {
+    @DisplayName("consistencyLevel=SESSION in config: CosmosClientBuilder.consistencyLevel(SESSION) is called before buildClient()")
+    void consistencyConfigCallsBuilderConsistencyLevel() {
         MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
                 .provider(ProviderId.COSMOS)
                 .connection(CosmosConstants.CONFIG_ENDPOINT, DUMMY_ENDPOINT)
@@ -175,7 +128,10 @@ class CosmosConsistencyTest {
 
             new CosmosProviderClient(config);
 
-            verify(mocked.constructed().get(0), never()).consistencyLevel(any());
+            CosmosClientBuilder builder = mocked.constructed().get(0);
+            org.mockito.InOrder order = inOrder(builder);
+            order.verify(builder).consistencyLevel(ConsistencyLevel.SESSION);
+            order.verify(builder).buildClient();
         }
     }
 
@@ -196,7 +152,7 @@ class CosmosConsistencyTest {
     }
 
     @Test
-    @DisplayName("No key + consistencyLevel=EVENTUAL: construction succeeds using DefaultAzureCredential path")
+    @DisplayName("No key + consistencyLevel=EVENTUAL: construction succeeds and CosmosClientBuilder.consistencyLevel(EVENTUAL) is called")
     void noKeyWithConsistencyLevelUsesDefaultAzureCredentialPath() {
         MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
                 .provider(ProviderId.COSMOS)
@@ -219,6 +175,7 @@ class CosmosConsistencyTest {
             assertEquals(1, builders.size());
             verify(builders.get(0)).buildClient();
             verify(builders.get(0)).credential(mockCredential);
+            verify(builders.get(0)).consistencyLevel(ConsistencyLevel.EVENTUAL);
         }
     }
 
@@ -278,12 +235,74 @@ class CosmosConsistencyTest {
         }
     }
 
-    // ── Operation-level consistency propagation ───────────────────────────────
+    // ── Override-constraint warning ───────────────────────────────────────────
 
     @Test
-    @DisplayName("read() with EVENTUAL override: readItem is called with CosmosItemRequestOptions carrying EVENTUAL")
+    @DisplayName("consistencyLevel configured: WARN logged reminding operator that override must be ≤ account default")
+    void consistencyConfigLogsAccountDefaultWarning() {
+        MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
+                .provider(ProviderId.COSMOS)
+                .connection(CosmosConstants.CONFIG_ENDPOINT, DUMMY_ENDPOINT)
+                .connection(CosmosConstants.CONFIG_KEY, DUMMY_KEY)
+                .connection(CosmosConstants.CONFIG_CONSISTENCY_LEVEL, "EVENTUAL")
+                .build();
+
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(CosmosProviderClient.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try (MockedConstruction<CosmosClientBuilder> ignored =
+                     mockConstruction(CosmosClientBuilder.class, builderDefaultAnswer())) {
+            new CosmosProviderClient(config);
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        boolean warnLogged = appender.list.stream().anyMatch(e ->
+                e.getLevel() == ch.qos.logback.classic.Level.WARN &&
+                e.getFormattedMessage().contains("equal to or weaker"));
+        assertTrue(warnLogged,
+                "Construction with a consistencyLevel override must log a WARN reminding " +
+                "the operator that the override must be ≤ the account's default");
+    }
+
+    @Test
+    @DisplayName("no consistencyLevel configured: no override-constraint WARN is logged")
+    void noConsistencyConfigDoesNotLogAccountDefaultWarning() {
+        MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
+                .provider(ProviderId.COSMOS)
+                .connection(CosmosConstants.CONFIG_ENDPOINT, DUMMY_ENDPOINT)
+                .connection(CosmosConstants.CONFIG_KEY, DUMMY_KEY)
+                .build();
+
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(CosmosProviderClient.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try (MockedConstruction<CosmosClientBuilder> ignored =
+                     mockConstruction(CosmosClientBuilder.class, builderDefaultAnswer())) {
+            new CosmosProviderClient(config);
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        boolean warnLogged = appender.list.stream().anyMatch(e ->
+                e.getLevel() == ch.qos.logback.classic.Level.WARN &&
+                e.getFormattedMessage().contains("equal to or weaker"));
+        assertFalse(warnLogged,
+                "No override-constraint WARN should be logged when no consistencyLevel is configured");
+    }
+
+    @Test
+    @DisplayName("read() with EVENTUAL override: readItem per-request options carry null consistency (client-level handles it)")
     @SuppressWarnings("unchecked")
-    void readPassesConsistencyLevelToReadItem() {
+    void readDoesNotSetPerRequestConsistencyWhenOverrideConfigured() {
         MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
                 .provider(ProviderId.COSMOS)
                 .connection(CosmosConstants.CONFIG_ENDPOINT, DUMMY_ENDPOINT)
@@ -316,8 +335,8 @@ class CosmosConsistencyTest {
                     ArgumentCaptor.forClass(CosmosItemRequestOptions.class);
             verify(mockContainer).readItem(anyString(), any(PartitionKey.class),
                     captor.capture(), eq(ObjectNode.class));
-            assertEquals(ConsistencyLevel.EVENTUAL, captor.getValue().getConsistencyLevel(),
-                    "read() must pass EVENTUAL consistency override to readItem");
+            assertNull(captor.getValue().getConsistencyLevel(),
+                    "read() must not set per-request consistency — the client-level override handles it");
         }
     }
 
@@ -363,9 +382,9 @@ class CosmosConsistencyTest {
     }
 
     @Test
-    @DisplayName("query() with EVENTUAL override: queryItems is called with CosmosQueryRequestOptions carrying EVENTUAL")
+    @DisplayName("query() with EVENTUAL override: queryItems per-request options carry null consistency (client-level handles it)")
     @SuppressWarnings("unchecked")
-    void queryAppliesConsistencyLevelToQueryOptions() {
+    void queryDoesNotSetPerRequestConsistencyWhenOverrideConfigured() {
         MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
                 .provider(ProviderId.COSMOS)
                 .connection(CosmosConstants.CONFIG_ENDPOINT, DUMMY_ENDPOINT)
@@ -400,15 +419,15 @@ class CosmosConsistencyTest {
                     ArgumentCaptor.forClass(CosmosQueryRequestOptions.class);
             verify(mockContainer).queryItems(any(SqlQuerySpec.class),
                     captor.capture(), eq(com.fasterxml.jackson.databind.JsonNode.class));
-            assertEquals(ConsistencyLevel.EVENTUAL, captor.getValue().getConsistencyLevel(),
-                    "query() must set EVENTUAL consistency on CosmosQueryRequestOptions");
+            assertNull(captor.getValue().getConsistencyLevel(),
+                    "query() must not set per-request consistency — the client-level override handles it");
         }
     }
 
     @Test
-    @DisplayName("queryWithTranslation() with EVENTUAL override: queryItems is called with CosmosQueryRequestOptions carrying EVENTUAL")
+    @DisplayName("queryWithTranslation() with EVENTUAL override: queryItems per-request options carry null consistency (client-level handles it)")
     @SuppressWarnings("unchecked")
-    void queryWithTranslationAppliesConsistencyLevelToQueryOptions() {
+    void queryWithTranslationDoesNotSetPerRequestConsistencyWhenOverrideConfigured() {
         MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
                 .provider(ProviderId.COSMOS)
                 .connection(CosmosConstants.CONFIG_ENDPOINT, DUMMY_ENDPOINT)
@@ -449,8 +468,8 @@ class CosmosConsistencyTest {
                     ArgumentCaptor.forClass(CosmosQueryRequestOptions.class);
             verify(mockContainer).queryItems(any(SqlQuerySpec.class),
                     captor.capture(), eq(com.fasterxml.jackson.databind.JsonNode.class));
-            assertEquals(ConsistencyLevel.EVENTUAL, captor.getValue().getConsistencyLevel(),
-                    "queryWithTranslation() must set EVENTUAL consistency on CosmosQueryRequestOptions");
+            assertNull(captor.getValue().getConsistencyLevel(),
+                    "queryWithTranslation() must not set per-request consistency — the client-level override handles it");
         }
     }
 
@@ -546,18 +565,15 @@ class CosmosConsistencyTest {
 
     // ── Write-path consistency invariant ──────────────────────────────────────
     //
-    // The PR's headline guarantee is that writes are *never* affected by the
-    // consistencyLevel override. The constructor-level test above verifies the
-    // CosmosClientBuilder.consistencyLevel() is never called; these tests close
-    // the loop by verifying that even with an override configured, every write
-    // op (create/update/upsert/delete) builds a CosmosItemRequestOptions with
-    // no consistency level set. A future refactor that consolidates options-
-    // building between read and write paths could silently violate this
-    // invariant — Cosmos does not reject per-request consistency on writes at
-    // runtime — so this contract is enforced here.
+    // These tests verify that write operations (create/update/upsert/delete) always
+    // use per-request CosmosItemRequestOptions with no consistency level set, even
+    // when a consistency override is configured at the client level. Cosmos DB ignores
+    // consistency overrides on write operations at the service level, but keeping
+    // per-request write options free of any consistency setting is explicit and avoids
+    // any ambiguity if the SDK behaviour changes.
 
     @Test
-    @DisplayName("create() with EVENTUAL override: createItem options carry no consistency level (writes unaffected)")
+    @DisplayName("create() with EVENTUAL override: createItem per-request options carry no consistency level")
     @SuppressWarnings("unchecked")
     void createDoesNotCarryConsistencyLevel() {
         MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
@@ -592,12 +608,12 @@ class CosmosConsistencyTest {
             verify(mockContainer).createItem(any(ObjectNode.class), any(PartitionKey.class),
                     captor.capture());
             assertNull(captor.getValue().getConsistencyLevel(),
-                    "create() must not carry a consistency level even when an override is configured (writes unaffected)");
+                    "create() must not carry a per-request consistency level when a client-level override is configured");
         }
     }
 
     @Test
-    @DisplayName("update() with EVENTUAL override: replaceItem options carry no consistency level (writes unaffected)")
+    @DisplayName("update() with EVENTUAL override: replaceItem per-request options carry no consistency level")
     @SuppressWarnings("unchecked")
     void updateDoesNotCarryConsistencyLevel() {
         MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
@@ -632,12 +648,12 @@ class CosmosConsistencyTest {
             verify(mockContainer).replaceItem(any(ObjectNode.class), anyString(), any(PartitionKey.class),
                     captor.capture());
             assertNull(captor.getValue().getConsistencyLevel(),
-                    "update() must not carry a consistency level even when an override is configured (writes unaffected)");
+                    "update() must not carry a per-request consistency level when a client-level override is configured");
         }
     }
 
     @Test
-    @DisplayName("upsert() with EVENTUAL override: upsertItem options carry no consistency level (writes unaffected)")
+    @DisplayName("upsert() with EVENTUAL override: upsertItem per-request options carry no consistency level")
     @SuppressWarnings("unchecked")
     void upsertDoesNotCarryConsistencyLevel() {
         MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
@@ -672,12 +688,12 @@ class CosmosConsistencyTest {
             verify(mockContainer).upsertItem(any(ObjectNode.class), any(PartitionKey.class),
                     captor.capture());
             assertNull(captor.getValue().getConsistencyLevel(),
-                    "upsert() must not carry a consistency level even when an override is configured (writes unaffected)");
+                    "upsert() must not carry a per-request consistency level when a client-level override is configured");
         }
     }
 
     @Test
-    @DisplayName("delete() with EVENTUAL override: deleteItem options carry no consistency level (writes unaffected)")
+    @DisplayName("delete() with EVENTUAL override: deleteItem per-request options carry no consistency level")
     @SuppressWarnings("unchecked")
     void deleteDoesNotCarryConsistencyLevel() {
         MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
@@ -712,7 +728,7 @@ class CosmosConsistencyTest {
             verify(mockContainer).deleteItem(anyString(), any(PartitionKey.class),
                     captor.capture());
             assertNull(captor.getValue().getConsistencyLevel(),
-                    "delete() must not carry a consistency level even when an override is configured (writes unaffected)");
+                    "delete() must not carry a per-request consistency level when a client-level override is configured");
         }
     }
 }

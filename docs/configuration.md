@@ -111,12 +111,12 @@ Writes are unaffected — Cosmos DB write durability is independent of the consi
     semantic change. If RYOW semantics are required, keep the override at `SESSION` or
     omit the property entirely.
 
-!!! note "Connection-config-level setting — not `CosmosClientBuilder.consistencyLevel()`"
-    `consistencyLevel` is applied per-request via `CosmosItemRequestOptions` /
-    `CosmosQueryRequestOptions`. It is **not** set on `CosmosClientBuilder.consistencyLevel()`
-    (which would affect writes as well as reads). The setting is uniform across all read
-    operations from a single client instance — to use different levels for different reads,
-    create separate `MulticloudDbClient` instances with the desired override.
+!!! note "Client-level setting"
+    `consistencyLevel` is configured once at client construction and applies uniformly to
+    all read operations from that client instance. Writes are not affected — Cosmos DB
+    ignores consistency overrides on write operations at the service level. To use different
+    consistency levels for different reads, create separate `MulticloudDbClient` instances
+    with the desired override.
 
 **Example** — use eventual consistency for reads while keeping the account default for everything else:
 
