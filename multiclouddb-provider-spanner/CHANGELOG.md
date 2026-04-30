@@ -7,6 +7,37 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+
+- **`delete()` of a missing key now throws `MulticloudDbException` with category
+  `NOT_FOUND` instead of returning silently.** The implementation now uses a
+  DML `DELETE … WHERE partitionKey=@pk AND sortKey=@sk` inside a
+  `readWriteTransaction()`; if the returned row count is zero the row did not
+  exist and a synthetic `NOT_FOUND` is thrown. Because the predicate binds
+  the full primary key, Spanner narrows locking to a single row (no range
+  locks), so the existence check and the delete are a single atomic step —
+  no TOCTOU race window between probe and write under concurrent deletes.
+  This delivers the strict-delete cross-provider contract while preserving
+  point-row lock semantics. **Migration:** callers that relied on
+  idempotent-delete semantics must now catch and ignore `NOT_FOUND`:
+  ```java
+  try {
+      client.delete(addr, key);
+  } catch (MulticloudDbException ex) {
+      if (ex.error().category() != MulticloudDbErrorCategory.NOT_FOUND) {
+          throw ex;
+      }
+  }
+  ```
+
+### Fixed
+
+- **`BETWEEN` translation now wraps in parentheses** (`(field BETWEEN @lo AND @hi)`).
+  Mirrors the parenthesised form emitted by sibling translators so cross-provider
+  query stitching is uniform. GoogleSQL parses both forms correctly, so this is
+  not a correctness fix on Spanner — purely a consistency improvement. The
+  output of `TranslatedQuery.whereClause()` is now parenthesised.
+
 ## [0.1.0-beta.1] — 2026-04-23
 
 ### Added

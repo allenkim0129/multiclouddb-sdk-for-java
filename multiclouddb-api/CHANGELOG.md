@@ -7,6 +7,18 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+
+- **`MulticloudDbClient.delete(...)` is now a strict-delete contract.** The
+  Javadoc has been updated to declare that all implementations must throw
+  `MulticloudDbException` with category `MulticloudDbErrorCategory.NOT_FOUND`
+  when no document exists with the given key. This replaces the previous
+  unspecified (de-facto idempotent) behaviour and aligns `delete()` with the
+  rest of the CRUD surface (`read()` / `update()` already throw on missing
+  keys). See provider-module CHANGELOGs for per-backend implementation
+  details. **Migration:** callers that relied on idempotent-delete must now
+  catch and ignore `NOT_FOUND` at the call site.
+
 ## [0.1.0-beta.1] — 2026-04-23
 
 ### Added

@@ -293,14 +293,14 @@ class ExpressionTranslationTest {
         Map<String, Object> params = Map.of("min", 18, "max", 65);
 
         TranslatedQuery cosRes = cosmos.translate(ast, params, TABLE);
-        assertEquals("c.age BETWEEN @min AND @max", cosRes.whereClause());
+        assertEquals("(c.age BETWEEN @min AND @max)", cosRes.whereClause());
 
         TranslatedQuery dynRes = dynamo.translate(ast, params, TABLE);
-        assertEquals("age BETWEEN ? AND ?", dynRes.whereClause());
+        assertEquals("(age BETWEEN ? AND ?)", dynRes.whereClause());
         assertEquals(List.of(18, 65), dynRes.positionalParameters());
 
         TranslatedQuery spnRes = spanner.translate(ast, params, TABLE);
-        assertEquals("age BETWEEN @min AND @max", spnRes.whereClause());
+        assertEquals("(age BETWEEN @min AND @max)", spnRes.whereClause());
     }
 
     @Test
@@ -308,11 +308,11 @@ class ExpressionTranslationTest {
     void betweenWithLiterals() {
         Expression ast = ExpressionParser.parse("price BETWEEN 10 AND 100");
 
-        assertEquals("c.price BETWEEN 10 AND 100",
+        assertEquals("(c.price BETWEEN 10 AND 100)",
                 cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
-        assertEquals("price BETWEEN 10 AND 100",
+        assertEquals("(price BETWEEN 10 AND 100)",
                 dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
-        assertEquals("price BETWEEN 10 AND 100",
+        assertEquals("(price BETWEEN 10 AND 100)",
                 spanner.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
     }
 

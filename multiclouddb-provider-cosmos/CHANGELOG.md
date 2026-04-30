@@ -7,6 +7,26 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+
+- **`delete()` of a missing key now throws `MulticloudDbException` with category
+  `NOT_FOUND` instead of returning silently.** Removed the previous
+  `if (statusCode == 404) return;` swallow path. The change brings Cosmos's
+  delete contract in line with `read()` and `update()` (which already throw
+  `NOT_FOUND` on missing keys) and matches the cross-provider portability
+  contract enforced by the conformance suite. **Migration:** callers that
+  relied on idempotent-delete semantics must now catch and ignore
+  `NOT_FOUND`:
+  ```java
+  try {
+      client.delete(addr, key);
+  } catch (MulticloudDbException ex) {
+      if (ex.error().category() != MulticloudDbErrorCategory.NOT_FOUND) {
+          throw ex;
+      }
+  }
+  ```
+
 ### Added
 
 - `consistencyLevel` connection config key for opt-in client-level read consistency
@@ -31,6 +51,17 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   previously `ConsistencyLevel.SESSION`) — removed without a deprecation cycle; the project
   is pre-release. Callers referencing this constant should use `ConsistencyLevel.SESSION`
   directly.
+
+### Fixed
+
+- **`BETWEEN` translation now wraps in parentheses** (`(c.field BETWEEN @lo AND @hi)`).
+  Without the wrapping parens, Cosmos NoSQL's parser greedily binds the
+  `BETWEEN`'s inner `AND` together with any trailing logical `AND`, producing
+  a *"Syntax error, incorrect syntax near 'AND'"* `BadRequest` for predicates
+  like `age BETWEEN @lo AND @hi AND marker = @m`. The output of
+  `TranslatedQuery.whereClause()` is now parenthesised — backward-compatible
+  at the query-execution level, but consumers that string-match the where
+  clause should update their expectations.
 
 ## [0.1.0-beta.1] — 2026-04-23
 

@@ -8,6 +8,7 @@ import com.multiclouddb.conformance.ConformanceConfig;
 import com.multiclouddb.conformance.ConformanceHarness;
 import org.junit.jupiter.api.*;
 
+import java.time.Duration;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -36,16 +37,58 @@ public abstract class ErrorNormalizationConformanceTest {
     private MulticloudDbClient client;
     private ResourceAddress address;
 
+    /**
+     * Tracks which providers have already had their default DB/container
+     * provisioned in this JVM. ensure* is idempotent on every provider, but
+     * Spanner DDL still costs an information_schema query per call, and Cosmos
+     * issues a control-plane RPC. Memoising once per provider keeps the
+     * @BeforeEach cost flat for the rest of the suite.
+     */
+    private static final java.util.Set<ProviderId> PROVISIONED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     @BeforeEach
     void setUp() {
         MulticloudDbClientConfig config = ConformanceConfig.forProvider(providerId());
         client = MulticloudDbClientFactory.create(config);
         address = ConformanceHarness.defaultAddress(providerId());
+        // Provision the database/container exactly once per provider per JVM.
+        // This suite can run independently of CrudConformanceTests subclasses
+        // (which provision the table in their own @BeforeAll); on subsequent
+        // tests the resources are already there. We only mark the provider as
+        // provisioned AFTER ensure* succeeds, so a transient failure on the
+        // first attempt is retried by the next test rather than silently
+        // skipped — masking it would turn into a confusing cascade of
+        // "table not found" errors in later tests.
+        if (!PROVISIONED.contains(providerId())) {
+            client.ensureDatabase(address.database());
+            client.ensureContainer(address);
+            PROVISIONED.add(providerId());
+        }
     }
 
     @AfterEach
     void tearDown() throws Exception {
         if (client != null) client.close();
+    }
+
+
+    /**
+     * Asserts the structured diagnostics contract claimed by this suite's class
+     * Javadoc: every {@link MulticloudDbException} surfaced through the public client
+     * must carry an {@link OperationDiagnostics} populated with provider, op name,
+     * and a non-negative duration.
+     */
+    private void assertDiagnosticsPopulated(MulticloudDbException ex, String expectedOp) {
+        OperationDiagnostics diag = ex.diagnostics();
+        assertNotNull(diag, "Exception must carry OperationDiagnostics");
+        assertEquals(providerId(), diag.provider(),
+                "Diagnostics.provider() must reflect the originating provider");
+        assertEquals(expectedOp, diag.operation(),
+                "Diagnostics.operation() must record the failing operation");
+        assertNotNull(diag.duration(), "Diagnostics.duration() must be populated");
+        assertFalse(diag.duration().isNegative(),
+                "Diagnostics.duration() must be non-negative; was " + diag.duration());
     }
 
     @Test
@@ -71,6 +114,9 @@ public abstract class ErrorNormalizationConformanceTest {
         // NOT_FOUND on a real key the caller asked for is not transient — retry is futile.
         assertFalse(ex.error().retryable(),
                 "NOT_FOUND must not be marked retryable");
+
+        // Diagnostics contract — claimed in the class Javadoc above.
+        assertDiagnosticsPopulated(ex, "delete");
     }
 
     @Test
@@ -93,8 +139,20 @@ public abstract class ErrorNormalizationConformanceTest {
             assertNotNull(ex.error().operation(), "Error.operation() must be populated for CONFLICT");
             assertFalse(ex.error().retryable(),
                     "CONFLICT must not be marked retryable — retrying without changing the key would just re-conflict");
+
+            // Diagnostics contract — claimed in the class Javadoc above.
+            assertDiagnosticsPopulated(ex, "create");
         } finally {
-            try { client.delete(address, key); } catch (Exception ignored) { }
+            // Only swallow NOT_FOUND; rethrow other categories so a real cleanup
+            // failure (auth, transient, validation) surfaces instead of being masked.
+            try {
+                client.delete(address, key);
+            } catch (MulticloudDbException cleanup) {
+                if (cleanup.error() == null
+                        || cleanup.error().category() != MulticloudDbErrorCategory.NOT_FOUND) {
+                    throw cleanup;
+                }
+            }
         }
     }
 
@@ -115,5 +173,9 @@ public abstract class ErrorNormalizationConformanceTest {
                 "Equivalent errors must always produce the same category");
         assertEquals(first.error().retryable(), second.error().retryable(),
                 "Equivalent errors must produce stable isRetryable() across calls");
+
+        // Diagnostics must be populated on every reproduction.
+        assertDiagnosticsPopulated(first, "delete");
+        assertDiagnosticsPopulated(second, "delete");
     }
 }

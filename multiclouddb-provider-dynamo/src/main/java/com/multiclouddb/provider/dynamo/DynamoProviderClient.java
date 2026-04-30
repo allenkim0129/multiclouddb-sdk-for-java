@@ -391,10 +391,15 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
                     response.consumedCapacity());
         } catch (ConditionalCheckFailedException e) {
             // attribute_exists() guard failed — item does not exist; map to NOT_FOUND
-            // to match the cross-provider contract.
+            // to match the cross-provider contract. Populate the same diagnostic
+            // fields DynamoErrorMapper would, so observability is consistent
+            // regardless of which path raised the error.
             Map<String, String> details = new java.util.LinkedHashMap<>();
             if (e.awsErrorDetails() != null) {
                 details.put("errorCode", e.awsErrorDetails().errorCode());
+            }
+            if (e.requestId() != null) {
+                details.put("requestId", e.requestId());
             }
             throw new MulticloudDbException(new MulticloudDbError(
                     MulticloudDbErrorCategory.NOT_FOUND,

@@ -605,9 +605,27 @@ site as shown above.
 
 | Behavior | Cosmos DB | DynamoDB | Spanner |
 |----------|-----------|----------|---------|
-| Operation | `deleteItem(id, partitionKey)` | `deleteItem` with `attribute_exists` guard | `executeUpdate("DELETE …")` |
-| Not found | Throws `NOT_FOUND` (HTTP 404) | Throws `NOT_FOUND` (condition fails) | Throws `NOT_FOUND` (rowsModified == 0) |
+| Operation | `deleteItem(id, partitionKey)` | `deleteItem` with `attribute_exists` guard | DML `DELETE … WHERE partitionKey=? AND sortKey=?` (full-PK predicate) |
+| Not found | Throws `NOT_FOUND` (HTTP 404) | Throws `NOT_FOUND` (condition fails) | Throws `NOT_FOUND` (rows-modified == 0) |
 | Return value | None (void) | None (void) | None (void) |
+
+> **Cost note (DynamoDB):** the strict-delete contract is implemented on
+> DynamoDB by adding a conditional `attribute_exists(partitionKey)` guard to
+> `DeleteItem`. DynamoDB charges write capacity for conditional `DeleteItem`
+> **regardless of whether the condition matched** — so each delete consumes
+> ~1 WCU even when the item does not exist. Workloads that perform
+> speculative cleanup or rely on cheap idempotent retries should account for
+> this; if you need cheap "delete-if-exists" semantics, gate the delete with
+> a `read()` first or batch it.
+
+> **Cost note (Spanner):** the strict-delete contract is implemented on
+> Spanner via a single DML `DELETE` statement issued inside a
+> `readWriteTransaction()`. Because the predicate binds the full primary
+> key (`partitionKey` + `sortKey`), Spanner narrows locking to a single row
+> — no range locks are taken — and the existence check is atomic with the
+> delete (no TOCTOU race window). Cost versus the previous idempotent path:
+> one read-write transaction round-trip instead of one mutation-write
+> round-trip; the lock scope is identical (point-row).
 
 ### Document Field Injection
 

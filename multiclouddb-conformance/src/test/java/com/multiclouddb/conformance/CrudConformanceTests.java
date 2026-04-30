@@ -55,12 +55,20 @@ public abstract class CrudConformanceTests {
         return Boolean.parseBoolean(v != null ? v.toString() : "false");
     }
 
-    /** Best-effort cleanup that swallows NOT_FOUND so cleanup never blocks teardown. */
+    /**
+     * Best-effort cleanup that swallows {@link MulticloudDbErrorCategory#NOT_FOUND} only,
+     * so cleanup never blocks teardown when an item was already deleted by a previous
+     * assertion. Any other category (auth, validation, transient, etc.) is rethrown so
+     * that real provider misconfigurations surface during tests instead of being masked.
+     */
     private void safeDelete(MulticloudDbKey key) {
         try {
             client.delete(getAddress(), key);
-        } catch (MulticloudDbException ignored) {
-            // best-effort cleanup
+        } catch (MulticloudDbException ex) {
+            if (ex.error() == null
+                    || ex.error().category() != MulticloudDbErrorCategory.NOT_FOUND) {
+                throw ex;
+            }
         }
     }
 
@@ -121,7 +129,10 @@ public abstract class CrudConformanceTests {
     @Test @Order(5)
     @DisplayName("delete of nonexistent key throws MulticloudDbException with NOT_FOUND")
     void deleteOfMissingKeyThrowsNotFound() {
-        MulticloudDbKey key = MulticloudDbKey.of("never-existed-xyz", "never-existed-xyz");
+        // Use a per-invocation unique key so a previous failed run, a parallel runner,
+        // or seeded state cannot accidentally make the key exist when this test runs.
+        String unique = "never-existed-" + UUID.randomUUID();
+        MulticloudDbKey key = MulticloudDbKey.of(unique, unique);
         MulticloudDbException ex = assertThrows(MulticloudDbException.class,
                 () -> client.delete(getAddress(), key),
                 "Deleting a nonexistent key must throw — providers must not silently swallow missing-key");
@@ -361,10 +372,16 @@ public abstract class CrudConformanceTests {
             QueryPage p = client.query(getAddress(), b.build());
             assertNotNull(p);
             for (Map<String, Object> item : p.items()) {
-                Object n = item.get("n");
-                String stableId = (n == null ? "?" : n.toString());
+                // The seed loop assigns the field "n" the values 1..seedCount, one
+                // value per inserted document, so "n" is guaranteed unique within
+                // this test's universe and works as a portable stable id across
+                // all providers (Cosmos does not inject a "sortKey" field on
+                // returned items, only "id" + "partitionKey", so a key-based
+                // dedup would not be portable here).
+                String stableId = str(item, "n");
                 assertTrue(seenIds.add(stableId),
-                        "Pagination at pageSize=" + pageSize + " produced a duplicate item (n=" + stableId + ")");
+                        "Pagination at pageSize=" + pageSize
+                                + " produced a duplicate item (n=" + stableId + ")");
                 total++;
             }
             token = p.continuationToken();
@@ -379,17 +396,13 @@ public abstract class CrudConformanceTests {
     @Test @Order(18)
     @DisplayName("close() is idempotent — calling twice does not throw")
     void closeIsIdempotent() throws Exception {
-        // close() once now and let @AfterEach close again to assert idempotency.
-        // To detect throw on second close we explicitly close twice here AND null-out
-        // the field so the @AfterEach doesn't double-close (some providers' tearDown
-        // handles their own resource freeing). We then re-create the client so other
-        // ordered tests after this one continue to operate on a fresh client.
-        MulticloudDbClient first = client;
-        assertDoesNotThrow(first::close, "first close() must not throw");
-        assertDoesNotThrow(first::close, "second close() must be idempotent");
-        // ensure the @AfterEach close is also safe (third close):
-        // recreate so subsequent tests have a working client (test ordering allows this)
-        client = createClient();
+        // Use a dedicated, throwaway client so the shared @BeforeEach/@AfterEach
+        // lifecycle is not perturbed. The shared `client` field is left untouched,
+        // so @AfterEach will close exactly one (still-open) client as designed.
+        MulticloudDbClient throwaway = createClient();
+        assertDoesNotThrow(throwaway::close, "first close() must not throw");
+        assertDoesNotThrow(throwaway::close,
+                "second close() on an already-closed client must be a no-op");
     }
 
     @Test @Order(19)
@@ -446,7 +459,9 @@ public abstract class CrudConformanceTests {
     @Test @Order(31)
     @DisplayName("IN and BETWEEN yield expected runtime result sets")
     void runtimeInAndBetween() {
-        String pk = "inbtw-conf";
+        // Use a unique partition key suffix so cleanup is precise even when
+        // earlier runs of this test left rows behind in long-lived emulator state.
+        String pk = "inbtw-" + UUID.randomUUID().toString().substring(0, 6);
         String marker = "ib-" + UUID.randomUUID().toString().substring(0, 6);
         int[] ages = { 10, 20, 30, 40, 50 };
         for (int a : ages) {

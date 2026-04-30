@@ -7,6 +7,39 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+
+- **`delete()` of a missing key now throws `MulticloudDbException` with category
+  `NOT_FOUND` instead of returning silently.** The implementation now adds an
+  `attribute_exists(partitionKey)` condition expression to `DeleteItem` and
+  maps `ConditionalCheckFailedException` to `NOT_FOUND`. The change matches
+  the cross-provider portability contract enforced by the conformance suite
+  and aligns with `update()` / `read()` which already throw on missing keys.
+  **Cost note:** because DynamoDB charges write-capacity for conditional
+  `DeleteItem` regardless of whether the condition matches, every delete now
+  consumes ~1 WCU even when the item does not exist. Workloads that perform
+  speculative cleanup or rely on cheap idempotent retries should account for
+  this; see `docs/guide.md` — *Strict Delete*. **Migration:** callers that
+  relied on idempotent-delete semantics must now catch and ignore
+  `NOT_FOUND`:
+  ```java
+  try {
+      client.delete(addr, key);
+  } catch (MulticloudDbException ex) {
+      if (ex.error().category() != MulticloudDbErrorCategory.NOT_FOUND) {
+          throw ex;
+      }
+  }
+  ```
+
+### Fixed
+
+- **`BETWEEN` translation now wraps in parentheses** (`(field BETWEEN ? AND ?)`).
+  Mirrors the parenthesised form emitted by sibling translators so cross-provider
+  query stitching is uniform. PartiQL parses both forms correctly, so this is
+  not a correctness fix on Dynamo — purely a consistency improvement. The
+  output of `TranslatedQuery.whereClause()` is now parenthesised.
+
 ## [0.1.0-beta.1] — 2026-04-23
 
 ### Added
