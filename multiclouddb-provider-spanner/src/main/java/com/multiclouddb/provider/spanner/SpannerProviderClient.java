@@ -28,6 +28,7 @@ import com.google.cloud.spanner.DatabaseAdminClient;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.ErrorCode;
+import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Spanner;
@@ -291,25 +292,15 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     /**
      * Deletes a row from Spanner by its composite primary key.
      * <p>
-     * Uses DML {@code DELETE} via {@code TransactionRunner.executeUpdate} so the
-     * number of affected rows can be inspected atomically. If zero rows are
-     * affected the row did not exist and a {@link MulticloudDbException} with
-     * category {@link MulticloudDbErrorCategory#NOT_FOUND} is thrown, matching
-     * the cross-provider contract on
-     * {@link com.multiclouddb.api.MulticloudDbClient#delete}.
-     * <p>
-     * The DML predicate binds the full primary key
-     * ({@code partitionKey} + {@code sortKey}), so Spanner narrows locking to a
-     * single row — no range locks are taken. This makes the existence check
-     * and the delete a single atomic step, eliminating the TOCTOU race a
-     * separate read-then-mutate flow would suffer from under concurrent
-     * deletes.
+     * Idempotent: uses a Spanner {@code Mutation.delete} which silently no-ops
+     * when no row matches the given key. This matches the LCD cross-provider
+     * contract on {@link com.multiclouddb.api.MulticloudDbClient#delete}, where
+     * DynamoDB {@code DeleteItem} naturally no-ops and Cosmos swallows 404.
      *
      * @param address the logical database + collection
      * @param key     the document key identifying the row to delete
      * @param options operation options (currently unused by this provider)
-     * @throws com.multiclouddb.api.MulticloudDbException category {@code NOT_FOUND}
-     *         if no row exists with the given key; other categories on any other Spanner error
+     * @throws com.multiclouddb.api.MulticloudDbException on any Spanner error
      */
     @Override
     public void delete(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
@@ -318,38 +309,9 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             String partitionKeyVal = key.partitionKey();
             String sortKeyVal = key.sortKey() != null ? key.sortKey() : key.partitionKey();
 
-            Statement deleteStmt = Statement.newBuilder(
-                    "DELETE FROM " + table
-                            + " WHERE " + SpannerConstants.FIELD_PARTITION_KEY + " = @pk"
-                            + " AND " + SpannerConstants.FIELD_SORT_KEY + " = @sk")
-                    .bind("pk").to(partitionKeyVal)
-                    .bind("sk").to(sortKeyVal)
-                    .build();
-
-            Long rowsDeleted = databaseClient.readWriteTransaction()
-                    .run(txn -> txn.executeUpdate(deleteStmt));
-
-            if (rowsDeleted == null || rowsDeleted == 0L) {
-                // Synthesise a NOT_FOUND with the same shape SpannerErrorMapper would
-                // produce for a real provider-emitted NOT_FOUND, so observability is
-                // consistent regardless of which path raised the error.
-                Map<String, String> details = new java.util.LinkedHashMap<>();
-                details.put("grpcStatus", ErrorCode.NOT_FOUND.name());
-                details.put("table", table);
-                throw new MulticloudDbException(new MulticloudDbError(
-                        MulticloudDbErrorCategory.NOT_FOUND,
-                        "Row not found for delete: " + SpannerConstants.FIELD_PARTITION_KEY
-                                + "=" + partitionKeyVal
-                                + ", " + SpannerConstants.FIELD_SORT_KEY + "=" + sortKeyVal,
-                        ProviderId.SPANNER,
-                        OperationNames.DELETE,
-                        false,
-                        5,  // gRPC NOT_FOUND status code (matches SpannerErrorMapper#grpcCode)
-                        details), null);
-            }
+            databaseClient.write(List.of(
+                    Mutation.delete(table, Key.of(partitionKeyVal, sortKeyVal))));
             logItemDiagnostics(OperationNames.DELETE, address);
-        } catch (MulticloudDbException e) {
-            throw e;
         } catch (SpannerException e) {
             throw SpannerErrorMapper.map(e, OperationNames.DELETE);
         }

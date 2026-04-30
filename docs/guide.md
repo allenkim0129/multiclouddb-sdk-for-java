@@ -28,7 +28,7 @@ portable API surface and error mapping reference, see
   - [read - Point Read](#read---point-read)
   - [update - Replace Existing](#update---replace-existing)
   - [upsert - Create or Replace](#upsert---create-or-replace)
-  - [delete - Strict Delete](#delete---strict-delete-not_found-on-missing-key)
+  - [delete - Idempotent Delete](#delete---idempotent-delete-silent-on-missing-key)
   - [Document Field Injection](#document-field-injection)
 - [Query DSL](#query-dsl)
   - [Portable Expressions](#portable-expressions)
@@ -579,53 +579,35 @@ client.upsert(addr, key, doc);   // Creates or replaces the document
 | If not exists | Create | Create | Create |
 | Return value | None (void) | None (void) | None (void) |
 
-### delete - Strict Delete (NOT_FOUND on missing key)
+### delete - Idempotent Delete (silent on missing key)
 
-`delete()` removes a document by key. If the document does not exist, the
-operation throws `MulticloudDbException` with category
-`MulticloudDbErrorCategory.NOT_FOUND`. This is the portable contract — every
-provider behaves identically so that callers can rely on the result.
+`delete()` removes a document by key. If the document does not exist the
+operation is a **silent no-op** — no exception is thrown. This is the LCD
+across the supported providers: DynamoDB `DeleteItem` and Spanner
+`Mutation.delete` are both idempotent natively, and the Cosmos provider
+swallows the 404 to match. Callers can therefore retry deletes safely
+without bespoke "ignore NOT_FOUND" handling.
 
 ```java
-try {
-    client.delete(addr, MulticloudDbKey.of("customer-456", "order-123"));
-} catch (MulticloudDbException ex) {
-    if (MulticloudDbErrorCategory.NOT_FOUND.equals(ex.error().category())) {
-        // Document didn't exist — caller decides what that means.
-    } else {
-        throw ex;
-    }
-}
+client.delete(addr, MulticloudDbKey.of("customer-456", "order-123"));
+// Safe to call again — second invocation is also a no-op.
+client.delete(addr, MulticloudDbKey.of("customer-456", "order-123"));
 ```
 
-For "delete-if-exists" semantics, catch and ignore `NOT_FOUND` at the call
-site as shown above.
+If you need to detect whether a key exists, use `read()` — it returns
+`null` on every provider when the key does not exist, and does not mutate
+state. `update()` also throws `NOT_FOUND` on a missing key, but it
+requires a document body and **overwrites the existing document on hit**,
+so it is not a safe pure existence probe.
 
 **Key behavior across providers:**
 
 | Behavior | Cosmos DB | DynamoDB | Spanner |
 |----------|-----------|----------|---------|
-| Operation | `deleteItem(id, partitionKey)` | `deleteItem` with `attribute_exists` guard | DML `DELETE … WHERE partitionKey=? AND sortKey=?` (full-PK predicate) |
-| Not found | Throws `NOT_FOUND` (HTTP 404) | Throws `NOT_FOUND` (condition fails) | Throws `NOT_FOUND` (rows-modified == 0) |
+| Operation | `deleteItem(id, partitionKey)` | `deleteItem` (no condition) | `Mutation.delete(table, key)` |
+| Not found | 404 swallowed (silent) | Silent (native) | Silent (native) |
 | Return value | None (void) | None (void) | None (void) |
 
-> **Cost note (DynamoDB):** the strict-delete contract is implemented on
-> DynamoDB by adding a conditional `attribute_exists(partitionKey)` guard to
-> `DeleteItem`. DynamoDB charges write capacity for conditional `DeleteItem`
-> **regardless of whether the condition matched** — so each delete consumes
-> ~1 WCU even when the item does not exist. Workloads that perform
-> speculative cleanup or rely on cheap idempotent retries should account for
-> this; if you need cheap "delete-if-exists" semantics, gate the delete with
-> a `read()` first or batch it.
-
-> **Cost note (Spanner):** the strict-delete contract is implemented on
-> Spanner via a single DML `DELETE` statement issued inside a
-> `readWriteTransaction()`. Because the predicate binds the full primary
-> key (`partitionKey` + `sortKey`), Spanner narrows locking to a single row
-> — no range locks are taken — and the existence check is atomic with the
-> delete (no TOCTOU race window). Cost versus the previous idempotent path:
-> one read-write transaction round-trip instead of one mutation-write
-> round-trip; the lock scope is identical (point-row).
 
 ### Document Field Injection
 

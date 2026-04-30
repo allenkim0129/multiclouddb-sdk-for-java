@@ -316,6 +316,32 @@ class ExpressionTranslationTest {
                 spanner.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
     }
 
+    @Test
+    @DisplayName("BETWEEN combined with trailing AND keeps inner parens")
+    void betweenWithTrailingAnd() {
+        // This is the exact form that motivated the parens wrap on Cosmos:
+        // without the wrapping parens, the Cosmos NoSQL parser greedily binds
+        // BETWEEN's inner AND together with the trailing logical AND, raising
+        // BadRequest "Syntax error, incorrect syntax near 'AND'". A future
+        // refactor that drops the parens because the standalone form parses
+        // fine on every backend would re-introduce that production bug — this
+        // test pins the parenthesised contract for the failure shape itself.
+        Expression ast = ExpressionParser.parse(
+                "age BETWEEN @lo AND @hi AND marker = @m");
+        Map<String, Object> params = Map.of("lo", 18, "hi", 65, "m", "x");
+
+        // Outer parens wrap the whole logical AND — the translators emit parens
+        // around every binary AND expression. The inner (BETWEEN ...) parens are
+        // what this test pins: without them, Cosmos NoSQL's parser greedily
+        // binds BETWEEN's inner AND with the trailing logical AND.
+        assertEquals("((c.age BETWEEN @lo AND @hi) AND c.marker = @m)",
+                cosmos.translate(ast, params, TABLE).whereClause());
+        assertEquals("((age BETWEEN ? AND ?) AND marker = ?)",
+                dynamo.translate(ast, params, TABLE).whereClause());
+        assertEquals("((age BETWEEN @lo AND @hi) AND marker = @m)",
+                spanner.translate(ast, params, TABLE).whereClause());
+    }
+
     // ---- Dot notation ----
 
     @Test

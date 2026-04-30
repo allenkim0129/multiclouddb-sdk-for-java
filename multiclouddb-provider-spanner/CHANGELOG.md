@@ -7,30 +7,25 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-### Changed (BREAKING)
+### Documentation
 
-- **`delete()` of a missing key now throws `MulticloudDbException` with category
-  `NOT_FOUND` instead of returning silently.** The implementation now uses a
-  DML `DELETE … WHERE partitionKey=@pk AND sortKey=@sk` inside a
-  `readWriteTransaction()`; if the returned row count is zero the row did not
-  exist and a synthetic `NOT_FOUND` is thrown. Because the predicate binds
-  the full primary key, Spanner narrows locking to a single row (no range
-  locks), so the existence check and the delete are a single atomic step —
-  no TOCTOU race window between probe and write under concurrent deletes.
-  This delivers the strict-delete cross-provider contract while preserving
-  point-row lock semantics. **Migration:** callers that relied on
-  idempotent-delete semantics must now catch and ignore `NOT_FOUND`:
-  ```java
-  try {
-      client.delete(addr, key);
-  } catch (MulticloudDbException ex) {
-      if (ex.error().category() != MulticloudDbErrorCategory.NOT_FOUND) {
-          throw ex;
-      }
-  }
-  ```
+- **`delete()` of a missing key remains a silent no-op (idempotent).** The
+  Spanner provider continues to use `Mutation.delete(table, Key.of(pk, sk))`
+  via `databaseClient.write(...)`, which is idempotent natively — deleting
+  a row that does not exist returns success without modifying state. This
+  matches the LCD behaviour of Cosmos (404 swallowed) and DynamoDB
+  (`DeleteItem` is idempotent natively). Documented in the API Javadoc on
+  `MulticloudDbClient.delete(...)` and in `docs/guide.md`. Callers needing to detect a
+  missing key should use `read()`, which returns `null` on every provider
+  when the key does not exist.
+- *Audit trail*: an earlier draft of this PR introduced a strict
+  NOT_FOUND-on-delete contract (Cosmos retained the 404 throw; DynamoDB
+  added an `attribute_exists` guard; Spanner used a DML `DELETE` with a
+  rows-affected check). After review, that contract was abandoned in
+  favour of the LCD interpretation documented above; the strict-delete
+  code was reverted in this same PR before merge.
 
-### Fixed
+### Changed
 
 - **`BETWEEN` translation now wraps in parentheses** (`(field BETWEEN @lo AND @hi)`).
   Mirrors the parenthesised form emitted by sibling translators so cross-provider

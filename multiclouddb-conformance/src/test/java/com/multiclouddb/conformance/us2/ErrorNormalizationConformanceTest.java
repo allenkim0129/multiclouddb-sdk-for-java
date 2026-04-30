@@ -93,20 +93,25 @@ public abstract class ErrorNormalizationConformanceTest {
 
     @Test
     @Order(1)
-    @DisplayName("delete-missing carries NOT_FOUND, OperationDiagnostics, and isRetryable=false")
+    @DisplayName("update-missing carries NOT_FOUND, OperationDiagnostics, and isRetryable=false")
     void notFoundIsFullyNormalized() {
+        // Update is the LCD probe for NOT_FOUND across providers: Cosmos replaceItem
+        // returns 404, Dynamo update with attribute_exists fails the condition, and
+        // Spanner Mutation.newUpdateBuilder rejects with NOT_FOUND. Delete is silent
+        // on missing across all three providers (idempotent), so it cannot be used
+        // to assert NOT_FOUND normalization.
         MulticloudDbKey key = MulticloudDbKey.of(
                 "norm-missing-" + System.nanoTime(),
                 "norm-missing-" + System.nanoTime());
 
         MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                () -> client.delete(address, key),
-                "delete of missing key must throw on every provider");
+                () -> client.update(address, key, Map.of("title", "x")),
+                "update of missing key must throw on every provider");
 
         // Structured error
         assertNotNull(ex.error(), "Exception must carry a MulticloudDbError");
         assertEquals(MulticloudDbErrorCategory.NOT_FOUND, ex.error().category(),
-                "delete-missing must normalize to NOT_FOUND");
+                "update-missing must normalize to NOT_FOUND");
         assertEquals(providerId(), ex.error().provider(),
                 "Error.provider() must reflect the originating provider");
         assertNotNull(ex.error().operation(), "Error.operation() must be populated");
@@ -116,7 +121,7 @@ public abstract class ErrorNormalizationConformanceTest {
                 "NOT_FOUND must not be marked retryable");
 
         // Diagnostics contract — claimed in the class Javadoc above.
-        assertDiagnosticsPopulated(ex, "delete");
+        assertDiagnosticsPopulated(ex, "update");
     }
 
     @Test
@@ -142,17 +147,25 @@ public abstract class ErrorNormalizationConformanceTest {
 
             // Diagnostics contract — claimed in the class Javadoc above.
             assertDiagnosticsPopulated(ex, "create");
+
+            // Stability check: a second equivalent reproduction must surface the
+            // same category and the same retryable hint. The class Javadoc claims
+            // stability as a general property, but the dedicated stability test
+            // (retryableIsStableForRepeatedErrors) only exercises NOT_FOUND — so
+            // we pin CONFLICT here to make sure a provider cannot legitimately
+            // flip its retryable hint between equivalent CONFLICT reproductions.
+            MulticloudDbException ex2 = assertThrows(MulticloudDbException.class,
+                    () -> client.create(address, key, Map.of("title", "third")),
+                    "second equivalent create-duplicate must also throw");
+            assertEquals(ex.error().category(), ex2.error().category(),
+                    "Equivalent CONFLICT errors must always produce the same category");
+            assertEquals(ex.error().retryable(), ex2.error().retryable(),
+                    "Equivalent CONFLICT errors must produce stable isRetryable() across calls");
+            assertDiagnosticsPopulated(ex2, "create");
         } finally {
-            // Only swallow NOT_FOUND; rethrow other categories so a real cleanup
-            // failure (auth, transient, validation) surfaces instead of being masked.
-            try {
-                client.delete(address, key);
-            } catch (MulticloudDbException cleanup) {
-                if (cleanup.error() == null
-                        || cleanup.error().category() != MulticloudDbErrorCategory.NOT_FOUND) {
-                    throw cleanup;
-                }
-            }
+            // delete() is idempotent across providers — silent on missing — so a
+            // plain call is safe even if the create above failed before persisting.
+            client.delete(address, key);
         }
     }
 
@@ -160,14 +173,17 @@ public abstract class ErrorNormalizationConformanceTest {
     @Order(3)
     @DisplayName("isRetryable() is consistent across two reproductions of the same error")
     void retryableIsStableForRepeatedErrors() {
+        // Reproduce the same NOT_FOUND twice via update on a missing key. Delete
+        // cannot be used here because it is idempotent — silent on missing across
+        // all providers — so it never produces an exception to compare.
         MulticloudDbKey key = MulticloudDbKey.of(
                 "norm-stable-" + System.nanoTime(),
                 "norm-stable-" + System.nanoTime());
 
         MulticloudDbException first = assertThrows(MulticloudDbException.class,
-                () -> client.delete(address, key));
+                () -> client.update(address, key, Map.of("title", "x")));
         MulticloudDbException second = assertThrows(MulticloudDbException.class,
-                () -> client.delete(address, key));
+                () -> client.update(address, key, Map.of("title", "x")));
 
         assertEquals(first.error().category(), second.error().category(),
                 "Equivalent errors must always produce the same category");
@@ -175,7 +191,7 @@ public abstract class ErrorNormalizationConformanceTest {
                 "Equivalent errors must produce stable isRetryable() across calls");
 
         // Diagnostics must be populated on every reproduction.
-        assertDiagnosticsPopulated(first, "delete");
-        assertDiagnosticsPopulated(second, "delete");
+        assertDiagnosticsPopulated(first, "update");
+        assertDiagnosticsPopulated(second, "update");
     }
 }

@@ -7,17 +7,25 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-### Changed (BREAKING)
+### Documentation
 
-- **`MulticloudDbClient.delete(...)` is now a strict-delete contract.** The
-  Javadoc has been updated to declare that all implementations must throw
-  `MulticloudDbException` with category `MulticloudDbErrorCategory.NOT_FOUND`
-  when no document exists with the given key. This replaces the previous
-  unspecified (de-facto idempotent) behaviour and aligns `delete()` with the
-  rest of the CRUD surface (`read()` / `update()` already throw on missing
-  keys). See provider-module CHANGELOGs for per-backend implementation
-  details. **Migration:** callers that relied on idempotent-delete must now
-  catch and ignore `NOT_FOUND` at the call site.
+- **`MulticloudDbClient.delete(...)` is documented as idempotent — silent on
+  missing key.** The Javadoc now declares that deleting a key that does not
+  exist is a silent no-op on every provider, which is the true LCD across
+  Cosmos (404 swallowed), DynamoDB (`DeleteItem` is idempotent natively) and
+  Spanner (`Mutation.delete` is idempotent natively). Callers that need to detect a missing key should use
+  `MulticloudDbClient.read(...)`, which returns `null` on every provider
+  when the key does not exist (non-mutating). `update()` also throws
+  `NOT_FOUND` on a missing key, but it requires a document body and
+  **overwrites on hit**, so it is not a safe pure existence probe.
+- *Audit trail*: an earlier draft of this PR introduced a strict
+  NOT_FOUND-on-delete contract (Cosmos retained the 404 throw; DynamoDB
+  added an `attribute_exists` guard; Spanner used a DML `DELETE` with a
+  rows-affected check). After review, that contract was abandoned in
+  favour of the LCD interpretation documented above; the strict-delete
+  code was reverted in this same PR before merge. This clarifies (rather
+  than changes) the wire-level behaviour the providers were already
+  exhibiting; no caller-visible behaviour change.
 
 ## [0.1.0-beta.1] — 2026-04-23
 

@@ -56,20 +56,12 @@ public abstract class CrudConformanceTests {
     }
 
     /**
-     * Best-effort cleanup that swallows {@link MulticloudDbErrorCategory#NOT_FOUND} only,
-     * so cleanup never blocks teardown when an item was already deleted by a previous
-     * assertion. Any other category (auth, validation, transient, etc.) is rethrown so
-     * that real provider misconfigurations surface during tests instead of being masked.
+     * Cleanup helper that delegates to {@link com.multiclouddb.api.MulticloudDbClient#delete}.
+     * Delete is idempotent across providers, so calling this on an already-deleted
+     * (or never-created) key is a silent no-op and never blocks teardown.
      */
     private void safeDelete(MulticloudDbKey key) {
-        try {
-            client.delete(getAddress(), key);
-        } catch (MulticloudDbException ex) {
-            if (ex.error() == null
-                    || ex.error().category() != MulticloudDbErrorCategory.NOT_FOUND) {
-                throw ex;
-            }
-        }
+        client.delete(getAddress(), key);
     }
 
     // ── CRUD tests ────────────────────────────────────────────────────────────
@@ -127,18 +119,17 @@ public abstract class CrudConformanceTests {
     }
 
     @Test @Order(5)
-    @DisplayName("delete of nonexistent key throws MulticloudDbException with NOT_FOUND")
-    void deleteOfMissingKeyThrowsNotFound() {
+    @DisplayName("delete of nonexistent key is a silent no-op (idempotent)")
+    void deleteOfMissingKeyIsSilent() {
         // Use a per-invocation unique key so a previous failed run, a parallel runner,
         // or seeded state cannot accidentally make the key exist when this test runs.
         String unique = "never-existed-" + UUID.randomUUID();
         MulticloudDbKey key = MulticloudDbKey.of(unique, unique);
-        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                () -> client.delete(getAddress(), key),
-                "Deleting a nonexistent key must throw — providers must not silently swallow missing-key");
-        assertNotNull(ex.error(), "Exception must carry a structured error");
-        assertEquals(MulticloudDbErrorCategory.NOT_FOUND, ex.error().category(),
-                "Delete-missing must normalize to NOT_FOUND across providers");
+        // Delete is the LCD across Cosmos/Dynamo/Spanner: a missing key is a silent
+        // no-op, never an exception. Callers that need NOT_FOUND on a missing key
+        // must use update() instead.
+        assertDoesNotThrow(() -> client.delete(getAddress(), key),
+                "Delete of a nonexistent key must be silent — providers must not throw on missing");
     }
 
     @Test @Order(6)
@@ -264,6 +255,10 @@ public abstract class CrudConformanceTests {
         doc.put("strField", "hello-world");
         doc.put("intField", 12345);
         doc.put("longField", 9_876_543_210L);
+        // Just under Long.MAX_VALUE and well above 2^53 (~9.007e15) — a silent
+        // int/long → double coercion would lose precision here, so a value
+        // mismatch (not just a type mismatch) would surface the regression.
+        doc.put("bigLongField", 9_223_372_036_854_775_800L);
         doc.put("doubleField", 3.14159);
         doc.put("boolTrue", true);
         doc.put("boolFalse", false);
@@ -279,8 +274,24 @@ public abstract class CrudConformanceTests {
             JsonNode d = r.document();
 
             assertEquals("hello-world", d.get("strField").asText(), "string fidelity");
-            assertEquals(12345, d.get("intField").asInt(), "int fidelity");
-            assertEquals(9_876_543_210L, d.get("longField").asLong(), "long fidelity");
+            // JsonNode.asInt() / asLong() coerce silently — a provider that stores
+            // integers as JSON doubles would still pass a value comparison up to
+            // 2^53. Guard the *type* explicitly with isIntegralNumber() /
+            // canConvertToLong() so a silent int → double promotion fails here.
+            assertTrue(d.get("intField").isIntegralNumber(),
+                    "int field must round-trip as an integral JSON number, not a double");
+            assertEquals(12345, d.get("intField").asInt(), "int value fidelity");
+            assertTrue(d.get("longField").isIntegralNumber(),
+                    "long field must round-trip as an integral JSON number, not a double");
+            assertTrue(d.get("longField").canConvertToLong(),
+                    "long field must round-trip without losing precision");
+            assertEquals(9_876_543_210L, d.get("longField").asLong(), "long value fidelity");
+            assertTrue(d.get("bigLongField").isIntegralNumber(),
+                    "near-Long.MAX_VALUE must round-trip as an integral JSON number");
+            assertTrue(d.get("bigLongField").canConvertToLong(),
+                    "near-Long.MAX_VALUE must round-trip without losing precision");
+            assertEquals(9_223_372_036_854_775_800L, d.get("bigLongField").asLong(),
+                    "near-Long.MAX_VALUE value fidelity (would fail on silent long → double)");
             assertEquals(3.14159, d.get("doubleField").asDouble(), 1e-9, "double fidelity");
             assertTrue(d.get("boolTrue").asBoolean(), "boolean true fidelity");
             assertFalse(d.get("boolFalse").asBoolean(), "boolean false fidelity");
@@ -342,24 +353,30 @@ public abstract class CrudConformanceTests {
                     Map.of("marker", marker, "n", i));
         }
         try {
-            int totalAtPage1 = exhaustiveCount(pk, marker, 1);
-            int totalAtPage3 = exhaustiveCount(pk, marker, 3);
-            int totalAtPage50 = exhaustiveCount(pk, marker, 50);
+            // Compare the actual *set* of returned items, not just counts.
+            // A buggy provider that returns 7 items at pageSize=50 and a
+            // different 7 items at pageSize=1 (e.g. one stale + one missing)
+            // would yield identical counts but a set-equality failure here
+            // — that's the regression this assertion guards against.
+            Set<String> idsAtPage1 = exhaustiveCount(pk, marker, 1);
+            Set<String> idsAtPage3 = exhaustiveCount(pk, marker, 3);
+            Set<String> idsAtPage50 = exhaustiveCount(pk, marker, 50);
 
-            assertEquals(seedCount, totalAtPage1,
+            assertEquals(seedCount, idsAtPage1.size(),
                     "Page size 1 must yield all " + seedCount + " items via continuation");
-            assertEquals(totalAtPage1, totalAtPage3,
-                    "Page sizes 1 and 3 must yield identical total counts");
-            assertEquals(totalAtPage1, totalAtPage50,
-                    "Page sizes 1 and 50 must yield identical total counts");
+            assertEquals(idsAtPage1, idsAtPage3,
+                    "Page sizes 1 and 3 must yield the identical *set* of items "
+                            + "(same identities, no duplicates, no omissions)");
+            assertEquals(idsAtPage1, idsAtPage50,
+                    "Page sizes 1 and 50 must yield the identical *set* of items "
+                            + "(same identities, no duplicates, no omissions)");
         } finally {
             for (int i = 1; i <= seedCount; i++) safeDelete(MulticloudDbKey.of(pk, "pi-" + i));
         }
     }
 
-    private int exhaustiveCount(String partition, String marker, int pageSize) {
-        int total = 0;
-        Set<String> seenIds = new HashSet<>();
+    private Set<String> exhaustiveCount(String partition, String marker, int pageSize) {
+        Set<String> seenIds = new LinkedHashSet<>();
         String token = null;
         int safety = 0;
         do {
@@ -382,13 +399,12 @@ public abstract class CrudConformanceTests {
                 assertTrue(seenIds.add(stableId),
                         "Pagination at pageSize=" + pageSize
                                 + " produced a duplicate item (n=" + stableId + ")");
-                total++;
             }
             token = p.continuationToken();
             safety++;
             if (safety > 1000) fail("Pagination did not terminate within 1000 pages");
         } while (token != null);
-        return total;
+        return seenIds;
     }
 
     // ── Lifecycle / configuration tests ───────────────────────────────────────

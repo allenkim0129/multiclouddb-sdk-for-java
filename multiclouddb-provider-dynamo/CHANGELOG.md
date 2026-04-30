@@ -7,32 +7,25 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-### Changed (BREAKING)
+### Documentation
 
-- **`delete()` of a missing key now throws `MulticloudDbException` with category
-  `NOT_FOUND` instead of returning silently.** The implementation now adds an
-  `attribute_exists(partitionKey)` condition expression to `DeleteItem` and
-  maps `ConditionalCheckFailedException` to `NOT_FOUND`. The change matches
-  the cross-provider portability contract enforced by the conformance suite
-  and aligns with `update()` / `read()` which already throw on missing keys.
-  **Cost note:** because DynamoDB charges write-capacity for conditional
-  `DeleteItem` regardless of whether the condition matches, every delete now
-  consumes ~1 WCU even when the item does not exist. Workloads that perform
-  speculative cleanup or rely on cheap idempotent retries should account for
-  this; see `docs/guide.md` — *Strict Delete*. **Migration:** callers that
-  relied on idempotent-delete semantics must now catch and ignore
-  `NOT_FOUND`:
-  ```java
-  try {
-      client.delete(addr, key);
-  } catch (MulticloudDbException ex) {
-      if (ex.error().category() != MulticloudDbErrorCategory.NOT_FOUND) {
-          throw ex;
-      }
-  }
-  ```
+- **`delete()` of a missing key remains a silent no-op (idempotent).** The
+  Dynamo provider issues an unconditional `DeleteItem`, so a delete of a
+  key that does not exist is silently ignored — matching the LCD behaviour
+  of Cosmos (404 swallowed) and Spanner (`Mutation.delete` is idempotent
+  natively). No `attribute_exists` guard is added, so deletes do not pay
+  the conditional-write WCU surcharge. Documented in the API Javadoc on
+  `MulticloudDbClient.delete(...)` and in `docs/guide.md`. Callers needing to detect a
+  missing key should use `read()`, which returns `null` on every provider
+  when the key does not exist.
+- *Audit trail*: an earlier draft of this PR introduced a strict
+  NOT_FOUND-on-delete contract (Cosmos retained the 404 throw; DynamoDB
+  added an `attribute_exists` guard; Spanner used a DML `DELETE` with a
+  rows-affected check). After review, that contract was abandoned in
+  favour of the LCD interpretation documented above; the strict-delete
+  code was reverted in this same PR before merge.
 
-### Fixed
+### Changed
 
 - **`BETWEEN` translation now wraps in parentheses** (`(field BETWEEN ? AND ?)`).
   Mirrors the parenthesised form emitted by sibling translators so cross-provider

@@ -7,25 +7,22 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-### Changed (BREAKING)
+### Documentation
 
-- **`delete()` of a missing key now throws `MulticloudDbException` with category
-  `NOT_FOUND` instead of returning silently.** Removed the previous
-  `if (statusCode == 404) return;` swallow path. The change brings Cosmos's
-  delete contract in line with `read()` and `update()` (which already throw
-  `NOT_FOUND` on missing keys) and matches the cross-provider portability
-  contract enforced by the conformance suite. **Migration:** callers that
-  relied on idempotent-delete semantics must now catch and ignore
-  `NOT_FOUND`:
-  ```java
-  try {
-      client.delete(addr, key);
-  } catch (MulticloudDbException ex) {
-      if (ex.error().category() != MulticloudDbErrorCategory.NOT_FOUND) {
-          throw ex;
-      }
-  }
-  ```
+- **`delete()` of a missing key remains a silent no-op (idempotent).** The
+  Cosmos provider continues to swallow the native 404 from
+  `deleteItem(...)`, matching the LCD behaviour of DynamoDB
+  (`DeleteItem` is idempotent natively) and Spanner (`Mutation.delete` is
+  idempotent natively). Documented in the API Javadoc on
+  `MulticloudDbClient.delete(...)` and in `docs/guide.md`. No caller-visible
+  behaviour change. Callers needing to detect a missing key should use `read()`, which
+  returns `null` on every provider when the key does not exist.
+- *Audit trail*: an earlier draft of this PR introduced a strict
+  NOT_FOUND-on-delete contract (Cosmos retained the 404 throw; DynamoDB
+  added an `attribute_exists` guard; Spanner used a DML `DELETE` with a
+  rows-affected check). After review, that contract was abandoned in
+  favour of the LCD interpretation documented above; the strict-delete
+  code was reverted in this same PR before merge.
 
 ### Added
 
