@@ -4,22 +4,44 @@
 
 Spec FR-065..070 / US8 describes a portable change-feed abstraction. Today only the
 `Capability.CHANGE_FEED` flag exists; there is no API/SPI surface, no provider impl,
-and no tests. Need an LCD design that fits all three providers.
+and no tests.
 
-## Provider native surfaces (LCD-relevant facts)
+## Design philosophy: majority-rule, not strict LCD
 
-| Aspect | Cosmos (azure-cosmos 4.78.0) | Dynamo Streams (sdk v2 2.34.0) | Spanner Change Streams (6.62.0) |
-|---|---|---|---|
-| Pull API | `queryChangeFeed(CosmosChangeFeedRequestOptions, FeedRange)` | `GetShardIterator` + `GetRecords` | `SELECT * FROM READ_<stream>(...)` |
-| Start: beginning | `createForProcessingFromBeginning()` | `TRIM_HORIZON` (24h) | `start_timestamp = epoch` |
-| Start: point-in-time | ✅ `createForProcessingFromPointInTime(Instant)` | ❌ no timestamp iterator | ✅ `start_timestamp` |
-| Start: checkpoint | ✅ `createForProcessingFromContinuation(String)` | ✅ `AFTER_SEQUENCE_NUMBER` | ✅ `partition_token` + watermark |
-| Logical partition-key scope | ✅ `FeedRange.forLogicalPartition(pk)` | ❌ shards are physical | ❌ partition tokens are physical row ranges |
-| Delete events | ⚠ require `AllVersionsAndDeletes` provisioning | ✅ native `REMOVE` | ✅ native |
-| Full new-item image | ✅ default in `LatestVersion` | ⚠ requires `NEW_IMAGE` / `NEW_AND_OLD_IMAGES` | ⚠ requires `NEW_ROW` / `NEW_ROW_AND_OLD_VALUES` |
-| Event timestamp | UTC | `ApproximateCreationDateTime` (UTC) | `commit_timestamp` (UTC) |
-| Retention | container-driven | 24 h hard cap | configurable |
-| Push alternative (out of scope v1) | Change Feed Processor + lease container | KCL | Dataflow connector |
+A pure lowest-common-denominator (intersection of all three providers) leaves a
+useful feature anaemic: it would force us to drop delete events, drop create/update
+distinction, and drop time-based start — three features that 2 of 3 providers
+support natively.
+
+The rule used in this design is:
+
+- **3/3 supported** → first-class API surface, no warning.
+- **2/3 supported** → first-class API surface; minority provider either (a) works
+  with a documented provisioning prerequisite, or (b) raises
+  `UNSUPPORTED_CAPABILITY` with an actionable error. **Portability warning
+  documented on every public API element where the gap is observable.**
+- **1/3 supported** → kept as an explicit capability-gated opt-in; not part of
+  the first-class API path.
+- **0/3 supported** → out of scope.
+
+This keeps the portable surface ergonomic for the common case while staying honest
+about provider gaps.
+
+## Provider native surfaces
+
+| Aspect | Cosmos (azure-cosmos 4.78.0) | Dynamo Streams (sdk v2 2.34.0) | Spanner Change Streams (6.62.0) | Coverage |
+|---|---|---|---|---|
+| Pull API | `queryChangeFeed(CosmosChangeFeedRequestOptions, FeedRange)` | `GetShardIterator` + `GetRecords` | `SELECT * FROM READ_<stream>(...)` | 3/3 |
+| Start: beginning | `createForProcessingFromBeginning()` | `TRIM_HORIZON` (24h) | `start_timestamp = epoch` | 3/3 |
+| Start: checkpoint | `createForProcessingFromContinuation(String)` | `AFTER_SEQUENCE_NUMBER` | `partition_token` + watermark | 3/3 |
+| Start: point-in-time | ✅ `createForProcessingFromPointInTime(Instant)` | ❌ no timestamp iterator | ✅ `start_timestamp` | **2/3** |
+| Distinct CREATE vs UPDATE | needs `AllVersionsAndDeletes` provisioning | ✅ native (`INSERT` vs `MODIFY`) | ✅ native (`mod_type`) | **2/3** |
+| Delete events | needs `AllVersionsAndDeletes` provisioning | ✅ native (`REMOVE`) | ✅ native | **2/3** |
+| Full new-item image | ✅ default in `LatestVersion` | needs `NEW_IMAGE` / `NEW_AND_OLD_IMAGES` provisioning | needs `NEW_ROW` / `NEW_ROW_AND_OLD_VALUES` provisioning | 3/3 with per-provider provisioning |
+| Logical partition-key scope | ✅ `FeedRange.forLogicalPartition(pk)` | ❌ shards are physical | ❌ partition tokens are physical row ranges | **1/3** |
+| Event timestamp | UTC | `ApproximateCreationDateTime` (UTC) | `commit_timestamp` (UTC) | 3/3 |
+| Retention | container-driven | 24 h hard cap | configurable | n/a |
+| Push alternative (out of scope v1) | Change Feed Processor + lease container | KCL | Dataflow connector | — |
 
 ## Programming model: synchronous pull, with a polling iterator helper
 
@@ -56,8 +78,7 @@ ChangeFeedPage readChanges(ChangeFeedRequest request, OperationOptions options);
 public final class ChangeFeedRequest {
     ResourceAddress address;                // required
     StartPosition start;                    // required
-    MulticloudDbKey partitionKeyScope;      // optional; capability-gated
-    boolean includeDeletes;                 // capability-gated
+    MulticloudDbKey partitionKeyScope;      // optional; capability-gated (1/3 — minority)
     NewItemStateMode newItemStateMode;      // default INCLUDE_IF_AVAILABLE
     int maxBatchSize;                       // default 100; provider clamps
 }
@@ -70,21 +91,16 @@ public enum NewItemStateMode {
 
 public sealed interface StartPosition {
     record BeginningOfAvailableChanges() implements StartPosition {}  // see retention note
-    record AtTimestamp(Instant utc) implements StartPosition {}        // capability-gated
+    record AtTimestamp(Instant utc) implements StartPosition {}        // 2/3 — Dynamo throws
     record FromCheckpoint(String token) implements StartPosition {}
 }
 
-public enum ChangeType {
-    WRITE,         // create or update — LCD type when provider can't distinguish
-    CREATE,        // distinct create — only when CHANGE_FEED_DISTINCT_CREATE_UPDATE supported
-    UPDATE,        // distinct update — only when CHANGE_FEED_DISTINCT_CREATE_UPDATE supported
-    DELETE
-}
+public enum ChangeType { CREATE, UPDATE, DELETE }
 
 public final class ChangeEvent {
     String eventId;                          // provider sequence/LSN, as string; for dedup
     MulticloudDbKey key;
-    ChangeType type;
+    ChangeType type;                         // always CREATE/UPDATE/DELETE — see Cosmos note
     Instant timestamp;                       // UTC, RFC3339 on toString
     Map<String, Object> newItemState;        // null on DELETE or when OMIT/unavailable
 }
@@ -99,31 +115,70 @@ public final class ChangeFeedPage {
 
 ### Capabilities (extends existing `CHANGE_FEED`)
 
-| Capability | Gates |
-|---|---|
-| `CHANGE_FEED` (existing) | basic feed: `WRITE` events, beginning + checkpoint start |
-| `CHANGE_FEED_DISTINCT_CREATE_UPDATE` | event types `CREATE` vs `UPDATE` rather than `WRITE` |
-| `CHANGE_FEED_DELETE_EVENTS` | `includeDeletes=true` |
-| `CHANGE_FEED_POINT_IN_TIME` | `StartPosition.AtTimestamp` |
-| `CHANGE_FEED_FULL_ITEM_IMAGE` | `newItemStateMode=REQUIRE` |
-| `CHANGE_FEED_PARTITION_KEY_SCOPE` | non-null `partitionKeyScope` (requires spec amendment of FR-069) |
+| Capability | Tier | Gates |
+|---|---|---|
+| `CHANGE_FEED` (existing) | 3/3 first-class | basic feed: CREATE/UPDATE/DELETE events, beginning + checkpoint start, full image when provisioned |
+| `CHANGE_FEED_POINT_IN_TIME` | 2/3 first-class | `StartPosition.AtTimestamp` |
+| `CHANGE_FEED_PARTITION_KEY_SCOPE` | 1/3 minority opt-in | non-null `partitionKeyScope` |
+
+`CREATE`/`UPDATE`/`DELETE` event labelling, delete events, and full-image
+emission are **not separate capabilities** — they are part of the basic
+`CHANGE_FEED` contract. Providers satisfy that contract via the provisioning
+prerequisites in the next section. A provider that cannot satisfy the contract
+(e.g. Cosmos in `LatestVersion` mode, which conflates create vs update) fails
+fast at first `readChanges()` with `INVALID_REQUEST` and an actionable message
+pointing at the missing provisioning step.
 
 Capability matrix:
 
 | Capability | Cosmos | Dynamo | Spanner |
 |---|---|---|---|
-| `CHANGE_FEED` | ✅ | ✅ | ✅ |
-| `CHANGE_FEED_DISTINCT_CREATE_UPDATE` | only with `AllVersionsAndDeletes` mode | ✅ (`INSERT` vs `MODIFY`) | ✅ (mod_type) |
-| `CHANGE_FEED_DELETE_EVENTS` | only with `AllVersionsAndDeletes` mode | ✅ | ✅ |
-| `CHANGE_FEED_POINT_IN_TIME` | ✅ | ❌ | ✅ |
-| `CHANGE_FEED_FULL_ITEM_IMAGE` | ✅ (default Latest mode) | only with `NEW_IMAGE` / `NEW_AND_OLD_IMAGES` | only with `NEW_ROW` / `NEW_ROW_AND_OLD_VALUES` |
-| `CHANGE_FEED_PARTITION_KEY_SCOPE` | ✅ | ❌ | ❌ |
+| `CHANGE_FEED` | ✅ (requires `AllVersionsAndDeletes` mode) | ✅ (requires `NEW_AND_OLD_IMAGES` for full image) | ✅ (requires `NEW_ROW_AND_OLD_VALUES` for full image) |
+| `CHANGE_FEED_POINT_IN_TIME` | ✅ | ❌ — `UNSUPPORTED_CAPABILITY` | ✅ |
+| `CHANGE_FEED_PARTITION_KEY_SCOPE` | ✅ | ❌ — `UNSUPPORTED_CAPABILITY` | ❌ — `UNSUPPORTED_CAPABILITY` |
 
-> **Cosmos `LatestVersion` caveat:** the default change feed mode does not reliably
-> distinguish create from update — only the post-image is exposed. The basic
-> `CHANGE_FEED` capability therefore promises only `WRITE` events; precise
-> create/update labelling is a separate capability that on Cosmos requires
-> `AllVersionsAndDeletes` provisioning.
+## Portability warnings (must appear in javadoc + docs/configuration.md)
+
+These are the gaps a portable application will observe; surfacing them as docs
+warnings — not as quiet capability flags — is the cost of the majority-rule
+shortcut.
+
+1. **Cosmos: change-feed mode must be `AllVersionsAndDeletes`.**
+   Cosmos's default `LatestVersion` mode emits only post-images and cannot
+   distinguish create from update or surface deletes. The SDK validates the
+   container's change-feed mode at first `readChanges()` and fails with
+   `INVALID_REQUEST` ("Cosmos change feed must be configured with
+   `AllVersionsAndDeletes`") if mis-provisioned. This is a one-time
+   provisioning step.
+
+2. **Dynamo: point-in-time start is unsupported.**
+   `StartPosition.AtTimestamp` raises `UNSUPPORTED_CAPABILITY` on Dynamo.
+   Dynamo Streams only expose `TRIM_HORIZON` (24-hour window) and `LATEST`.
+   Portable applications should either gate via
+   `capabilities.supports(CHANGE_FEED_POINT_IN_TIME)` or fall back to a
+   stored checkpoint.
+
+3. **Dynamo: 24-hour record retention.**
+   `BeginningOfAvailableChanges` on Dynamo means "24 hours ago," not
+   "table creation." A persisted checkpoint older than ~24 h fails with
+   `CHECKPOINT_EXPIRED`.
+
+4. **Dynamo full image: requires `StreamSpecification.StreamViewType =
+   NEW_IMAGE` (or `NEW_AND_OLD_IMAGES`)** at table provisioning. With
+   `KEYS_ONLY`, `newItemStateMode=REQUIRE` fails with
+   `UNSUPPORTED_CAPABILITY`.
+
+5. **Spanner full image: requires `value_capture_type = 'NEW_ROW'` (or
+   `NEW_ROW_AND_OLD_VALUES`)** on the change stream definition. Other
+   modes emit only changed columns; `newItemStateMode=REQUIRE` fails with
+   `UNSUPPORTED_CAPABILITY`.
+
+6. **Logical partition-key scope is Cosmos-only.**
+   Dynamo and Spanner partition feeds at the physical shard / row-range
+   level, with no relationship to logical partition keys. Setting
+   `partitionKeyScope` on those providers raises `UNSUPPORTED_CAPABILITY`.
+   Portable code that needs partition-scoped consumption must gate on
+   `CHANGE_FEED_PARTITION_KEY_SCOPE`.
 
 When an unsupported capability is requested, the SPI raises a
 `MulticloudDbException` of category `UNSUPPORTED` with an actionable message
@@ -193,14 +248,14 @@ the resource fingerprint in the token will mismatch → `INVALID_REQUEST`.
 
 ## Provisioning prerequisites (documentation only)
 
-These are surfaced as preconditions in the docs, not in code:
+These are folded into the **Portability warnings** section above. Summary
+table (the SDK validates these at first `readChanges()`):
 
-- Cosmos delete events → enable `AllVersionsAndDeletes` on the change feed mode.
-- Dynamo full image → set table `StreamSpecification.StreamViewType` to
-  `NEW_IMAGE` or `NEW_AND_OLD_IMAGES`.
-- Spanner full image → `CREATE CHANGE STREAM ... OPTIONS (value_capture_type =
-  'NEW_ROW')` (or `NEW_ROW_AND_OLD_VALUES`).
-- Spanner & Cosmos: change streams must exist before `readChanges()`.
+| Provider | Required provisioning | If missing |
+|---|---|---|
+| Cosmos | change feed mode = `AllVersionsAndDeletes` | `INVALID_REQUEST` at first call |
+| Dynamo | `StreamSpecification.StreamViewType` ∈ {`NEW_IMAGE`, `NEW_AND_OLD_IMAGES`} (only required for `newItemStateMode=REQUIRE`) | `UNSUPPORTED_CAPABILITY` |
+| Spanner | `value_capture_type` ∈ {`NEW_ROW`, `NEW_ROW_AND_OLD_VALUES`} (only required for `newItemStateMode=REQUIRE`); change stream DDL must exist | `UNSUPPORTED_CAPABILITY` / `NOT_FOUND` |
 
 ## Out of scope (v1)
 
