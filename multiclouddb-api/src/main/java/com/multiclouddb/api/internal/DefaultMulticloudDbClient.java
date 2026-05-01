@@ -19,6 +19,10 @@ import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
+import com.multiclouddb.api.changefeed.ChangeFeedPage;
+import com.multiclouddb.api.changefeed.ChangeFeedRequest;
+import com.multiclouddb.api.changefeed.FeedScope;
+import com.multiclouddb.api.changefeed.StartPosition;
 import com.multiclouddb.api.query.Expression;
 import com.multiclouddb.api.query.ExpressionParseException;
 import com.multiclouddb.api.query.ExpressionParser;
@@ -34,6 +38,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletionException;
@@ -213,6 +218,58 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
     }
 
     @Override
+    public ChangeFeedPage readChanges(ChangeFeedRequest request, OperationOptions options) {
+        Objects.requireNonNull(request, "request");
+        Instant start = Instant.now();
+        try {
+            // Fail-fast capability gates before hitting the provider
+            checkCapability(Capability.CHANGE_FEED,
+                    "Change feed is not supported by provider " + config.provider().id(),
+                    "readChanges");
+            if (request.startPosition() instanceof StartPosition.AtTime) {
+                checkCapability(Capability.CHANGE_FEED_POINT_IN_TIME,
+                        "Point-in-time start (StartPosition.atTime) is not supported by provider "
+                                + config.provider().id(),
+                        "readChanges");
+            }
+            if (request.scope() instanceof FeedScope.LogicalPartition) {
+                checkCapability(Capability.CHANGE_FEED_LOGICAL_PARTITION_SCOPE,
+                        "Logical-partition-scoped change feed is not supported by provider "
+                                + config.provider().id(),
+                        "readChanges");
+            }
+            ChangeFeedPage page = providerClient.readChanges(request, options);
+            LOG.debug("readChanges completed: address={}, events={}, hasMore={}, duration={}ms",
+                    request.address(), page.events().size(), page.hasMore(),
+                    Duration.between(start, Instant.now()).toMillis());
+            return page;
+        } catch (MulticloudDbException e) {
+            throw enrichException(e, "readChanges", start);
+        } catch (Exception e) {
+            throw wrapUnexpected(e, "readChanges", start);
+        }
+    }
+
+    @Override
+    public List<String> listPhysicalPartitions(ResourceAddress address, OperationOptions options) {
+        Objects.requireNonNull(address, "address");
+        Instant start = Instant.now();
+        try {
+            checkCapability(Capability.CHANGE_FEED,
+                    "Change feed is not supported by provider " + config.provider().id(),
+                    "listPhysicalPartitions");
+            List<String> ids = providerClient.listPhysicalPartitions(address, options);
+            LOG.debug("listPhysicalPartitions completed: address={}, count={}, duration={}ms",
+                    address, ids.size(), Duration.between(start, Instant.now()).toMillis());
+            return ids;
+        } catch (MulticloudDbException e) {
+            throw enrichException(e, "listPhysicalPartitions", start);
+        } catch (Exception e) {
+            throw wrapUnexpected(e, "listPhysicalPartitions", start);
+        }
+    }
+
+    @Override
     public void ensureDatabase(String database) {
         Instant start = Instant.now();
         try {
@@ -303,6 +360,10 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
      * Fail-fast: throw if a required capability is not supported (T080).
      */
     private void checkCapability(String capabilityName, String message) {
+        checkCapability(capabilityName, message, "query");
+    }
+
+    private void checkCapability(String capabilityName, String message, String operation) {
         CapabilitySet caps = providerClient.capabilities();
         if (!caps.isSupported(capabilityName)) {
             throw new MulticloudDbException(
@@ -310,7 +371,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
                             MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
                             message,
                             config.provider(),
-                            "query",
+                            operation,
                             false,
                             Map.of("capability", capabilityName)));
         }

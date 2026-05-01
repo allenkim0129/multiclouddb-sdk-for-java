@@ -38,7 +38,9 @@ about provider gaps.
 | Distinct CREATE vs UPDATE | needs `AllVersionsAndDeletes` provisioning | ✅ native (`INSERT` vs `MODIFY`) | ✅ native (`mod_type`) | **2/3** |
 | Delete events | needs `AllVersionsAndDeletes` provisioning | ✅ native (`REMOVE`) | ✅ native | **2/3** |
 | Full new-item image | ✅ default in `LatestVersion` | needs `NEW_IMAGE` / `NEW_AND_OLD_IMAGES` provisioning | needs `NEW_ROW` / `NEW_ROW_AND_OLD_VALUES` provisioning | 3/3 with per-provider provisioning |
-| Logical partition-key scope | ✅ `FeedRange.forLogicalPartition(pk)` | ❌ shards are physical | ❌ partition tokens are physical row ranges | **1/3** |
+| Logical partition-key scope (filter to a single PK value) | ✅ `FeedRange.forLogicalPartition(pk)` | ❌ shards are physical | ❌ partition tokens are physical row ranges | **1/3** |
+| Physical partition scope (one shard / range / token) | ✅ `FeedRange` from `getFeedRanges()` / `forFeedRange(...)` | ✅ shard iterator from `DescribeStream` | ✅ `partition_token` from `child_partitions_record` | **3/3** |
+| Physical partition lifecycle (split/merge signal) | `splitFeedRange()` / new ranges from `getFeedRanges()` | parent shard closes, child shard ids in `DescribeStream` | `child_partitions_record` event in feed | **3/3** |
 | Event timestamp | UTC | `ApproximateCreationDateTime` (UTC) | `commit_timestamp` (UTC) | 3/3 |
 | Retention | container-driven | 24 h hard cap | configurable | n/a |
 | Push alternative (out of scope v1) | Change Feed Processor + lease container | KCL | Dataflow connector | — |
@@ -78,9 +80,16 @@ ChangeFeedPage readChanges(ChangeFeedRequest request, OperationOptions options);
 public final class ChangeFeedRequest {
     ResourceAddress address;                // required
     StartPosition start;                    // required
-    MulticloudDbKey partitionKeyScope;      // optional; capability-gated (1/3 — minority)
+    FeedScope scope;                        // default EntireCollection()
     NewItemStateMode newItemStateMode;      // default INCLUDE_IF_AVAILABLE
     int maxBatchSize;                       // default 100; provider clamps
+}
+
+// Unified partitioning model.
+public sealed interface FeedScope {
+    record EntireCollection() implements FeedScope {}                     // 3/3 default
+    record PhysicalPartition(String partitionId) implements FeedScope {}  // 3/3 first-class
+    record LogicalPartition(MulticloudDbKey key) implements FeedScope {}  // 1/3 — Cosmos only
 }
 
 public enum NewItemStateMode {
@@ -109,22 +118,39 @@ public final class ChangeFeedPage {
     List<ChangeEvent> events;                // possibly empty
     String continuationToken;                // never null; opaque; resume here
     boolean idle;                            // true when provider returned an empty batch
+    // Physical-partition lifecycle. Populated only when scope is PhysicalPartition.
+    boolean partitionRetired;                // true when this partition has been split/merged
+    List<String> childPartitions;            // partition IDs to consume next; non-empty iff partitionRetired
     OperationDiagnostics diagnostics;        // optional: lag estimate, RU/RCU charge, watermark
 }
 ```
 
-### Capabilities (extends existing `CHANGE_FEED`)
+### Partition discovery (new SPI/API call)
+
+```java
+// 3/3 — returns currently active physical partition IDs for the resource.
+// Used as the seed for parallel consumption; subsequent splits are surfaced
+// via ChangeFeedPage.partitionRetired + childPartitions.
+List<String> listPhysicalPartitions(ResourceAddress address, OperationOptions options);
+```
+
+`partitionId` is an opaque string. Internally each provider encodes its native
+identifier (Cosmos: serialized `FeedRange`; Dynamo: `shardId`; Spanner:
+`partition_token`). The string is meaningful only to the same provider+resource
+that produced it.
+
+### Capabilities
 
 | Capability | Tier | Gates |
 |---|---|---|
-| `CHANGE_FEED` (existing) | 3/3 first-class | basic feed: CREATE/UPDATE/DELETE events, beginning + checkpoint start, full image when provisioned |
+| `CHANGE_FEED` (existing) | 3/3 first-class | basic feed: CREATE/UPDATE/DELETE events, beginning + checkpoint start, full image when provisioned, `EntireCollection` and `PhysicalPartition` scopes |
 | `CHANGE_FEED_POINT_IN_TIME` | 2/3 first-class | `StartPosition.AtTimestamp` |
-| `CHANGE_FEED_PARTITION_KEY_SCOPE` | 1/3 minority opt-in | non-null `partitionKeyScope` |
+| `CHANGE_FEED_LOGICAL_PARTITION_SCOPE` | 1/3 minority opt-in | `FeedScope.LogicalPartition(...)` |
 
-`CREATE`/`UPDATE`/`DELETE` event labelling, delete events, and full-image
-emission are **not separate capabilities** — they are part of the basic
-`CHANGE_FEED` contract. Providers satisfy that contract via the provisioning
-prerequisites in the next section. A provider that cannot satisfy the contract
+`CREATE`/`UPDATE`/`DELETE` event labelling, delete events, full-image emission,
+and physical-partition scope are **not separate capabilities** — they are part
+of the basic `CHANGE_FEED` contract. Providers satisfy that contract via the
+provisioning prerequisites below. A provider that cannot satisfy the contract
 (e.g. Cosmos in `LatestVersion` mode, which conflates create vs update) fails
 fast at first `readChanges()` with `INVALID_REQUEST` and an actionable message
 pointing at the missing provisioning step.
@@ -135,7 +161,7 @@ Capability matrix:
 |---|---|---|---|
 | `CHANGE_FEED` | ✅ (requires `AllVersionsAndDeletes` mode) | ✅ (requires `NEW_AND_OLD_IMAGES` for full image) | ✅ (requires `NEW_ROW_AND_OLD_VALUES` for full image) |
 | `CHANGE_FEED_POINT_IN_TIME` | ✅ | ❌ — `UNSUPPORTED_CAPABILITY` | ✅ |
-| `CHANGE_FEED_PARTITION_KEY_SCOPE` | ✅ | ❌ — `UNSUPPORTED_CAPABILITY` | ❌ — `UNSUPPORTED_CAPABILITY` |
+| `CHANGE_FEED_LOGICAL_PARTITION_SCOPE` | ✅ | ❌ — `UNSUPPORTED_CAPABILITY` | ❌ — `UNSUPPORTED_CAPABILITY` |
 
 ## Portability warnings (must appear in javadoc + docs/configuration.md)
 
@@ -176,9 +202,18 @@ shortcut.
 6. **Logical partition-key scope is Cosmos-only.**
    Dynamo and Spanner partition feeds at the physical shard / row-range
    level, with no relationship to logical partition keys. Setting
-   `partitionKeyScope` on those providers raises `UNSUPPORTED_CAPABILITY`.
-   Portable code that needs partition-scoped consumption must gate on
-   `CHANGE_FEED_PARTITION_KEY_SCOPE`.
+   `FeedScope.LogicalPartition(...)` on those providers raises
+   `UNSUPPORTED_CAPABILITY`. Portable code that needs to filter to a single
+   PK must gate on `CHANGE_FEED_LOGICAL_PARTITION_SCOPE` — or use
+   `FeedScope.PhysicalPartition` and filter client-side, which works on all
+   three providers but reads the full physical range.
+
+7. **Physical-partition IDs are not portable across providers.**
+   The opaque `partitionId` strings returned by `listPhysicalPartitions()`
+   encode provider-native identifiers (Cosmos `FeedRange`, Dynamo `shardId`,
+   Spanner `partition_token`). A `partitionId` is meaningful only against
+   the same provider+resource that produced it. Continuation tokens scoped
+   to a `PhysicalPartition` carry the same constraint.
 
 When an unsupported capability is requested, the SPI raises a
 `MulticloudDbException` of category `UNSUPPORTED` with an actionable message
@@ -217,15 +252,21 @@ Documented as: **events within a single page are ordered by the provider's
 native commit/ingest order within the cursor's scope. No global ordering
 across the collection is guaranteed.**
 
-Cursor scope:
-- Cosmos with `partitionKeyScope` set: logical partition key.
-- Cosmos otherwise / Dynamo / Spanner: provider's native physical
-  shard/partition. `partitionKeyScope` is rejected as `UNSUPPORTED_CAPABILITY`
-  on Dynamo and Spanner — we do **not** silently emulate via full-feed scan.
+Cursor scope by `FeedScope`:
+- `EntireCollection`: SDK fans out across all physical partitions internally;
+  per-partition order preserved, no cross-partition ordering. Token hides
+  fan-out; partition splits handled internally and may grow the token.
+- `PhysicalPartition`: ordered within that one provider partition; on split
+  the page returns `partitionRetired=true` + `childPartitions` and the caller
+  fans out.
+- `LogicalPartition` (Cosmos only): ordered within that single PK.
 
 **Spec impact:** FR-069's wording ("MUST support partition-scoped consumption")
-needs to be amended to capability-gated alignment with FR-068. Tracked as part
-of this work.
+is honoured — `PhysicalPartition` scope satisfies it on all 3 providers. The
+phrase "specific partition key" in acceptance scenario 3 is now mapped to
+either `LogicalPartition` (where supported) or `PhysicalPartition` (everywhere
+else). The spec needs a clarifying note distinguishing the two scopes;
+unconditional MUST is no longer in conflict with the design.
 
 ## Delivery semantics
 
@@ -280,18 +321,36 @@ table (the SDK validates these at first `readChanges()`):
 ## Tasks (rough)
 
 1. API types: `ChangeEvent`, `ChangeFeedRequest`, `ChangeFeedPage`,
-   `StartPosition`, `ChangeType` in `multiclouddb-api`.
-2. New capability constants in `Capability.java`.
-3. SPI: add `readChanges(...)` to `MulticloudDbProviderClient`; default
-   throws `UNSUPPORTED`.
+   `StartPosition`, `FeedScope`, `ChangeType`, `NewItemStateMode` in
+   `multiclouddb-api`.
+2. New capability constants in `Capability.java`:
+   `CHANGE_FEED_POINT_IN_TIME`, `CHANGE_FEED_LOGICAL_PARTITION_SCOPE`.
+3. SPI: add `readChanges(...)` and `listPhysicalPartitions(...)` to
+   `MulticloudDbProviderClient`; default throws `UNSUPPORTED_CAPABILITY`.
 4. Default client wiring in `DefaultMulticloudDbClient`.
-5. Cosmos provider: implement using `queryChangeFeed` + `FeedRange`.
-6. Dynamo provider: implement using `GetShardIterator` + `GetRecords`,
-   internal token = `{streamArn, shardId, sequenceNumber}`.
-7. Spanner provider: implement TVF read with internal multi-partition cursor.
-8. Conformance tests under `us8/`.
-9. Docs: `docs/configuration.md` (provisioning prerequisites per provider),
-   per-module CHANGELOG entries.
+5. Cosmos provider: implement `readChanges` via `queryChangeFeed` + `FeedRange`;
+   `listPhysicalPartitions` via `getFeedRanges()`. Validate
+   `AllVersionsAndDeletes` mode at first call.
+6. Dynamo provider: implement `readChanges` via `GetShardIterator` +
+   `GetRecords`; `listPhysicalPartitions` via `DescribeStream().shards()`.
+   Token encodes per-shard sequence + closed/parent/child shard state.
+   Surface `partitionRetired` when a shard closes.
+7. Spanner provider: implement `readChanges` via TVF read;
+   `listPhysicalPartitions` returns the initial root partition tokens (and
+   `EntireCollection` mode discovers via `child_partitions_record` internally).
+   Surface `partitionRetired` + `childPartitions` when consuming a single
+   `PhysicalPartition` and a `child_partitions_record` arrives.
+8. Conformance tests under `us8/`:
+   - basic CRUD propagation (`EntireCollection`)
+   - checkpoint roundtrip
+   - point-in-time start (gated; Dynamo skipped)
+   - logical-partition scope (gated; Dynamo + Spanner skipped)
+   - physical-partition scope + lifecycle (3/3)
+9. Docs: `docs/configuration.md` (provisioning prerequisites per provider,
+   portability warnings), per-module CHANGELOG entries.
 10. Spec: tick the now-implemented checkboxes in `spec.md` US8 checklist;
+    add a clarifying note distinguishing `LogicalPartition` from
+    `PhysicalPartition` scope under FR-069 (no MUST amendment needed —
+    `PhysicalPartition` satisfies the requirement on all three providers);
     record FR-067/068 implementation status notes inline (matches the
     convention used for FR-077).

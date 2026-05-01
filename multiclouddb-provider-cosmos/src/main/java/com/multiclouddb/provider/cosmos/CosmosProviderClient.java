@@ -488,6 +488,18 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     }
 
     @Override
+    public com.multiclouddb.api.changefeed.ChangeFeedPage readChanges(
+            com.multiclouddb.api.changefeed.ChangeFeedRequest request,
+            OperationOptions options) {
+        return new CosmosChangeFeed(this).readChanges(request, options);
+    }
+
+    @Override
+    public List<String> listPhysicalPartitions(ResourceAddress address, OperationOptions options) {
+        return new CosmosChangeFeed(this).listPhysicalPartitions(address);
+    }
+
+    @Override
     public ProviderId providerId() {
         return ProviderId.COSMOS;
     }
@@ -562,6 +574,14 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     private CosmosContainer getContainer(ResourceAddress address) {
         CosmosDatabase database = cosmosClient.getDatabase(address.database());
         return database.getContainer(address.collection());
+    }
+
+    /**
+     * Package-private accessor for the change-feed adapter
+     * ({@link CosmosChangeFeed}). Mirrors the private helper used elsewhere.
+     */
+    CosmosContainer getContainerInternal(ResourceAddress address) {
+        return getContainer(address);
     }
 
     /**

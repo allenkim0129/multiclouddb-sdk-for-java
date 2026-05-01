@@ -23,7 +23,9 @@ public final class SpannerCapabilities {
             Capability.BATCH_OPERATIONS_CAP.withNotes("Spanner mutation batches"),
             Capability.STRONG_CONSISTENCY_CAP.withNotes("External consistency (linearizability)"),
             Capability.NATIVE_SQL_QUERY_CAP.withNotes("Full GoogleSQL or PostgreSQL-dialect SQL"),
-            Capability.CHANGE_FEED_CAP.withNotes("Change Streams"),
+            Capability.CHANGE_FEED_CAP.withNotes("Change Streams; requires CREATE CHANGE STREAM <name> FOR <table>(...) DDL ahead of time"),
+            Capability.CHANGE_FEED_POINT_IN_TIME_CAP.withNotes("StartPosition.atTime supported via TVF start_timestamp parameter (within retention)"),
+            Capability.CHANGE_FEED_LOGICAL_PARTITION_SCOPE_UNSUPPORTED.withNotes("Spanner Change Streams expose physical partition tokens only — no logical partition-key scoping"),
             // Query DSL capabilities
             Capability.PORTABLE_QUERY_EXPRESSION_CAP.withNotes("Portable expression translation to Spanner GoogleSQL"),
             Capability.LIKE_OPERATOR_CAP.withNotes("LIKE operator supported in GoogleSQL"),
