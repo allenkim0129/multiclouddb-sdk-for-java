@@ -58,6 +58,8 @@ public final class Capability {
     public static final String STRONG_CONSISTENCY           = "strong_consistency";
     public static final String NATIVE_SQL_QUERY             = "native_sql_query";
     public static final String CHANGE_FEED                  = "change_feed";
+    public static final String CHANGE_FEED_POINT_IN_TIME    = "change_feed_point_in_time";
+    public static final String CHANGE_FEED_LOGICAL_PARTITION_SCOPE = "change_feed_logical_partition_scope";
     public static final String PORTABLE_QUERY_EXPRESSION    = "portable_query_expression";
     public static final String LIKE_OPERATOR                = "like_operator";
     public static final String ORDER_BY                     = "order_by";
@@ -104,6 +106,16 @@ public final class Capability {
     public static final Capability CHANGE_FEED_CAP                  = intern(CHANGE_FEED, true);
     /** Unsupported singleton — change feed. */
     public static final Capability CHANGE_FEED_UNSUPPORTED          = intern(CHANGE_FEED, false);
+
+    /** Supported singleton — point-in-time start for change feed (StartPosition.atTime). */
+    public static final Capability CHANGE_FEED_POINT_IN_TIME_CAP    = intern(CHANGE_FEED_POINT_IN_TIME, true);
+    /** Unsupported singleton — point-in-time start for change feed. */
+    public static final Capability CHANGE_FEED_POINT_IN_TIME_UNSUPPORTED = intern(CHANGE_FEED_POINT_IN_TIME, false);
+
+    /** Supported singleton — logical-partition-key scoped change feed (FeedScope.logicalPartition). */
+    public static final Capability CHANGE_FEED_LOGICAL_PARTITION_SCOPE_CAP = intern(CHANGE_FEED_LOGICAL_PARTITION_SCOPE, true);
+    /** Unsupported singleton — logical-partition-key scoped change feed. */
+    public static final Capability CHANGE_FEED_LOGICAL_PARTITION_SCOPE_UNSUPPORTED = intern(CHANGE_FEED_LOGICAL_PARTITION_SCOPE, false);
 
     /** Supported singleton — portable query expression DSL. */
     public static final Capability PORTABLE_QUERY_EXPRESSION_CAP    = intern(PORTABLE_QUERY_EXPRESSION, true);

@@ -23,7 +23,9 @@ public final class DynamoCapabilities {
             Capability.BATCH_OPERATIONS_CAP.withNotes("BatchWriteItem and BatchGetItem (up to 25/100 items)"),
             Capability.STRONG_CONSISTENCY_CAP.withNotes("Strongly consistent reads supported on individual items"),
             Capability.NATIVE_SQL_QUERY_UNSUPPORTED.withNotes("PartiQL is available but not SQL; filter expressions used for scans"),
-            Capability.CHANGE_FEED_CAP.withNotes("DynamoDB Streams for change data capture"),
+            Capability.CHANGE_FEED_CAP.withNotes("DynamoDB Streams for change data capture; requires StreamSpecification.StreamEnabled=true on the table"),
+            Capability.CHANGE_FEED_POINT_IN_TIME_UNSUPPORTED.withNotes("DynamoDB Streams only support TRIM_HORIZON / LATEST / sequence-number iterators, not timestamp-based starts"),
+            Capability.CHANGE_FEED_LOGICAL_PARTITION_SCOPE_UNSUPPORTED.withNotes("DynamoDB Streams expose physical shards only — logical partition keys cannot scope reads"),
             // Query DSL capabilities
             Capability.PORTABLE_QUERY_EXPRESSION_CAP.withNotes("Portable expression translation to DynamoDB PartiQL"),
             Capability.LIKE_OPERATOR_UNSUPPORTED.withNotes("LIKE not natively supported in PartiQL on DynamoDB"),

@@ -472,7 +472,9 @@ for (Capability cap : caps.all()) {
 | Transactions | ✓ | ✓ | ✓ |
 | Batch operations | ✓ | ✓ | ✓ |
 | Strong consistency | ✓ | ✓ | ✓ |
-| Change feed | ✓ | ✓ | ✓ |
+| **Change feed (CDC)** | ✓ | ✓ | ✓ |
+| ↳ Point-in-time start (`StartPosition.atTime`) | ✓ | ✗ | ✓ |
+| ↳ Logical-partition scope (`FeedScope.logicalPartition`) | ✓ | ✗ | ✗ |
 | **Result limit** (`Top N`) | ✓ | ✓ (per-page) | ✓ |
 | **ORDER BY** | ✓ | ✗ | ✓ |
 | **Row-level TTL** | ✓ | ✓ | ✗ |
