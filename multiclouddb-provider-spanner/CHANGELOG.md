@@ -7,6 +7,27 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Change feed (User Story 8)** — `SpannerProviderClient.readChanges` /
+  `listPhysicalPartitions` implemented via Spanner Change Streams using the
+  `READ_<stream>(start_timestamp, end_timestamp, partition_token,
+  heartbeat_milliseconds)` SQL TVF. Parses `data_change_record` (mods →
+  CREATE / UPDATE / DELETE) and `child_partitions_record` for partition
+  retirement bookkeeping. Capabilities advertised: `CHANGE_FEED` and
+  `CHANGE_FEED_POINT_IN_TIME` (supported);
+  `CHANGE_FEED_LOGICAL_PARTITION_SCOPE` is **UNSUPPORTED** because Spanner
+  Change Streams expose physical partition tokens only.
+- New connection key `connection.changeStream.<collection>` to override the
+  change-stream name read for `<collection>`. When unset, the SDK falls
+  back to the convention `<collection>_changes`.
+- **Provisioning prerequisite:** create the change stream out-of-band:
+  `CREATE CHANGE STREAM <name> FOR <table> OPTIONS
+  (value_capture_type = 'NEW_ROW')`. `value_capture_type` must be
+  `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES` when callers pass
+  `newItemStateMode = REQUIRE`. The Spanner emulator does **not** support
+  change streams — exercise this feature against a real Spanner instance.
+
 ## [0.1.0-beta.1] — 2026-04-23
 
 ### Added

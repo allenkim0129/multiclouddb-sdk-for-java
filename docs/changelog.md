@@ -11,6 +11,20 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
+**Added (Change feed — User Story 8):**
+
+- New `com.multiclouddb.api.changefeed` package with
+  `MulticloudDbClient.readChanges` / `listPhysicalPartitions`,
+  `ChangeFeedRequest` / `ChangeFeedPage` / `ChangeEvent`, and sealed
+  `FeedScope` (Entire / Physical / Logical) and `StartPosition`
+  (Beginning / Now / AtTime / FromContinuationToken) types.
+- New capability tokens: `change_feed`, `change_feed_point_in_time`,
+  `change_feed_logical_partition_scope` — introspectable via
+  `client.capabilities()`. Calls fail fast with `UNSUPPORTED_CAPABILITY`
+  when the active provider does not advertise the required capability.
+- New SPI hooks `MulticloudDbProviderClient.readChanges` and
+  `listPhysicalPartitions` with `UNSUPPORTED_CAPABILITY` defaults.
+
 ### [0.1.0-beta.1] - 2026-04-23
 
 **Added:**
@@ -48,6 +62,17 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
+**Added (Change feed — User Story 8):**
+
+- `CosmosProviderClient.readChanges` / `listPhysicalPartitions` via
+  `CosmosAsyncContainer.queryChangeFeed` with `FeedRange`. Capabilities:
+  `change_feed`, `change_feed_point_in_time`,
+  `change_feed_logical_partition_scope` — all supported.
+- **Provisioning:** containers must be created with the
+  `AllVersionsAndDeletes` mode for distinct CREATE / UPDATE / DELETE
+  events; `LatestVersion` containers emit only the latest snapshot and
+  never surface DELETE events.
+
 ### [0.1.0-beta.1] - 2026-04-23
 
 **Added:**
@@ -70,6 +95,18 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
+**Added (Change feed — User Story 8):**
+
+- `DynamoProviderClient.readChanges` / `listPhysicalPartitions` via
+  DynamoDB Streams + the DynamoDB Streams Adapter
+  (shard-iterator-per-physical-partition). Capabilities: `change_feed`
+  supported; `change_feed_point_in_time` and
+  `change_feed_logical_partition_scope` **UNSUPPORTED** (Streams have no
+  timestamp start; shards are physical).
+- **Provisioning:** the table must have
+  `StreamSpecification.StreamEnabled=true` with `StreamViewType` of
+  `NEW_AND_OLD_IMAGES` (or `NEW_IMAGE`).
+
 ### [0.1.0-beta.1] - 2026-04-23
 
 **Added:**
@@ -88,6 +125,23 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## multiclouddb-provider-spanner
 
 ### [Unreleased]
+
+**Added (Change feed — User Story 8):**
+
+- `SpannerProviderClient.readChanges` / `listPhysicalPartitions` via
+  Spanner Change Streams using the
+  `READ_<stream>(start, end, partition_token, hb)` SQL TVF; parses
+  `data_change_record` and `child_partitions_record`. Capabilities:
+  `change_feed` and `change_feed_point_in_time` supported;
+  `change_feed_logical_partition_scope` **UNSUPPORTED** (partition
+  tokens are physical row ranges).
+- New connection key `connection.changeStream.<collection>` (defaults to
+  `<collection>_changes`).
+- **Provisioning:** `CREATE CHANGE STREAM <name> FOR <table> OPTIONS
+  (value_capture_type='NEW_ROW')` must be run out-of-band.
+  `value_capture_type` must be `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES`
+  when callers pass `newItemStateMode = REQUIRE`. The Spanner emulator
+  does **not** support change streams.
 
 ### [0.1.0-beta.1] - 2026-04-23
 

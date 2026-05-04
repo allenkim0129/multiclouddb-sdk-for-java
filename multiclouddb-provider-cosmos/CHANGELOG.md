@@ -9,6 +9,16 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
+- **Change feed (User Story 8)** — `CosmosProviderClient.readChanges` /
+  `listPhysicalPartitions` implemented via `CosmosAsyncContainer.queryChangeFeed`
+  with `FeedRange` for partition scoping. Capabilities advertised:
+  `CHANGE_FEED`, `CHANGE_FEED_POINT_IN_TIME`,
+  `CHANGE_FEED_LOGICAL_PARTITION_SCOPE` (all supported). **Provisioning
+  prerequisite:** containers must be created with the
+  `AllVersionsAndDeletes` change-feed mode to receive distinct
+  CREATE / UPDATE / DELETE events; containers in the default
+  (`LatestVersion`) mode emit only the latest snapshot of each document
+  and never surface DELETE events.
 - `consistencyLevel` connection config key for opt-in client-level read consistency
   override (applied uniformly to every read from a given client instance; per-operation
   overrides via `OperationOptions` are deferred to a future release per spec edge-case

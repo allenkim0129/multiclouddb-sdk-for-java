@@ -7,6 +7,22 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Change feed (User Story 8)** — `DynamoProviderClient.readChanges` /
+  `listPhysicalPartitions` implemented via DynamoDB Streams + the
+  DynamoDB Streams Adapter (shard-iterator-per-physical-partition).
+  Capabilities advertised: `CHANGE_FEED` (supported);
+  `CHANGE_FEED_POINT_IN_TIME` and `CHANGE_FEED_LOGICAL_PARTITION_SCOPE`
+  remain **UNSUPPORTED**:
+  - DynamoDB Streams only support `TRIM_HORIZON` / `LATEST` /
+    sequence-number iterators — there is no timestamp-based start.
+  - Streams expose physical shards only; scoping by a logical
+    partition key is not possible.
+- **Provisioning prerequisite:** the table must have
+  `StreamSpecification.StreamEnabled=true` with a `StreamViewType` of
+  `NEW_AND_OLD_IMAGES` (or `NEW_IMAGE` when old values are not required).
+
 ## [0.1.0-beta.1] — 2026-04-23
 
 ### Added

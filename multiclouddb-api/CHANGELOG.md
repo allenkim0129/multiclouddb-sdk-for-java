@@ -7,7 +7,35 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-## [0.1.0-beta.1] — 2026-04-23
+### Added
+
+#### Change feed (User Story 8)
+
+- New `com.multiclouddb.api.changefeed` package providing a portable
+  change-data-capture API:
+  - `MulticloudDbClient.readChanges(ChangeFeedRequest, OperationOptions)`
+    returning a `ChangeFeedPage` of `ChangeEvent` records and a
+    continuation token.
+  - `MulticloudDbClient.listPhysicalPartitions(ResourceAddress)` for parallel
+    readers (one continuation token per physical partition).
+  - `ChangeFeedRequest` builder with `FeedScope` (sealed: `EntireCollection`,
+    `PhysicalPartition`, `LogicalPartition`), `StartPosition` (sealed:
+    `Beginning`, `Now`, `AtTime`, `FromContinuationToken`), `maxPageSize`,
+    and `NewItemStateMode` (`PREFER` default, `REQUIRE`, `OMIT`).
+  - `ChangeEvent` carrying `ChangeType` (CREATE / UPDATE / DELETE), key,
+    data, commit timestamp, and provider sequence.
+- New capability tokens introspectable via `client.capabilities()`:
+  - `Capability.CHANGE_FEED` — basic CDC support
+  - `Capability.CHANGE_FEED_POINT_IN_TIME` — `StartPosition.atTime` accepted
+  - `Capability.CHANGE_FEED_LOGICAL_PARTITION_SCOPE` —
+    `FeedScope.logicalPartition` accepted
+- `ChangeFeedRequest` and listing calls fail fast with
+  `UNSUPPORTED_CAPABILITY` when the active provider does not advertise the
+  required capability; `INVALID_REQUEST` when continuation tokens cross
+  providers / resources.
+- New SPI hooks `MulticloudDbProviderClient.readChanges` and
+  `listPhysicalPartitions` with default implementations that raise
+  `UNSUPPORTED_CAPABILITY`.
 
 ### Added
 
