@@ -495,6 +495,20 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     @Override
+    public com.multiclouddb.api.changefeed.ChangeFeedPage readChanges(
+            com.multiclouddb.api.changefeed.ChangeFeedRequest request,
+            OperationOptions options) {
+        return new SpannerChangeFeed(databaseClient, config.connection())
+                .readChanges(request, options);
+    }
+
+    @Override
+    public List<String> listPhysicalPartitions(ResourceAddress address, OperationOptions options) {
+        return new SpannerChangeFeed(databaseClient, config.connection())
+                .listPhysicalPartitions(address);
+    }
+
+    @Override
     public ProviderId providerId() {
         return ProviderId.SPANNER;
     }
