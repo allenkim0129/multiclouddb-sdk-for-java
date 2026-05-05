@@ -7,6 +7,26 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Documentation
+
+- **`delete()` of a missing key remains a silent no-op (idempotent).** The
+  Spanner provider continues to use `Mutation.delete(table, Key.of(pk, sk))`
+  via `databaseClient.write(...)`, which is idempotent natively — deleting
+  a row that does not exist returns success without modifying state. This
+  matches the LCD behaviour of Cosmos (404 swallowed) and DynamoDB
+  (`DeleteItem` is idempotent natively). Documented in the API Javadoc on
+  `MulticloudDbClient.delete(...)` and in `docs/guide.md`. Callers needing to detect a
+  missing key should use `read()`, which returns `null` on every provider
+  when the key does not exist.
+
+### Changed
+
+- **`BETWEEN` translation now wraps in parentheses** (`(field BETWEEN @lo AND @hi)`).
+  Mirrors the parenthesised form emitted by sibling translators so cross-provider
+  query stitching is uniform. GoogleSQL parses both forms correctly, so this is
+  not a correctness fix on Spanner — purely a consistency improvement. The
+  output of `TranslatedQuery.whereClause()` is now parenthesised.
+
 ## [0.1.0-beta.1] — 2026-04-23
 
 ### Added

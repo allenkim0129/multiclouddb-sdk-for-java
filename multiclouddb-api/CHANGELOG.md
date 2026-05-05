@@ -7,6 +7,18 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Documentation
+
+- **`MulticloudDbClient.delete(...)` is documented as idempotent — silent on
+  missing key.** The Javadoc now declares that deleting a key that does not
+  exist is a silent no-op on every provider, which is the true LCD across
+  Cosmos (404 swallowed), DynamoDB (`DeleteItem` is idempotent natively) and
+  Spanner (`Mutation.delete` is idempotent natively). Callers that need to detect a missing key should use
+  `MulticloudDbClient.read(...)`, which returns `null` on every provider
+  when the key does not exist (non-mutating). `update()` also throws
+  `NOT_FOUND` on a missing key, but it requires a document body and
+  **overwrites on hit**, so it is not a safe pure existence probe.
+
 ## [0.1.0-beta.1] — 2026-04-23
 
 ### Added
