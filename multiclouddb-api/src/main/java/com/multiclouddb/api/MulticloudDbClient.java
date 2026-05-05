@@ -146,6 +146,25 @@ public interface MulticloudDbClient extends AutoCloseable {
     CapabilitySet capabilities();
 
     /**
+     * Return any {@link PortabilityWarning}s associated with this client's
+     * configuration.
+     * <p>
+     * Warnings are <b>informational</b> — they never break client creation or
+     * fail an operation. They surface places where the user has explicitly
+     * opted into provider-specific behaviour (e.g., Cosmos
+     * {@code consistencyLevel}, {@code connectionMode=direct}).
+     * <p>
+     * The default client configuration emits zero warnings on every supported
+     * provider. The list returned is immutable and safe to share across
+     * threads. The default implementation returns an empty list.
+     *
+     * @return immutable list of warnings, possibly empty; never null
+     */
+    default java.util.List<PortabilityWarning> portabilityWarnings() {
+        return java.util.List.of();
+    }
+
+    /**
      * Ensure a logical database exists, creating it if it does not already exist.
      * <p>
      * This is an idempotent operation — if the database already exists the call

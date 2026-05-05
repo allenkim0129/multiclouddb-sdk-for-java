@@ -71,6 +71,14 @@ Select a provider and supply its connection and auth properties.
 - **Gateway** (default) - HTTP-based routing through the Cosmos DB gateway. Required for the emulator.
 - **Direct** - TCP-based direct connectivity. Better performance for production workloads.
 
+!!! warning "Portability warning emitted"
+
+    Setting `connection.connectionMode=direct` surfaces a
+    `PortabilityWarning` (code `cosmos.connectionMode.direct`) on
+    `client.portabilityWarnings()`. DynamoDB and Spanner do not expose a
+    comparable transport selector — switching providers will silently
+    ignore this setting. Default (`gateway` or unset) emits no warning.
+
 ### Consistency Level
 
 When `multiclouddb.connection.consistencyLevel` is **not** set, read requests inherit the account's
@@ -124,6 +132,16 @@ instance. Writes are unaffected — Cosmos DB write durability is independent of
 ```properties
 multiclouddb.connection.consistencyLevel=EVENTUAL
 ```
+
+!!! warning "Portability warning emitted"
+
+    Setting `connection.consistencyLevel` to any value surfaces a
+    `PortabilityWarning` (code `cosmos.consistencyLevel`) on
+    `client.portabilityWarnings()`. Cosmos consistency-level names and
+    semantics (STRONG / BOUNDED_STALENESS / SESSION / CONSISTENT_PREFIX /
+    EVENTUAL) have no direct equivalents on DynamoDB or Spanner; this is
+    a Cosmos-specific opt-in. Omit the key to inherit the account default
+    and emit no warning.
 
 ---
 

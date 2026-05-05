@@ -7,6 +7,23 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **`PortabilityWarning`** — new informational signal that a client
+  configuration or operation may reduce portability across providers
+  (FR-021, issue #37 §7). Final immutable value class with stable
+  `code`, `message`, `scope` (`CLIENT_CONFIG` / `OPERATION` /
+  `RESOURCE`), `provider`, and `category`
+  (`PROVIDER_SPECIFIC_CONFIG`, `NATIVE_EXPRESSION`,
+  `BEHAVIORAL_DIVERGENCE`, `PROVIDER_SPECIFIC_FEATURE`).
+- **`MulticloudDbClient.portabilityWarnings()`** — returns the
+  immutable list of warnings associated with this client's
+  configuration. Default returns an empty list. Default client
+  configuration emits zero warnings on every supported provider.
+- **`MulticloudDbProviderClient.portabilityWarnings()`** — SPI hook
+  with empty-list default; providers override to surface non-portable
+  opt-ins detected at construction.
+
 ### Documentation
 
 - **`MulticloudDbClient.delete(...)` is documented as idempotent — silent on

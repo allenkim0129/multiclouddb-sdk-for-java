@@ -7,6 +7,15 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Portability warnings** infrastructure (issue #37 §7). Spanner has no
+  opt-in feature flags currently exposed in connection config — the
+  `emulatorHost` key is a deployment switch, not a non-portable feature —
+  so `client.portabilityWarnings()` returns an empty list for every
+  default-configured Spanner client. The empty-list contract is verified
+  by `SpannerPortabilityWarningTest`.
+
 ### Documentation
 
 - **`delete()` of a missing key remains a silent no-op (idempotent).** The

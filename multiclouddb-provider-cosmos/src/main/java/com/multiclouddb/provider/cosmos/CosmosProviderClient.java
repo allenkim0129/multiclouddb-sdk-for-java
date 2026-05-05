@@ -47,6 +47,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
 
     private final CosmosClient cosmosClient;
     private final MulticloudDbClientConfig config;
+    private final java.util.List<PortabilityWarning> portabilityWarnings;
 
 
     /**
@@ -114,8 +115,45 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         builder.userAgentSuffix(SdkUserAgent.userAgent(config));
 
         this.cosmosClient = builder.buildClient();
+        this.portabilityWarnings = collectPortabilityWarnings(connectionMode, consistencyStr);
         LOG.info("Cosmos client created for endpoint: {}", endpoint);
         LOG.info("Cosmos read consistency: {}", readConsistencyOverride != null ? readConsistencyOverride : "account default");
+    }
+
+    /**
+     * Collect non-portable opt-ins detected from the configuration and surface
+     * them as {@link PortabilityWarning}s. Default-mode configurations produce
+     * an empty list.
+     *
+     * @param connectionMode resolved connection mode (defaults to gateway when
+     *                       not set; only the explicit {@code direct} value is
+     *                       a non-portable opt-in)
+     * @param consistencyStr raw {@code consistencyLevel} configuration value;
+     *                       null when not set (account default applies)
+     */
+    private List<PortabilityWarning> collectPortabilityWarnings(String connectionMode,
+                                                                 String consistencyStr) {
+        List<PortabilityWarning> warnings = new ArrayList<>(2);
+
+        if (consistencyStr != null && !consistencyStr.isBlank()) {
+            warnings.add(PortabilityWarning.providerConfig(
+                    "cosmos.consistencyLevel",
+                    "connection.consistencyLevel='" + consistencyStr.trim() + "' overrides the Cosmos DB account default with Cosmos-specific consistency semantics. " +
+                            "Consistency-level names and behaviour (STRONG, BOUNDED_STALENESS, SESSION, CONSISTENT_PREFIX, EVENTUAL) " +
+                            "do not have direct equivalents on DynamoDB or Spanner; portability is reduced. Remove this key to inherit the account default.",
+                    ProviderId.COSMOS));
+        }
+
+        if (CosmosConstants.CONNECTION_MODE_DIRECT.equalsIgnoreCase(connectionMode)) {
+            warnings.add(PortabilityWarning.providerConfig(
+                    "cosmos.connectionMode.direct",
+                    "connection.connectionMode='direct' selects Cosmos DB's direct (TCP) transport mode. " +
+                            "DynamoDB and Spanner do not expose a comparable transport selector; portability is reduced. " +
+                            "Remove this key (or set 'gateway') to use the portable default.",
+                    ProviderId.COSMOS));
+        }
+
+        return List.copyOf(warnings);
     }
 
     /**
@@ -488,6 +526,11 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     @Override
     public CapabilitySet capabilities() {
         return CosmosCapabilities.CAPABILITIES;
+    }
+
+    @Override
+    public java.util.List<PortabilityWarning> portabilityWarnings() {
+        return portabilityWarnings;
     }
 
     @Override

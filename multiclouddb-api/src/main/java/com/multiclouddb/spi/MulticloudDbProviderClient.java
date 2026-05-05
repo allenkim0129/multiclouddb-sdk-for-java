@@ -235,6 +235,20 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
     CapabilitySet capabilities();
 
     /**
+     * Return any {@link com.multiclouddb.api.PortabilityWarning}s this provider
+     * surfaces for the current configuration.
+     * <p>
+     * Default returns an empty list — providers override to emit warnings when
+     * non-portable opt-ins are detected (e.g., Cosmos {@code consistencyLevel}
+     * override). The list must be immutable.
+     *
+     * @return immutable list of warnings, possibly empty; never null
+     */
+    default java.util.List<com.multiclouddb.api.PortabilityWarning> portabilityWarnings() {
+        return java.util.List.of();
+    }
+
+    /**
      * Return the provider id.
      */
     ProviderId providerId();

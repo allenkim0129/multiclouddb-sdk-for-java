@@ -7,6 +7,24 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Portability warnings** for non-portable opt-ins detected at construction
+  (FR-021, issue #37 §7). The Cosmos provider emits a
+  `PortabilityWarning` for each of:
+  - `connection.consistencyLevel=*` — code `cosmos.consistencyLevel`. Cosmos
+    consistency-level names (STRONG / BOUNDED_STALENESS / SESSION /
+    CONSISTENT_PREFIX / EVENTUAL) have no direct equivalents on DynamoDB
+    or Spanner.
+  - `connection.connectionMode=direct` — code
+    `cosmos.connectionMode.direct`. DynamoDB and Spanner do not expose a
+    comparable transport selector. The default (`gateway`) emits no warning.
+
+  Default Cosmos configuration (no `consistencyLevel`, no explicit
+  `connectionMode` or `connectionMode=gateway`) emits zero warnings.
+  Warnings are surfaced via `client.portabilityWarnings()` and never
+  break client creation.
+
 ### Documentation
 
 - **`delete()` of a missing key remains a silent no-op (idempotent).** The

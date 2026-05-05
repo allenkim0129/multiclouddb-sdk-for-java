@@ -505,6 +505,33 @@ if (client.capabilities().supports(Capability.ORDER_BY)) {
 
 ---
 
+## Portability Warnings
+
+When you opt into provider-specific configuration (e.g., Cosmos
+`consistencyLevel` or `connectionMode=direct`), the SDK surfaces a
+`PortabilityWarning` so the non-portable boundary is visible at runtime.
+Default configurations emit zero warnings on every supported provider —
+so the warning list is a useful drift-detector in CI.
+
+```java
+try (MulticloudDbClient client = MulticloudDbClientFactory.create(config)) {
+    for (PortabilityWarning w : client.portabilityWarnings()) {
+        logger.warn("[portability] {} ({}): {}",
+                w.code(), w.provider().id(), w.message());
+    }
+}
+```
+
+Each warning carries a stable `code` (e.g. `cosmos.consistencyLevel`),
+human-readable `message`, `scope` (`CLIENT_CONFIG` / `OPERATION` /
+`RESOURCE`), `provider`, and `category`
+(`PROVIDER_SPECIFIC_CONFIG`, `NATIVE_EXPRESSION`,
+`BEHAVIORAL_DIVERGENCE`, `PROVIDER_SPECIFIC_FEATURE`). The list is
+immutable. Warnings never break client creation or fail an operation —
+they are informational only.
+
+---
+
 ## Document TTL
 
 Set a per-document TTL at write time using `OperationOptions`:

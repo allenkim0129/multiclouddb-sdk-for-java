@@ -213,6 +213,11 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
     }
 
     @Override
+    public java.util.List<com.multiclouddb.api.PortabilityWarning> portabilityWarnings() {
+        return providerClient.portabilityWarnings();
+    }
+
+    @Override
     public void ensureDatabase(String database) {
         Instant start = Instant.now();
         try {

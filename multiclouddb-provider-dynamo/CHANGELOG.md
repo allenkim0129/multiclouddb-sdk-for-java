@@ -7,6 +7,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Portability warnings** infrastructure (issue #37 §7). DynamoDB has no
+  opt-in feature flags currently exposed in connection config, so
+  `client.portabilityWarnings()` returns an empty list for every
+  default-configured DynamoDB client. The empty-list contract is verified
+  by `DynamoPortabilityWarningTest`.
+
 ### Documentation
 
 - **`delete()` of a missing key remains a silent no-op (idempotent).** The
