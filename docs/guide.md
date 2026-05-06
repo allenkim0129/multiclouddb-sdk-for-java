@@ -44,6 +44,15 @@ portable API surface and error mapping reference, see
   - [Why Partition Keys Matter for Queries](#why-partition-keys-matter-for-queries)
   - [Combining Expression Filters with Key Design](#combining-expression-filters-with-key-design)
   - [Partition-Scoped Queries with QueryRequest.partitionKey()](#partition-scoped-queries-with-queryrequestpartitionkey)
+- [Change Feed (Change Data Capture)](#change-feed-change-data-capture)
+  - [Programming Model — Pull-Based Pagination](#programming-model--pull-based-pagination)
+  - [End-to-End Example](#end-to-end-example)
+  - [Feed Scope and Start Position](#feed-scope-and-start-position)
+  - [Delivery Semantics](#delivery-semantics)
+  - [Partition Retirement](#partition-retirement)
+  - [Provisioning Prerequisites](#provisioning-prerequisites)
+  - [SDK vs Application Responsibilities](#sdk-vs-application-responsibilities)
+  - [Checking Capabilities](#checking-capabilities-1)
 - [Multi-Tenant Architecture Patterns](#multi-tenant-architecture-patterns)
 - [Error Handling](#error-handling)
 - [Result Set Control](#result-set-control)
@@ -1098,6 +1107,204 @@ QueryRequest native = QueryRequest.builder()
 > **Best practice**: Always set `.partitionKey()` when you know the partition
 > value at query time. This is especially important for Cosmos DB, where
 > cross-partition queries consume significantly more RU/s.
+
+---
+
+
+## Change Feed (Change Data Capture)
+
+The SDK exposes a portable **Change Feed** API that surfaces row-level
+change events (CREATE / UPDATE / DELETE) from each provider's native
+change-data-capture primitive through a single contract:
+
+| Provider          | Native primitive                                         |
+|-------------------|----------------------------------------------------------|
+| Azure Cosmos DB   | Change feed in **All-Versions-and-Deletes (AVAD)** mode  |
+| Amazon DynamoDB   | **DynamoDB Streams** (`NEW_AND_OLD_IMAGES`)              |
+| Google Cloud Spanner | Change-streams TVF (`READ_<stream>`)                  |
+
+### Programming Model — Pull-Based Pagination
+
+The Change Feed API is **pull-based**, not a long-running processor or push
+listener. There is **no** lease/checkpoint container, no supplied
+`processChangesHandler`, and no background thread spun up by the SDK. The
+shape mirrors `query()` paging:
+
+```java
+ChangeFeedPage page = client.readChanges(request, options);
+List<ChangeEvent> events = page.events();
+String token            = page.continuationToken();   // opaque, persist this
+boolean retired         = page.partitionRetired();    // true → follow children
+List<String> children   = page.childPartitions();
+boolean more            = page.hasMore();
+```
+
+The application owns the loop, the cadence, the back-pressure, and the
+durable storage of the continuation token. This is intentional: it keeps
+the SDK provider-agnostic and lets each application choose the
+orchestration model that fits its runtime (a worker thread, a serverless
+timer, a Kafka-Connect task, etc.).
+
+> If you need a Cosmos-DB-style processor with leases, build it on top of
+> this API. It is not provided by the SDK and is out of scope for User
+> Story 8.
+
+### End-to-End Example
+
+```java
+MulticloudDbClient client = ...;
+if (!client.capabilities().isSupported(Capability.CHANGE_FEED)) {
+    throw new IllegalStateException("Provider does not support change feed");
+}
+
+ResourceAddress address = new ResourceAddress("orders_db", "line_items");
+
+// First call: start from the earliest available position.
+ChangeFeedRequest request = ChangeFeedRequest.builder(address)
+        .scope(FeedScope.entireCollection())
+        .startPosition(StartPosition.beginning())
+        .maxPageSize(500)
+        .build();
+
+String token = loadCheckpoint();      // null on first run
+if (token != null) {
+    request = ChangeFeedRequest.builder(address)
+            .scope(FeedScope.entireCollection())
+            .startPosition(StartPosition.fromContinuationToken(token))
+            .maxPageSize(500)
+            .build();
+}
+
+while (true) {
+    ChangeFeedPage page = client.readChanges(request);
+
+    for (ChangeEvent ev : page.events()) {
+        // Dedup by (provider, eventId) — see "Delivery Semantics" below.
+        if (alreadyProcessed(ev.provider(), ev.eventId())) continue;
+        switch (ev.eventType()) {
+            case CREATE -> onCreate(ev.address(), ev.key(), ev.data());
+            case UPDATE -> onUpdate(ev.address(), ev.key(), ev.data());
+            case DELETE -> onDelete(ev.address(), ev.key());
+        }
+        markProcessed(ev.provider(), ev.eventId());
+    }
+
+    if (page.partitionRetired()) {
+        // The physical partition split. Continue paging from each child.
+        for (String childToken : page.childPartitions()) enqueue(childToken);
+    }
+
+    if (!page.hasMore()) {
+        saveCheckpoint(page.continuationToken());
+        sleep(pollInterval);          // or break, if doing a one-shot drain
+    }
+
+    request = ChangeFeedRequest.builder(address)
+            .scope(request.scope())
+            .startPosition(StartPosition.fromContinuationToken(
+                    page.continuationToken()))
+            .maxPageSize(500)
+            .build();
+}
+```
+
+### Feed Scope and Start Position
+
+`ChangeFeedRequest` has two orthogonal axes:
+
+**Feed scope** — what to read:
+
+| Scope                              | Cosmos | Dynamo | Spanner |
+|------------------------------------|:-:|:-:|:-:|
+| `FeedScope.entireCollection()`     | ✓ | ✓ | ✓ |
+| `FeedScope.physicalPartition(id)`  | ✓ | ✓ (shard) | ✓ |
+| `FeedScope.logicalPartition(key)`  | ✓ | ✗ | ✗ |
+
+**Start position** — where to start:
+
+| Start position                            | Cosmos | Dynamo | Spanner |
+|-------------------------------------------|:-:|:-:|:-:|
+| `StartPosition.beginning()`               | ✓ | ✓ | ✓ (within retention) |
+| `StartPosition.now()`                     | ✓ | ✓ | ✓ |
+| `StartPosition.atTime(instant)`           | ✓ | ✗ | ✓ |
+| `StartPosition.fromContinuationToken(t)`  | ✓ | ✓ | ✓ |
+
+Unsupported combinations fail fast with `MulticloudDbErrorCategory
+.UNSUPPORTED_CAPABILITY` — they do **not** silently degrade. Probe
+fine-grained support up front via `client.capabilities().isSupported(...)`
+and the `change_feed_*` capability tokens documented in
+[`docs/compatibility.md`](compatibility.md#change-feed-sub-capabilities).
+
+### Delivery Semantics
+
+The contract is **at-least-once**:
+
+- The same `(providerId, eventId)` pair may be re-delivered after a
+  resume across a token boundary. Consumers must dedupe on this pair.
+- `eventId` is provider-specific but stable within a provider:
+  - Cosmos: `_lsn` of the change record.
+  - Dynamo: `sequenceNumber` of the stream record.
+  - Spanner: `serverTransactionId:commitTimestamp:recordSequence:modIndex`
+    — the `:modIndex` suffix keeps each mod within a multi-row
+    transaction distinct so dedup does not collapse them.
+- Events within a page preserve the provider's natural ordering
+  (commit-time, then in-transaction order). The SDK does **not** merge
+  or re-sort across providers or across partitions.
+
+### Partition Retirement
+
+When a physical partition splits or merges (Cosmos partition split,
+Dynamo shard close, Spanner `child_partitions_record`), the page that
+exhausts the parent sets `partitionRetired() == true` and exposes the
+child continuation tokens via `childPartitions()`. The application is
+responsible for **enqueuing each child token** and continuing to page
+from them — the SDK does not transparently follow children, because that
+would block the caller indefinitely on a busy stream.
+
+### Provisioning Prerequisites
+
+Each provider requires one-time setup before `readChanges` will return
+events. Provisioning is intentionally **not** done by the SDK; it lives
+in your infrastructure-as-code or `provisionSchema()` flow. See
+[`docs/configuration.md`](configuration.md#change-feed-provisioning) for
+the full matrix; in brief:
+
+- **Cosmos** — container created with `changeFeedPolicy = AllVersionsAndDeletes`.
+- **Dynamo** — table has `StreamSpecification` with view type
+  `NEW_AND_OLD_IMAGES`.
+- **Spanner** — a `CHANGE STREAM <name> FOR <table>` exists; the SDK
+  resolves it from connection key `changeStream.<collection>` (default
+  `<collection>_changes`).
+
+### SDK vs Application Responsibilities
+
+| Concern                                   | Owned by |
+|-------------------------------------------|----------|
+| Continuation-token format & tamper detection | **SDK** |
+| Scope/start-position validation, fast-fail on unsupported | **SDK** |
+| Partition enumeration (`listPhysicalPartitions`) | **SDK** |
+| Cosmos partition-key path resolution (incl. hierarchical) | **SDK** |
+| Spanner retention-window discovery (`INFORMATION_SCHEMA`) | **SDK** |
+| Dynamo iterator-anchor preservation across resumes | **SDK** |
+| Surfacing partition retirement and child tokens | **SDK** |
+| Persisting continuation tokens | **App** |
+| Polling cadence and back-pressure | **App** |
+| Dedup by `(provider, eventId)` | **App** |
+| Following child tokens on retirement | **App** |
+| Recovery on `UNSUPPORTED_CAPABILITY` / `INVALID_REQUEST` | **App** |
+| Cross-event ordering across partitions or providers | **App** (if needed) |
+
+### Checking Capabilities
+
+```java
+Capabilities caps = client.capabilities();
+boolean basic       = caps.isSupported(Capability.CHANGE_FEED);
+boolean pointInTime = caps.isSupported(Capability.CHANGE_FEED_POINT_IN_TIME);
+boolean lpScope     = caps.isSupported(Capability.CHANGE_FEED_LOGICAL_PARTITION_SCOPE);
+```
+
+A runnable end-to-end sample is tracked as a follow-up in the samples
+repository.
 
 ---
 
