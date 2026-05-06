@@ -84,7 +84,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   Cosmos DB account's configured default. See `docs/configuration.md` —
   *Consistency Level*.
 - `CosmosProviderClient.readChanges` / `listPhysicalPartitions` via
-  `CosmosAsyncContainer.queryChangeFeed` with `FeedRange`. Capabilities:
+  `CosmosContainer.queryChangeFeed` with `FeedRange`. Capabilities:
   `change_feed`, `change_feed_point_in_time`,
   `change_feed_logical_partition_scope` — all supported.
 - **Provisioning:** containers must be created with the

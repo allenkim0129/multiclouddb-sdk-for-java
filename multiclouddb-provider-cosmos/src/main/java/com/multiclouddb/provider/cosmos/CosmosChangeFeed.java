@@ -321,7 +321,10 @@ final class CosmosChangeFeed {
         ObjectNode data = null;
         if (request.newItemStateMode() != NewItemStateMode.OMIT
                 && current != null && current.isObject() && current.size() > 0) {
-            // Strip system fields for caller cleanliness
+            // Deep-copy so caller mutations don't leak back into the
+            // change-feed page; payload is left intact (system fields
+            // such as _etag / _ts / _rid / _self are preserved as-is
+            // because consumers may rely on them for dedup or auditing).
             data = (ObjectNode) current.deepCopy();
         }
         if (request.newItemStateMode() == NewItemStateMode.REQUIRE

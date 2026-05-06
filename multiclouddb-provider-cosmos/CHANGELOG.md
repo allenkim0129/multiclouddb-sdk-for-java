@@ -21,7 +21,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Added
 
 - **Change feed (User Story 8)** — `CosmosProviderClient.readChanges` /
-  `listPhysicalPartitions` implemented via `CosmosAsyncContainer.queryChangeFeed`
+  `listPhysicalPartitions` implemented via `CosmosContainer.queryChangeFeed`
   with `FeedRange` for partition scoping. Capabilities advertised:
   `CHANGE_FEED`, `CHANGE_FEED_POINT_IN_TIME`,
   `CHANGE_FEED_LOGICAL_PARTITION_SCOPE` (all supported). **Provisioning

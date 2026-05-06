@@ -33,6 +33,15 @@ import java.util.Map;
  * to wrap their native cursor and {@link #decode(String, ProviderId, ResourceAddress)}
  * to validate and unwrap on resume. Mismatches in version, provider id, or
  * resource fingerprint surface as {@link MulticloudDbErrorCategory#INVALID_REQUEST}.
+ *
+ * <p><b>Security note.</b> The envelope provides <em>structural validation</em>
+ * only (schema version, provider id, and {@code database/collection}
+ * resource fingerprint). It is <b>not</b> cryptographically protected:
+ * tokens are not signed or MAC’d, so a caller in possession of a token
+ * can decode and modify the inner cursor for the same provider+resource.
+ * Treat continuation tokens as caller-trusted state. Cryptographic
+ * authenticity (HMAC-keyed envelope) is tracked as a follow-up and will
+ * bump {@link #CURRENT_VERSION} when shipped.
  */
 public final class ContinuationTokenCodec {
 

@@ -1280,7 +1280,7 @@ the full matrix; in brief:
 
 | Concern                                   | Owned by |
 |-------------------------------------------|----------|
-| Continuation-token format & tamper detection | **SDK** |
+| Continuation-token format & structural validation | **SDK** |
 | Scope/start-position validation, fast-fail on unsupported | **SDK** |
 | Partition enumeration (`listPhysicalPartitions`) | **SDK** |
 | Cosmos partition-key path resolution (incl. hierarchical) | **SDK** |

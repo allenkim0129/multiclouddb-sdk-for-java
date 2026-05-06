@@ -79,10 +79,10 @@ ChangeFeedPage readChanges(ChangeFeedRequest request, OperationOptions options);
 ```java
 public final class ChangeFeedRequest {
     ResourceAddress address;                // required
-    StartPosition start;                    // required
+    StartPosition startPosition;            // required
     FeedScope scope;                        // default EntireCollection()
     NewItemStateMode newItemStateMode;      // default INCLUDE_IF_AVAILABLE
-    int maxBatchSize;                       // default 100; provider clamps
+    int maxPageSize;                        // default 0 = no cap; provider clamps when set
 }
 
 // Unified partitioning model.
@@ -99,9 +99,10 @@ public enum NewItemStateMode {
 }
 
 public sealed interface StartPosition {
-    record BeginningOfAvailableChanges() implements StartPosition {}  // see retention note
-    record AtTimestamp(Instant utc) implements StartPosition {}        // 2/3 — Dynamo throws
-    record FromCheckpoint(String token) implements StartPosition {}
+    record Beginning() implements StartPosition {}                    // see retention note
+    record Now() implements StartPosition {}                          // 3/3
+    record AtTime(Instant utc) implements StartPosition {}            // 2/3 — Dynamo throws
+    record FromContinuationToken(String token) implements StartPosition {}
 }
 
 public enum ChangeType { CREATE, UPDATE, DELETE }
@@ -216,7 +217,7 @@ shortcut.
    to a `PhysicalPartition` carry the same constraint.
 
 When an unsupported capability is requested, the SPI raises a
-`MulticloudDbException` of category `UNSUPPORTED` with an actionable message
+`MulticloudDbException` of category `UNSUPPORTED_CAPABILITY` with an actionable message
 (matching how other capability gates already work). No silent degradation.
 
 ## Continuation token strategy
