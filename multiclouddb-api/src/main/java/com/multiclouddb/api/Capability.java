@@ -107,12 +107,37 @@ public final class Capability {
     /** Unsupported singleton — change feed. */
     public static final Capability CHANGE_FEED_UNSUPPORTED          = intern(CHANGE_FEED, false);
 
-    /** Supported singleton — point-in-time start for change feed (StartPosition.atTime). */
+    /**
+     * Supported singleton — point-in-time start for change feed (StartPosition.atTime).
+     *
+     * <p><b>Provider support note.</b> Cosmos DB and Spanner advertise this
+     * capability; DynamoDB Streams exposes only TRIM_HORIZON / LATEST /
+     * sequence-number iterators and declares
+     * {@link #CHANGE_FEED_POINT_IN_TIME_UNSUPPORTED}. Gate
+     * {@code StartPosition.atTime(...)} reads with
+     * {@code client.capabilities().isSupported(Capability.CHANGE_FEED_POINT_IN_TIME)};
+     * unsupported callers receive
+     * {@link com.multiclouddb.api.MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}
+     * at request time.
+     */
     public static final Capability CHANGE_FEED_POINT_IN_TIME_CAP    = intern(CHANGE_FEED_POINT_IN_TIME, true);
     /** Unsupported singleton — point-in-time start for change feed. */
     public static final Capability CHANGE_FEED_POINT_IN_TIME_UNSUPPORTED = intern(CHANGE_FEED_POINT_IN_TIME, false);
 
-    /** Supported singleton — logical-partition-key scoped change feed (FeedScope.logicalPartition). */
+    /**
+     * Supported singleton — logical-partition-key scoped change feed
+     * (FeedScope.logicalPartition).
+     *
+     * <p><b>Provider support note.</b> As of this release the only provider
+     * that advertises this capability as supported is
+     * {@code com.multiclouddb.provider.cosmos.CosmosCapabilities};
+     * Spanner and DynamoDB Streams expose physical partitions only and
+     * declare {@link #CHANGE_FEED_LOGICAL_PARTITION_SCOPE_UNSUPPORTED}.
+     * Always gate logical-partition change-feed reads with
+     * {@code client.capabilities().isSupported(Capability.CHANGE_FEED_LOGICAL_PARTITION_SCOPE)};
+     * unsupported callers receive
+     * {@link com.multiclouddb.api.MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}.
+     */
     public static final Capability CHANGE_FEED_LOGICAL_PARTITION_SCOPE_CAP = intern(CHANGE_FEED_LOGICAL_PARTITION_SCOPE, true);
     /** Unsupported singleton — logical-partition-key scoped change feed. */
     public static final Capability CHANGE_FEED_LOGICAL_PARTITION_SCOPE_UNSUPPORTED = intern(CHANGE_FEED_LOGICAL_PARTITION_SCOPE, false);

@@ -170,7 +170,7 @@ public abstract class ChangeFeedConformanceTest {
         assumeChangeFeedSupported();
         // Hand-crafted token that decodes to a different provider id.
         String forged = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
-                "{\"v\":1,\"p\":\"__not_my_provider__\",\"r\":\"x/y\",\"c\":\"x\"}".getBytes());
+                "{\"v\":1,\"p\":\"__not_my_provider__\",\"r\":\"x/y\",\"c\":\"x\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
         ChangeFeedRequest req = ChangeFeedRequest.builder(getAddress())
                 .startPosition(StartPosition.fromContinuationToken(forged))
                 .build();

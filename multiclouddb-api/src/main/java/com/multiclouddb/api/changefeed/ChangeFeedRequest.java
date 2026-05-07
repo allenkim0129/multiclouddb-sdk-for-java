@@ -20,9 +20,23 @@ import java.util.Objects;
  * </ul>
  *
  * <p>When resuming from a saved checkpoint the {@code startPosition} should
- * be {@link StartPosition#fromContinuationToken(String)}; the scope embedded
- * in the token wins over an explicitly-set {@link #scope()}, but providers
- * still validate that the explicit scope (if any) is consistent.
+ * be {@link StartPosition#fromContinuationToken(String)}. The token's
+ * provider id and resource fingerprint are always validated by
+ * {@code ContinuationTokenCodec}. Scope validation on resume is
+ * provider-specific:
+ * <ul>
+ *   <li><b>Spanner / DynamoDB</b> — encode per-partition cursors in the
+ *       token and reject any resume whose explicit {@link #scope()}
+ *       disagrees with the partitions / shards referenced by the token.</li>
+ *   <li><b>Cosmos</b> — encodes the scope kind and (for
+ *       {@code PhysicalPartition} / {@code LogicalPartition}) the
+ *       partition value. A resume that switches scope kind or partition
+ *       value is rejected; a resume that keeps both identical is
+ *       accepted and the Cosmos service-side range governs the data
+ *       returned.</li>
+ * </ul>
+ * In all cases mismatches surface as
+ * {@link com.multiclouddb.api.MulticloudDbErrorCategory#INVALID_REQUEST}.
  */
 public final class ChangeFeedRequest {
 

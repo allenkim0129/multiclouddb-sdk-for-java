@@ -225,6 +225,21 @@ required). `StartPosition.atTime` is **not** supported — Streams only expose
 (`UNSUPPORTED_CAPABILITY`). Shards are physical and cannot be scoped by a
 logical partition key.
 
+There is no compile-time enforcement; the unsupported request fails fast at
+runtime with `MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY`. Gate calls
+with the published capability instead:
+
+```java
+if (client.capabilities().isSupported(Capability.CHANGE_FEED_POINT_IN_TIME)) {
+    request = ChangeFeedRequest.builder(address)
+            .startPosition(StartPosition.atTime(t))
+            .build();
+} else {
+    // DynamoDB path — fall back to TRIM_HORIZON / LATEST equivalents.
+    request = ChangeFeedRequest.fromBeginning(address);
+}
+```
+
 ### Google Cloud Spanner
 
 A change stream must be created via DDL ahead of time:

@@ -12,7 +12,6 @@ import com.azure.cosmos.models.PartitionKey;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.databind.node.TextNode;
 import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
@@ -118,12 +117,16 @@ final class CosmosChangeFeed {
 
             List<ChangeEvent> events = new ArrayList<>();
             String cosmosContinuation = null;
-            int statusCode = 200;
+            int statusCode = 304; // Cosmos returns 304 Not Modified when no new events
             int dropped = 0;
 
             if (pages.hasNext()) {
                 FeedResponse<JsonNode> page = pages.next();
-                statusCode = 200;
+                // An empty results list maps to the
+                // 304-Not-Modified semantics of the Cosmos change-feed REST
+                // contract; an empty page is otherwise indistinguishable
+                // from a 200 with zero results.
+                statusCode = page.getResults().isEmpty() ? 304 : 200;
                 for (JsonNode raw : page.getResults()) {
                     ChangeEvent ev = mapEvent(raw, request, pkField);
                     if (ev != null) {
@@ -142,7 +145,7 @@ final class CosmosChangeFeed {
 
             String token = cosmosContinuation != null
                     ? ContinuationTokenCodec.encode(ProviderId.COSMOS, request.address(),
-                            new TextNode(cosmosContinuation))
+                            buildCursorEnvelope(cosmosContinuation, request.scope()))
                     : null;
 
             OperationDiagnostics diag = OperationDiagnostics
@@ -194,18 +197,80 @@ final class CosmosChangeFeed {
                     atTime.timestamp(), feedRange);
         }
         if (sp instanceof StartPosition.FromContinuationToken token) {
-            JsonNode inner = ContinuationTokenCodec.decode(token.token(),
-                    ProviderId.COSMOS, request.address());
-            String cosmosToken = inner.asText();
-            if (cosmosToken == null || cosmosToken.isEmpty()) {
-                throw new MulticloudDbException(new MulticloudDbError(
-                        MulticloudDbErrorCategory.INVALID_REQUEST,
-                        "Continuation token does not contain a Cosmos cursor",
-                        ProviderId.COSMOS, "readChanges", false, Map.of()));
-            }
+            String cosmosToken = decodeAndValidateResumeToken(token.token(), request);
             return CosmosChangeFeedRequestOptions.createForProcessingFromContinuation(cosmosToken);
         }
         throw new IllegalStateException("Unhandled StartPosition: " + sp);
+    }
+
+    /**
+     * Decode the SDK envelope and validate scope on resume. Returns the
+     * Cosmos-native cursor string ready to hand to
+     * {@link CosmosChangeFeedRequestOptions#createForProcessingFromContinuation(String)}.
+     *
+     * <p>Package-private so unit tests can exercise the validation paths
+     * without standing up a real CosmosContainer.
+     */
+    static String decodeAndValidateResumeToken(String envelopeToken, ChangeFeedRequest request) {
+        JsonNode inner = ContinuationTokenCodec.decode(envelopeToken,
+                ProviderId.COSMOS, request.address());
+        // Backward-compat: legacy tokens wrapped only the cursor as a
+        // bare TextNode. Newer tokens wrap an object
+        // {cursor, scope, partitionValue}.
+        String cosmosToken;
+        String tokScope = "";
+        String tokPartitionValue = "";
+        boolean envelopeAware = false;
+        if (inner.isObject()) {
+            cosmosToken = inner.path("cursor").asText("");
+            tokScope = inner.path("scope").asText("");
+            tokPartitionValue = inner.path("partitionValue").asText("");
+            envelopeAware = !tokScope.isEmpty();
+        } else {
+            cosmosToken = inner.asText("");
+        }
+        if (cosmosToken == null || cosmosToken.isEmpty()) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.INVALID_REQUEST,
+                    "Continuation token does not contain a Cosmos cursor",
+                    ProviderId.COSMOS, "readChanges", false, Map.of()));
+        }
+        if (envelopeAware) {
+            // Reject scope-kind or per-partition mismatches on resume.
+            // The Cosmos service continuation is range-bound on the
+            // server, so silently honoring a different explicit scope
+            // would be misleading and could appear to read partitions
+            // that the caller never asked for. The Cosmos check matches
+            // Dynamo's per-shard rejection in DynamoChangeFeed.resolveShards;
+            // Spanner currently kind-checks only and per-partition value
+            // parity there is tracked as a follow-up.
+            String reqScope = scopeKind(request.scope());
+            if (!tokScope.equals(reqScope)) {
+                throw new MulticloudDbException(new MulticloudDbError(
+                        MulticloudDbErrorCategory.INVALID_REQUEST,
+                        "Continuation token was issued for scope '" + tokScope
+                                + "' but the resume request uses scope '" + reqScope
+                                + "'. Resume with the original scope or restart "
+                                + "from a fresh StartPosition.",
+                        ProviderId.COSMOS, "readChanges", false, Map.of()));
+            }
+            String reqPartitionValue = scopePartitionValue(request.scope());
+            if (!tokPartitionValue.equals(reqPartitionValue)) {
+                throw new MulticloudDbException(new MulticloudDbError(
+                        MulticloudDbErrorCategory.INVALID_REQUEST,
+                        "Continuation token was issued for partition '" + tokPartitionValue
+                                + "' but the resume request targets partition '"
+                                + reqPartitionValue + "'. Resume with the original "
+                                + "partition or restart from a fresh StartPosition.",
+                        ProviderId.COSMOS, "readChanges", false, Map.of()));
+            }
+        }
+        return cosmosToken;
+    }
+
+    /** Package-private accessor used by unit tests to build a token envelope. */
+    static ObjectNode buildCursorEnvelopeForTest(String cosmosCursor, FeedScope scope) {
+        return buildCursorEnvelope(cosmosCursor, scope);
     }
 
     private FeedRange resolveFeedRange(ChangeFeedRequest request) {
@@ -229,6 +294,48 @@ final class CosmosChangeFeed {
             return FeedRange.forLogicalPartition(new PartitionKey(lp.partitionKey().partitionKey()));
         }
         throw new IllegalStateException("Unhandled FeedScope: " + scope);
+    }
+
+    /** Token-encoded marker for which scope produced the continuation token. */
+    private static final String SCOPE_KIND_ENTIRE = "EntireCollection";
+    private static final String SCOPE_KIND_PHYSICAL = "PhysicalPartition";
+    private static final String SCOPE_KIND_LOGICAL = "LogicalPartition";
+
+    private static String scopeKind(FeedScope scope) {
+        if (scope instanceof FeedScope.PhysicalPartition) return SCOPE_KIND_PHYSICAL;
+        if (scope instanceof FeedScope.LogicalPartition) return SCOPE_KIND_LOGICAL;
+        return SCOPE_KIND_ENTIRE;
+    }
+
+    /**
+     * Per-scope partition value used to detect value-level mismatches on
+     * resume (in addition to the kind check). EntireCollection contributes
+     * an empty string because there is only one such scope per resource.
+     */
+    private static String scopePartitionValue(FeedScope scope) {
+        if (scope instanceof FeedScope.PhysicalPartition pp) {
+            return pp.partitionId();
+        }
+        if (scope instanceof FeedScope.LogicalPartition lp) {
+            return lp.partitionKey().partitionKey();
+        }
+        return "";
+    }
+
+    /**
+     * Wrap the native Cosmos continuation string in an envelope that also
+     * records the scope it was issued for, so a resume that switches scope
+     * (kind or partition value) can be rejected explicitly rather than
+     * silently ignored. The Cosmos service continuation is range-bound on
+     * the server side, so without this marker a different explicit scope
+     * on resume would be silently overridden by the server-side range.
+     */
+    private static ObjectNode buildCursorEnvelope(String cosmosCursor, FeedScope scope) {
+        ObjectNode env = JsonNodeFactory.instance.objectNode();
+        env.put("cursor", cosmosCursor);
+        env.put("scope", scopeKind(scope));
+        env.put("partitionValue", scopePartitionValue(scope));
+        return env;
     }
 
     /**
