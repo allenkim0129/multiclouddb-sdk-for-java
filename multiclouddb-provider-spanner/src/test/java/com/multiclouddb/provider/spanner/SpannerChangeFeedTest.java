@@ -214,21 +214,6 @@ class SpannerChangeFeedTest {
         verifyNoInteractions(ctx);
     }
 
-    // ── capability gate (defence-in-depth) ─────────────────────────────────
-
-    @Test
-    @DisplayName("FeedScope.LogicalPartition rejected with UNSUPPORTED_CAPABILITY")
-    void logicalPartitionRejected() {
-        SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
-        ChangeFeedRequest req = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.logicalPartition(MulticloudDbKey.of("pk1")))
-                .build();
-        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                () -> feed.readChanges(req, OperationOptions.defaults()));
-        assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY, ex.error().category());
-        verifyNoInteractions(ctx);
-    }
-
     // ── listPhysicalPartitions ─────────────────────────────────────────────
 
     @Test

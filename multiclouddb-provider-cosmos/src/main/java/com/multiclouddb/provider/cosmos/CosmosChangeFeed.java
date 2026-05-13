@@ -8,7 +8,6 @@ import com.azure.cosmos.CosmosException;
 import com.azure.cosmos.models.CosmosChangeFeedRequestOptions;
 import com.azure.cosmos.models.FeedRange;
 import com.azure.cosmos.models.FeedResponse;
-import com.azure.cosmos.models.PartitionKey;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -192,10 +191,6 @@ final class CosmosChangeFeed {
         if (sp instanceof StartPosition.Now) {
             return CosmosChangeFeedRequestOptions.createForProcessingFromNow(feedRange);
         }
-        if (sp instanceof StartPosition.AtTime atTime) {
-            return CosmosChangeFeedRequestOptions.createForProcessingFromPointInTime(
-                    atTime.timestamp(), feedRange);
-        }
         if (sp instanceof StartPosition.FromContinuationToken token) {
             String cosmosToken = decodeAndValidateResumeToken(token.token(), request);
             return CosmosChangeFeedRequestOptions.createForProcessingFromContinuation(cosmosToken);
@@ -290,20 +285,15 @@ final class CosmosChangeFeed {
             }
             return FeedRange.fromString(json);
         }
-        if (scope instanceof FeedScope.LogicalPartition lp) {
-            return FeedRange.forLogicalPartition(new PartitionKey(lp.partitionKey().partitionKey()));
-        }
         throw new IllegalStateException("Unhandled FeedScope: " + scope);
     }
 
     /** Token-encoded marker for which scope produced the continuation token. */
     private static final String SCOPE_KIND_ENTIRE = "EntireCollection";
     private static final String SCOPE_KIND_PHYSICAL = "PhysicalPartition";
-    private static final String SCOPE_KIND_LOGICAL = "LogicalPartition";
 
     private static String scopeKind(FeedScope scope) {
         if (scope instanceof FeedScope.PhysicalPartition) return SCOPE_KIND_PHYSICAL;
-        if (scope instanceof FeedScope.LogicalPartition) return SCOPE_KIND_LOGICAL;
         return SCOPE_KIND_ENTIRE;
     }
 
@@ -315,9 +305,6 @@ final class CosmosChangeFeed {
     private static String scopePartitionValue(FeedScope scope) {
         if (scope instanceof FeedScope.PhysicalPartition pp) {
             return pp.partitionId();
-        }
-        if (scope instanceof FeedScope.LogicalPartition lp) {
-            return lp.partitionKey().partitionKey();
         }
         return "";
     }

@@ -65,21 +65,12 @@ QueryPage page = client.query(address, query);
 | **Transactions** | Multi-document transactional operations |
 | **Batch operations** | Batch read/write for throughput efficiency |
 | **Strong consistency** | Strongly-consistent reads |
-| **Change feed** | Change-data-capture (`MulticloudDbClient.readChanges`) — see matrix below |
+| **Change feed** | Change-data-capture (`MulticloudDbClient.readChanges`) — portable across all providers |
 
-#### Change feed sub-capabilities
-
-| Capability | Cosmos DB | DynamoDB | Spanner |
-|------------|:---------:|:--------:|:-------:|
-| `change_feed` (basic CDC) | ✓ | ✓ | ✓ |
-| `change_feed_point_in_time` (`StartPosition.atTime`) | ✓ | ✗ | ✓ |
-| `change_feed_logical_partition_scope` (`FeedScope.logicalPartition`) | ✓ | ✗ | ✗ |
-
-DynamoDB Streams expose only `TRIM_HORIZON` / `LATEST` / sequence-number iterators
-(no timestamp start), and shards are physical (no logical-key scoping). Spanner
-Change Streams support timestamp start within the retention window but partition
-tokens are physical. `FeedScope.physicalPartition` is supported by all three
-providers and is the portable choice for parallel readers.
+The change-feed API surface is identical for all providers: every
+`FeedScope` and `StartPosition` variant works on Cosmos, Dynamo, and
+Spanner. `FeedScope.physicalPartition` is the portable choice for
+parallel readers.
 
 ### Diagnostics & Error Handling
 

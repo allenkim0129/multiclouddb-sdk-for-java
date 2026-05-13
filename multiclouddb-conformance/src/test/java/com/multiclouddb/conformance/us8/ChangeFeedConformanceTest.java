@@ -179,53 +179,10 @@ public abstract class ChangeFeedConformanceTest {
         assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
     }
 
-    // ── FR-CF-07: capability-gated point-in-time ───────────────────────────
-
-    @Test
-    @Order(5)
-    @DisplayName("FR-CF-07: StartPosition.atTime gated by CHANGE_FEED_POINT_IN_TIME")
-    void pointInTimeCapabilityGated() {
-        assumeChangeFeedSupported();
-        CapabilitySet caps = client.capabilities();
-        ChangeFeedRequest req = ChangeFeedRequest.builder(getAddress())
-                .startPosition(StartPosition.atTime(java.time.Instant.now().minusSeconds(60)))
-                .build();
-        if (caps.isSupported(Capability.CHANGE_FEED_POINT_IN_TIME)) {
-            // Just verify the call doesn't throw UNSUPPORTED_CAPABILITY (may legitimately
-            // return an empty page).
-            assertDoesNotThrow(() -> client.readChanges(req));
-        } else {
-            MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                    () -> client.readChanges(req));
-            assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY, ex.error().category());
-        }
-    }
-
-    // ── FR-CF-08: capability-gated logical-partition scope ─────────────────
-
-    @Test
-    @Order(6)
-    @DisplayName("FR-CF-08: FeedScope.logicalPartition gated by capability")
-    void logicalPartitionCapabilityGated() {
-        assumeChangeFeedSupported();
-        CapabilitySet caps = client.capabilities();
-        ChangeFeedRequest req = ChangeFeedRequest.builder(getAddress())
-                .scope(FeedScope.logicalPartition(MulticloudDbKey.of("any-pk")))
-                .startPosition(StartPosition.now())
-                .build();
-        if (caps.isSupported(Capability.CHANGE_FEED_LOGICAL_PARTITION_SCOPE)) {
-            assertDoesNotThrow(() -> client.readChanges(req));
-        } else {
-            MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                    () -> client.readChanges(req));
-            assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY, ex.error().category());
-        }
-    }
-
     // ── FR-CF-09: physical-partition scope round-trips ─────────────────────
 
     @Test
-    @Order(7)
+    @Order(5)
     @DisplayName("FR-CF-09: listPhysicalPartitions returns at least one partition; "
             + "PhysicalPartition scope reads from it")
     void physicalPartitionScope() throws Exception {
@@ -245,7 +202,7 @@ public abstract class ChangeFeedConformanceTest {
     // ── FR-CF-10: NewItemStateMode.OMIT yields null data ───────────────────
 
     @Test
-    @Order(8)
+    @Order(6)
     @DisplayName("FR-CF-10: NewItemStateMode.OMIT yields events with null data()")
     void omitDataMode() throws Exception {
         assumeChangeFeedSupported();

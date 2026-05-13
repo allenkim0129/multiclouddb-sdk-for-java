@@ -63,9 +63,6 @@ import java.util.Map;
  *
  * <p>Caveats:
  * <ul>
- *   <li>{@link FeedScope.LogicalPartition} is rejected with
- *       {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} —
- *       Spanner exposes physical partition tokens only.</li>
  *   <li>{@link FeedScope.EntireCollection} is implemented as a
  *       partition-queue iterator: a fresh request bootstraps from the root
  *       (NULL token) and the continuation carries the work queue forward.
@@ -128,12 +125,6 @@ final class SpannerChangeFeed {
     ChangeFeedPage readChanges(ChangeFeedRequest request, OperationOptions options) {
         Instant start = Instant.now();
         try {
-            if (request.scope() instanceof FeedScope.LogicalPartition) {
-                throw unsupported("FeedScope.logicalPartition is not supported by Spanner "
-                        + "Change Streams; use FeedScope.physicalPartition with a token from "
-                        + "listPhysicalPartitions()");
-            }
-
             String stream = resolveStreamName(request.address());
             validateIdentifier(stream);
             PartitionQueue queue = resolveQueue(request, stream);
@@ -369,7 +360,6 @@ final class SpannerChangeFeed {
 
     private static String scopeKind(FeedScope scope) {
         if (scope instanceof FeedScope.PhysicalPartition) return SCOPE_KIND_PHYSICAL;
-        // LogicalPartition is rejected upstream for Spanner; default to EntireCollection.
         return SCOPE_KIND_ENTIRE;
     }
 
@@ -455,9 +445,6 @@ final class SpannerChangeFeed {
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private Instant computeStart(StartPosition sp, String stream) {
-        if (sp instanceof StartPosition.AtTime at) {
-            return at.timestamp();
-        }
         if (sp instanceof StartPosition.Now) {
             return Instant.now();
         }

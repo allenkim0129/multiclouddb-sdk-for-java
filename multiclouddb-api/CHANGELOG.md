@@ -19,16 +19,15 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   - `MulticloudDbClient.listPhysicalPartitions(ResourceAddress)` for parallel
     readers (one continuation token per physical partition).
   - `ChangeFeedRequest` builder with `FeedScope` (sealed: `EntireCollection`,
-    `PhysicalPartition`, `LogicalPartition`), `StartPosition` (sealed:
-    `Beginning`, `Now`, `AtTime`, `FromContinuationToken`), `maxPageSize`,
-    and `NewItemStateMode` (`INCLUDE_IF_AVAILABLE` default, `REQUIRE`, `OMIT`).
+    `PhysicalPartition`), `StartPosition` (sealed: `Beginning`, `Now`,
+    `FromContinuationToken`), `maxPageSize`, and `NewItemStateMode`
+    (`INCLUDE_IF_AVAILABLE` default, `REQUIRE`, `OMIT`).
   - `ChangeEvent` carrying `ChangeType` (CREATE / UPDATE / DELETE), key,
     data, commit timestamp, and provider sequence.
-- New capability tokens introspectable via `client.capabilities()`:
-  - `Capability.CHANGE_FEED` — basic CDC support
-  - `Capability.CHANGE_FEED_POINT_IN_TIME` — `StartPosition.atTime` accepted
-  - `Capability.CHANGE_FEED_LOGICAL_PARTITION_SCOPE` —
-    `FeedScope.logicalPartition` accepted
+- New capability token introspectable via `client.capabilities()`:
+  - `Capability.CHANGE_FEED` — change-data-capture support. The change-feed
+    API is **fully portable**: every `FeedScope` and `StartPosition`
+    variant must work on every provider that advertises this capability.
 - `ChangeFeedRequest` and listing calls fail fast with
   `UNSUPPORTED_CAPABILITY` when the active provider does not advertise the
   required capability; `INVALID_REQUEST` when continuation tokens cross

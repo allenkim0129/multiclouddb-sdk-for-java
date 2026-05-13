@@ -3,12 +3,9 @@
 
 package com.multiclouddb.api.changefeed;
 
-import com.multiclouddb.api.MulticloudDbKey;
 import com.multiclouddb.api.ResourceAddress;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-
-import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -49,26 +46,12 @@ class ChangeFeedRequestTest {
     }
 
     @Test
-    @DisplayName("FeedScope.logicalPartition wraps the supplied key")
-    void logicalPartitionScope() {
-        FeedScope s = FeedScope.logicalPartition(MulticloudDbKey.of("pk1"));
-        assertInstanceOf(FeedScope.LogicalPartition.class, s);
-    }
-
-    @Test
     @DisplayName("StartPosition factories return the expected variants")
     void startPositionFactories() {
         assertInstanceOf(StartPosition.Beginning.class, StartPosition.beginning());
         assertInstanceOf(StartPosition.Now.class, StartPosition.now());
-        assertInstanceOf(StartPosition.AtTime.class, StartPosition.atTime(Instant.EPOCH));
         assertInstanceOf(StartPosition.FromContinuationToken.class,
                 StartPosition.fromContinuationToken("abc"));
-    }
-
-    @Test
-    @DisplayName("StartPosition.AtTime requires non-null timestamp")
-    void atTimeRequiresTimestamp() {
-        assertThrows(NullPointerException.class, () -> StartPosition.atTime(null));
     }
 
     @Test

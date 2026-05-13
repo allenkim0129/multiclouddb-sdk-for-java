@@ -65,13 +65,8 @@ import java.util.Set;
  * {@code DescribeStream} + {@code GetShardIterator} + {@code GetRecords}
  * primitives.
  *
- * <p>Constraints (capability-gated; see {@code DynamoCapabilities}):
+ * <p>Stream-view-type constraints (capability-gated):
  * <ul>
- *   <li>{@link StartPosition.AtTime} is rejected with
- *       {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} —
- *       Dynamo does not provide timestamp-based iterators.</li>
- *   <li>{@link FeedScope.LogicalPartition} is rejected with
- *       {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}.</li>
  *   <li>{@link NewItemStateMode#REQUIRE} requires
  *       {@code StreamViewType.NEW_IMAGE} or {@code NEW_AND_OLD_IMAGES} on
  *       the table; otherwise rejected at first call.</li>
@@ -109,17 +104,6 @@ final class DynamoChangeFeed {
     ChangeFeedPage readChanges(ChangeFeedRequest request, OperationOptions options) {
         Instant start = Instant.now();
         try {
-            // Reject unsupported request shapes early (defence in depth — the default
-            // client also gates these, but we may be called via the SPI directly).
-            if (request.startPosition() instanceof StartPosition.AtTime) {
-                throw unsupported("StartPosition.atTime is not supported by DynamoDB Streams "
-                        + "(only TRIM_HORIZON / LATEST / sequence-number iterators are available)");
-            }
-            if (request.scope() instanceof FeedScope.LogicalPartition) {
-                throw unsupported("FeedScope.logicalPartition is not supported by DynamoDB Streams; "
-                        + "use FeedScope.physicalPartition with an ID from listPhysicalPartitions()");
-            }
-
             String streamArn = resolveStreamArn(request.address());
             validateStreamViewType(request, streamArn);
 
@@ -402,8 +386,8 @@ final class DynamoChangeFeed {
     private static String anchorFromStartPosition(StartPosition sp) {
         if (sp instanceof StartPosition.Now) return ANCHOR_NOW;
         if (sp instanceof StartPosition.Beginning) return ANCHOR_BEGINNING;
-        // FromContinuationToken / AtTime — anchor is recovered from the token
-        // itself or unsupported entirely. Return null so callers fall back.
+        // FromContinuationToken — anchor is recovered from the token
+        // itself. Return null so callers fall back.
         return null;
     }
 

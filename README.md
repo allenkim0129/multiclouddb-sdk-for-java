@@ -473,8 +473,6 @@ for (Capability cap : caps.all()) {
 | Batch operations | ✓ | ✓ | ✓ |
 | Strong consistency | ✓ | ✓ | ✓ |
 | **Change feed (CDC)** | ✓ | ✓ | ✓ |
-| ↳ Point-in-time start (`StartPosition.atTime`) | ✓ | ✗ | ✓ |
-| ↳ Logical-partition scope (`FeedScope.logicalPartition`) | ✓ | ✗ | ✗ |
 | **Result limit** (`Top N`) | ✓ | ✓ (per-page) | ✓ |
 | **ORDER BY** | ✓ | ✗ | ✓ |
 | **Row-level TTL** | ✓ | ✓ | ✗ |

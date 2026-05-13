@@ -3,22 +3,16 @@
 
 package com.multiclouddb.api.changefeed;
 
-import java.time.Instant;
-import java.util.Objects;
-
 /**
  * Where to begin reading the change feed.
  * <p>
- * Sealed interface with four variants:
+ * Sealed interface with three fully-portable variants — every provider
+ * (Cosmos, DynamoDB, Spanner) supports the same surface:
  * <ul>
  *   <li>{@link Beginning} — start at the earliest available change in the
  *       feed. Subject to provider retention windows (Dynamo: 24h, Spanner:
  *       configurable, Cosmos: indefinite).</li>
  *   <li>{@link Now} — start with changes committed after the call.</li>
- *   <li>{@link AtTime} — start at a specific instant (Cosmos + Spanner only;
- *       gated by {@link com.multiclouddb.api.Capability#CHANGE_FEED_POINT_IN_TIME}).
- *       Throws {@link com.multiclouddb.api.MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}
- *       on Dynamo.</li>
  *   <li>{@link FromContinuationToken} — resume from a previously-issued
  *       opaque token. The token is provider+resource scoped; cross-provider
  *       use fails with {@link com.multiclouddb.api.MulticloudDbErrorCategory#INVALID_REQUEST}.
@@ -29,7 +23,6 @@ import java.util.Objects;
 public sealed interface StartPosition
         permits StartPosition.Beginning,
                 StartPosition.Now,
-                StartPosition.AtTime,
                 StartPosition.FromContinuationToken {
 
     /** Start from the earliest available change. */
@@ -40,14 +33,6 @@ public sealed interface StartPosition
     /** Start from changes committed after the call. */
     static StartPosition now() {
         return Now.INSTANCE;
-    }
-
-    /**
-     * Start at the given commit timestamp (capability-gated).
-     * @throws NullPointerException if {@code timestamp} is null
-     */
-    static StartPosition atTime(Instant timestamp) {
-        return new AtTime(timestamp);
     }
 
     /**
@@ -79,12 +64,6 @@ public sealed interface StartPosition
         @Override
         public String toString() {
             return "StartPosition.Now";
-        }
-    }
-
-    record AtTime(Instant timestamp) implements StartPosition {
-        public AtTime {
-            Objects.requireNonNull(timestamp, "timestamp");
         }
     }
 

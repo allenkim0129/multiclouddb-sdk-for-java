@@ -29,11 +29,10 @@ import java.util.Objects;
  *       token and reject any resume whose explicit {@link #scope()}
  *       disagrees with the partitions / shards referenced by the token.</li>
  *   <li><b>Cosmos</b> — encodes the scope kind and (for
- *       {@code PhysicalPartition} / {@code LogicalPartition}) the
- *       partition value. A resume that switches scope kind or partition
- *       value is rejected; a resume that keeps both identical is
- *       accepted and the Cosmos service-side range governs the data
- *       returned.</li>
+ *       {@code PhysicalPartition}) the partition value. A resume that
+ *       switches scope kind or partition value is rejected; a resume that
+ *       keeps both identical is accepted and the Cosmos service-side range
+ *       governs the data returned.</li>
  * </ul>
  * In all cases mismatches surface as
  * {@link com.multiclouddb.api.MulticloudDbErrorCategory#INVALID_REQUEST}.

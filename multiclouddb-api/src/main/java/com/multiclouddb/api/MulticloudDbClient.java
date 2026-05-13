@@ -150,19 +150,16 @@ public interface MulticloudDbClient extends AutoCloseable {
      * Capability gates:
      * <ul>
      *   <li>{@link Capability#CHANGE_FEED} — must be supported by the provider.</li>
-     *   <li>{@link Capability#CHANGE_FEED_POINT_IN_TIME} — required when the
-     *       request uses {@code StartPosition.atTime(...)}.</li>
-     *   <li>{@link Capability#CHANGE_FEED_LOGICAL_PARTITION_SCOPE} — required
-     *       when the request scope is {@code FeedScope.LogicalPartition}.</li>
      * </ul>
      * Returns {@link ChangeFeedPage#events()} (possibly empty) with a
      * resumption {@link ChangeFeedPage#continuationToken()}.
      *
-     * @throws MulticloudDbException with category UNSUPPORTED_CAPABILITY when a
-     *                               required capability is missing,
-     *                               INVALID_REQUEST for malformed/cross-provider
-     *                               tokens, or CHECKPOINT_EXPIRED when the
-     *                               cursor has been trimmed
+     * @throws MulticloudDbException with category UNSUPPORTED_CAPABILITY when
+     *                               the provider does not support the change
+     *                               feed, INVALID_REQUEST for malformed/
+     *                               cross-provider tokens, or
+     *                               CHECKPOINT_EXPIRED when the cursor has
+     *                               been trimmed
      */
     ChangeFeedPage readChanges(ChangeFeedRequest request, OperationOptions options);
 

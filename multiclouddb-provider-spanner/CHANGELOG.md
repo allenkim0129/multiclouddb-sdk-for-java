@@ -14,10 +14,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `READ_<stream>(start_timestamp, end_timestamp, partition_token,
   heartbeat_milliseconds)` SQL TVF. Parses `data_change_record` (mods →
   CREATE / UPDATE / DELETE) and `child_partitions_record` for partition
-  retirement bookkeeping. Capabilities advertised: `CHANGE_FEED` and
-  `CHANGE_FEED_POINT_IN_TIME` (supported);
-  `CHANGE_FEED_LOGICAL_PARTITION_SCOPE` is **UNSUPPORTED** because Spanner
-  Change Streams expose physical partition tokens only.
+  retirement bookkeeping. Capability advertised: `CHANGE_FEED`. Spanner
+  Change Streams expose physical partition tokens only; use
+  `FeedScope.entireCollection()` or `FeedScope.physicalPartition(id)`.
 - New connection key `connection.changeStream.<collection>` to override the
   change-stream name read for `<collection>`. When unset, the SDK falls
   back to the convention `<collection>_changes`.

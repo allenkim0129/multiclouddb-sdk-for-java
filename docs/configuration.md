@@ -220,25 +220,11 @@ DELETE events. No SDK-level config key is required.
 
 The table must have `StreamSpecification.StreamEnabled=true` and a
 `StreamViewType` of `NEW_AND_OLD_IMAGES` (or `NEW_IMAGE` if old values are not
-required). `StartPosition.atTime` is **not** supported — Streams only expose
-`TRIM_HORIZON` / `LATEST` / sequence-number iterators
-(`UNSUPPORTED_CAPABILITY`). Shards are physical and cannot be scoped by a
-logical partition key.
-
-There is no compile-time enforcement; the unsupported request fails fast at
-runtime with `MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY`. Gate calls
-with the published capability instead:
-
-```java
-if (client.capabilities().isSupported(Capability.CHANGE_FEED_POINT_IN_TIME)) {
-    request = ChangeFeedRequest.builder(address)
-            .startPosition(StartPosition.atTime(t))
-            .build();
-} else {
-    // DynamoDB path — fall back to TRIM_HORIZON / LATEST equivalents.
-    request = ChangeFeedRequest.fromBeginning(address);
-}
-```
+required). Streams expose `TRIM_HORIZON` / `LATEST` / sequence-number
+iterators, which map to `StartPosition.beginning()`, `StartPosition.now()`,
+and `StartPosition.fromContinuationToken(...)` respectively. Shards are
+physical; use `FeedScope.entireCollection()` or
+`FeedScope.physicalPartition(id)`.
 
 ### Google Cloud Spanner
 
@@ -254,10 +240,11 @@ CREATE CHANGE STREAM events_changes FOR events
 | `multiclouddb.connection.changeStream.<collection>` | Optional. Override the change-stream name to read for `<collection>`. Defaults to `<collection>_changes`. |
 
 `value_capture_type` must be `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES` when
-`newItemStateMode = REQUIRE`. `FeedScope.logicalPartition` is rejected with
-`UNSUPPORTED_CAPABILITY` (Spanner partition tokens are physical row ranges).
-The Spanner emulator does **not** support change streams — exercise the
-feature against a real Spanner instance.
+`newItemStateMode = REQUIRE`. Spanner partition tokens are physical row
+ranges — use `FeedScope.entireCollection()` or
+`FeedScope.physicalPartition(id)`. The Spanner emulator does **not**
+support change streams — exercise the feature against a real Spanner
+instance.
 
 ---
 

@@ -24,8 +24,6 @@ public final class CosmosCapabilities {
             Capability.STRONG_CONSISTENCY_CAP.withNotes("Configurable consistency levels including Strong"),
             Capability.NATIVE_SQL_QUERY_CAP.withNotes("SQL-like query language"),
             Capability.CHANGE_FEED_CAP.withNotes("Change feed via queryChangeFeed; for distinct CREATE/UPDATE/DELETE events, container must be configured with AllVersionsAndDeletes mode"),
-            Capability.CHANGE_FEED_POINT_IN_TIME_CAP.withNotes("StartPosition.atTime supported via createForProcessingFromPointInTime"),
-            Capability.CHANGE_FEED_LOGICAL_PARTITION_SCOPE_CAP.withNotes("Cosmos exposes FeedRange.forLogicalPartition for partition-key scoping"),
             // Query DSL capabilities
             Capability.PORTABLE_QUERY_EXPRESSION_CAP.withNotes("Portable expression translation to Cosmos SQL"),
             Capability.LIKE_OPERATOR_CAP.withNotes("LIKE operator supported via Cosmos SQL"),

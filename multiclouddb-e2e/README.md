@@ -112,6 +112,33 @@ Each run exercises the full CRUD surface on a `products` collection:
 
 ---
 
+## Change Feed test
+
+A second runnable (`ChangeFeedMain`) exercises the portable Change Feed API
+end-to-end: it anchors a cursor at `StartPosition.now()`, seeds one CREATE,
+one UPDATE, and one DELETE, then drains `readChanges` until every seeded
+event has been observed. It skips cleanly when the configured provider does
+not advertise `CHANGE_FEED`.
+
+```bash
+# Cosmos DB (default config). Container must be created with
+# changeFeedPolicy = AllVersionsAndDeletes — see docs/configuration.md.
+mvn -pl multiclouddb-e2e process-resources exec:java \
+    -Dexec.mainClass=com.microsoft.multiclouddb.e2e.ChangeFeedMain
+
+# DynamoDB (table must have StreamSpecification = NEW_AND_OLD_IMAGES)
+mvn -pl multiclouddb-e2e process-resources exec:java \
+    -Dexec.mainClass=com.microsoft.multiclouddb.e2e.ChangeFeedMain \
+    -Dmulticlouddb.config=dynamo.properties
+
+# Spanner (a `CHANGE STREAM <collection>_changes FOR <collection>` must exist)
+mvn -pl multiclouddb-e2e process-resources exec:java \
+    -Dexec.mainClass=com.microsoft.multiclouddb.e2e.ChangeFeedMain \
+    -Dmulticlouddb.config=spanner.properties
+```
+
+---
+
 ## Switching providers
 
 Edit the corresponding properties file in `src/main/resources/`, then pass it
@@ -144,7 +171,8 @@ multiclouddb-e2e/
 ├── README.md
 └── src/main/
     ├── java/com/microsoft/multiclouddb/e2e/
-    │   ├── Main.java                    ← Entry point; orchestrates the E2E run
+    │   ├── Main.java                    ← CRUD/query E2E entry point
+    │   ├── ChangeFeedMain.java          ← Change Feed E2E entry point
     │   └── ConfigLoader.java            ← Loads *.properties, builds SDK config
     └── resources/
         ├── cosmos.properties.template   ← Cosmos DB config template (committed)

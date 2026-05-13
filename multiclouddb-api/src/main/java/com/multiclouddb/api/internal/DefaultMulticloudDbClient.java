@@ -21,8 +21,6 @@ import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
 import com.multiclouddb.api.changefeed.ChangeFeedPage;
 import com.multiclouddb.api.changefeed.ChangeFeedRequest;
-import com.multiclouddb.api.changefeed.FeedScope;
-import com.multiclouddb.api.changefeed.StartPosition;
 import com.multiclouddb.api.query.Expression;
 import com.multiclouddb.api.query.ExpressionParseException;
 import com.multiclouddb.api.query.ExpressionParser;
@@ -222,22 +220,10 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         Objects.requireNonNull(request, "request");
         Instant start = Instant.now();
         try {
-            // Fail-fast capability gates before hitting the provider
+            // Fail-fast capability gate before hitting the provider
             checkCapability(Capability.CHANGE_FEED,
                     "Change feed is not supported by provider " + config.provider().id(),
                     "readChanges");
-            if (request.startPosition() instanceof StartPosition.AtTime) {
-                checkCapability(Capability.CHANGE_FEED_POINT_IN_TIME,
-                        "Point-in-time start (StartPosition.atTime) is not supported by provider "
-                                + config.provider().id(),
-                        "readChanges");
-            }
-            if (request.scope() instanceof FeedScope.LogicalPartition) {
-                checkCapability(Capability.CHANGE_FEED_LOGICAL_PARTITION_SCOPE,
-                        "Logical-partition-scoped change feed is not supported by provider "
-                                + config.provider().id(),
-                        "readChanges");
-            }
             ChangeFeedPage page = providerClient.readChanges(request, options);
             LOG.debug("readChanges completed: address={}, events={}, hasMore={}, duration={}ms",
                     request.address(), page.events().size(), page.hasMore(),

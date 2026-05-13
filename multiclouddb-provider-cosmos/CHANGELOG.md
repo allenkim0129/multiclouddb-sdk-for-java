@@ -22,11 +22,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - **Change feed (User Story 8)** — `CosmosProviderClient.readChanges` /
   `listPhysicalPartitions` implemented via `CosmosContainer.queryChangeFeed`
-  with `FeedRange` for partition scoping. Capabilities advertised:
-  `CHANGE_FEED`, `CHANGE_FEED_POINT_IN_TIME`,
-  `CHANGE_FEED_LOGICAL_PARTITION_SCOPE` (all supported). **Provisioning
-  prerequisite:** containers must be created with the
-  `AllVersionsAndDeletes` change-feed mode to receive distinct
+  with `FeedRange` for partition scoping. Capability advertised:
+  `CHANGE_FEED`. **Provisioning prerequisite:** containers must be created
+  with the `AllVersionsAndDeletes` change-feed mode to receive distinct
   CREATE / UPDATE / DELETE events; containers in the default
   (`LatestVersion`) mode emit only the latest snapshot of each document
   and never surface DELETE events.

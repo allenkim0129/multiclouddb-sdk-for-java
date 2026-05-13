@@ -6,7 +6,6 @@ package com.multiclouddb.provider.cosmos;
 import com.fasterxml.jackson.databind.node.TextNode;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
-import com.multiclouddb.api.MulticloudDbKey;
 import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.ResourceAddress;
 import com.multiclouddb.api.changefeed.ChangeFeedRequest;
@@ -101,23 +100,6 @@ class CosmosChangeFeedTokenTest {
 
         assertEquals("cosmos-cursor",
                 CosmosChangeFeed.decodeAndValidateResumeToken(token, req));
-    }
-
-    @Test
-    @DisplayName("LogicalPartition resume validates the partition-key value, not just the kind")
-    void resumeLogicalPartitionValueMismatchRejected() {
-        String token = encodeEnvelope("cosmos-cursor",
-                FeedScope.logicalPartition(MulticloudDbKey.of("tenant-1")));
-        ChangeFeedRequest req = resumeWith(token,
-                FeedScope.logicalPartition(MulticloudDbKey.of("tenant-2")));
-
-        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                () -> CosmosChangeFeed.decodeAndValidateResumeToken(token, req));
-
-        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
-        String msg = ex.error().message();
-        assertTrue(msg.contains("tenant-1") && msg.contains("tenant-2"),
-                "message should name both partition values, was: " + msg);
     }
 
     @Test

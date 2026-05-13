@@ -1218,7 +1218,6 @@ while (true) {
 |------------------------------------|:-:|:-:|:-:|
 | `FeedScope.entireCollection()`     | ✓ | ✓ | ✓ |
 | `FeedScope.physicalPartition(id)`  | ✓ | ✓ (shard) | ✓ |
-| `FeedScope.logicalPartition(key)`  | ✓ | ✗ | ✗ |
 
 **Start position** — where to start:
 
@@ -1226,14 +1225,11 @@ while (true) {
 |-------------------------------------------|:-:|:-:|:-:|
 | `StartPosition.beginning()`               | ✓ | ✓ | ✓ (within retention) |
 | `StartPosition.now()`                     | ✓ | ✓ | ✓ |
-| `StartPosition.atTime(instant)`           | ✓ | ✗ | ✓ |
 | `StartPosition.fromContinuationToken(t)`  | ✓ | ✓ | ✓ |
 
-Unsupported combinations fail fast with `MulticloudDbErrorCategory
-.UNSUPPORTED_CAPABILITY` — they do **not** silently degrade. Probe
-fine-grained support up front via `client.capabilities().isSupported(...)`
-and the `change_feed_*` capability tokens documented in
-[`docs/compatibility.md`](compatibility.md#change-feed-sub-capabilities).
+Every scope and start-position variant is portable across all providers.
+The change-feed API surface is intentionally identical for Cosmos, Dynamo,
+and Spanner: there are no provider-specific sub-features to probe.
 
 ### Delivery Semantics
 
@@ -1298,9 +1294,7 @@ the full matrix; in brief:
 
 ```java
 Capabilities caps = client.capabilities();
-boolean basic       = caps.isSupported(Capability.CHANGE_FEED);
-boolean pointInTime = caps.isSupported(Capability.CHANGE_FEED_POINT_IN_TIME);
-boolean lpScope     = caps.isSupported(Capability.CHANGE_FEED_LOGICAL_PARTITION_SCOPE);
+boolean changeFeed = caps.isSupported(Capability.CHANGE_FEED);
 ```
 
 A runnable end-to-end sample is tracked as a follow-up in the samples
