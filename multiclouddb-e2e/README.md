@@ -115,10 +115,22 @@ Each run exercises the full CRUD surface on a `products` collection:
 ## Change Feed test
 
 A second runnable (`ChangeFeedMain`) exercises the portable Change Feed API
-end-to-end: it anchors a cursor at `StartPosition.now()`, seeds one CREATE,
-one UPDATE, and one DELETE, then drains `readChanges` until every seeded
-event has been observed. It skips cleanly when the configured provider does
-not advertise `CHANGE_FEED`.
+end-to-end. It runs four phases against the configured provider and fails
+loudly if any of them break the portable contract:
+
+1. **entireCollection round-trip + replay** — anchors at `StartPosition.now()`,
+   seeds one CREATE / UPDATE / DELETE, drains forward until all three are
+   observed, then replays from the *original* anchor token and asserts every
+   event re-delivers (at-least-once contract).
+2. **physicalPartition scope** — calls `listPhysicalPartitions` and reads
+   from the first partition via `FeedScope.physicalPartition(id)`.
+3. **NewItemStateMode.OMIT** — seeds a CREATE and asserts the surfaced event
+   has `data() == null`.
+4. **maxPageSize=1 paging** — seeds 3 CREATEs and asserts the cursor returns
+   at most one event per page while still surfacing every seeded key.
+
+It skips cleanly when the configured provider does not advertise
+`CHANGE_FEED`.
 
 ```bash
 # Cosmos DB (default config). Container must be created with

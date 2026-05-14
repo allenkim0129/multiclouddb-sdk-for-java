@@ -14,11 +14,13 @@ import com.multiclouddb.api.changefeed.ChangeFeedPage;
 import com.multiclouddb.api.changefeed.ChangeFeedRequest;
 import com.multiclouddb.api.changefeed.ChangeType;
 import com.multiclouddb.api.changefeed.FeedScope;
+import com.multiclouddb.api.changefeed.NewItemStateMode;
 import com.multiclouddb.api.changefeed.StartPosition;
 
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -27,17 +29,22 @@ import java.util.UUID;
  * End-to-end test for the portable Change Feed API.
  *
  * <p>Exercises {@link MulticloudDbClient#readChanges} against whichever provider
- * is configured in the active properties file (Cosmos / Dynamo / Spanner). The
- * test:
+ * is configured in the active properties file (Cosmos / Dynamo / Spanner).
+ * The test runs four phases against a single client + collection:
  * <ol>
- *   <li>Captures a continuation token at {@link StartPosition#now()} so it only
- *       observes changes produced by this run.</li>
- *   <li>Seeds one CREATE, one UPDATE, and one DELETE via {@code client.create},
- *       {@code client.upsert}, and {@code client.delete}.</li>
- *   <li>Polls {@code readChanges} until every seeded event has been observed
- *       or the drain budget is exhausted.</li>
- *   <li>Asserts CREATE, UPDATE, DELETE were all surfaced for the seeded keys
- *       and that the resumption token can be reused.</li>
+ *   <li><b>entireCollection round-trip + replay</b> — anchor at
+ *       {@link StartPosition#now()}, seed one CREATE/UPDATE/DELETE, drain
+ *       forward until all three types are observed for the seeded keys, then
+ *       replay from the <em>original</em> anchor token and assert every event
+ *       re-delivers (at-least-once contract).</li>
+ *   <li><b>physicalPartition scope</b> — call
+ *       {@link MulticloudDbClient#listPhysicalPartitions} and read from the
+ *       first partition with
+ *       {@link FeedScope#physicalPartition(String)}.</li>
+ *   <li><b>NewItemStateMode.OMIT</b> — seed a CREATE and verify the surfaced
+ *       event has {@code data() == null}.</li>
+ *   <li><b>maxPageSize=1 paging</b> — seed 3 CREATEs and assert the cursor
+ *       returns at most one event per page while still surfacing all keys.</li>
  * </ol>
  *
  * <p>Run with:
@@ -118,132 +125,303 @@ public class ChangeFeedMain {
         System.out.println("  Read and write metadata cached.");
         System.out.println();
 
-        // ── Capture a "now" cursor so we only see this run's events ───
-        System.out.println("── Anchor change-feed cursor at StartPosition.now() ───────────");
+        // Run each phase in sequence; each phase is self-contained.
+        runEntireCollectionRoundTrip();
+        runPhysicalPartitionScope();
+        runOmitMode();
+        runMaxPageSizePaging();
+
+        System.out.println("╔══════════════════════════════════════════════════════════════╗");
+        System.out.printf ("║  ✓  Change Feed E2E test completed on %-21s  ║%n",
+                cfg.sdk().provider().displayName());
+        System.out.println("╚══════════════════════════════════════════════════════════════╝");
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Phase 1: entire-collection round-trip + at-least-once replay
+    // ──────────────────────────────────────────────────────────────────
+    private void runEntireCollectionRoundTrip() throws Exception {
+        System.out.println("── Phase 1: entireCollection round-trip ───────────────────────");
+
+        // Capture an anchor token at now(); we will both drain forward
+        // from it AND replay from it later to verify at-least-once.
         ChangeFeedRequest anchorReq = ChangeFeedRequest.builder(address)
                 .scope(FeedScope.entireCollection())
                 .startPosition(StartPosition.now())
                 .maxPageSize(100)
                 .build();
-        ChangeFeedPage anchor = client.readChanges(anchorReq);
-        String token = anchor.continuationToken();
-        System.out.printf("  anchor token captured (len=%d, hasMore=%s)%n",
-                token != null ? token.length() : 0, anchor.hasMore());
-        if (token == null) {
+        ChangeFeedPage anchorPage = client.readChanges(anchorReq);
+        String anchorToken = anchorPage.continuationToken();
+        if (anchorToken == null) {
             throw new AssertionError(
                     "Expected non-null continuation token from StartPosition.now() seed page");
         }
-        System.out.println();
+        System.out.printf("  anchor token captured (len=%d)%n", anchorToken.length());
 
-        // ── Seed CREATE / UPDATE / DELETE on unique keys ──────────────
+        // Seed one CREATE / UPDATE / DELETE on unique keys
         String prefix = "cf-e2e-" + UUID.randomUUID();
         String pkCreate = prefix + "-create";
         String pkUpdate = prefix + "-update";
         String pkDelete = prefix + "-delete";
         Set<String> seededKeys = Set.of(pkCreate, pkUpdate, pkDelete);
 
-        System.out.println("── Seed events ────────────────────────────────────────────────");
         MulticloudDbKey kCreate = MulticloudDbKey.of(pkCreate, pkCreate);
         MulticloudDbKey kUpdate = MulticloudDbKey.of(pkUpdate, pkUpdate);
         MulticloudDbKey kDelete = MulticloudDbKey.of(pkDelete, pkDelete);
 
         client.create(address, kCreate, doc(pkCreate, "created", 1));
-        System.out.printf("  client.create(%s)            → CREATE expected%n", pkCreate);
-
         client.create(address, kUpdate, doc(pkUpdate, "initial", 1));
         client.upsert(address, kUpdate, doc(pkUpdate, "modified", 2));
-        System.out.printf("  client.create + upsert(%s)   → CREATE+UPDATE expected%n", pkUpdate);
-
         client.create(address, kDelete, doc(pkDelete, "tombstone-source", 1));
         client.delete(address, kDelete);
-        System.out.printf("  client.create + delete(%s)   → CREATE+DELETE expected%n", pkDelete);
-        System.out.println();
+        System.out.println("  seeded CREATE+UPDATE+DELETE on 3 keys");
 
-        // ── Drain the feed until we see CREATE+UPDATE+DELETE ──────────
-        System.out.println("── Drain change feed (budget=" + DRAIN_BUDGET_MS + "ms) ─────────────────");
-        Set<ChangeType> typesSeen = EnumSet.noneOf(ChangeType.class);
-        Set<String>      keysSeen = new HashSet<>();
-        Set<ChangeType> required = EnumSet.of(ChangeType.CREATE, ChangeType.UPDATE, ChangeType.DELETE);
-
-        int pages = 0;
-        int totalEvents = 0;
-        long deadline = System.currentTimeMillis() + DRAIN_BUDGET_MS;
-        while (System.currentTimeMillis() < deadline && !typesSeen.containsAll(required)) {
-            ChangeFeedRequest next = ChangeFeedRequest.builder(address)
-                    .scope(FeedScope.entireCollection())
-                    .startPosition(StartPosition.fromContinuationToken(token))
-                    .maxPageSize(100)
-                    .build();
-            ChangeFeedPage page = client.readChanges(next);
-            pages++;
-            totalEvents += page.events().size();
-
-            for (ChangeEvent ev : page.events()) {
-                String pk = ev.key().partitionKey();
-                if (seededKeys.contains(pk)) {
-                    typesSeen.add(ev.eventType());
-                    keysSeen.add(pk);
-                    System.out.printf("    ← %-6s %s (eventId=%s)%n",
-                            ev.eventType(), pk, ev.eventId());
-                }
-            }
-
-            if (page.continuationToken() != null) {
-                token = page.continuationToken();
-            }
-            if (page.events().isEmpty()) {
-                Thread.sleep(IDLE_SLEEP_MS);
-            }
-        }
-        System.out.printf("  pages=%d totalEvents=%d typesSeen=%s keysSeen=%s%n",
-                pages, totalEvents, typesSeen, keysSeen);
-        System.out.println();
-
-        // ── Assertions ────────────────────────────────────────────────
-        if (!typesSeen.containsAll(required)) {
+        // Drain forward — must observe all 3 event types for our keys.
+        DrainResult drained = drain(anchorToken, seededKeys,
+                EnumSet.of(ChangeType.CREATE, ChangeType.UPDATE, ChangeType.DELETE),
+                100, FeedScope.entireCollection(), NewItemStateMode.INCLUDE_IF_AVAILABLE,
+                DRAIN_BUDGET_MS);
+        System.out.printf("  drain: pages=%d total=%d typesSeen=%s keysSeen=%s%n",
+                drained.pages, drained.totalEvents, drained.typesSeen, drained.keysSeen);
+        if (!drained.typesSeen.containsAll(EnumSet.of(
+                ChangeType.CREATE, ChangeType.UPDATE, ChangeType.DELETE))) {
             throw new AssertionError(
-                    "Change feed did not surface all of CREATE/UPDATE/DELETE within "
-                            + DRAIN_BUDGET_MS + "ms. Got " + typesSeen);
+                    "Drain did not surface all of CREATE/UPDATE/DELETE within "
+                            + DRAIN_BUDGET_MS + "ms. Got " + drained.typesSeen);
         }
-        if (!keysSeen.containsAll(seededKeys)) {
+        if (!drained.keysSeen.containsAll(seededKeys)) {
             throw new AssertionError(
-                    "Change feed did not surface every seeded key. Expected "
-                            + seededKeys + " but saw " + keysSeen);
+                    "Drain did not surface every seeded key. Expected "
+                            + seededKeys + " but saw " + drained.keysSeen);
         }
 
-        // ── Resumption: read again from the latest token, expect no
-        // events for the seeded keys (idempotent resume past the drained
-        // cursor). Re-delivery of any other event is allowed (at-least-once).
-        System.out.println("── Verify continuation token can be resumed ───────────────────");
-        ChangeFeedRequest resume = ChangeFeedRequest.builder(address)
-                .startPosition(StartPosition.fromContinuationToken(token))
-                .maxPageSize(100)
-                .build();
-        ChangeFeedPage resumed = client.readChanges(resume);
-        long redelivered = resumed.events().stream()
-                .filter(e -> seededKeys.contains(e.key().partitionKey()))
-                .count();
-        System.out.printf("  resumed page: %d event(s), %d for seeded keys, token=%s%n",
-                resumed.events().size(),
-                redelivered,
-                resumed.continuationToken() != null ? "present" : "null");
-        // At-least-once delivery may resurface 0+ of the seeded events; the
-        // primary assertion here is that the resume call succeeded against
-        // the token we previously persisted.
-        System.out.println();
+        // ── At-least-once replay ──────────────────────────────────
+        // Replay from the *original* anchor token: every event we
+        // observed during the forward drain MUST re-deliver. This is
+        // the contractual at-least-once guarantee — token identity is
+        // the only durable record of cursor position.
+        System.out.println("  replaying from original anchor token (at-least-once)…");
+        DrainResult replayed = drain(anchorToken, seededKeys,
+                EnumSet.of(ChangeType.CREATE, ChangeType.UPDATE, ChangeType.DELETE),
+                100, FeedScope.entireCollection(), NewItemStateMode.INCLUDE_IF_AVAILABLE,
+                DRAIN_BUDGET_MS);
+        System.out.printf("  replay: pages=%d total=%d typesSeen=%s keysSeen=%s%n",
+                replayed.pages, replayed.totalEvents,
+                replayed.typesSeen, replayed.keysSeen);
+        if (!replayed.typesSeen.containsAll(EnumSet.of(
+                ChangeType.CREATE, ChangeType.UPDATE, ChangeType.DELETE))) {
+            throw new AssertionError(
+                    "Replay from anchor token did not re-deliver CREATE/UPDATE/DELETE — "
+                            + "at-least-once contract violated. Got " + replayed.typesSeen);
+        }
+        if (!replayed.keysSeen.containsAll(seededKeys)) {
+            throw new AssertionError(
+                    "Replay from anchor token did not re-deliver every seeded key. "
+                            + "Expected " + seededKeys + " but saw " + replayed.keysSeen);
+        }
 
-        // ── Cleanup ───────────────────────────────────────────────────
-        System.out.println("── CLEANUP ────────────────────────────────────────────────────");
+        // Cleanup the seeded items (kDelete already deleted above)
         client.delete(address, kCreate);
         client.delete(address, kUpdate);
-        // kDelete already deleted above.
-        System.out.println("  Seeded test items removed.");
+        System.out.println("  ✓ entireCollection round-trip + replay passed");
         System.out.println();
+    }
 
-        System.out.println("╔══════════════════════════════════════════════════════════════╗");
-        System.out.printf ("║  ✓  Change Feed E2E test completed on %-21s  ║%n",
-                cfg.sdk().provider().displayName());
-        System.out.println("╚══════════════════════════════════════════════════════════════╝");
+    // ──────────────────────────────────────────────────────────────────
+    // Phase 2: listPhysicalPartitions + PhysicalPartition scope
+    // ──────────────────────────────────────────────────────────────────
+    private void runPhysicalPartitionScope() throws Exception {
+        System.out.println("── Phase 2: PhysicalPartition scope round-trip ────────────────");
+
+        List<String> partitions = client.listPhysicalPartitions(address);
+        if (partitions == null || partitions.isEmpty()) {
+            throw new AssertionError(
+                    "Every provider with CHANGE_FEED must expose at least one physical partition");
+        }
+        System.out.printf("  listPhysicalPartitions returned %d partition(s)%n",
+                partitions.size());
+
+        String firstPartition = partitions.get(0);
+        ChangeFeedRequest req = ChangeFeedRequest.builder(address)
+                .scope(FeedScope.physicalPartition(firstPartition))
+                .startPosition(StartPosition.now())
+                .maxPageSize(100)
+                .build();
+        ChangeFeedPage page = client.readChanges(req);
+        if (page == null) {
+            throw new AssertionError("readChanges(PhysicalPartition) returned null page");
+        }
+        System.out.printf("  read partition[0] OK: %d events, hasMore=%s%n",
+                page.events().size(), page.hasMore());
+        System.out.println("  ✓ PhysicalPartition scope round-trip passed");
+        System.out.println();
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Phase 3: NewItemStateMode.OMIT yields events with null data()
+    // ──────────────────────────────────────────────────────────────────
+    private void runOmitMode() throws Exception {
+        System.out.println("── Phase 3: NewItemStateMode.OMIT ─────────────────────────────");
+
+        ChangeFeedRequest anchor = ChangeFeedRequest.builder(address)
+                .startPosition(StartPosition.now())
+                .newItemStateMode(NewItemStateMode.OMIT)
+                .build();
+        String token = client.readChanges(anchor).continuationToken();
+        if (token == null) {
+            throw new AssertionError("OMIT-mode anchor returned null continuation token");
+        }
+
+        String pk = "cf-omit-" + UUID.randomUUID();
+        MulticloudDbKey key = MulticloudDbKey.of(pk, pk);
+        client.create(address, key, doc(pk, "created", 1));
+        System.out.printf("  seeded CREATE on %s (OMIT-mode drain expects data()==null)%n", pk);
+
+        long deadline = System.currentTimeMillis() + DRAIN_BUDGET_MS;
+        boolean observed = false;
+        while (System.currentTimeMillis() < deadline && !observed) {
+            ChangeFeedRequest next = ChangeFeedRequest.builder(address)
+                    .startPosition(StartPosition.fromContinuationToken(token))
+                    .newItemStateMode(NewItemStateMode.OMIT)
+                    .build();
+            ChangeFeedPage page = client.readChanges(next);
+            for (ChangeEvent ev : page.events()) {
+                if (pk.equals(ev.key().partitionKey())) {
+                    if (ev.data() != null) {
+                        throw new AssertionError(
+                                "OMIT mode must produce events with null data(), got "
+                                        + ev.data());
+                    }
+                    System.out.printf("    ← %s %s data()=null ✓%n",
+                            ev.eventType(), pk);
+                    observed = true;
+                    break;
+                }
+            }
+            if (page.continuationToken() != null) token = page.continuationToken();
+            if (page.events().isEmpty()) Thread.sleep(IDLE_SLEEP_MS);
+        }
+        if (!observed) {
+            throw new AssertionError(
+                    "OMIT-mode drain did not surface the seeded event within "
+                            + DRAIN_BUDGET_MS + "ms");
+        }
+        client.delete(address, key);
+        System.out.println("  ✓ OMIT mode passed");
+        System.out.println();
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Phase 4: small maxPageSize forces multi-page drain
+    // ──────────────────────────────────────────────────────────────────
+    private void runMaxPageSizePaging() throws Exception {
+        System.out.println("── Phase 4: maxPageSize=1 multi-page drain ────────────────────");
+
+        ChangeFeedRequest anchor = ChangeFeedRequest.builder(address)
+                .startPosition(StartPosition.now())
+                .maxPageSize(1)
+                .build();
+        String token = client.readChanges(anchor).continuationToken();
+        if (token == null) {
+            throw new AssertionError(
+                    "maxPageSize=1 anchor returned null continuation token");
+        }
+
+        // Seed 3 distinct events that the cursor must surface.
+        String prefix = "cf-page-" + UUID.randomUUID();
+        Set<String> keys = new HashSet<>();
+        for (int i = 0; i < 3; i++) {
+            String pk = prefix + "-" + i;
+            keys.add(pk);
+            client.create(address, MulticloudDbKey.of(pk, pk), doc(pk, "p", i));
+        }
+        System.out.printf("  seeded 3 CREATE events with prefix %s%n", prefix);
+
+        int pagesObserved = 0;
+        Set<String> seenKeys = new HashSet<>();
+        long deadline = System.currentTimeMillis() + DRAIN_BUDGET_MS;
+        while (System.currentTimeMillis() < deadline && !seenKeys.containsAll(keys)) {
+            ChangeFeedRequest next = ChangeFeedRequest.builder(address)
+                    .startPosition(StartPosition.fromContinuationToken(token))
+                    .maxPageSize(1)
+                    .build();
+            ChangeFeedPage page = client.readChanges(next);
+            if (page.events().size() > 1) {
+                throw new AssertionError(
+                        "maxPageSize=1 violated — page returned " + page.events().size()
+                                + " events");
+            }
+            if (!page.events().isEmpty()) {
+                pagesObserved++;
+                ChangeEvent ev = page.events().get(0);
+                if (keys.contains(ev.key().partitionKey())) {
+                    seenKeys.add(ev.key().partitionKey());
+                }
+            }
+            if (page.continuationToken() != null) token = page.continuationToken();
+            if (page.events().isEmpty()) Thread.sleep(IDLE_SLEEP_MS);
+        }
+        System.out.printf("  pagesWithEvents=%d keysSeen=%s%n", pagesObserved, seenKeys);
+        if (!seenKeys.containsAll(keys)) {
+            throw new AssertionError(
+                    "maxPageSize=1 drain did not surface every seeded key. Expected "
+                            + keys + " but saw " + seenKeys);
+        }
+        // Cleanup
+        for (String pk : keys) {
+            client.delete(address, MulticloudDbKey.of(pk, pk));
+        }
+        System.out.println("  ✓ maxPageSize paging passed");
+        System.out.println();
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Drain helper: pulls pages until either {@code requiredTypes} are
+    // observed for keys in {@code targetKeys}, or {@code budgetMs}
+    // elapses. Returns a snapshot of what was observed.
+    // ──────────────────────────────────────────────────────────────────
+    private DrainResult drain(
+            String startToken,
+            Set<String> targetKeys,
+            Set<ChangeType> requiredTypes,
+            int maxPageSize,
+            FeedScope scope,
+            NewItemStateMode mode,
+            long budgetMs) throws Exception {
+        DrainResult r = new DrainResult();
+        String token = startToken;
+        long deadline = System.currentTimeMillis() + budgetMs;
+        while (System.currentTimeMillis() < deadline
+                && !r.typesSeen.containsAll(requiredTypes)) {
+            ChangeFeedRequest next = ChangeFeedRequest.builder(address)
+                    .scope(scope)
+                    .startPosition(StartPosition.fromContinuationToken(token))
+                    .newItemStateMode(mode)
+                    .maxPageSize(maxPageSize)
+                    .build();
+            ChangeFeedPage page = client.readChanges(next);
+            r.pages++;
+            r.totalEvents += page.events().size();
+            for (ChangeEvent ev : page.events()) {
+                String pk = ev.key().partitionKey();
+                if (targetKeys.contains(pk)) {
+                    r.typesSeen.add(ev.eventType());
+                    r.keysSeen.add(pk);
+                }
+            }
+            if (page.continuationToken() != null) token = page.continuationToken();
+            if (page.events().isEmpty()) Thread.sleep(IDLE_SLEEP_MS);
+        }
+        r.lastToken = token;
+        return r;
+    }
+
+    private static final class DrainResult {
+        int pages;
+        int totalEvents;
+        Set<ChangeType> typesSeen = EnumSet.noneOf(ChangeType.class);
+        Set<String> keysSeen = new HashSet<>();
+        String lastToken;
     }
 
     private static Map<String, Object> doc(String id, String state, int version) {
