@@ -7,12 +7,16 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking change:** removed public `listPhysicalPartitions` support and `FeedScope.PhysicalPartition` from the portable change-feed API. DynamoDB still performs internal multi-shard fan-out behind `FeedScope.entireCollection()`.
+
 ### Added
 
-- **Change feed (User Story 8)** — `DynamoProviderClient.readChanges` /
-  `listPhysicalPartitions` implemented via DynamoDB Streams + the
-  DynamoDB Streams Adapter (shard-iterator-per-physical-partition).
-  Capability advertised: `CHANGE_FEED`. Start positions map as follows:
+- **Change feed (User Story 8)** — `DynamoProviderClient.readChanges`
+  implemented via DynamoDB Streams + the DynamoDB Streams Adapter for
+  internal multi-shard fan-out. Capability advertised: `CHANGE_FEED`.
+  Start positions map as follows:
   `StartPosition.beginning()` → `TRIM_HORIZON`, `StartPosition.now()` →
   `LATEST`, `StartPosition.fromContinuationToken(...)` → sequence-number
   iterator.

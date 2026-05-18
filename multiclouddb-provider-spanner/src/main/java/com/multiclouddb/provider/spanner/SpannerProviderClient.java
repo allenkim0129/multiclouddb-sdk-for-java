@@ -499,12 +499,6 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     @Override
-    public List<String> listPhysicalPartitions(ResourceAddress address, OperationOptions options) {
-        return new SpannerChangeFeed(databaseClient, config.connection())
-                .listPhysicalPartitions(address);
-    }
-
-    @Override
     public ProviderId providerId() {
         return ProviderId.SPANNER;
     }

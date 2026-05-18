@@ -7,16 +7,18 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking change:** removed public `listPhysicalPartitions` support and `FeedScope.PhysicalPartition` from the portable change-feed API. Spanner still traverses child partitions internally behind `FeedScope.entireCollection()`.
+
 ### Added
 
-- **Change feed (User Story 8)** — `SpannerProviderClient.readChanges` /
-  `listPhysicalPartitions` implemented via Spanner Change Streams using the
+- **Change feed (User Story 8)** — `SpannerProviderClient.readChanges`
+  implemented via Spanner Change Streams using the
   `READ_<stream>(start_timestamp, end_timestamp, partition_token,
   heartbeat_milliseconds)` SQL TVF. Parses `data_change_record` (mods →
-  CREATE / UPDATE / DELETE) and `child_partitions_record` for partition
-  retirement bookkeeping. Capability advertised: `CHANGE_FEED`. Spanner
-  Change Streams expose physical partition tokens only; use
-  `FeedScope.entireCollection()` or `FeedScope.physicalPartition(id)`.
+  CREATE / UPDATE / DELETE) and `child_partitions_record` for internal
+  partition-queue fan-out. Capability advertised: `CHANGE_FEED`.
 - New connection key `connection.changeStream.<collection>` to override the
   change-stream name read for `<collection>`. When unset, the SDK falls
   back to the convention `<collection>_changes`.

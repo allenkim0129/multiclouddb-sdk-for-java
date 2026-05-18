@@ -85,22 +85,6 @@ final class DynamoChangeFeed {
         this.streams = streams;
     }
 
-    List<String> listPhysicalPartitions(ResourceAddress address) {
-        try {
-            String streamArn = resolveStreamArn(address);
-            List<Shard> shards = describeAllShards(streamArn);
-            List<String> ids = new ArrayList<>();
-            for (Shard s : shards) {
-                if (!isClosed(s)) {
-                    ids.add(s.shardId());
-                }
-            }
-            return ids;
-        } catch (Exception e) {
-            throw mapDynamoException(e, "listPhysicalPartitions");
-        }
-    }
-
     ChangeFeedPage readChanges(ChangeFeedRequest request, OperationOptions options) {
         Instant start = Instant.now();
         try {
@@ -122,8 +106,6 @@ final class DynamoChangeFeed {
             int maxRecordsPerShard = request.maxPageSize() > 0 ? request.maxPageSize() : 100;
             List<ChangeEvent> events = new ArrayList<>();
             Map<String, ShardCursor> nextCursors = new LinkedHashMap<>();
-            boolean partitionRetired = false;
-            List<String> childPartitions = List.of();
 
             for (Shard shard : selection.shardsToRead) {
                 ShardCursor existing = selection.cursors.get(shard.shardId());
@@ -162,13 +144,7 @@ final class DynamoChangeFeed {
                 }
 
                 if (resp.nextShardIterator() == null) {
-                    // shard is closed and fully drained
-                    if (selection.shardsToRead.size() == 1
-                            && request.scope() instanceof FeedScope.PhysicalPartition) {
-                        partitionRetired = true;
-                        childPartitions = findChildren(streamArn, shard.shardId());
-                    }
-                    // do not include this shard in the next cursor
+                    // shard is closed and fully drained; do not include it in the next cursor
                 } else {
                     nextCursors.put(shard.shardId(), new ShardCursor(
                             lastSeq, false, resp.nextShardIterator(),
@@ -183,7 +159,7 @@ final class DynamoChangeFeed {
                             Duration.between(start, Instant.now()))
                     .itemCount(events.size())
                     .build();
-            return new ChangeFeedPage(events, token, partitionRetired, childPartitions, diag);
+            return new ChangeFeedPage(events, token, diag);
         } catch (MulticloudDbException e) {
             throw e;
         } catch (Exception e) {
@@ -256,80 +232,45 @@ final class DynamoChangeFeed {
         String anchor = anchorFromToken(request);
         List<Shard> all = describeAllShards(streamArn);
 
-        List<Shard> toRead;
-        if (request.scope() instanceof FeedScope.PhysicalPartition pp) {
-            // If a continuation token carries cursors for shards outside the
-            // requested partition, the caller is narrowing the scope after a
-            // wider read. Silently filtering would drop unread events from
-            // those other shards — fail loudly so the caller resumes with the
-            // original scope (or a fresh start).
-            if (!cursors.isEmpty()) {
-                Set<String> outOfScope = new LinkedHashSet<>();
-                for (String sid : cursors.keySet()) {
-                    if (!sid.equals(pp.partitionId())) {
-                        outOfScope.add(sid);
-                    }
-                }
-                if (!outOfScope.isEmpty()) {
-                    throw new MulticloudDbException(new MulticloudDbError(
-                            MulticloudDbErrorCategory.INVALID_REQUEST,
-                            "Continuation token references shards " + outOfScope
-                                    + " outside the requested physicalPartition scope '"
-                                    + pp.partitionId() + "'. Resume with the original scope "
-                                    + "or restart from a fresh StartPosition to avoid losing events.",
-                            ProviderId.DYNAMO, "readChanges", false, Map.of()));
-                }
-            }
-            toRead = all.stream()
-                    .filter(s -> s.shardId().equals(pp.partitionId()))
-                    .toList();
-            if (toRead.isEmpty()) {
-                throw new MulticloudDbException(new MulticloudDbError(
-                        MulticloudDbErrorCategory.INVALID_REQUEST,
-                        "DynamoDB shard '" + pp.partitionId() + "' not found in stream " + streamArn,
-                        ProviderId.DYNAMO, "readChanges", false, Map.of()));
-            }
-        } else {
-            // EntireCollection — read all open shards (or shards still on the cursor).
-            Set<String> liveIds = new HashSet<>();
-            for (Shard s : all) liveIds.add(s.shardId());
+        // EntireCollection — read all open shards (or shards still on the cursor).
+        Set<String> liveIds = new HashSet<>();
+        for (Shard s : all) liveIds.add(s.shardId());
 
-            // Cursors referencing shards that are no longer in the stream
-            // description are dangerous: they can mean (a) the shard was
-            // drained and aged out (legitimate), or (b) the stream was
-            // recreated / the cursor predates retention, in which case
-            // silently dropping it loses unread events. Fail with
-            // CHECKPOINT_EXPIRED so the caller restarts deliberately.
-            Set<String> vanished = new LinkedHashSet<>();
-            for (String sid : cursors.keySet()) {
-                if (!liveIds.contains(sid)) vanished.add(sid);
-            }
-            if (!vanished.isEmpty()) {
-                throw new MulticloudDbException(new MulticloudDbError(
-                        MulticloudDbErrorCategory.CHECKPOINT_EXPIRED,
-                        "Continuation token references shards " + vanished
-                                + " that are no longer present in the DynamoDB stream description "
-                                + "(stream may have been recreated, or the cursor is older than the "
-                                + "24h retention window). Restart from beginning() or now().",
-                        ProviderId.DYNAMO, "readChanges", false, Map.of()));
-            }
+        // Cursors referencing shards that are no longer in the stream
+        // description are dangerous: they can mean (a) the shard was
+        // drained and aged out (legitimate), or (b) the stream was
+        // recreated / the cursor predates retention, in which case
+        // silently dropping it loses unread events. Fail with
+        // CHECKPOINT_EXPIRED so the caller restarts deliberately.
+        Set<String> vanished = new LinkedHashSet<>();
+        for (String sid : cursors.keySet()) {
+            if (!liveIds.contains(sid)) vanished.add(sid);
+        }
+        if (!vanished.isEmpty()) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.CHECKPOINT_EXPIRED,
+                    "Continuation token references shards " + vanished
+                            + " that are no longer present in the DynamoDB stream description "
+                            + "(stream may have been recreated, or the cursor is older than the "
+                            + "24h retention window). Restart from beginning() or now().",
+                    ProviderId.DYNAMO, "readChanges", false, Map.of()));
+        }
 
-            // Read shards that are open OR have a cursor (need to drain closed-but-cursored).
-            // For a fresh beginning() request (no cursors), also include closed
-            // parent shards: TRIM_HORIZON on a child shard starts at the split
-            // point, so any pre-split records still inside the closed parent
-            // would otherwise be missed. Records older than the 24h trim
-            // horizon are gone either way.
-            boolean fromBeginningFresh = cursors.isEmpty()
-                    && ANCHOR_BEGINNING.equals(anchor != null ? anchor
-                            : anchorFromStartPosition(request.startPosition()));
-            toRead = new ArrayList<>();
-            for (Shard s : all) {
-                if (!isClosed(s)
-                        || cursors.containsKey(s.shardId())
-                        || fromBeginningFresh) {
-                    toRead.add(s);
-                }
+        // Read shards that are open OR have a cursor (need to drain closed-but-cursored).
+        // For a fresh beginning() request (no cursors), also include closed
+        // parent shards: TRIM_HORIZON on a child shard starts at the split
+        // point, so any pre-split records still inside the closed parent
+        // would otherwise be missed. Records older than the 24h trim
+        // horizon are gone either way.
+        boolean fromBeginningFresh = cursors.isEmpty()
+                && ANCHOR_BEGINNING.equals(anchor != null ? anchor
+                        : anchorFromStartPosition(request.startPosition()));
+        List<Shard> toRead = new ArrayList<>();
+        for (Shard s : all) {
+            if (!isClosed(s)
+                    || cursors.containsKey(s.shardId())
+                    || fromBeginningFresh) {
+                toRead.add(s);
             }
         }
         return new ShardSelection(toRead, cursors, anchor);

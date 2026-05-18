@@ -169,26 +169,6 @@ public interface MulticloudDbClient extends AutoCloseable {
     }
 
     /**
-     * List the provider-native physical partitions for the given collection.
-     * <p>
-     * Each returned string is an opaque, provider-scoped partition identifier.
-     * Pass these to
-     * {@link com.multiclouddb.api.changefeed.FeedScope#physicalPartition(String)}
-     * to consume a single partition's slice of the change feed in parallel.
-     * IDs are <em>not</em> portable across providers.
-     *
-     * @throws MulticloudDbException with category UNSUPPORTED_CAPABILITY when
-     *                               the provider does not support the change
-     *                               feed
-     */
-    List<String> listPhysicalPartitions(ResourceAddress address, OperationOptions options);
-
-    /** List physical partitions using default options. */
-    default List<String> listPhysicalPartitions(ResourceAddress address) {
-        return listPhysicalPartitions(address, OperationOptions.defaults());
-    }
-
-    /**
      * Discover capabilities supported by the current provider.
      */
     CapabilitySet capabilities();

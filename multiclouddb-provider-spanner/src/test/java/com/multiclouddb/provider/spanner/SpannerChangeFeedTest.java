@@ -19,7 +19,6 @@ import com.multiclouddb.api.changefeed.ChangeEvent;
 import com.multiclouddb.api.changefeed.ChangeFeedPage;
 import com.multiclouddb.api.changefeed.ChangeFeedRequest;
 import com.multiclouddb.api.changefeed.ChangeType;
-import com.multiclouddb.api.changefeed.FeedScope;
 import com.multiclouddb.api.changefeed.NewItemStateMode;
 import com.multiclouddb.api.changefeed.StartPosition;
 import com.multiclouddb.api.changefeed.internal.ContinuationTokenCodec;
@@ -106,7 +105,7 @@ class SpannerChangeFeedTest {
 
         SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
         ChangeFeedRequest req = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .startPosition(StartPosition.beginning())
                 .build();
         feed.readChanges(req, OperationOptions.defaults());
@@ -136,7 +135,7 @@ class SpannerChangeFeedTest {
 
         SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
         ChangeFeedRequest req = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .startPosition(StartPosition.beginning())
                 .build();
         // Must not throw — fallback should kick in.
@@ -160,7 +159,7 @@ class SpannerChangeFeedTest {
 
         SpannerChangeFeed feed1 = new SpannerChangeFeed(db, Map.of());
         feed1.readChanges(ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .startPosition(StartPosition.beginning()).build(),
                 OperationOptions.defaults());
 
@@ -168,7 +167,7 @@ class SpannerChangeFeedTest {
         // SpannerChangeFeed per call. Cache hit must avoid the metadata round-trip.
         SpannerChangeFeed feed2 = new SpannerChangeFeed(db, Map.of());
         feed2.readChanges(ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .startPosition(StartPosition.beginning()).build(),
                 OperationOptions.defaults());
 
@@ -214,32 +213,6 @@ class SpannerChangeFeedTest {
         verifyNoInteractions(ctx);
     }
 
-    // ── listPhysicalPartitions ─────────────────────────────────────────────
-
-    @Test
-    @DisplayName("listPhysicalPartitions returns child_partitions tokens from the root probe")
-    void listPhysicalPartitionsReturnsChildren() {
-        Struct childPartition1 = mock(Struct.class);
-        when(childPartition1.getString("token")).thenReturn("p-1");
-        Struct childPartition2 = mock(Struct.class);
-        when(childPartition2.getString("token")).thenReturn("p-2");
-
-        Struct cpr = mock(Struct.class);
-        when(cpr.getTimestamp("start_timestamp")).thenReturn(Timestamp.now());
-        when(cpr.getStructList("child_partitions"))
-                .thenReturn(List.of(childPartition1, childPartition2));
-
-        Struct outer = stubChangeRecord(/*data*/ null, /*childPartitions*/ cpr);
-        ResultSet rs = singleRow(outer);
-        ResultSet __rs = rs;
-        when(ctx.executeQuery(any(Statement.class))).thenReturn(__rs);
-
-        SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
-        List<String> ids = feed.listPhysicalPartitions(ADDR);
-
-        assertEquals(List.of("p-1", "p-2"), ids);
-    }
-
     // ── readChanges happy path ─────────────────────────────────────────────
 
     @Test
@@ -259,7 +232,7 @@ class SpannerChangeFeedTest {
 
         SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
         ChangeFeedRequest req = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .startPosition(StartPosition.now())
                 .build();
         ChangeFeedPage page = feed.readChanges(req, OperationOptions.defaults());
@@ -289,7 +262,7 @@ class SpannerChangeFeedTest {
 
         SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
         ChangeFeedRequest req = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .startPosition(StartPosition.now())
                 .build();
         ChangeFeedPage page = feed.readChanges(req, OperationOptions.defaults());
@@ -318,7 +291,7 @@ class SpannerChangeFeedTest {
 
         SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
         ChangeFeedRequest req = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .startPosition(StartPosition.now())
                 .build();
         ChangeFeedPage page = feed.readChanges(req, OperationOptions.defaults());
@@ -346,7 +319,7 @@ class SpannerChangeFeedTest {
 
         SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
         ChangeFeedRequest first = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .build();
         ChangeFeedPage page = feed.readChanges(first, OperationOptions.defaults());
 
@@ -360,7 +333,7 @@ class SpannerChangeFeedTest {
         ResultSet __rs2 = emptyResultSet();
         when(ctx.executeQuery(any(Statement.class))).thenReturn(__rs2);
         ChangeFeedRequest resume = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .startPosition(StartPosition.fromContinuationToken(token))
                 .build();
         ChangeFeedPage page2 = feed.readChanges(resume, OperationOptions.defaults());
@@ -380,7 +353,7 @@ class SpannerChangeFeedTest {
         ResultSet __rs = singleRow(row);
         when(ctx.executeQuery(any(Statement.class))).thenReturn(__rs);
         ChangeFeedPage pageA = feedA.readChanges(
-                ChangeFeedRequest.builder(ADDR).scope(FeedScope.physicalPartition("p-1")).build(),
+                ChangeFeedRequest.builder(ADDR).build(),
                 OperationOptions.defaults());
         String tokenA = pageA.continuationToken();
         assertNotNull(tokenA);
@@ -389,40 +362,12 @@ class SpannerChangeFeedTest {
         SpannerChangeFeed feedB = new SpannerChangeFeed(db,
                 Map.of("changeStream.events", "stream_B"));
         ChangeFeedRequest resume = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .startPosition(StartPosition.fromContinuationToken(tokenA))
                 .build();
         MulticloudDbException ex = assertThrows(MulticloudDbException.class,
                 () -> feedB.readChanges(resume, OperationOptions.defaults()));
         assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
-    }
-
-    // ── partition retirement ───────────────────────────────────────────────
-
-    @Test
-    @DisplayName("PhysicalPartition partition retirement surfaces partitionRetired + childPartitions")
-    void physicalPartitionRetirement() {
-        Struct child = mock(Struct.class);
-        when(child.getString("token")).thenReturn("p-2");
-
-        Struct cpr = mock(Struct.class);
-        when(cpr.getTimestamp("start_timestamp")).thenReturn(Timestamp.now());
-        when(cpr.getStructList("child_partitions")).thenReturn(List.of(child));
-
-        Struct row = stubChangeRecord(null, cpr);
-        ResultSet __rs = singleRow(row);
-        when(ctx.executeQuery(any(Statement.class))).thenReturn(__rs);
-
-        SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
-        ChangeFeedRequest req = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
-                .startPosition(StartPosition.now())
-                .build();
-        ChangeFeedPage page = feed.readChanges(req, OperationOptions.defaults());
-
-        assertTrue(page.partitionRetired(),
-                "a partition that emits child_partitions_record must be marked retired");
-        assertEquals(List.of("p-2"), page.childPartitions());
     }
 
     // ── newItemStateMode ───────────────────────────────────────────────────
@@ -438,7 +383,7 @@ class SpannerChangeFeedTest {
 
         SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
         ChangeFeedRequest req = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .startPosition(StartPosition.now())
                 .newItemStateMode(NewItemStateMode.OMIT)
                 .build();
@@ -459,7 +404,7 @@ class SpannerChangeFeedTest {
 
         SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
         ChangeFeedRequest req = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .startPosition(StartPosition.now())
                 .newItemStateMode(NewItemStateMode.REQUIRE)
                 .build();
@@ -497,7 +442,7 @@ class SpannerChangeFeedTest {
 
         SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
         ChangeFeedRequest req = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .startPosition(StartPosition.now())
                 .maxPageSize(2)
                 .build();
@@ -514,15 +459,13 @@ class SpannerChangeFeedTest {
                 "second emitted event must be m2 (preserves per-partition commit order)");
         assertNotNull(page.continuationToken(),
                 "page must carry a continuation token so the remainder paginates next call");
-        assertFalse(page.partitionRetired(),
-                "truncation alone must not flag the partition as retired");
 
         // Resume: the token must round-trip cleanly through the codec and
         // the next readChanges call must not throw. This exercises the
         // re-queue path (addFirst with advanced watermark) and the resume
         // branch in resolveQueue that reads the encoded scope back out.
         ChangeFeedRequest resume = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .startPosition(StartPosition.fromContinuationToken(page.continuationToken()))
                 .maxPageSize(10)
                 .build();
@@ -544,7 +487,7 @@ class SpannerChangeFeedTest {
 
         SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
         ChangeFeedRequest req = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("p-1"))
+
                 .startPosition(StartPosition.now())
                 .build(); // maxPageSize unset -> 0 -> no cap
         ChangeFeedPage page = feed.readChanges(req, OperationOptions.defaults());
@@ -553,39 +496,29 @@ class SpannerChangeFeedTest {
                 "with no caller cap, all 3 mods must be emitted in one page");
     }
 
+
+
     @Test
-    @DisplayName("continuation token from PhysicalPartition scope rejected when resumed under EntireCollection")
-    void continuationTokenScopeMismatchRejected() {
-        // Bake a token under PhysicalPartition scope.
-        Struct mod = stubKeyMod("pk1", null, null);
-        Struct dcr = stubDataChangeRecord("INSERT", List.of(mod));
-        Struct row = stubChangeRecord(dcr, null);
-        ResultSet __rs = singleRow(row);
-        when(ctx.executeQuery(any(Statement.class))).thenReturn(__rs);
+    @DisplayName("continuation token naming removed PhysicalPartition scope is rejected")
+    void continuationTokenWithRemovedPhysicalPartitionScopeRejected() {
+        var envelope = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode();
+        envelope.put("stream", "events_changes");
+        envelope.put("scope", "PhysicalPartition");
+        var partitions = envelope.putArray("partitions");
+        partitions.addObject().put("token", "p-1");
+        String token = ContinuationTokenCodec.encode(ProviderId.SPANNER, ADDR, envelope);
 
-        SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
-        ChangeFeedPage page = feed.readChanges(
-                ChangeFeedRequest.builder(ADDR)
-                        .scope(FeedScope.physicalPartition("p-1"))
-                        .build(),
-                OperationOptions.defaults());
-        String physToken = page.continuationToken();
-        assertNotNull(physToken, "PhysicalPartition page must yield a token to resume from");
-
-        // Resume under default scope (EntireCollection). The scopes disagree,
-        // so the token MUST be rejected — silently switching scopes would
-        // either skip partitions or replay records the caller did not request.
-        ChangeFeedRequest resumeUnderEntire = ChangeFeedRequest.builder(ADDR)
-                .startPosition(StartPosition.fromContinuationToken(physToken))
+        ChangeFeedRequest resume = ChangeFeedRequest.builder(ADDR)
+                .startPosition(StartPosition.fromContinuationToken(token))
                 .build();
-        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                () -> feed.readChanges(resumeUnderEntire, OperationOptions.defaults()));
-        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
-        assertTrue(ex.error().message().contains("PhysicalPartition")
-                        || ex.error().message().contains("EntireCollection"),
-                "error message must name the disagreeing scopes; got: " + ex.error().message());
-    }
+        SpannerChangeFeed feed = new SpannerChangeFeed(db, Map.of());
 
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> feed.readChanges(resume, OperationOptions.defaults()));
+        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
+        assertTrue(ex.error().message().contains("PhysicalPartition scope has been removed"),
+                "error message must explain the removed scope; got: " + ex.error().message());
+    }
     // ── helpers ────────────────────────────────────────────────────────────
 
     /** Captures the {@link Statement} sent for a no-op execution. */
@@ -593,11 +526,7 @@ class SpannerChangeFeedTest {
                                     String partitionToken, ResultSet rs) {
         ArgumentCaptor<Statement> stmtCaptor = ArgumentCaptor.forClass(Statement.class);
         when(ctx.executeQuery(stmtCaptor.capture())).thenReturn(rs);
-        ChangeFeedRequest req = partitionToken == null
-                ? ChangeFeedRequest.builder(addr).build()
-                : ChangeFeedRequest.builder(addr)
-                        .scope(FeedScope.physicalPartition(partitionToken))
-                        .build();
+        ChangeFeedRequest req = ChangeFeedRequest.builder(addr).build();
         feed.readChanges(req, OperationOptions.defaults());
         return stmtCaptor.getValue();
     }

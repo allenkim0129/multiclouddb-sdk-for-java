@@ -500,11 +500,6 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     }
 
     @Override
-    public List<String> listPhysicalPartitions(ResourceAddress address, OperationOptions options) {
-        return new CosmosChangeFeed(this).listPhysicalPartitions(address);
-    }
-
-    @Override
     public ProviderId providerId() {
         return ProviderId.COSMOS;
     }

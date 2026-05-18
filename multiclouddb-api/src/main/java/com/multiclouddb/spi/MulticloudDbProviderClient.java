@@ -247,22 +247,6 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
     }
 
     /**
-     * List the provider-native physical partitions for the given collection.
-     * Returned IDs are opaque and meaningful only against this provider+resource;
-     * pass them to {@code FeedScope.physicalPartition(id)}.
-     * <p>
-     * Default implementation throws
-     * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}.
-     */
-    default List<String> listPhysicalPartitions(ResourceAddress address, OperationOptions options) {
-        throw new MulticloudDbException(new MulticloudDbError(
-                MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
-                "listPhysicalPartitions is not supported by provider " + providerId().id(),
-                providerId(), "listPhysicalPartitions", false,
-                java.util.Map.of("capability", "change_feed")));
-    }
-
-    /**
      * Return the set of capabilities supported by this provider.
      */
     CapabilitySet capabilities();

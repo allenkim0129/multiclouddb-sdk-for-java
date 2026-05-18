@@ -916,11 +916,6 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         return changeFeed().readChanges(request, options);
     }
 
-    @Override
-    public List<String> listPhysicalPartitions(ResourceAddress address, OperationOptions options) {
-        return changeFeed().listPhysicalPartitions(address);
-    }
-
     private synchronized DynamoChangeFeed changeFeed() {
         if (changeFeed == null) {
             // Build streams client mirroring the data-plane client config.

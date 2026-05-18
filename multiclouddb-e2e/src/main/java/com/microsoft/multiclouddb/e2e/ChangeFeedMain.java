@@ -30,17 +30,13 @@ import java.util.UUID;
  *
  * <p>Exercises {@link MulticloudDbClient#readChanges} against whichever provider
  * is configured in the active properties file (Cosmos / Dynamo / Spanner).
- * The test runs four phases against a single client + collection:
+ * The test runs three phases against a single client + collection:
  * <ol>
  *   <li><b>entireCollection round-trip + replay</b> — anchor at
  *       {@link StartPosition#now()}, seed one CREATE/UPDATE/DELETE, drain
  *       forward until all three types are observed for the seeded keys, then
  *       replay from the <em>original</em> anchor token and assert every event
  *       re-delivers (at-least-once contract).</li>
- *   <li><b>physicalPartition scope</b> — call
- *       {@link MulticloudDbClient#listPhysicalPartitions} and read from the
- *       first partition with
- *       {@link FeedScope#physicalPartition(String)}.</li>
  *   <li><b>NewItemStateMode.OMIT</b> — seed a CREATE and verify the surfaced
  *       event has {@code data() == null}.</li>
  *   <li><b>maxPageSize=1 paging</b> — seed 3 CREATEs and assert the cursor
@@ -127,7 +123,6 @@ public class ChangeFeedMain {
 
         // Run each phase in sequence; each phase is self-contained.
         runEntireCollectionRoundTrip();
-        runPhysicalPartitionScope();
         runOmitMode();
         runMaxPageSizePaging();
 
@@ -228,40 +223,10 @@ public class ChangeFeedMain {
     }
 
     // ──────────────────────────────────────────────────────────────────
-    // Phase 2: listPhysicalPartitions + PhysicalPartition scope
-    // ──────────────────────────────────────────────────────────────────
-    private void runPhysicalPartitionScope() throws Exception {
-        System.out.println("── Phase 2: PhysicalPartition scope round-trip ────────────────");
-
-        List<String> partitions = client.listPhysicalPartitions(address);
-        if (partitions == null || partitions.isEmpty()) {
-            throw new AssertionError(
-                    "Every provider with CHANGE_FEED must expose at least one physical partition");
-        }
-        System.out.printf("  listPhysicalPartitions returned %d partition(s)%n",
-                partitions.size());
-
-        String firstPartition = partitions.get(0);
-        ChangeFeedRequest req = ChangeFeedRequest.builder(address)
-                .scope(FeedScope.physicalPartition(firstPartition))
-                .startPosition(StartPosition.now())
-                .maxPageSize(100)
-                .build();
-        ChangeFeedPage page = client.readChanges(req);
-        if (page == null) {
-            throw new AssertionError("readChanges(PhysicalPartition) returned null page");
-        }
-        System.out.printf("  read partition[0] OK: %d events, hasMore=%s%n",
-                page.events().size(), page.hasMore());
-        System.out.println("  ✓ PhysicalPartition scope round-trip passed");
-        System.out.println();
-    }
-
-    // ──────────────────────────────────────────────────────────────────
-    // Phase 3: NewItemStateMode.OMIT yields events with null data()
+    // Phase 2: NewItemStateMode.OMIT yields events with null data()
     // ──────────────────────────────────────────────────────────────────
     private void runOmitMode() throws Exception {
-        System.out.println("── Phase 3: NewItemStateMode.OMIT ─────────────────────────────");
+        System.out.println("── Phase 2: NewItemStateMode.OMIT ─────────────────────────────");
 
         ChangeFeedRequest anchor = ChangeFeedRequest.builder(address)
                 .startPosition(StartPosition.now())
@@ -312,10 +277,10 @@ public class ChangeFeedMain {
     }
 
     // ──────────────────────────────────────────────────────────────────
-    // Phase 4: small maxPageSize forces multi-page drain
+    // Phase 3: small maxPageSize forces multi-page drain
     // ──────────────────────────────────────────────────────────────────
     private void runMaxPageSizePaging() throws Exception {
-        System.out.println("── Phase 4: maxPageSize=1 multi-page drain ────────────────────");
+        System.out.println("── Phase 3: maxPageSize=1 multi-page drain ────────────────────");
 
         ChangeFeedRequest anchor = ChangeFeedRequest.builder(address)
                 .startPosition(StartPosition.now())

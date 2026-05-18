@@ -7,6 +7,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking change:** removed `FeedScope.PhysicalPartition`, `MulticloudDbClient.listPhysicalPartitions(...)`, and `ChangeFeedPage` partition-lifecycle fields. Portable change feeds now expose only `FeedScope.entireCollection()`.
+
 ### Added
 
 #### Change feed (User Story 8)
@@ -16,10 +20,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   - `MulticloudDbClient.readChanges(ChangeFeedRequest, OperationOptions)`
     returning a `ChangeFeedPage` of `ChangeEvent` records and a
     continuation token.
-  - `MulticloudDbClient.listPhysicalPartitions(ResourceAddress)` for parallel
-    readers (one continuation token per physical partition).
-  - `ChangeFeedRequest` builder with `FeedScope` (sealed: `EntireCollection`,
-    `PhysicalPartition`), `StartPosition` (sealed: `Beginning`, `Now`,
+  - `ChangeFeedRequest` builder with `FeedScope` (sealed: `EntireCollection`),
+    `StartPosition` (sealed: `Beginning`, `Now`,
     `FromContinuationToken`), `maxPageSize`, and `NewItemStateMode`
     (`INCLUDE_IF_AVAILABLE` default, `REQUIRE`, `OMIT`).
   - `ChangeEvent` carrying `ChangeType` (CREATE / UPDATE / DELETE), key,
@@ -28,13 +30,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   - `Capability.CHANGE_FEED` — change-data-capture support. The change-feed
     API is **fully portable**: every `FeedScope` and `StartPosition`
     variant must work on every provider that advertises this capability.
-- `ChangeFeedRequest` and listing calls fail fast with
+- `ChangeFeedRequest` and change-feed calls fail fast with
   `UNSUPPORTED_CAPABILITY` when the active provider does not advertise the
   required capability; `INVALID_REQUEST` when continuation tokens cross
   providers / resources.
-- New SPI hooks `MulticloudDbProviderClient.readChanges` and
-  `listPhysicalPartitions` with default implementations that raise
-  `UNSUPPORTED_CAPABILITY`.
+- New SPI hook `MulticloudDbProviderClient.readChanges` with a default
+  implementation that raises `UNSUPPORTED_CAPABILITY`.
 
 ### Documentation
 

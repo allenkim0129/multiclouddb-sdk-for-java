@@ -237,25 +237,6 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
     }
 
     @Override
-    public List<String> listPhysicalPartitions(ResourceAddress address, OperationOptions options) {
-        Objects.requireNonNull(address, "address");
-        Instant start = Instant.now();
-        try {
-            checkCapability(Capability.CHANGE_FEED,
-                    "Change feed is not supported by provider " + config.provider().id(),
-                    "listPhysicalPartitions");
-            List<String> ids = providerClient.listPhysicalPartitions(address, options);
-            LOG.debug("listPhysicalPartitions completed: address={}, count={}, duration={}ms",
-                    address, ids.size(), Duration.between(start, Instant.now()).toMillis());
-            return ids;
-        } catch (MulticloudDbException e) {
-            throw enrichException(e, "listPhysicalPartitions", start);
-        } catch (Exception e) {
-            throw wrapUnexpected(e, "listPhysicalPartitions", start);
-        }
-    }
-
-    @Override
     public void ensureDatabase(String database) {
         Instant start = Instant.now();
         try {

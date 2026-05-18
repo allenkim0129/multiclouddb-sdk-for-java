@@ -29,23 +29,6 @@ class ChangeFeedRequestTest {
     }
 
     @Test
-    @DisplayName("builder accepts physical-partition scope")
-    void physicalPartitionScope() {
-        ChangeFeedRequest r = ChangeFeedRequest.builder(ADDR)
-                .scope(FeedScope.physicalPartition("pid-1"))
-                .build();
-        assertInstanceOf(FeedScope.PhysicalPartition.class, r.scope());
-        assertEquals("pid-1", ((FeedScope.PhysicalPartition) r.scope()).partitionId());
-    }
-
-    @Test
-    @DisplayName("FeedScope.physicalPartition rejects null/blank ids")
-    void physicalPartitionRejectsBlank() {
-        assertThrows(NullPointerException.class, () -> FeedScope.physicalPartition(null));
-        assertThrows(IllegalArgumentException.class, () -> FeedScope.physicalPartition(""));
-    }
-
-    @Test
     @DisplayName("StartPosition factories return the expected variants")
     void startPositionFactories() {
         assertInstanceOf(StartPosition.Beginning.class, StartPosition.beginning());

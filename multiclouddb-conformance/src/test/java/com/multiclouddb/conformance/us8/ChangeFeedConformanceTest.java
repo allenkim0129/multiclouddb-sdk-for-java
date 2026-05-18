@@ -14,7 +14,6 @@ import com.multiclouddb.api.changefeed.ChangeEvent;
 import com.multiclouddb.api.changefeed.ChangeFeedPage;
 import com.multiclouddb.api.changefeed.ChangeFeedRequest;
 import com.multiclouddb.api.changefeed.ChangeType;
-import com.multiclouddb.api.changefeed.FeedScope;
 import com.multiclouddb.api.changefeed.NewItemStateMode;
 import com.multiclouddb.api.changefeed.StartPosition;
 import org.junit.jupiter.api.AfterEach;
@@ -177,26 +176,6 @@ public abstract class ChangeFeedConformanceTest {
         MulticloudDbException ex = assertThrows(MulticloudDbException.class,
                 () -> client.readChanges(req));
         assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
-    }
-
-    // ── FR-CF-09: physical-partition scope round-trips ─────────────────────
-
-    @Test
-    @Order(5)
-    @DisplayName("FR-CF-09: listPhysicalPartitions returns at least one partition; "
-            + "PhysicalPartition scope reads from it")
-    void physicalPartitionScope() throws Exception {
-        assumeChangeFeedSupported();
-        List<String> partitions = client.listPhysicalPartitions(getAddress());
-        assertNotNull(partitions);
-        assertFalse(partitions.isEmpty(),
-                "every provider with CHANGE_FEED must expose at least one physical partition");
-        ChangeFeedRequest req = ChangeFeedRequest.builder(getAddress())
-                .scope(FeedScope.physicalPartition(partitions.get(0)))
-                .startPosition(StartPosition.now())
-                .build();
-        ChangeFeedPage page = assertDoesNotThrow(() -> client.readChanges(req));
-        assertNotNull(page);
     }
 
     // ── FR-CF-10: NewItemStateMode.OMIT yields null data ───────────────────

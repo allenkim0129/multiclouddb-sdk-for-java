@@ -7,6 +7,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking change:** removed public `listPhysicalPartitions` support and `FeedScope.PhysicalPartition` from the portable change-feed API. Cosmos still manages feed ranges internally behind `FeedScope.entireCollection()`.
+
 ### Documentation
 
 - **`delete()` of a missing key remains a silent no-op (idempotent).** The
@@ -20,9 +24,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
-- **Change feed (User Story 8)** — `CosmosProviderClient.readChanges` /
-  `listPhysicalPartitions` implemented via `CosmosContainer.queryChangeFeed`
-  with `FeedRange` for partition scoping. Capability advertised:
+- **Change feed (User Story 8)** — `CosmosProviderClient.readChanges`
+  implemented via `CosmosContainer.queryChangeFeed`. Capability advertised:
   `CHANGE_FEED`. **Provisioning prerequisite:** containers must be created
   with the `AllVersionsAndDeletes` change-feed mode to receive distinct
   CREATE / UPDATE / DELETE events; containers in the default

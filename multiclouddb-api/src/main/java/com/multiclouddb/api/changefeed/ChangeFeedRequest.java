@@ -22,17 +22,18 @@ import java.util.Objects;
  * <p>When resuming from a saved checkpoint the {@code startPosition} should
  * be {@link StartPosition#fromContinuationToken(String)}. The token's
  * provider id and resource fingerprint are always validated by
- * {@code ContinuationTokenCodec}. Scope validation on resume is
- * provider-specific:
+ * {@code ContinuationTokenCodec}. Provider-specific resume metadata is also
+ * validated:
  * <ul>
- *   <li><b>Spanner / DynamoDB</b> — encode per-partition cursors in the
- *       token and reject any resume whose explicit {@link #scope()}
- *       disagrees with the partitions / shards referenced by the token.</li>
- *   <li><b>Cosmos</b> — encodes the scope kind and (for
- *       {@code PhysicalPartition}) the partition value. A resume that
- *       switches scope kind or partition value is rejected; a resume that
- *       keeps both identical is accepted and the Cosmos service-side range
- *       governs the data returned.</li>
+ *   <li><b>Spanner</b> — encodes the internal partition queue plus scope kind.
+ *       Legacy tokens that name the removed {@code PhysicalPartition} scope
+ *       are rejected with {@code INVALID_REQUEST}.</li>
+ *   <li><b>DynamoDB</b> — encodes per-shard cursors and validates them against
+ *       the current stream topology.</li>
+ *   <li><b>Cosmos</b> — encodes the scope kind in the token. A resume that
+ *       switches scope kind is rejected, and legacy tokens that name the
+ *       removed {@code PhysicalPartition} scope are rejected with
+ *       {@code INVALID_REQUEST}.</li>
  * </ul>
  * In all cases mismatches surface as
  * {@link com.multiclouddb.api.MulticloudDbErrorCategory#INVALID_REQUEST}.

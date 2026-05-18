@@ -45,8 +45,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Cloud Spanner change-feed adapter — implements {@code readChanges} and
- * {@code listPhysicalPartitions} on top of Spanner Change Streams TVFs.
+ * Cloud Spanner change-feed adapter — implements {@code readChanges} on top
+ * of Spanner Change Streams TVFs.
  *
  * <p>Provisioning prerequisite: the user MUST have created a change stream
  * via DDL out-of-band, e.g.
@@ -102,26 +102,6 @@ final class SpannerChangeFeed {
 
     // ── Public API ─────────────────────────────────────────────────────────
 
-    List<String> listPhysicalPartitions(ResourceAddress address) {
-        try {
-            String stream = resolveStreamName(address);
-            validateIdentifier(stream);
-            // Probe the root partition (NULL token) over a tiny window: returns the
-            // current set of root-level child_partitions tokens.
-            Instant now = Instant.now();
-            List<String> tokens = new ArrayList<>();
-            queryTvf(stream, now.minusSeconds(1), now, /*partitionToken*/ null,
-                    new TvfVisitor() {
-                        @Override public void onChildPartitions(Timestamp ts, List<String> children) {
-                            tokens.addAll(children);
-                        }
-                    });
-            return tokens;
-        } catch (SpannerException e) {
-            throw mapSpannerException(e, "listPhysicalPartitions");
-        }
-    }
-
     ChangeFeedPage readChanges(ChangeFeedRequest request, OperationOptions options) {
         Instant start = Instant.now();
         try {
@@ -129,8 +109,6 @@ final class SpannerChangeFeed {
             validateIdentifier(stream);
             PartitionQueue queue = resolveQueue(request, stream);
             List<ChangeEvent> events = new ArrayList<>();
-            boolean partitionRetired = false;
-            List<String> retiredChildren = List.of();
 
             int processed = 0;
             Instant readEnd = queue.readEnd != null ? queue.readEnd : Instant.now().plusSeconds(1);
@@ -176,28 +154,20 @@ final class SpannerChangeFeed {
                     Instant advanced = drain.maxCommitTs != null ? drain.maxCommitTs : readEnd;
                     queue.tokens.addLast(new PartitionCursor(cursor.token, advanced));
                 } else {
-                    // Partition retired (split/merge). Surface for PhysicalPartition scope;
-                    // for EntireCollection, fan out into children.
-                    if (request.scope() instanceof FeedScope.PhysicalPartition) {
-                        partitionRetired = true;
-                        retiredChildren = drain.children;
-                        // Don't keep this token in the queue.
-                    } else {
-                        for (String child : drain.children) {
-                            queue.tokens.addLast(new PartitionCursor(child, drain.maxCommitTs));
-                        }
+                    for (String child : drain.children) {
+                        queue.tokens.addLast(new PartitionCursor(child, drain.maxCommitTs));
                     }
                 }
                 processed++;
             }
 
-            String token = encodeToken(request.address(), stream, queue, scopeKind(request.scope()));
+            String token = encodeToken(request.address(), stream, queue, scopeKind());
             OperationDiagnostics diag = OperationDiagnostics
                     .builder(ProviderId.SPANNER, "readChanges",
                             Duration.between(start, Instant.now()))
                     .itemCount(events.size())
                     .build();
-            return new ChangeFeedPage(events, token, partitionRetired, retiredChildren, diag);
+            return new ChangeFeedPage(events, token, diag);
         } catch (MulticloudDbException e) {
             throw e;
         } catch (SpannerException e) {
@@ -356,10 +326,8 @@ final class SpannerChangeFeed {
 
     /** Token-encoded marker for which scope produced the continuation token. */
     private static final String SCOPE_KIND_ENTIRE = "EntireCollection";
-    private static final String SCOPE_KIND_PHYSICAL = "PhysicalPartition";
 
-    private static String scopeKind(FeedScope scope) {
-        if (scope instanceof FeedScope.PhysicalPartition) return SCOPE_KIND_PHYSICAL;
+    private static String scopeKind() {
         return SCOPE_KIND_ENTIRE;
     }
 
@@ -382,13 +350,14 @@ final class SpannerChangeFeed {
                                 + "' but the request resolves to '" + stream + "'",
                         ProviderId.SPANNER, "readChanges", false, Map.of()));
             }
-            // Validate that the scope on the resuming request matches the
-            // scope that produced the token. Without this check, switching
-            // EntireCollection ↔ PhysicalPartition on resume silently drains
-            // whatever was in the token and returns rows from partitions the
-            // caller did not ask for (or skips partitions they did).
             String tokKind = inner.path("scope").asText("");
-            String reqKind = scopeKind(req.scope());
+            if ("PhysicalPartition".equals(tokKind)) {
+                throw new MulticloudDbException(new MulticloudDbError(
+                        MulticloudDbErrorCategory.INVALID_REQUEST,
+                        "PhysicalPartition scope has been removed; restart with a fresh StartPosition.",
+                        ProviderId.SPANNER, "readChanges", false, Map.of()));
+            }
+            String reqKind = scopeKind();
             if (!tokKind.isEmpty() && !tokKind.equals(reqKind)) {
                 throw new MulticloudDbException(new MulticloudDbError(
                         MulticloudDbErrorCategory.INVALID_REQUEST,
@@ -408,14 +377,9 @@ final class SpannerChangeFeed {
             return new PartitionQueue(cursors, fallbackStart, /*readEnd*/ null);
         }
 
-        // First call — bootstrap based on scope.
+        // First call — bootstrap from the root partition (NULL token).
         Deque<PartitionCursor> initial = new ArrayDeque<>();
-        if (req.scope() instanceof FeedScope.PhysicalPartition pp) {
-            initial.addLast(new PartitionCursor(pp.partitionId(), fallbackStart));
-        } else {
-            // EntireCollection: bootstrap from root partition (NULL token).
-            initial.addLast(new PartitionCursor(null, fallbackStart));
-        }
+        initial.addLast(new PartitionCursor(null, fallbackStart));
         return new PartitionQueue(initial, fallbackStart, /*readEnd*/ null);
     }
 
