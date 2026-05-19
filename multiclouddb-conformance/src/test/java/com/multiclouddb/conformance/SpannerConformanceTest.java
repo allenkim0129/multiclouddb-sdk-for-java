@@ -77,7 +77,29 @@ class SpannerConformanceTest extends CrudConformanceTests {
                                 + "  batch STRING(MAX),"
                                 + "  status STRING(MAX),"
                                 + "  priority INT64,"
-                                + "  category STRING(MAX)"
+                                + "  category STRING(MAX),"
+                                // upsert-overwrites test
+                                + "  shared STRING(MAX),"
+                                + "  originalOnly STRING(MAX),"
+                                // partition-key isolation test
+                                + "  `group` STRING(MAX),"
+                                // cross-partition + pagination tests
+                                + "  marker STRING(MAX),"
+                                + "  n INT64,"
+                                // data-type fidelity test
+                                + "  strField STRING(MAX),"
+                                + "  intField INT64,"
+                                + "  longField INT64,"
+                                + "  bigLongField INT64,"
+                                + "  doubleField FLOAT64,"
+                                + "  boolTrue BOOL,"
+                                + "  boolFalse BOOL,"
+                                + "  nullField STRING(MAX),"
+                                + "  nestedObj STRING(MAX),"
+                                + "  arrayField STRING(MAX),"
+                                + "  emptyArray STRING(MAX),"
+                                // filter-operator tests
+                                + "  age INT64"
                                 + ") PRIMARY KEY (partitionKey, sortKey)"))
                         .get();
                 System.out.println("[Spanner] Created database: " + DATABASE_ID + " with table: " + TABLE);
