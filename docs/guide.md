@@ -1147,6 +1147,27 @@ timer, a Kafka-Connect task, etc.).
 > this API. It is not provided by the SDK and is out of scope for User
 > Story 8.
 
+### NewItemStateMode — Controlling Event Payloads
+
+`NewItemStateMode` controls whether `ChangeEvent.data()` is populated with
+the new document image:
+
+| Mode | `data()` value | Use case |
+|------|---------------|----------|
+| `INCLUDE_IF_AVAILABLE` (default) | Full document image when the provider can supply it; `null` otherwise | Event-driven replication, materialized views, audit logs |
+| `OMIT` | Always `null` — events carry only the key and change type | Cache invalidation, triggering downstream refreshes, lightweight change detection |
+
+`OMIT` is the cheapest mode: less data transferred, less deserialization
+overhead. Use it when you only need to know *what* changed, not *what it
+changed to*.
+
+```java
+// Lightweight: key + change type only, no document body
+ChangeFeedRequest request = ChangeFeedRequest.builder(address)
+        .newItemStateMode(NewItemStateMode.OMIT)
+        .build();
+```
+
 ### End-to-End Example
 
 ```java
