@@ -226,6 +226,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     private void writeMutationFields(Mutation.WriteBuilder mutation, Map<String, Object> document) {
         if (document != null) {
+            List<String> fieldNames = new ArrayList<>();
             for (Map.Entry<String, Object> entry : document.entrySet()) {
                 String name = entry.getKey();
                 Object value = entry.getValue();
@@ -233,8 +234,20 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                 // Skip primary key fields — already set by caller
                 if (SpannerConstants.FIELD_SORT_KEY.equals(name) || SpannerConstants.FIELD_PARTITION_KEY.equals(name))
                     continue;
+                // Skip the internal metadata column — reserved for tracking written fields
+                if (SpannerConstants.FIELD_DATA.equals(name))
+                    continue;
 
                 setMutationValue(mutation, name, value);
+                fieldNames.add(name);
+            }
+            // Store the list of explicitly-written field names in the data column.
+            // This lets toJsonNode() distinguish between "explicitly set to null"
+            // and "empty schema column" when reading back.
+            try {
+                mutation.set(SpannerConstants.FIELD_DATA).to(JSON_MAPPER.writeValueAsString(fieldNames));
+            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+                throw new IllegalStateException("Failed to serialize field names", e);
             }
         }
     }
@@ -648,6 +661,9 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     /**
      * Appends ORDER BY and LIMIT N clauses for result-set control.
      * ORDER BY is appended before LIMIT/OFFSET is applied in {@link #executeStatement}.
+     * <p>
+     * When no explicit ordering is requested, a default {@code ORDER BY partitionKey, sortKey}
+     * is appended to guarantee deterministic OFFSET-based pagination.
      */
     private String appendResultSetControl(String sql, QueryRequest query) {
         StringBuilder result = new StringBuilder(sql);
@@ -658,6 +674,13 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                 if (i > 0) result.append(", ");
                 result.append(so.field()).append(" ").append(so.direction().name());
             }
+            // Add primary key as tiebreaker for deterministic pagination
+            result.append(", ").append(SpannerConstants.FIELD_PARTITION_KEY)
+                  .append(", ").append(SpannerConstants.FIELD_SORT_KEY);
+        } else if (query != null) {
+            // No explicit ordering — use primary key for deterministic OFFSET pagination
+            result.append(" ORDER BY ").append(SpannerConstants.FIELD_PARTITION_KEY)
+                  .append(", ").append(SpannerConstants.FIELD_SORT_KEY);
         }
         return result.toString();
     }

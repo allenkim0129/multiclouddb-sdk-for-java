@@ -10,18 +10,28 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Type;
 
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
 
 /**
  * Maps Spanner {@link ResultSet} rows to Jackson {@link JsonNode} documents.
  * <p>
  * Supports all common Spanner column types: STRING, INT64, FLOAT64, BOOL,
  * BYTES, TIMESTAMP, DATE, and JSON.
+ * <p>
+ * When a {@code data} column is present and contains a JSON array of field
+ * names, only those fields (plus the primary key columns) are included in the
+ * result. This lets the SDK distinguish between "explicitly set to null" and
+ * "empty schema column" — a distinction that Spanner's fixed schema otherwise
+ * loses.
  */
 public final class SpannerRowMapper {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
+    private static final TypeReference<List<String>> STRING_LIST_TYPE = new TypeReference<>() {};
 
     private SpannerRowMapper() {
     }
@@ -39,12 +49,31 @@ public final class SpannerRowMapper {
         ObjectNode node = MAPPER.createObjectNode();
         Type type = rs.getType();
 
+        // First pass: check for field-name metadata in the data column
+        Set<String> writtenFields = parseFieldMetadata(rs, type);
+
         for (int i = 0; i < rs.getColumnCount(); i++) {
             String colName = type.getStructFields().get(i).getName();
             Type colType = type.getStructFields().get(i).getType();
 
+            // Skip the internal metadata column
+            if (SpannerConstants.FIELD_DATA.equals(colName)) continue;
+
             if (rs.isNull(i)) {
-                node.putNull(colName);
+                // Only include null columns if they were explicitly written
+                if (writtenFields != null && writtenFields.contains(colName)) {
+                    node.putNull(colName);
+                } else if (writtenFields == null) {
+                    // No metadata — legacy row, skip nulls entirely
+                }
+                continue;
+            }
+
+            // For non-null values, include if no metadata or if field is in metadata
+            if (writtenFields != null
+                    && !writtenFields.contains(colName)
+                    && !SpannerConstants.FIELD_PARTITION_KEY.equals(colName)
+                    && !SpannerConstants.FIELD_SORT_KEY.equals(colName)) {
                 continue;
             }
 
@@ -99,5 +128,30 @@ public final class SpannerRowMapper {
         // schemaless stores (Cosmos, DynamoDB) simply omit absent fields
         raw.entrySet().removeIf(e -> e.getValue() == null);
         return raw;
+    }
+
+    /**
+     * Parses the field-name metadata stored in the {@code data} column.
+     *
+     * @return set of field names that were explicitly written, or {@code null}
+     *         if no metadata is available (legacy row or data column absent)
+     */
+    private static Set<String> parseFieldMetadata(ResultSet rs, Type type) {
+        for (int i = 0; i < rs.getColumnCount(); i++) {
+            if (SpannerConstants.FIELD_DATA.equals(type.getStructFields().get(i).getName())) {
+                if (rs.isNull(i)) return null;
+                String dataValue = rs.getString(i);
+                if (dataValue != null && dataValue.startsWith("[")) {
+                    try {
+                        List<String> fields = MAPPER.readValue(dataValue, STRING_LIST_TYPE);
+                        return new HashSet<>(fields);
+                    } catch (Exception e) {
+                        return null;
+                    }
+                }
+                return null;
+            }
+        }
+        return null;
     }
 }
