@@ -222,9 +222,8 @@ The table must have `StreamSpecification.StreamEnabled=true` and a
 `StreamViewType` of `NEW_AND_OLD_IMAGES` (or `NEW_IMAGE` if old values are not
 required). Streams expose `TRIM_HORIZON` / `LATEST` / sequence-number
 iterators, which map to `StartPosition.beginning()`, `StartPosition.now()`,
-and `StartPosition.fromContinuationToken(...)` respectively. Shards are
-physical; use `FeedScope.entireCollection()` or
-`FeedScope.physicalPartition(id)`.
+and `StartPosition.fromContinuationToken(...)` respectively. The SDK fans
+out across shards internally via `FeedScope.entireCollection()`.
 
 ### Google Cloud Spanner
 
@@ -240,11 +239,10 @@ CREATE CHANGE STREAM events_changes FOR events
 | `multiclouddb.connection.changeStream.<collection>` | Optional. Override the change-stream name to read for `<collection>`. Defaults to `<collection>_changes`. |
 
 `value_capture_type` must be `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES` when
-`newItemStateMode = REQUIRE`. Spanner partition tokens are physical row
-ranges — use `FeedScope.entireCollection()` or
-`FeedScope.physicalPartition(id)`. The Spanner emulator does **not**
-support change streams — exercise the feature against a real Spanner
-instance.
+`newItemStateMode = REQUIRE`. The SDK fans out across Spanner partition
+tokens internally via `FeedScope.entireCollection()`. The Spanner emulator
+does **not** support change streams — exercise the feature against a real
+Spanner instance.
 
 ---
 

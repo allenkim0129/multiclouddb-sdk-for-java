@@ -1134,8 +1134,6 @@ shape mirrors `query()` paging:
 ChangeFeedPage page = client.readChanges(request, options);
 List<ChangeEvent> events = page.events();
 String token            = page.continuationToken();   // opaque, persist this
-boolean retired         = page.partitionRetired();    // true → follow children
-List<String> children   = page.childPartitions();
 boolean more            = page.hasMore();
 ```
 
@@ -1189,11 +1187,6 @@ while (true) {
         markProcessed(ev.provider(), ev.eventId());
     }
 
-    if (page.partitionRetired()) {
-        // The physical partition split. Continue paging from each child.
-        for (String childToken : page.childPartitions()) enqueue(childToken);
-    }
-
     if (!page.hasMore()) {
         saveCheckpoint(page.continuationToken());
         sleep(pollInterval);          // or break, if doing a one-shot drain
@@ -1217,7 +1210,6 @@ while (true) {
 | Scope                              | Cosmos | Dynamo | Spanner |
 |------------------------------------|:-:|:-:|:-:|
 | `FeedScope.entireCollection()`     | ✓ | ✓ | ✓ |
-| `FeedScope.physicalPartition(id)`  | ✓ | ✓ (shard) | ✓ |
 
 **Start position** — where to start:
 
@@ -1227,9 +1219,12 @@ while (true) {
 | `StartPosition.now()`                     | ✓ | ✓ | ✓ |
 | `StartPosition.fromContinuationToken(t)`  | ✓ | ✓ | ✓ |
 
-Every scope and start-position variant is portable across all providers.
+Every start-position variant is portable across all providers.
 The change-feed API surface is intentionally identical for Cosmos, Dynamo,
 and Spanner: there are no provider-specific sub-features to probe.
+The SDK handles physical-partition fan-out (Cosmos feed-ranges, Dynamo
+shards, Spanner partition tokens) internally — callers always see a
+single `entireCollection()` stream.
 
 ### Delivery Semantics
 
@@ -1246,16 +1241,6 @@ The contract is **at-least-once**:
 - Events within a page preserve the provider's natural ordering
   (commit-time, then in-transaction order). The SDK does **not** merge
   or re-sort across providers or across partitions.
-
-### Partition Retirement
-
-When a physical partition splits or merges (Cosmos partition split,
-Dynamo shard close, Spanner `child_partitions_record`), the page that
-exhausts the parent sets `partitionRetired() == true` and exposes the
-child continuation tokens via `childPartitions()`. The application is
-responsible for **enqueuing each child token** and continuing to page
-from them — the SDK does not transparently follow children, because that
-would block the caller indefinitely on a busy stream.
 
 ### Provisioning Prerequisites
 
@@ -1278,15 +1263,13 @@ the full matrix; in brief:
 |-------------------------------------------|----------|
 | Continuation-token format & structural validation | **SDK** |
 | Scope/start-position validation, fast-fail on unsupported | **SDK** |
-| Partition enumeration (`listPhysicalPartitions`) | **SDK** |
+| Internal partition fan-out (shards, ranges, partition tokens) | **SDK** |
 | Cosmos partition-key path resolution (incl. hierarchical) | **SDK** |
 | Spanner retention-window discovery (`INFORMATION_SCHEMA`) | **SDK** |
 | Dynamo iterator-anchor preservation across resumes | **SDK** |
-| Surfacing partition retirement and child tokens | **SDK** |
 | Persisting continuation tokens | **App** |
 | Polling cadence and back-pressure | **App** |
 | Dedup by `(provider, eventId)` | **App** |
-| Following child tokens on retirement | **App** |
 | Recovery on `UNSUPPORTED_CAPABILITY` / `INVALID_REQUEST` | **App** |
 | Cross-event ordering across partitions or providers | **App** (if needed) |
 

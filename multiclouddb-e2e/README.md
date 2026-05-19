@@ -122,11 +122,9 @@ loudly if any of them break the portable contract:
    seeds one CREATE / UPDATE / DELETE, drains forward until all three are
    observed, then replays from the *original* anchor token and asserts every
    event re-delivers (at-least-once contract).
-2. **physicalPartition scope** — calls `listPhysicalPartitions` and reads
-   from the first partition via `FeedScope.physicalPartition(id)`.
-3. **NewItemStateMode.OMIT** — seeds a CREATE and asserts the surfaced event
+2. **NewItemStateMode.OMIT** — seeds a CREATE and asserts the surfaced event
    has `data() == null`.
-4. **maxPageSize=1 paging** — seeds 3 CREATEs and asserts the cursor returns
+3. **maxPageSize=1 paging** — seeds 3 CREATEs and asserts the cursor returns
    at most one event per page while still surfacing every seeded key.
 
 It skips cleanly when the configured provider does not advertise

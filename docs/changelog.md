@@ -14,16 +14,16 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 **Added (Change feed — User Story 8):**
 
 - New `com.multiclouddb.api.changefeed` package with
-  `MulticloudDbClient.readChanges` / `listPhysicalPartitions`,
+  `MulticloudDbClient.readChanges`,
   `ChangeFeedRequest` / `ChangeFeedPage` / `ChangeEvent`, and sealed
-  `FeedScope` (Entire / Physical) and `StartPosition`
+  `FeedScope` and `StartPosition`
   (Beginning / Now / FromContinuationToken) types. The API surface is
   **fully portable**: every variant works on every provider.
 - New capability token: `change_feed` — introspectable via
   `client.capabilities()`. Calls fail fast with `UNSUPPORTED_CAPABILITY`
   when the active provider does not advertise it.
-- New SPI hooks `MulticloudDbProviderClient.readChanges` and
-  `listPhysicalPartitions` with `UNSUPPORTED_CAPABILITY` defaults.
+- New SPI hook `MulticloudDbProviderClient.readChanges`
+  with `UNSUPPORTED_CAPABILITY` default.
 
 **Documentation:**
 
@@ -83,7 +83,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   `CONSISTENT_PREFIX`, `EVENTUAL`. When absent, read requests inherit the
   Cosmos DB account's configured default. See `docs/configuration.md` —
   *Consistency Level*.
-- `CosmosProviderClient.readChanges` / `listPhysicalPartitions` via
+- `CosmosProviderClient.readChanges` via
   `CosmosContainer.queryChangeFeed` with `FeedRange`. Capability:
   `change_feed`.
 - **Provisioning:** containers must be created with the
@@ -154,9 +154,9 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Added (Change feed — User Story 8):**
 
-- `DynamoProviderClient.readChanges` / `listPhysicalPartitions` via
+- `DynamoProviderClient.readChanges` via
   DynamoDB Streams + the DynamoDB Streams Adapter
-  (shard-iterator-per-physical-partition). Capability: `change_feed`.
+  (shard-iterator-based fan-out). Capability: `change_feed`.
   `StartPosition.beginning()` maps to `TRIM_HORIZON`, `now()` to
   `LATEST`, `fromContinuationToken(...)` to a sequence-number iterator.
 - **Provisioning:** the table must have
@@ -205,11 +205,11 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Added (Change feed — User Story 8):**
 
-- `SpannerProviderClient.readChanges` / `listPhysicalPartitions` via
+- `SpannerProviderClient.readChanges` via
   Spanner Change Streams using the
   `READ_<stream>(start, end, partition_token, hb)` SQL TVF; parses
   `data_change_record` and `child_partitions_record`. Capability:
-  `change_feed`. Spanner partition tokens are physical row ranges.
+  `change_feed`.
 - New connection key `connection.changeStream.<collection>` (defaults to
   `<collection>_changes`).
 - **Provisioning:** `CREATE CHANGE STREAM <name> FOR <table> OPTIONS

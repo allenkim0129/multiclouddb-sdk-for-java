@@ -68,9 +68,8 @@ QueryPage page = client.query(address, query);
 | **Change feed** | Change-data-capture (`MulticloudDbClient.readChanges`) — portable across all providers |
 
 The change-feed API surface is identical for all providers: every
-`FeedScope` and `StartPosition` variant works on Cosmos, Dynamo, and
-Spanner. `FeedScope.physicalPartition` is the portable choice for
-parallel readers.
+`StartPosition` variant works on Cosmos, Dynamo, and
+Spanner. The SDK handles physical-partition fan-out internally.
 
 ### Diagnostics & Error Handling
 
