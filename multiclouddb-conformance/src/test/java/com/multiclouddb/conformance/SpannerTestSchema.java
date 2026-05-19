@@ -1,0 +1,145 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
+package com.multiclouddb.conformance;
+
+import com.google.cloud.spanner.*;
+
+import java.util.List;
+import java.util.concurrent.ExecutionException;
+
+/**
+ * Shared Spanner emulator schema setup for conformance tests.
+ * <p>
+ * Ensures the test instance, database, and table exist with a schema that
+ * includes all columns used across the conformance test suite. Idempotent —
+ * safe to call from multiple test classes regardless of execution order.
+ * <p>
+ * When the database already exists (e.g. created by {@code ensureContainer}
+ * with a minimal schema), the table is dropped and recreated with the full
+ * conformance schema.
+ */
+public final class SpannerTestSchema {
+
+    static final String EMULATOR_HOST = System.getProperty(
+            "spanner.emulatorHost", "localhost:9010");
+    static final String PROJECT_ID = "test-project";
+    static final String INSTANCE_ID = "test-instance";
+
+    /**
+     * DDL for the conformance test table — includes all columns used across
+     * CrudConformanceTests, ErrorNormalizationConformanceTest, etc.
+     */
+    private static final String TABLE_DDL_TEMPLATE =
+            "CREATE TABLE %s ("
+                    + "  partitionKey STRING(MAX) NOT NULL,"
+                    + "  sortKey STRING(MAX) NOT NULL,"
+                    + "  data STRING(MAX),"
+                    + "  title STRING(MAX),"
+                    + "  value INT64,"
+                    + "  active BOOL,"
+                    + "  version INT64,"
+                    + "  extra STRING(MAX),"
+                    + "  batch STRING(MAX),"
+                    + "  status STRING(MAX),"
+                    + "  priority INT64,"
+                    + "  category STRING(MAX),"
+                    + "  shared STRING(MAX),"
+                    + "  originalOnly STRING(MAX),"
+                    + "  `group` STRING(MAX),"
+                    + "  marker STRING(MAX),"
+                    + "  n INT64,"
+                    + "  strField STRING(MAX),"
+                    + "  intField INT64,"
+                    + "  longField INT64,"
+                    + "  bigLongField INT64,"
+                    + "  doubleField FLOAT64,"
+                    + "  boolTrue BOOL,"
+                    + "  boolFalse BOOL,"
+                    + "  nullField STRING(MAX),"
+                    + "  nestedObj STRING(MAX),"
+                    + "  arrayField STRING(MAX),"
+                    + "  emptyArray STRING(MAX),"
+                    + "  age INT64"
+                    + ") PRIMARY KEY (partitionKey, sortKey)";
+
+    private static volatile boolean provisioned = false;
+
+    private SpannerTestSchema() {
+    }
+
+    /**
+     * Ensures the Spanner emulator has the test instance, database, and table
+     * with the full conformance schema. Thread-safe and idempotent within a
+     * single JVM.
+     *
+     * @param databaseId the database to create/ensure
+     * @param table      the table name
+     */
+    public static synchronized void ensureSchema(String databaseId, String table)
+            throws ExecutionException, InterruptedException {
+        if (provisioned) return;
+
+        SpannerOptions options = SpannerOptions.newBuilder()
+                .setEmulatorHost(EMULATOR_HOST)
+                .setProjectId(PROJECT_ID)
+                .build();
+        Spanner spanner = options.getService();
+        try {
+            // Ensure instance
+            InstanceAdminClient instanceAdmin = spanner.getInstanceAdminClient();
+            try {
+                instanceAdmin.createInstance(
+                        InstanceInfo.newBuilder(InstanceId.of(PROJECT_ID, INSTANCE_ID))
+                                .setInstanceConfigId(InstanceConfigId.of(PROJECT_ID, "emulator-config"))
+                                .setDisplayName("Test Instance")
+                                .setNodeCount(1)
+                                .build())
+                        .get();
+                System.out.println("[SpannerTestSchema] Created instance: " + INSTANCE_ID);
+            } catch (ExecutionException e) {
+                if (e.getCause() instanceof SpannerException se
+                        && se.getErrorCode() == ErrorCode.ALREADY_EXISTS) {
+                    System.out.println("[SpannerTestSchema] Instance already exists: " + INSTANCE_ID);
+                } else {
+                    throw e;
+                }
+            }
+
+            // Ensure database + table
+            DatabaseAdminClient dbAdmin = spanner.getDatabaseAdminClient();
+            String tableDdl = String.format(TABLE_DDL_TEMPLATE, table);
+            try {
+                dbAdmin.createDatabase(INSTANCE_ID, databaseId, List.of(tableDdl)).get();
+                System.out.println("[SpannerTestSchema] Created database: " + databaseId
+                        + " with table: " + table);
+            } catch (ExecutionException e) {
+                if (e.getCause() instanceof SpannerException se
+                        && se.getErrorCode() == ErrorCode.ALREADY_EXISTS) {
+                    System.out.println("[SpannerTestSchema] Database already exists: " + databaseId);
+                    // Drop and recreate table to ensure full schema
+                    try {
+                        dbAdmin.updateDatabaseDdl(
+                                INSTANCE_ID, databaseId,
+                                List.of("DROP TABLE " + table), null).get();
+                        System.out.println("[SpannerTestSchema] Dropped existing table: " + table);
+                    } catch (ExecutionException ex) {
+                        System.out.println("[SpannerTestSchema] Table drop skipped: "
+                                + ex.getMessage());
+                    }
+                    dbAdmin.updateDatabaseDdl(
+                            INSTANCE_ID, databaseId,
+                            List.of(tableDdl), null).get();
+                    System.out.println("[SpannerTestSchema] Recreated table: " + table
+                            + " with full conformance schema");
+                } else {
+                    throw e;
+                }
+            }
+
+            provisioned = true;
+        } finally {
+            spanner.close();
+        }
+    }
+}
