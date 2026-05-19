@@ -324,5 +324,11 @@
                 <test.includedGroups>dynamo</test.includedGroups>
             </properties>
         </profile>
+        <profile>
+            <id>emulator-spanner</id>
+            <properties>
+                <test.includedGroups>spanner &amp; emulator</test.includedGroups>
+            </properties>
+        </profile>
     </profiles>
 </project>
