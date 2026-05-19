@@ -20,10 +20,8 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   (Beginning / Now / FromContinuationToken) types. The API surface is
   **fully portable**: every variant works on every provider.
 - New capability token: `change_feed` — introspectable via
-  `client.capabilities()`. Calls fail fast with `UNSUPPORTED_CAPABILITY`
-  when the active provider does not advertise it.
-- New SPI hook `MulticloudDbProviderClient.readChanges`
-  with `UNSUPPORTED_CAPABILITY` default.
+  `client.capabilities()`.
+- New SPI hook `MulticloudDbProviderClient.readChanges`.
 
 **Documentation:**
 
@@ -217,8 +215,9 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   `<collection>_changes`).
 - **Provisioning:** `CREATE CHANGE STREAM <name> FOR <table> OPTIONS
   (value_capture_type='NEW_ROW')` must be run out-of-band.
-  `value_capture_type` must be `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES`
-  when callers pass `newItemStateMode = REQUIRE`. The Spanner emulator
+  `value_capture_type` should be `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES`
+  for `newItemStateMode = INCLUDE_IF_AVAILABLE` to populate event
+  payloads; otherwise `data()` is `null`. The Spanner emulator
   does **not** support change streams.
 
 **Changed:**

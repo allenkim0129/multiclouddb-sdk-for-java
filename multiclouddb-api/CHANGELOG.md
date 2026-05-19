@@ -23,7 +23,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   - `ChangeFeedRequest` builder with `FeedScope` (sealed: `EntireCollection`),
     `StartPosition` (sealed: `Beginning`, `Now`,
     `FromContinuationToken`), `maxPageSize`, and `NewItemStateMode`
-    (`INCLUDE_IF_AVAILABLE` default, `REQUIRE`, `OMIT`).
+    (`INCLUDE_IF_AVAILABLE` default, `OMIT`).
   - `ChangeEvent` carrying `ChangeType` (CREATE / UPDATE / DELETE), key,
     data, commit timestamp, and provider sequence.
 - New capability token introspectable via `client.capabilities()`:
@@ -31,11 +31,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
     API is **fully portable**: every `FeedScope` and `StartPosition`
     variant must work on every provider that advertises this capability.
 - `ChangeFeedRequest` and change-feed calls fail fast with
-  `UNSUPPORTED_CAPABILITY` when the active provider does not advertise the
-  required capability; `INVALID_REQUEST` when continuation tokens cross
+  `INVALID_REQUEST` when continuation tokens cross
   providers / resources.
-- New SPI hook `MulticloudDbProviderClient.readChanges` with a default
-  implementation that raises `UNSUPPORTED_CAPABILITY`.
+- New SPI hook `MulticloudDbProviderClient.readChanges`.
 
 ### Documentation
 

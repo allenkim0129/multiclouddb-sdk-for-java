@@ -24,9 +24,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   back to the convention `<collection>_changes`.
 - **Provisioning prerequisite:** create the change stream out-of-band:
   `CREATE CHANGE STREAM <name> FOR <table> OPTIONS
-  (value_capture_type = 'NEW_ROW')`. `value_capture_type` must be
-  `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES` when callers pass
-  `newItemStateMode = REQUIRE`. The Spanner emulator does **not** support
+  (value_capture_type = 'NEW_ROW')`. `value_capture_type` should be
+  `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES` for
+  `newItemStateMode = INCLUDE_IF_AVAILABLE` to populate event payloads;
+  otherwise `data()` is `null`. The Spanner emulator does **not** support
   change streams — exercise this feature against a real Spanner instance.
 
 ### Changed

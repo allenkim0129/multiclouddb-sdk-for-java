@@ -28,7 +28,7 @@ JUnit 5 + Mockito.
 - [x] T003 [P] Create `ChangeType` enum (CREATE / UPDATE / DELETE)
       (`multiclouddb-api/.../changefeed/ChangeType.java`)
 - [x] T004 [P] Create `NewItemStateMode` enum
-      (OMIT / INCLUDE_IF_AVAILABLE / REQUIRE)
+      (OMIT / INCLUDE_IF_AVAILABLE)
       (`multiclouddb-api/.../changefeed/NewItemStateMode.java`)
 - [x] T005 [P] Create sealed `FeedScope` interface + `EntireCollection`,
       `PhysicalPartition`, `LogicalPartition` records
@@ -133,9 +133,9 @@ JUnit 5 + Mockito.
       - parse `data_change_record` (mods → CREATE/UPDATE/DELETE) and
         `child_partitions_record`
       - aggregate active partition cursors into envelope token
-- [x] T030 Reject `LogicalPartition` with `UNSUPPORTED_CAPABILITY`; reject
-      `newItemStateMode=REQUIRE` if `value_capture_type` is not
-      `NEW_ROW` / `NEW_ROW_AND_OLD_VALUES` (validated at first call)
+- [x] T030 Reject `LogicalPartition` with `UNSUPPORTED_CAPABILITY`; validate
+      `value_capture_type` is `NEW_ROW` / `NEW_ROW_AND_OLD_VALUES` for
+      `INCLUDE_IF_AVAILABLE` to populate payloads (returns `data=null` otherwise)
 
 ## Phase 7: Tests
 

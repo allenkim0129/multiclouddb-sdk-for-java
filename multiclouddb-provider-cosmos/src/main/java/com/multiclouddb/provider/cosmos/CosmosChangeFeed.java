@@ -356,14 +356,6 @@ final class CosmosChangeFeed {
             // because consumers may rely on them for dedup or auditing).
             data = (ObjectNode) current.deepCopy();
         }
-        if (request.newItemStateMode() == NewItemStateMode.REQUIRE
-                && type != ChangeType.DELETE && data == null) {
-            throw new MulticloudDbException(new MulticloudDbError(
-                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
-                    "newItemStateMode=REQUIRE but no current image was returned for this event",
-                    ProviderId.COSMOS, "readChanges", false, Map.of()));
-        }
-
         return new ChangeEvent(ProviderId.COSMOS, eventId, type,
                 request.address(), key, data, ts);
     }

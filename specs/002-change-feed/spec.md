@@ -182,7 +182,7 @@ capability set matches the documented matrix per provider.
 - **`ChangeFeedPage`** — events, continuationToken, partitionRetired,
   childPartitions, diagnostics.
 - **`ChangeType`** — CREATE / UPDATE / DELETE.
-- **`NewItemStateMode`** — OMIT / INCLUDE_IF_AVAILABLE / REQUIRE.
+- **`NewItemStateMode`** — OMIT / INCLUDE_IF_AVAILABLE.
 
 ## Success Criteria
 

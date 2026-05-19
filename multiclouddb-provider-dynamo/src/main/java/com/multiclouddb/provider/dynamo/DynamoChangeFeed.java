@@ -31,7 +31,6 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.DescribeTableRequest;
 import software.amazon.awssdk.services.dynamodb.model.DescribeTableResponse;
 import software.amazon.awssdk.services.dynamodb.model.StreamSpecification;
-import software.amazon.awssdk.services.dynamodb.model.StreamViewType;
 import software.amazon.awssdk.services.dynamodb.streams.DynamoDbStreamsClient;
 import software.amazon.awssdk.services.dynamodb.model.DescribeStreamRequest;
 import software.amazon.awssdk.services.dynamodb.model.ExpiredIteratorException;
@@ -65,12 +64,9 @@ import java.util.Set;
  * {@code DescribeStream} + {@code GetShardIterator} + {@code GetRecords}
  * primitives.
  *
- * <p>Stream-view-type constraints (capability-gated):
- * <ul>
- *   <li>{@link NewItemStateMode#REQUIRE} requires
- *       {@code StreamViewType.NEW_IMAGE} or {@code NEW_AND_OLD_IMAGES} on
- *       the table; otherwise rejected at first call.</li>
- * </ul>
+ * <p>{@link NewItemStateMode#INCLUDE_IF_AVAILABLE} populates {@code data}
+ * when the stream's {@code StreamViewType} includes {@code NEW_IMAGE} or
+ * {@code NEW_AND_OLD_IMAGES}; otherwise {@code data} is {@code null}.
  */
 final class DynamoChangeFeed {
 
@@ -89,7 +85,6 @@ final class DynamoChangeFeed {
         Instant start = Instant.now();
         try {
             String streamArn = resolveStreamArn(request.address());
-            validateStreamViewType(request, streamArn);
 
             // Resolve which shards to read this call
             ShardSelection selection = resolveShards(request, streamArn);
@@ -192,23 +187,6 @@ final class DynamoChangeFeed {
         return arn;
     }
 
-    private void validateStreamViewType(ChangeFeedRequest request, String streamArn) {
-        if (request.newItemStateMode() == NewItemStateMode.OMIT) {
-            return;
-        }
-        DescribeStreamResponse resp = streams.describeStream(DescribeStreamRequest.builder()
-                .streamArn(streamArn)
-                .limit(1)
-                .build());
-        StreamViewType view = resp.streamDescription().streamViewType();
-        boolean hasNewImage = view == StreamViewType.NEW_IMAGE
-                || view == StreamViewType.NEW_AND_OLD_IMAGES;
-        if (request.newItemStateMode() == NewItemStateMode.REQUIRE && !hasNewImage) {
-            throw unsupported("newItemStateMode=REQUIRE but the DynamoDB stream is configured "
-                    + "with StreamViewType=" + view + ". Reconfigure the stream with NEW_IMAGE "
-                    + "or NEW_AND_OLD_IMAGES.");
-        }
-    }
 
     private List<Shard> describeAllShards(String streamArn) {
         List<Shard> all = new ArrayList<>();
@@ -463,10 +441,6 @@ final class DynamoChangeFeed {
                 && sr.newImage() != null && !sr.newImage().isEmpty()) {
             data = imageToJson(sr.newImage());
         }
-        if (request.newItemStateMode() == NewItemStateMode.REQUIRE
-                && type != ChangeType.DELETE && data == null) {
-            throw unsupported("newItemStateMode=REQUIRE but no NEW_IMAGE was returned for shard record");
-        }
 
         Instant ts = sr.approximateCreationDateTime();
         return new ChangeEvent(ProviderId.DYNAMO, sr.sequenceNumber(), type,
@@ -554,11 +528,6 @@ final class DynamoChangeFeed {
         return MAPPER.nullNode();
     }
 
-    private MulticloudDbException unsupported(String msg) {
-        return new MulticloudDbException(new MulticloudDbError(
-                MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
-                msg, ProviderId.DYNAMO, "readChanges", false, Map.of()));
-    }
 
     private MulticloudDbException mapDynamoException(Exception e, String op) {
         if (e instanceof TrimmedDataAccessException) {

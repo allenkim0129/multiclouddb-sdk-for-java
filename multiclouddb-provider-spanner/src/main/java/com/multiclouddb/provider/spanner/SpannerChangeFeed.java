@@ -67,11 +67,11 @@ import java.util.Map;
  *       partition-queue iterator: a fresh request bootstraps from the root
  *       (NULL token) and the continuation carries the work queue forward.
  *       Per-page ordering is per-partition only.</li>
- *   <li>{@link NewItemStateMode#REQUIRE} requires that the stream was
- *       created with {@code value_capture_type='NEW_ROW'} or
- *       {@code 'NEW_ROW_AND_OLD_VALUES'}; otherwise events surface with {@code data=null}
- *       and we raise {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}
- *       on the first DELETE-or-non-NEW record we observe.</li>
+ *   <li>{@link NewItemStateMode#INCLUDE_IF_AVAILABLE} populates
+ *       {@code data} when the stream was created with
+ *       {@code value_capture_type='NEW_ROW'} or
+ *       {@code 'NEW_ROW_AND_OLD_VALUES'}; otherwise {@code data} is
+ *       {@code null}.</li>
  * </ul>
  */
 final class SpannerChangeFeed {
@@ -310,13 +310,6 @@ final class SpannerChangeFeed {
                 data = obj;
             }
         }
-        if (request.newItemStateMode() == NewItemStateMode.REQUIRE
-                && type != ChangeType.DELETE && data == null) {
-            throw unsupported("newItemStateMode=REQUIRE but the change stream did not include "
-                    + "new_values; recreate the stream with value_capture_type='NEW_ROW' "
-                    + "or 'NEW_ROW_AND_OLD_VALUES'");
-        }
-
         Instant ts = commit != null ? toInstant(commit) : null;
         return new ChangeEvent(ProviderId.SPANNER, baseEventId, type,
                 request.address(), key, data, ts);
@@ -574,12 +567,6 @@ final class SpannerChangeFeed {
 
     private static Instant toInstant(com.google.cloud.Timestamp t) {
         return Instant.ofEpochSecond(t.getSeconds(), t.getNanos());
-    }
-
-    private static MulticloudDbException unsupported(String msg) {
-        return new MulticloudDbException(new MulticloudDbError(
-                MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
-                msg, ProviderId.SPANNER, "readChanges", false, Map.of()));
     }
 
     private static MulticloudDbException mapSpannerException(SpannerException e, String op) {

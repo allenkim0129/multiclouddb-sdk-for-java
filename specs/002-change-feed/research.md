@@ -94,8 +94,7 @@ public sealed interface FeedScope {
 
 public enum NewItemStateMode {
     OMIT,                  // never include
-    INCLUDE_IF_AVAILABLE,  // include when provider/config provides it; null otherwise
-    REQUIRE                // include or fail with UNSUPPORTED_CAPABILITY
+    INCLUDE_IF_AVAILABLE   // include when provider/config provides it; null otherwise
 }
 
 public sealed interface StartPosition {
@@ -192,13 +191,12 @@ shortcut.
 
 4. **Dynamo full image: requires `StreamSpecification.StreamViewType =
    NEW_IMAGE` (or `NEW_AND_OLD_IMAGES`)** at table provisioning. With
-   `KEYS_ONLY`, `newItemStateMode=REQUIRE` fails with
-   `UNSUPPORTED_CAPABILITY`.
+   `KEYS_ONLY`, `INCLUDE_IF_AVAILABLE` returns `data=null`.
 
 5. **Spanner full image: requires `value_capture_type = 'NEW_ROW'` (or
    `NEW_ROW_AND_OLD_VALUES`)** on the change stream definition. Other
-   modes emit only changed columns; `newItemStateMode=REQUIRE` fails with
-   `UNSUPPORTED_CAPABILITY`.
+   modes emit only changed columns; `INCLUDE_IF_AVAILABLE` returns
+   `data=null`.
 
 6. **Logical partition-key scope is Cosmos-only.**
    Dynamo and Spanner partition feeds at the physical shard / row-range
@@ -296,8 +294,8 @@ table (the SDK validates these at first `readChanges()`):
 | Provider | Required provisioning | If missing |
 |---|---|---|
 | Cosmos | change feed mode = `AllVersionsAndDeletes` | `INVALID_REQUEST` at first call |
-| Dynamo | `StreamSpecification.StreamViewType` ∈ {`NEW_IMAGE`, `NEW_AND_OLD_IMAGES`} (only required for `newItemStateMode=REQUIRE`) | `UNSUPPORTED_CAPABILITY` |
-| Spanner | `value_capture_type` ∈ {`NEW_ROW`, `NEW_ROW_AND_OLD_VALUES`} (only required for `newItemStateMode=REQUIRE`); change stream DDL must exist | `UNSUPPORTED_CAPABILITY` / `NOT_FOUND` |
+| Dynamo | `StreamSpecification.StreamViewType` ∈ {`NEW_IMAGE`, `NEW_AND_OLD_IMAGES`} (needed for `INCLUDE_IF_AVAILABLE` to populate payloads) | `data=null` if not configured |
+| Spanner | `value_capture_type` ∈ {`NEW_ROW`, `NEW_ROW_AND_OLD_VALUES`} (needed for `INCLUDE_IF_AVAILABLE` to populate payloads); change stream DDL must exist | `data=null` / `NOT_FOUND` |
 
 ## Out of scope (v1)
 

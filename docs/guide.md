@@ -1270,7 +1270,7 @@ the full matrix; in brief:
 | Persisting continuation tokens | **App** |
 | Polling cadence and back-pressure | **App** |
 | Dedup by `(provider, eventId)` | **App** |
-| Recovery on `UNSUPPORTED_CAPABILITY` / `INVALID_REQUEST` | **App** |
+| Recovery on `INVALID_REQUEST` | **App** |
 | Cross-event ordering across partitions or providers | **App** (if needed) |
 
 ### Checking Capabilities

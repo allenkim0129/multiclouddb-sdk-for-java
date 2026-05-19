@@ -238,8 +238,9 @@ CREATE CHANGE STREAM events_changes FOR events
 |-----|-------------|
 | `multiclouddb.connection.changeStream.<collection>` | Optional. Override the change-stream name to read for `<collection>`. Defaults to `<collection>_changes`. |
 
-`value_capture_type` must be `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES` when
-`newItemStateMode = REQUIRE`. The SDK fans out across Spanner partition
+`value_capture_type` should be `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES` for
+`newItemStateMode = INCLUDE_IF_AVAILABLE` to populate event payloads;
+otherwise `data()` is `null`. The SDK fans out across Spanner partition
 tokens internally via `FeedScope.entireCollection()`. The Spanner emulator
 does **not** support change streams — exercise the feature against a real
 Spanner instance.

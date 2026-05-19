@@ -394,8 +394,8 @@ class SpannerChangeFeedTest {
     }
 
     @Test
-    @DisplayName("NewItemStateMode.REQUIRE throws UNSUPPORTED_CAPABILITY when new_values are absent")
-    void requireModeFailsWithoutNewValues() {
+    @DisplayName("NewItemStateMode.INCLUDE_IF_AVAILABLE returns null data when new_values are absent")
+    void includeIfAvailableReturnsNullDataWhenNewValuesAbsent() {
         Struct mod = stubKeyMod("pk1", "sk1", null); // no new_values
         Struct dcr = stubDataChangeRecord("INSERT", List.of(mod));
         Struct row = stubChangeRecord(dcr, null);
@@ -406,11 +406,11 @@ class SpannerChangeFeedTest {
         ChangeFeedRequest req = ChangeFeedRequest.builder(ADDR)
 
                 .startPosition(StartPosition.now())
-                .newItemStateMode(NewItemStateMode.REQUIRE)
+                .newItemStateMode(NewItemStateMode.INCLUDE_IF_AVAILABLE)
                 .build();
-        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                () -> feed.readChanges(req, OperationOptions.defaults()));
-        assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY, ex.error().category());
+        ChangeFeedPage page = feed.readChanges(req, OperationOptions.defaults());
+        assertFalse(page.events().isEmpty(), "should have events");
+        assertNull(page.events().get(0).data(), "data should be null when new_values absent");
     }
 
     // ── maxPageSize / scope-mismatch (round-2 review fixes) ───────────────
