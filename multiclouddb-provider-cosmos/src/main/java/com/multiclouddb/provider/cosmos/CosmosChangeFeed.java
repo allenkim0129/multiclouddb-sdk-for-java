@@ -418,6 +418,13 @@ final class CosmosChangeFeed {
      * {@code null} when the metadata read fails or the definition is missing /
      * empty — the caller decides what fallback to use without poisoning any
      * cache.
+     *
+     * <p><b>Limitation:</b> only the first partition-key path is used.
+     * Cosmos containers with <em>hierarchical partition keys</em> (multiple
+     * paths, e.g. {@code ["/tenantId", "/userId"]}) will key change-feed
+     * events by the first level only. This is consistent with
+     * {@link com.multiclouddb.api.MulticloudDbKey}, which carries a single
+     * {@code partitionKey} string.
      */
     private String resolvePartitionKeyDefinitionStrict(CosmosContainer container) {
         try {

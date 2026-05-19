@@ -74,7 +74,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
-**Added (Change feed — User Story 8):**
+**Added:**
 
 - `consistencyLevel` connection config key for opt-in client-level read
   consistency override (applied uniformly to every read from a given client
@@ -83,6 +83,9 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   `CONSISTENT_PREFIX`, `EVENTUAL`. When absent, read requests inherit the
   Cosmos DB account's configured default. See `docs/configuration.md` —
   *Consistency Level*.
+
+**Added (Change feed — User Story 8):**
+
 - `CosmosProviderClient.readChanges` via
   `CosmosContainer.queryChangeFeed` with `FeedRange`. Capability:
   `change_feed`.
