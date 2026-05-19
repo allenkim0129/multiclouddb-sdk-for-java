@@ -49,7 +49,20 @@ public final class SpannerRowMapper {
             }
 
             switch (colType.getCode()) {
-                case STRING -> node.put(colName, rs.getString(i));
+                case STRING -> {
+                    String s = rs.getString(i);
+                    // Detect JSON-serialized complex values (Map/List stored as JSON strings)
+                    if (s != null && s.length() >= 2
+                            && (s.charAt(0) == '{' || s.charAt(0) == '[')) {
+                        try {
+                            node.set(colName, MAPPER.readTree(s));
+                        } catch (Exception e) {
+                            node.put(colName, s);
+                        }
+                    } else {
+                        node.put(colName, s);
+                    }
+                }
                 case INT64 -> node.put(colName, rs.getLong(i));
                 case FLOAT64 -> node.put(colName, rs.getDouble(i));
                 case BOOL -> node.put(colName, rs.getBoolean(i));
@@ -81,6 +94,10 @@ public final class SpannerRowMapper {
      */
     public static Map<String, Object> toMap(ResultSet rs) {
         JsonNode node = toJsonNode(rs);
-        return MAPPER.convertValue(node, MAP_TYPE);
+        Map<String, Object> raw = MAPPER.convertValue(node, MAP_TYPE);
+        // Remove null entries — Map.copyOf() in QueryPage rejects nulls, and
+        // schemaless stores (Cosmos, DynamoDB) simply omit absent fields
+        raw.entrySet().removeIf(e -> e.getValue() == null);
+        return raw;
     }
 }

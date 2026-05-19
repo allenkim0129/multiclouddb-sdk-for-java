@@ -65,7 +65,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
 
     private static final Logger LOG = LoggerFactory.getLogger(SpannerProviderClient.class);
 
-    private final Spanner spanner;
+    private Spanner spanner;
     private final DatabaseClient databaseClient;
     private final MulticloudDbClientConfig config;
     private final String projectId;
@@ -185,10 +185,12 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
-     * Creates or replaces a row in Spanner (INSERT_OR_UPDATE mutation / upsert semantics).
+     * Creates or replaces a row in Spanner (REPLACE mutation / upsert semantics).
      * <p>
-     * Uses a Spanner {@code INSERT_OR_UPDATE} mutation, which inserts the row if it does
-     * not exist, or updates it in-place if it does.
+     * Uses a Spanner {@code REPLACE} mutation, which deletes the existing row (if any)
+     * and inserts the new one. This ensures full document replacement: columns not present
+     * in the new document are set to {@code NULL}, matching the behavior of schemaless
+     * stores (Cosmos, DynamoDB) where upsert fully replaces the document.
      *
      * @param address  the logical database + collection
      * @param key      the document key
@@ -200,7 +202,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     public void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         try {
             String table = address.collection();
-            Mutation.WriteBuilder mutation = Mutation.newInsertOrUpdateBuilder(table)
+            Mutation.WriteBuilder mutation = Mutation.newReplaceBuilder(table)
                     .set(SpannerConstants.FIELD_PARTITION_KEY).to(key.partitionKey())
                     .set(SpannerConstants.FIELD_SORT_KEY).to(key.sortKey() != null ? key.sortKey() : key.partitionKey());
 
@@ -496,20 +498,70 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
         if (spanner != null) {
             spanner.close();
+            spanner = null;
         }
     }
 
     // ── Provisioning ────────────────────────────────────────────────────────
 
     /**
-     * No-op — the Spanner database is set at client construction time.
+     * Ensures the Spanner database exists, creating it if absent.
+     * <p>
+     * Also ensures the Spanner instance exists (required before creating a database).
+     * Uses idempotent {@code ALREADY_EXISTS} handling for both instance and database.
      */
     @Override
     public void ensureDatabase(String database) {
-        LOG.debug("ensureDatabase is a no-op for Spanner (database={})", database);
+        try {
+            // Ensure instance exists first
+            var instanceAdmin = spanner.getInstanceAdminClient();
+            try {
+                instanceAdmin.createInstance(
+                        com.google.cloud.spanner.InstanceInfo.newBuilder(
+                                com.google.cloud.spanner.InstanceId.of(projectId, instanceId))
+                                .setInstanceConfigId(
+                                        com.google.cloud.spanner.InstanceConfigId.of(projectId, "emulator-config"))
+                                .setDisplayName(instanceId)
+                                .setNodeCount(1)
+                                .build()).get();
+                LOG.info("Created Spanner instance: {}", instanceId);
+            } catch (java.util.concurrent.ExecutionException e) {
+                if (e.getCause() instanceof SpannerException se
+                        && se.getErrorCode() == ErrorCode.ALREADY_EXISTS) {
+                    LOG.debug("Spanner instance already exists: {}", instanceId);
+                } else {
+                    throw e;
+                }
+            }
+
+            // Ensure database exists
+            DatabaseAdminClient dbAdmin = spanner.getDatabaseAdminClient();
+            try {
+                dbAdmin.createDatabase(instanceId, database, List.of()).get();
+                LOG.info("Created Spanner database: {}", database);
+            } catch (java.util.concurrent.ExecutionException e) {
+                if (e.getCause() instanceof SpannerException se
+                        && se.getErrorCode() == ErrorCode.ALREADY_EXISTS) {
+                    LOG.debug("Spanner database already exists: {}", database);
+                } else {
+                    throw e;
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted while creating Spanner database: " + database, e);
+        } catch (java.util.concurrent.ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof SpannerException se) {
+                throw SpannerErrorMapper.map(se, "ensureDatabase");
+            }
+            throw new RuntimeException("Failed to create Spanner database: " + database, cause);
+        } catch (SpannerException se) {
+            throw SpannerErrorMapper.map(se, "ensureDatabase");
+        }
     }
 
     /**
@@ -738,6 +790,9 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * @param column   the Spanner column name
      * @param value    the value to write; {@code null} writes a null STRING
      */
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON_MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
     private void setMutationValue(Mutation.WriteBuilder mutation, String column, Object value) {
         if (value == null) {
             mutation.set(column).to((String) null);
@@ -754,8 +809,13 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
         } else if (value instanceof Float f) {
             mutation.set(column).to((double) f);
         } else {
-            // Complex types: serialize as JSON string
-            mutation.set(column).to(value.toString());
+            // Complex types (Map, List, etc.): serialize as JSON string
+            try {
+                mutation.set(column).to(JSON_MAPPER.writeValueAsString(value));
+            } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+                throw new IllegalArgumentException(
+                        "Failed to serialize value for column '" + column + "': " + ex.getMessage(), ex);
+            }
         }
     }
 
