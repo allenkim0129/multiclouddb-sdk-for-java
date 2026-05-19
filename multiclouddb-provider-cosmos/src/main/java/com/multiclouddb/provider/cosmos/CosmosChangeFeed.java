@@ -23,7 +23,6 @@ import com.multiclouddb.api.changefeed.ChangeEvent;
 import com.multiclouddb.api.changefeed.ChangeFeedPage;
 import com.multiclouddb.api.changefeed.ChangeFeedRequest;
 import com.multiclouddb.api.changefeed.ChangeType;
-import com.multiclouddb.api.changefeed.FeedScope;
 import com.multiclouddb.api.changefeed.NewItemStateMode;
 import com.multiclouddb.api.changefeed.StartPosition;
 import com.multiclouddb.api.changefeed.internal.ContinuationTokenCodec;

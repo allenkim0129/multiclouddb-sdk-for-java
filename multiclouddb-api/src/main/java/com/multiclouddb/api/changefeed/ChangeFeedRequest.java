@@ -13,11 +13,14 @@ import java.util.Objects;
  * Construct via {@link #builder(ResourceAddress)}. All fields except
  * {@code address} have defaults:
  * <ul>
- *   <li>{@code scope} → {@link FeedScope#entireCollection()}</li>
  *   <li>{@code startPosition} → {@link StartPosition#beginning()}</li>
  *   <li>{@code newItemStateMode} → {@link NewItemStateMode#INCLUDE_IF_AVAILABLE}</li>
  *   <li>{@code maxPageSize} → {@code 0} (provider default)</li>
  * </ul>
+ *
+ * <p>The change feed always reads the entire collection. The SDK fans out
+ * across provider-native partitions internally, preserving per-partition
+ * order without exposing provider-specific partition semantics.
  *
  * <p>When resuming from a saved checkpoint the {@code startPosition} should
  * be {@link StartPosition#fromContinuationToken(String)}. The token's
@@ -25,15 +28,14 @@ import java.util.Objects;
  * {@code ContinuationTokenCodec}. Provider-specific resume metadata is also
  * validated:
  * <ul>
- *   <li><b>Spanner</b> — encodes the internal partition queue plus scope kind.
+ *   <li><b>Spanner</b> — encodes the internal partition queue.
  *       Legacy tokens that name the removed {@code PhysicalPartition} scope
  *       are rejected with {@code INVALID_REQUEST}.</li>
  *   <li><b>DynamoDB</b> — encodes per-shard cursors and validates them against
  *       the current stream topology.</li>
- *   <li><b>Cosmos</b> — encodes the scope kind in the token. A resume that
- *       switches scope kind is rejected, and legacy tokens that name the
- *       removed {@code PhysicalPartition} scope are rejected with
- *       {@code INVALID_REQUEST}.</li>
+ *   <li><b>Cosmos</b> — encodes scope metadata in the token. Legacy tokens
+ *       that name the removed {@code PhysicalPartition} scope are rejected
+ *       with {@code INVALID_REQUEST}.</li>
  * </ul>
  * In all cases mismatches surface as
  * {@link com.multiclouddb.api.MulticloudDbErrorCategory#INVALID_REQUEST}.
@@ -41,14 +43,12 @@ import java.util.Objects;
 public final class ChangeFeedRequest {
 
     private final ResourceAddress address;
-    private final FeedScope scope;
     private final StartPosition startPosition;
     private final NewItemStateMode newItemStateMode;
     private final int maxPageSize;
 
     private ChangeFeedRequest(Builder b) {
         this.address = Objects.requireNonNull(b.address, "address");
-        this.scope = b.scope != null ? b.scope : FeedScope.entireCollection();
         this.startPosition = b.startPosition != null
                 ? b.startPosition : StartPosition.beginning();
         this.newItemStateMode = b.newItemStateMode != null
@@ -57,7 +57,6 @@ public final class ChangeFeedRequest {
     }
 
     public ResourceAddress address() { return address; }
-    public FeedScope scope() { return scope; }
     public StartPosition startPosition() { return startPosition; }
     public NewItemStateMode newItemStateMode() { return newItemStateMode; }
     /** {@code 0} means provider default. */
@@ -74,18 +73,12 @@ public final class ChangeFeedRequest {
 
     public static final class Builder {
         private final ResourceAddress address;
-        private FeedScope scope;
         private StartPosition startPosition;
         private NewItemStateMode newItemStateMode;
         private int maxPageSize;
 
         private Builder(ResourceAddress address) {
             this.address = Objects.requireNonNull(address, "address");
-        }
-
-        public Builder scope(FeedScope scope) {
-            this.scope = scope;
-            return this;
         }
 
         public Builder startPosition(StartPosition startPosition) {

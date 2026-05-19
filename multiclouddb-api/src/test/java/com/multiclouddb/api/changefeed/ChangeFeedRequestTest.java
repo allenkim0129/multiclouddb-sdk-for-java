@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Unit tests for {@link ChangeFeedRequest}, {@link FeedScope}, and
+ * Unit tests for {@link ChangeFeedRequest} and
  * {@link StartPosition} — sealed-type behavior and builder defaults.
  */
 class ChangeFeedRequestTest {
@@ -18,11 +18,10 @@ class ChangeFeedRequestTest {
     private static final ResourceAddress ADDR = new ResourceAddress("db", "col");
 
     @Test
-    @DisplayName("builder defaults: entire-collection + beginning + INCLUDE_IF_AVAILABLE")
+    @DisplayName("builder defaults: beginning + INCLUDE_IF_AVAILABLE")
     void builderDefaults() {
         ChangeFeedRequest r = ChangeFeedRequest.builder(ADDR).build();
         assertEquals(ADDR, r.address());
-        assertTrue(r.scope() instanceof FeedScope.EntireCollection);
         assertTrue(r.startPosition() instanceof StartPosition.Beginning);
         assertEquals(NewItemStateMode.INCLUDE_IF_AVAILABLE, r.newItemStateMode());
         assertEquals(0, r.maxPageSize());

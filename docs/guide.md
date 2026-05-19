@@ -1180,7 +1180,6 @@ ResourceAddress address = new ResourceAddress("orders_db", "line_items");
 
 // First call: start from the earliest available position.
 ChangeFeedRequest request = ChangeFeedRequest.builder(address)
-        .scope(FeedScope.entireCollection())
         .startPosition(StartPosition.beginning())
         .maxPageSize(500)
         .build();
@@ -1188,7 +1187,6 @@ ChangeFeedRequest request = ChangeFeedRequest.builder(address)
 String token = loadCheckpoint();      // null on first run
 if (token != null) {
     request = ChangeFeedRequest.builder(address)
-            .scope(FeedScope.entireCollection())
             .startPosition(StartPosition.fromContinuationToken(token))
             .maxPageSize(500)
             .build();
@@ -1214,7 +1212,6 @@ while (true) {
     }
 
     request = ChangeFeedRequest.builder(address)
-            .scope(request.scope())
             .startPosition(StartPosition.fromContinuationToken(
                     page.continuationToken()))
             .maxPageSize(500)
@@ -1222,15 +1219,11 @@ while (true) {
 }
 ```
 
-### Feed Scope and Start Position
+### Start Position
 
-`ChangeFeedRequest` has two orthogonal axes:
-
-**Feed scope** — what to read:
-
-| Scope                              | Cosmos | Dynamo | Spanner |
-|------------------------------------|:-:|:-:|:-:|
-| `FeedScope.entireCollection()`     | ✓ | ✓ | ✓ |
+The change feed always reads the **entire collection** — the SDK fans out
+across provider-native partitions (Cosmos feed-ranges, Dynamo shards,
+Spanner partition tokens) internally.
 
 **Start position** — where to start:
 
@@ -1243,9 +1236,6 @@ while (true) {
 Every start-position variant is portable across all providers.
 The change-feed API surface is intentionally identical for Cosmos, Dynamo,
 and Spanner: there are no provider-specific sub-features to probe.
-The SDK handles physical-partition fan-out (Cosmos feed-ranges, Dynamo
-shards, Spanner partition tokens) internally — callers always see a
-single `entireCollection()` stream.
 
 ### Delivery Semantics
 

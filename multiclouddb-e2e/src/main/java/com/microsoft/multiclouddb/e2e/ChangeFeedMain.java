@@ -13,7 +13,6 @@ import com.multiclouddb.api.changefeed.ChangeEvent;
 import com.multiclouddb.api.changefeed.ChangeFeedPage;
 import com.multiclouddb.api.changefeed.ChangeFeedRequest;
 import com.multiclouddb.api.changefeed.ChangeType;
-import com.multiclouddb.api.changefeed.FeedScope;
 import com.multiclouddb.api.changefeed.NewItemStateMode;
 import com.multiclouddb.api.changefeed.StartPosition;
 
@@ -141,7 +140,6 @@ public class ChangeFeedMain {
         // Capture an anchor token at now(); we will both drain forward
         // from it AND replay from it later to verify at-least-once.
         ChangeFeedRequest anchorReq = ChangeFeedRequest.builder(address)
-                .scope(FeedScope.entireCollection())
                 .startPosition(StartPosition.now())
                 .maxPageSize(100)
                 .build();
@@ -174,7 +172,7 @@ public class ChangeFeedMain {
         // Drain forward — must observe all 3 event types for our keys.
         DrainResult drained = drain(anchorToken, seededKeys,
                 EnumSet.of(ChangeType.CREATE, ChangeType.UPDATE, ChangeType.DELETE),
-                100, FeedScope.entireCollection(), NewItemStateMode.INCLUDE_IF_AVAILABLE,
+                100, NewItemStateMode.INCLUDE_IF_AVAILABLE,
                 DRAIN_BUDGET_MS);
         System.out.printf("  drain: pages=%d total=%d typesSeen=%s keysSeen=%s%n",
                 drained.pages, drained.totalEvents, drained.typesSeen, drained.keysSeen);
@@ -198,7 +196,7 @@ public class ChangeFeedMain {
         System.out.println("  replaying from original anchor token (at-least-once)…");
         DrainResult replayed = drain(anchorToken, seededKeys,
                 EnumSet.of(ChangeType.CREATE, ChangeType.UPDATE, ChangeType.DELETE),
-                100, FeedScope.entireCollection(), NewItemStateMode.INCLUDE_IF_AVAILABLE,
+                100, NewItemStateMode.INCLUDE_IF_AVAILABLE,
                 DRAIN_BUDGET_MS);
         System.out.printf("  replay: pages=%d total=%d typesSeen=%s keysSeen=%s%n",
                 replayed.pages, replayed.totalEvents,
@@ -350,7 +348,6 @@ public class ChangeFeedMain {
             Set<String> targetKeys,
             Set<ChangeType> requiredTypes,
             int maxPageSize,
-            FeedScope scope,
             NewItemStateMode mode,
             long budgetMs) throws Exception {
         DrainResult r = new DrainResult();
@@ -359,7 +356,6 @@ public class ChangeFeedMain {
         while (System.currentTimeMillis() < deadline
                 && !r.typesSeen.containsAll(requiredTypes)) {
             ChangeFeedRequest next = ChangeFeedRequest.builder(address)
-                    .scope(scope)
                     .startPosition(StartPosition.fromContinuationToken(token))
                     .newItemStateMode(mode)
                     .maxPageSize(maxPageSize)

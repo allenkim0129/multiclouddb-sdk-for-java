@@ -9,7 +9,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
-- **Breaking change:** removed public `listPhysicalPartitions` support and `FeedScope.PhysicalPartition` from the portable change-feed API. DynamoDB still performs internal multi-shard fan-out behind `FeedScope.entireCollection()`.
+- **Breaking change:** removed public `listPhysicalPartitions` support and `FeedScope` from the portable change-feed API. DynamoDB still performs internal multi-shard fan-out; the change feed always reads the entire collection.
 
 ### Added
 

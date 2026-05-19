@@ -4,12 +4,13 @@
 **Status**: Implementing
 **Input**: Implements User Story 8 / FR-065..070 of `specs/001-clouddb-sdk/spec.md`
 
-> **⚠️ Design Change**: `FeedScope.PhysicalPartition`, `listPhysicalPartitions`,
+> **⚠️ Design Change**: `FeedScope` (including `PhysicalPartition`, `LogicalPartition`,
+> and `EntireCollection`), `listPhysicalPartitions`,
 > `partitionRetired`, and `childPartitions` have been **removed** from the public
 > API. The physical-partition abstraction was not truly portable — Cosmos uses
 > stable feed ranges, DynamoDB uses ephemeral shards, and Spanner uses ephemeral
-> partition tokens. The SDK now handles partition fan-out internally within
-> `FeedScope.entireCollection()`. References to these concepts in the spec below
+> partition tokens. The SDK now handles partition fan-out internally and always
+> reads the entire collection. References to these concepts in the spec below
 > reflect the original design and are retained for historical context.
 
 ## User Scenarios & Testing

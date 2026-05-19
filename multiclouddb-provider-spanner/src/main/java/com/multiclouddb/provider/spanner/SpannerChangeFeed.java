@@ -27,7 +27,6 @@ import com.multiclouddb.api.changefeed.ChangeEvent;
 import com.multiclouddb.api.changefeed.ChangeFeedPage;
 import com.multiclouddb.api.changefeed.ChangeFeedRequest;
 import com.multiclouddb.api.changefeed.ChangeType;
-import com.multiclouddb.api.changefeed.FeedScope;
 import com.multiclouddb.api.changefeed.NewItemStateMode;
 import com.multiclouddb.api.changefeed.StartPosition;
 import com.multiclouddb.api.changefeed.internal.ContinuationTokenCodec;
@@ -63,7 +62,7 @@ import java.util.Map;
  *
  * <p>Caveats:
  * <ul>
- *   <li>{@link FeedScope.EntireCollection} is implemented as a
+ *   <li>The entire-collection scope is implemented as a
  *       partition-queue iterator: a fresh request bootstraps from the root
  *       (NULL token) and the continuation carries the work queue forward.
  *       Per-page ordering is per-partition only.</li>

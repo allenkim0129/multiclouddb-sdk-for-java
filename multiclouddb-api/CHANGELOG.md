@@ -20,16 +20,17 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   - `MulticloudDbClient.readChanges(ChangeFeedRequest, OperationOptions)`
     returning a `ChangeFeedPage` of `ChangeEvent` records and a
     continuation token.
-  - `ChangeFeedRequest` builder with `FeedScope` (sealed: `EntireCollection`),
+  - `ChangeFeedRequest` builder with
     `StartPosition` (sealed: `Beginning`, `Now`,
     `FromContinuationToken`), `maxPageSize`, and `NewItemStateMode`
-    (`INCLUDE_IF_AVAILABLE` default, `OMIT`).
+    (`INCLUDE_IF_AVAILABLE` default, `OMIT`). The change feed always
+    reads the entire collection.
   - `ChangeEvent` carrying `ChangeType` (CREATE / UPDATE / DELETE), key,
     data, commit timestamp, and provider sequence.
 - New capability token introspectable via `client.capabilities()`:
   - `Capability.CHANGE_FEED` — change-data-capture support. The change-feed
-    API is **fully portable**: every `FeedScope` and `StartPosition`
-    variant must work on every provider that advertises this capability.
+    API is **fully portable**: every `StartPosition`
+    variant works on every provider that advertises this capability.
 - `ChangeFeedRequest` and change-feed calls fail fast with
   `INVALID_REQUEST` when continuation tokens cross
   providers / resources.

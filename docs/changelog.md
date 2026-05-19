@@ -16,9 +16,10 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - New `com.multiclouddb.api.changefeed` package with
   `MulticloudDbClient.readChanges`,
   `ChangeFeedRequest` / `ChangeFeedPage` / `ChangeEvent`, and sealed
-  `FeedScope` and `StartPosition`
+  `StartPosition`
   (Beginning / Now / FromContinuationToken) types. The API surface is
-  **fully portable**: every variant works on every provider.
+  **fully portable**: every option combination works identically on every
+  provider.
 - New capability token: `change_feed` — introspectable via
   `client.capabilities()`.
 - New SPI hook `MulticloudDbProviderClient.readChanges`.
