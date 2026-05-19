@@ -167,9 +167,13 @@ public abstract class ChangeFeedConformanceTest {
     @DisplayName("FR-CF-06: continuation token from another provider rejected")
     void crossProviderTokenRejected() {
         assumeChangeFeedSupported();
-        // Hand-crafted token that decodes to a different provider id.
+        // Hand-crafted token whose resource fingerprint matches the current
+        // address but whose provider id does not — so the codec's *provider-id*
+        // validation (FR-CF-06) is the only check that can reject it.
+        String r = getAddress().database() + "/" + getAddress().collection();
         String forged = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
-                "{\"v\":1,\"p\":\"__not_my_provider__\",\"r\":\"x/y\",\"c\":\"x\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                ("{\"v\":1,\"p\":\"__not_my_provider__\",\"r\":\"" + r + "\",\"c\":\"x\"}")
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
         ChangeFeedRequest req = ChangeFeedRequest.builder(getAddress())
                 .startPosition(StartPosition.fromContinuationToken(forged))
                 .build();
