@@ -62,12 +62,14 @@ runtime dependencies:
         <version>0.1.0-beta.1</version>
         <scope>runtime</scope>
     </dependency>
-    ```
 
-    Spanner support is source-available but its Maven artifact is not yet
-    published. Do not add `multiclouddb-provider-spanner` as a normal Maven
-    dependency until it is published; instead, build it from source if you
-    need to evaluate it locally.
+    <dependency>
+        <groupId>com.microsoft.multiclouddb</groupId>
+        <artifactId>multiclouddb-provider-spanner</artifactId>
+        <version>0.1.0-beta.1</version>
+        <scope>runtime</scope>
+    </dependency>
+    ```
 ---
 
 ## 3. Write Portable Code

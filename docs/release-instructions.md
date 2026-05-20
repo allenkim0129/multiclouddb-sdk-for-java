@@ -135,12 +135,12 @@ git push origin multiclouddb-provider-cosmos-v0.1.0-beta.1
 
 The release pipeline starts automatically. Test gates run based on the module:
 
-| Module | Unit Tests | Cosmos Emulator | DynamoDB Local |
-|--------|-----------|-----------------|----------------|
-| `multiclouddb-api` | ✅ | ✅ | ✅ |
-| `multiclouddb-provider-cosmos` | ✅ | ✅ | ⏭ skipped |
-| `multiclouddb-provider-dynamo` | ✅ | ⏭ skipped | ✅ |
-| `multiclouddb-provider-spanner` | ✅ | ⏭ skipped | ⏭ skipped |
+| Module | Unit Tests | Cosmos Emulator | DynamoDB Local | Spanner Emulator |
+|--------|-----------|-----------------|----------------|------------------|
+| `multiclouddb-api` | ✅ | ✅ | ✅ | ✅ |
+| `multiclouddb-provider-cosmos` | ✅ | ✅ | ⏭ skipped | ⏭ skipped |
+| `multiclouddb-provider-dynamo` | ✅ | ⏭ skipped | ✅ | ⏭ skipped |
+| `multiclouddb-provider-spanner` | ✅ | ⏭ skipped | ⏭ skipped | ✅ |
 
 If any gate fails:
 - Check the test reports uploaded as workflow artifacts

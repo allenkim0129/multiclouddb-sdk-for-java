@@ -9,6 +9,11 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- **Spanner provider is no longer marked preview.** Conformance with Cosmos and
+  DynamoDB is now verified on every PR build by the `emulator-spanner` CI job,
+  which runs the full conformance suite against the Google Cloud Spanner
+  Emulator. The provider supports the same LCD surface as the other providers
+  and is suitable for production use.
 - **`ensureDatabase(String)` now validates that the requested database matches
   the configured `databaseId`.** Operations always route to the database the
   client was constructed with, so accepting a different name here would silently
