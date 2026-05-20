@@ -70,6 +70,39 @@ For changes under `specs/<NNN-feature>/`:
   e.g., a parameter or mode was removed late), `spec.md` / `plan.md` /
   `tasks.md` must reflect the **shipped** behaviour, not the original design.
 
+## Cost-efficiency parity (🟡 by default; 🔴 when severely asymmetric)
+
+A feature that achieves functional portability by burning disproportionate
+cost on one provider (Cosmos RUs, DynamoDB RCU/WCU, Spanner processing units)
+is a portability anti-pattern. Functional `Equivalent` plus a 10× cost on one
+provider is a real bug — the user's bill is part of the contract.
+
+Patterns to flag:
+
+- **Cosmos**: cross-partition query (no `partitionKey` set) used for what
+  could be a point read; `SELECT *` when only a few fields are read;
+  `ORDER BY` on an unindexed field; N individual point reads where
+  `readMany` / bulk would do.
+- **DynamoDB**: `Scan` (with or without filter) used where `Query` (or a GSI
+  `Query`) would do; N individual `GetItem` calls instead of `BatchGetItem`;
+  `FilterExpression` consuming RCUs for items examined but discarded; GSI
+  queries that fall through to a base-table read because the projection is
+  insufficient.
+- **Spanner**: full table scan where a secondary-indexed read would suffice;
+  DML for high-volume row writes that should use the mutations API (or vice
+  versa); strong reads on read-mostly paths where bounded staleness is
+  acceptable.
+
+When raising a finding, name the cheap path the provider offers and tie the
+recommendation to it (not just "this is expensive"). Promote to 🔴 when the
+cost asymmetry is **severe** (an order of magnitude or worse) **and
+unbounded** (scales with data size or request volume, not capped).
+
+If a feature can't be brought to cost parity across providers, **prefer
+declaring it `Capability-gated`** (`CapabilitySet` + `UNSUPPORTED_CAPABILITY`)
+over implementing it at an order-of-magnitude cost penalty. A documented gap
+is portable; a silent cost spike is not.
+
 ## Documentation alignment (🔴 if user-visible change ships without docs)
 
 | Change kind | Doc(s) that must update in the same PR |

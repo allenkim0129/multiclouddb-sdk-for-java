@@ -155,6 +155,39 @@ If the diff references `specs/<NNN-feature>/`:
   behaviour not described in the spec, (c) design decisions that evolved
   during review and now disagree with `spec.md` / `plan.md` / `tasks.md`.
 
+**Cost-efficiency parity** (🟡 by default; 🔴 when severely asymmetric)
+
+Functional `Equivalent` across providers is not enough if one provider pays
+an order-of-magnitude cost penalty (Cosmos RUs, DynamoDB RCU/WCU, Spanner
+processing units). The user's bill is part of the portability contract.
+
+For each portable operation introduced or modified, identify the cost driver
+on each provider and call out asymmetry:
+
+- **Cosmos**: cross-partition query (no `partitionKey` set) used for what
+  could be a point read; `SELECT *` when only a few fields are needed;
+  `ORDER BY` on an unindexed field; N point reads where `readMany` / bulk
+  would do; large page sizes that magnify RU charges per round trip.
+- **DynamoDB**: `Scan` (with or without filter) used where `Query` (or a GSI
+  `Query`) would do; N individual `GetItem` calls instead of `BatchGetItem`
+  (up to 100 per batch); `FilterExpression` that consumes RCUs for items
+  examined and discarded; GSI queries that fall through to a base-table read
+  because the GSI projection is insufficient.
+- **Spanner**: full table scan where a secondary-indexed read would suffice;
+  high-volume row writes via DML when the mutations API is cheaper (or vice
+  versa); strong reads on read-mostly paths where bounded staleness would do.
+
+Tie the finding to the cheap path the provider offers (e.g., *"this routes
+through `executeScanWithFilter` on DynamoDB; use `Query` on the partition
+key instead"*), not just "this is expensive."
+
+When a provider genuinely cannot match the cost of the others, **prefer
+declaring it `Capability-gated`** (`CapabilitySet` + `UNSUPPORTED_CAPABILITY`)
+over implementing it at a steep cost penalty. A documented gap is portable;
+a silent cost spike is not. Promote a cost-efficiency finding from 🟡 to 🔴
+when the cost asymmetry is **severe** (an order of magnitude or worse) **and
+unbounded** (scales with data size or request volume, not capped).
+
 **Documentation alignment** (🔴 when user-visible change ships without docs)
 
 | Change | Required doc update in the same PR |
@@ -204,6 +237,25 @@ For each `Divergent` or `Missing` verdict, **classify impact**:
 `High` and `Medium` are 🔴 unless explicitly gated via `CapabilitySet` +
 `UNSUPPORTED_CAPABILITY` (in which case they're 💬).
 
+#### Cost-efficiency sub-matrix
+
+For any portable read/write/query operation introduced or modified, add a
+companion table tracking the cost driver on each provider. This is separate
+from the behaviour parity matrix because a row can be functionally
+`Equivalent` and still have wildly asymmetric cost.
+
+| Operation | Cosmos cost driver | DynamoDB cost driver | Spanner cost driver | Concern |
+|---|---|---|---|---|
+| e.g. `query(no partitionKey, no expression)` | cross-partition scan → high RU per page | full-table `Scan` → high RCU, examines every item | full table scan → high CPU/IO | 🟡 unbounded on all three; should this be `Capability-gated`? |
+| e.g. `query(partitionKey=X)` | partition-scoped query → bounded RU | `Query` on PK → bounded RCU | indexed read → bounded CPU/IO | OK — symmetric and bounded |
+
+When a row is asymmetric (cheap on two providers, expensive on the third),
+promote the finding from 🟡 to 🔴 if the cost is **severe** (order of
+magnitude worse) **and unbounded** (scales with data size or request volume).
+Otherwise leave it 🟡 with a concrete recommendation: name the cheaper path
+the provider offers (e.g., *"prefer `Query` over `Scan` here"*) or recommend
+declaring the operation `Capability-gated`.
+
 ### Step 5 — Severity self-challenge
 
 Before finalising any 🔴 Blocking finding, run this check:
@@ -219,7 +271,8 @@ Before finalising any 🔴 Blocking finding, run this check:
    or a doc that already covers the concern? If so, the impact is bounded.
 4. **Distinguish correctness from efficiency** — Wrong results, data loss, or
    silent provider divergence is 🔴. A suboptimal but correct implementation
-   is 🟡 at most.
+   is 🟡 at most — unless cost asymmetry is severe and unbounded (see the
+   cost-efficiency sub-matrix), in which case it escalates to 🔴.
 
 Mandatory escalation: **any cross-provider divergence not gated by
 `CapabilitySet`** stays 🔴, regardless of perceived severity.
@@ -270,8 +323,8 @@ Per-finding template:
 ```
 
 **Categories:** `Provider Symmetry` · `Conformance` · `Spec Conformance` ·
-`Capability Declaration` · `Error Normalization` · `Doc Alignment` ·
-`Changelog` · `E2E` · `Correctness`.
+`Capability Declaration` · `Error Normalization` · `Cost Efficiency` ·
+`Doc Alignment` · `Changelog` · `E2E` · `Correctness`.
 
 ⛔ **Hard Gate.** Stop after presenting the report. Do **not** modify any
 file, do **not** stage anything, do **not** post anything to GitHub. Wait for
