@@ -36,7 +36,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `IllegalStateException` instead of a racy `NullPointerException`.
 - **Default ORDER BY no longer duplicates primary-key columns** when the caller
   already sorts by `partitionKey` and/or `sortKey` — only the missing key is
-  appended as a tiebreaker.
+  appended as a tiebreaker. In addition, if the caller-supplied SQL already
+  contains its own `ORDER BY` clause (e.g., a raw GoogleSQL expression passed
+  via `QueryRequest.expression()`), no default or tiebreaker `ORDER BY` is
+  appended at all — the caller's ordering is honored verbatim.
 - **`setMutationValue` no longer fails on common Java types** (e.g.
   `java.time.Instant`). JSON serialisation is restricted to `Map`/`Collection`;
   every other type falls back to `value.toString()`.

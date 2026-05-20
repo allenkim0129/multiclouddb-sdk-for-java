@@ -40,6 +40,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.regex.Pattern;
 
 /**
  * Google Cloud Spanner provider client implementing CRUD + query operations.
@@ -64,6 +65,24 @@ import java.util.*;
 public class SpannerProviderClient implements MulticloudDbProviderClient {
 
     private static final Logger LOG = LoggerFactory.getLogger(SpannerProviderClient.class);
+
+    /**
+     * Detects an {@code ORDER BY} clause already present in caller-supplied SQL
+     * (e.g., a raw GoogleSQL expression passed via {@link QueryRequest#expression()}
+     * or a {@link TranslatedQuery} that already includes ordering).
+     * Used by {@link #appendResultSetControl} to avoid emitting a duplicate
+     * {@code ORDER BY} clause.
+     */
+    private static final Pattern ORDER_BY_CLAUSE =
+            Pattern.compile("\\bORDER\\s+BY\\b", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Returns {@code true} if {@code sql} already contains an {@code ORDER BY}
+     * clause (case-insensitive). Package-private for unit testing.
+     */
+    static boolean hasOrderByClause(String sql) {
+        return sql != null && ORDER_BY_CLAUSE.matcher(sql).find();
+    }
 
     private final Spanner spanner;
     private final DatabaseClient databaseClient;
@@ -712,8 +731,20 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * <p>
      * When no explicit ordering is requested, a default {@code ORDER BY partitionKey, sortKey}
      * is appended to guarantee deterministic OFFSET-based pagination.
+     * <p>
+     * If the supplied {@code sql} already contains an {@code ORDER BY} clause
+     * (case-insensitive) — e.g., a raw GoogleSQL expression passed via
+     * {@link QueryRequest#expression()} — this method returns the statement
+     * unchanged. The caller has already specified ordering and owns the
+     * determinism contract.
      */
     private String appendResultSetControl(String sql, QueryRequest query) {
+        // Caller-supplied SQL already orders its results — do not emit a
+        // second ORDER BY clause, even when the caller also populates
+        // QueryRequest.orderBy().
+        if (hasOrderByClause(sql)) {
+            return sql;
+        }
         StringBuilder result = new StringBuilder(sql);
         if (query != null && query.orderBy() != null && !query.orderBy().isEmpty()) {
             boolean sortsByPartitionKey = false;
