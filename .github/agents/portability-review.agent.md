@@ -219,9 +219,12 @@ version header is out of scope here — that's `release.agent.md`.
 
 **E2E coverage** (🟡)
 
-- New cross-provider behaviour exercised by `multiclouddb-e2e/` (e.g., a
-  `*Main.java` analogous to `ChangeFeedMain.java`), or a documented reason it
-  isn't.
+- New cross-provider behaviour exercised by `multiclouddb-e2e/` (currently
+  driven by `Main.java`, which runs the same CRUD + query calls against
+  whichever provider the active `*.properties` selects). New scenarios
+  should either extend `Main.java` or add an analogous entry point under
+  `multiclouddb-e2e/src/main/java/.../e2e/`, or document why they aren't
+  cheap to exercise end-to-end.
 
 ### Step 4 — Build a cross-provider parity matrix
 
@@ -231,7 +234,12 @@ touches.**
 
 | Behaviour | `multiclouddb-api` SPI | Cosmos | Dynamo | Spanner | Verdict | Evidence |
 |---|---|---|---|---|---|---|
-| e.g. read on missing item | `MulticloudDbClient.read` returns `null` | `CosmosProviderClient.java:120` returns `null` | `DynamoProviderClient.java:88` returns `null` | `SpannerProviderClient.java:96` throws → ❌ | **Divergent** | Spanner throws `MulticloudDbException(NOT_FOUND)` instead of returning `null` |
+| _(template — replace with real rows)_ `<behaviour>` | `<ApiType>.<method>` returns/throws `<X>` | `Cosmos<Adapter>.java:<line>` does `<X>` | `Dynamo<Adapter>.java:<line>` does `<X>` | `Spanner<Adapter>.java:<line>` does `<Y>` → ❌ | **Divergent** | one-line summary of the cross-provider deviation, with the citing line(s) |
+
+> Rows above are **illustrative placeholders only** — substitute real
+> file:line citations from the PR under review. Do **not** copy the
+> placeholder text into a real review. Every cell that names a file must
+> point at a path that exists at the PR's HEAD.
 
 **Verdict values:** `Equivalent` | `Partially Equivalent` | `Divergent` |
 `Missing` (no implementation) | `Capability-gated` (intentionally unsupported
