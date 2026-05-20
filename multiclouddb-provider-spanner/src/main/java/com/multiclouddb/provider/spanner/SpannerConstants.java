@@ -39,7 +39,14 @@ public final class SpannerConstants {
     /** The sort key column — stores {@code Key.sortKey()} for item identification. */
     public static final String FIELD_SORT_KEY = "sortKey";
 
-    /** The data column used for document fields not stored as separate columns. */
+    /**
+     * Internal metadata column. Stores a JSON array of the field names that were
+     * explicitly written by the SDK on each row, so {@link SpannerRowMapper} can
+     * distinguish &quot;explicitly set to null&quot; from &quot;empty schema column&quot;
+     * — a distinction that Spanner's fixed schema otherwise loses. This column is
+     * reserved by the SDK; {@link com.multiclouddb.spi.MulticloudDbProviderClient#create}
+     * and friends skip any user-supplied field with this name.
+     */
     public static final String FIELD_DATA = "data";
 
     /**

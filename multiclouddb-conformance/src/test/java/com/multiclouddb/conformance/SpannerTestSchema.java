@@ -18,13 +18,20 @@ import java.util.concurrent.ExecutionException;
  * When the database already exists (e.g. created by {@code ensureContainer}
  * with a minimal schema), the table is dropped and recreated with the full
  * conformance schema.
+ * <p>
+ * Project / instance / emulator host are resolved from the same system
+ * properties and environment variables that {@link ConformanceConfig}
+ * uses to build the Spanner client, so schema provisioning always targets
+ * the same Spanner instance the client connects to.
  */
 public final class SpannerTestSchema {
 
-    static final String EMULATOR_HOST = System.getProperty(
-            "spanner.emulatorHost", "localhost:9010");
-    static final String PROJECT_ID = "test-project";
-    static final String INSTANCE_ID = "test-instance";
+    static final String EMULATOR_HOST = ConformanceConfig.resolve(
+            "spanner.emulatorHost", "SPANNER_EMULATOR_HOST", "localhost:9010");
+    static final String PROJECT_ID = ConformanceConfig.resolve(
+            "spanner.projectId", "SPANNER_PROJECT_ID", "test-project");
+    static final String INSTANCE_ID = ConformanceConfig.resolve(
+            "spanner.instanceId", "SPANNER_INSTANCE_ID", "test-instance");
 
     /**
      * DDL for the conformance test table — includes all columns used across

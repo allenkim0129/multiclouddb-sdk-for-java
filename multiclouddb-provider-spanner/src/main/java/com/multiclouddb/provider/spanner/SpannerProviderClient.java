@@ -545,6 +545,12 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     /**
      * Ensures the Spanner database exists, creating it if absent.
      * <p>
+     * The {@code database} argument <em>must equal</em> the {@code databaseId} this
+     * client was constructed with — operations route to the bound database regardless
+     * of {@link com.multiclouddb.api.ResourceAddress#database()}, so accepting a
+     * different name here would silently provision the wrong database. An
+     * {@link IllegalArgumentException} is thrown if the names disagree.
+     * <p>
      * <strong>Emulator mode</strong> ({@code emulatorHost} configured): also ensures the
      * Spanner instance exists, creating it with the emulator's built-in
      * {@code emulator-config} instance config if necessary. This is required because
@@ -560,6 +566,12 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     @Override
     public void ensureDatabase(String database) {
         checkOpen();
+        if (!databaseId.equals(database)) {
+            throw new IllegalArgumentException(
+                    "ensureDatabase('" + database + "') does not match the configured databaseId ('"
+                            + databaseId + "'); this client routes operations to the configured "
+                            + "database only. Construct a separate client for a different database.");
+        }
         try {
             if (emulatorMode) {
                 // Emulator only: create the instance with the built-in emulator config.

@@ -7,6 +7,40 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **`ensureDatabase(String)` now validates that the requested database matches
+  the configured `databaseId`.** Operations always route to the database the
+  client was constructed with, so accepting a different name here would silently
+  provision the wrong database. The provider now throws `IllegalArgumentException`
+  if the names disagree.
+- **Spanner instance creation in `ensureDatabase` is gated to emulator mode.**
+  In production (no `emulatorHost` configured), the instance is expected to
+  pre-exist; only the database is created. Creating a Spanner instance is a
+  billable, region-specific operation that should be done deliberately.
+- **Complex container values (`Map`, `Collection`) round-trip through STRING
+  columns using an unambiguous prefix marker** (`U+0001` + `mcdb:json:`).
+  `SpannerRowMapper` only parses values that carry the marker, so user strings
+  that happen to start with `{` or `[` are returned verbatim.
+- **`BETWEEN` translation now wraps in parentheses** (`(field BETWEEN @lo AND @hi)`).
+  Mirrors the parenthesised form emitted by sibling translators so cross-provider
+  query stitching is uniform. GoogleSQL parses both forms correctly, so this is
+  not a correctness fix on Spanner — purely a consistency improvement. The
+  output of `TranslatedQuery.whereClause()` is now parenthesised.
+
+### Fixed
+
+- **Race / NPE hazard in `close()`.** The `Spanner` field is now `final` again
+  and `close()` is idempotent via a `volatile boolean closed` flag. All public
+  entry points call `checkOpen()` so post-close callers receive a deterministic
+  `IllegalStateException` instead of a racy `NullPointerException`.
+- **Default ORDER BY no longer duplicates primary-key columns** when the caller
+  already sorts by `partitionKey` and/or `sortKey` — only the missing key is
+  appended as a tiebreaker.
+- **`setMutationValue` no longer fails on common Java types** (e.g.
+  `java.time.Instant`). JSON serialisation is restricted to `Map`/`Collection`;
+  every other type falls back to `value.toString()`.
+
 ### Documentation
 
 - **`delete()` of a missing key remains a silent no-op (idempotent).** The
@@ -18,14 +52,6 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `MulticloudDbClient.delete(...)` and in `docs/guide.md`. Callers needing to detect a
   missing key should use `read()`, which returns `null` on every provider
   when the key does not exist.
-
-### Changed
-
-- **`BETWEEN` translation now wraps in parentheses** (`(field BETWEEN @lo AND @hi)`).
-  Mirrors the parenthesised form emitted by sibling translators so cross-provider
-  query stitching is uniform. GoogleSQL parses both forms correctly, so this is
-  not a correctness fix on Spanner — purely a consistency improvement. The
-  output of `TranslatedQuery.whereClause()` is now parenthesised.
 
 ## [0.1.0-beta.1] — 2026-04-23
 
