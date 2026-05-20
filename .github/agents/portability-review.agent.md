@@ -1,7 +1,8 @@
 ---
 description: >
   Deep portability & doc-alignment reviewer for multiclouddb-sdk-for-java.
-  Reviews staged/unstaged changes, a branch diff against upstream/main, or a
+  Reviews staged/unstaged changes, a branch diff against the canonical main
+  (auto-detected from `upstream/main` / `origin/main` / `main`), or a
   specific PR. Enforces cross-provider symmetry (Cosmos/Dynamo/Spanner),
   conformance coverage, capability declarations, spec conformance, and
   documentation alignment. Produces severity-tagged findings with a
@@ -17,8 +18,9 @@ $ARGUMENTS
 
 You **MUST** consider the user input before proceeding (if not empty). The input
 may specify a scope ("review the staged changes", "review the diff against
-upstream/main", "review PR #74", "focus on docs only", etc.). Default scope: the
-diff between the current branch and `upstream/main`.
+main", "review PR #74", "focus on docs only", etc.). Default scope: the diff
+between the current branch and the canonical-main ref (tries `upstream/main`,
+then `origin/main`, then local `main` — see Step 1).
 
 ## Overview
 
@@ -71,13 +73,22 @@ PRs unless explicitly approved**.
 
 ### Step 1 — Load the diff and understand intent
 
-Pick the matching command for the requested scope (default = branch vs.
-upstream/main):
+Pick the matching command for the requested scope. The default scope is the
+current branch vs. the canonical `main`, which may be tracked by either
+`upstream/main` (forked-repo workflow, the convention for contributing to
+`microsoft/multiclouddb-sdk-for-java`) or `origin/main` (direct-clone
+workflow).
 
 ```bash
-# default: branch vs upstream
-git --no-pager diff --stat upstream/main...HEAD
-git --no-pager diff upstream/main...HEAD
+# Detect the right base ref. Prefer `upstream/main` (forked-repo workflow);
+# fall back to `origin/main` (direct clone); fall back to local `main`.
+BASE=$(git rev-parse --verify --quiet upstream/main >/dev/null && echo upstream/main \
+       || (git rev-parse --verify --quiet origin/main >/dev/null && echo origin/main) \
+       || echo main)
+
+# default: branch vs. canonical main
+git --no-pager diff --stat "$BASE...HEAD"
+git --no-pager diff "$BASE...HEAD"
 
 # staged only
 git --no-pager diff --staged
@@ -86,6 +97,10 @@ git --no-pager diff --staged
 gh pr diff <NUMBER> --repo microsoft/multiclouddb-sdk-for-java
 gh pr view <NUMBER> --repo microsoft/multiclouddb-sdk-for-java --json title,body
 ```
+
+If `$BASE` resolves to local `main`, run `git fetch` first so the comparison
+is against an up-to-date ref — otherwise the diff may include commits already
+merged upstream.
 
 Build the mental model:
 
