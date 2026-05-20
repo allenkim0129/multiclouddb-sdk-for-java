@@ -150,15 +150,13 @@ internal token-based traversal, not sort key - this is a known limitation.
 
 ### Spanner
 
-The Spanner provider applies the same default ORDER BY behaviour as Cosmos and
-DynamoDB: queries are sorted by `partitionKey ASC, sortKey ASC` unless the
-caller supplies their own `query.orderBy(...)`. When the caller does supply
-explicit ordering, the SDK appends only the missing primary-key columns as
-tiebreakers — no duplicate column references are emitted.
+The Spanner provider does not yet implement default sort-key ordering.
+Consumers relying on consistent cross-provider sort behavior should not use
+the Spanner provider until this gap is addressed.
 
-Conformance with Cosmos and DynamoDB is verified by the `emulator-spanner` CI
-job, which runs the full conformance suite against the Google Cloud Spanner
-Emulator on every PR build.
+> **Tracking**: A follow-up issue will be filed to implement default sort-key
+> ordering for the Spanner provider. Until resolved, do not mix Spanner with
+> Cosmos or DynamoDB in conformance-sensitive workloads.
 
 ## Escape Hatch Policy
 
