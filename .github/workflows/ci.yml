@@ -332,7 +332,8 @@ jobs:
               echo "::error::Failed to pull $IMAGE after 5 attempts"
               exit 1
             fi
-            WAIT=$((i * 15))
+            # Exponential backoff: 15s, 30s, 60s, 120s between attempts.
+            WAIT=$((15 * (1 << (i - 1))))
             echo "Pull failed, waiting ${WAIT}s before retry..."
             sleep "$WAIT"
           done
@@ -344,8 +345,11 @@ jobs:
       - name: Wait for Spanner Emulator
         run: |
           echo "Waiting for Spanner Emulator to be ready..."
+          # Probe instanceConfigs — the emulator pre-populates this list, so it
+          # returns HTTP 200 once the REST/gRPC stack is up and does not depend
+          # on any user-created project/instance.
           timeout 60 bash -c '
-            until curl -fsS http://localhost:9020/v1/projects/test-project/instances >/dev/null 2>&1; do
+            until curl -fsS http://localhost:9020/v1/projects/test-project/instanceConfigs >/dev/null 2>&1; do
               echo "  Not ready yet, retrying in 2s..."
               sleep 2
             done

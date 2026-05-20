@@ -65,12 +65,14 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
 
     private static final Logger LOG = LoggerFactory.getLogger(SpannerProviderClient.class);
 
-    private Spanner spanner;
+    private final Spanner spanner;
     private final DatabaseClient databaseClient;
     private final MulticloudDbClientConfig config;
     private final String projectId;
     private final String instanceId;
     private final String databaseId;
+    private final boolean emulatorMode;
+    private volatile boolean closed = false;
 
     /**
      * Constructs a Cloud Spanner provider client from the supplied configuration.
@@ -90,6 +92,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
         this.instanceId = config.connection().get(SpannerConstants.CONFIG_INSTANCE_ID);
         this.databaseId = config.connection().get(SpannerConstants.CONFIG_DATABASE_ID);
         String emulatorHost = config.connection().get(SpannerConstants.CONFIG_EMULATOR_HOST);
+        this.emulatorMode = emulatorHost != null && !emulatorHost.isBlank();
 
         if (instanceId == null || instanceId.isBlank()) {
             throw new IllegalArgumentException(SpannerConstants.ERR_INSTANCE_ID_REQUIRED);
@@ -103,7 +106,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                 .setHeaderProvider(FixedHeaderProvider.create(
                         "user-agent", SdkUserAgent.userAgent(config)));
 
-        if (emulatorHost != null && !emulatorHost.isBlank()) {
+        if (emulatorMode) {
             builder.setEmulatorHost(emulatorHost);
         }
 
@@ -138,6 +141,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen();
         try {
             String table = address.collection();
             Mutation.WriteBuilder mutation = Mutation.newInsertBuilder(table)
@@ -170,6 +174,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen();
         try {
             String table = address.collection();
             Mutation.WriteBuilder mutation = Mutation.newUpdateBuilder(table)
@@ -200,6 +205,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen();
         try {
             String table = address.collection();
             Mutation.WriteBuilder mutation = Mutation.newReplaceBuilder(table)
@@ -267,6 +273,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public DocumentResult read(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
+        checkOpen();
         try {
             String table = address.collection();
             String partitionKeyVal = key.partitionKey();
@@ -319,6 +326,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void delete(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
+        checkOpen();
         try {
             String table = address.collection();
             String partitionKeyVal = key.partitionKey();
@@ -362,6 +370,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public QueryPage query(ResourceAddress address, QueryRequest query, OperationOptions options) {
+        checkOpen();
         try {
             String table = address.collection();
             long offset = SpannerContinuationToken.decode(query.continuationToken());
@@ -439,6 +448,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     @Override
     public QueryPage queryWithTranslation(ResourceAddress address, TranslatedQuery translated,
             QueryRequest query, OperationOptions options) {
+        checkOpen();
         try {
             long offset = SpannerContinuationToken.decode(query.continuationToken());
             int pageSize = query.maxPageSize() != null ? query.maxPageSize() : SpannerConstants.PAGE_SIZE_DEFAULT;
@@ -512,9 +522,21 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
 
     @Override
     public synchronized void close() {
-        if (spanner != null) {
-            spanner.close();
-            spanner = null;
+        if (closed) return;
+        closed = true;
+        // Spanner.close() is idempotent in the SDK; we keep the reference final
+        // so concurrent callers cannot observe a NULL or half-replaced field.
+        spanner.close();
+    }
+
+    /**
+     * Guards public entry points against use after {@link #close()}.
+     * Provides deterministic behaviour instead of relying on the SDK's
+     * post-close exceptions.
+     */
+    private void checkOpen() {
+        if (closed) {
+            throw new IllegalStateException("SpannerProviderClient has been closed");
         }
     }
 
@@ -523,34 +545,47 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     /**
      * Ensures the Spanner database exists, creating it if absent.
      * <p>
-     * Also ensures the Spanner instance exists (required before creating a database).
-     * Uses idempotent {@code ALREADY_EXISTS} handling for both instance and database.
+     * <strong>Emulator mode</strong> ({@code emulatorHost} configured): also ensures the
+     * Spanner instance exists, creating it with the emulator's built-in
+     * {@code emulator-config} instance config if necessary. This is required because
+     * the local emulator starts with no instances.
+     * <p>
+     * <strong>Production mode</strong> (live Cloud Spanner): the instance is expected to
+     * already exist; only the database is created. Creating a Spanner instance is a
+     * billable, region-specific operation that should be done deliberately (via Terraform,
+     * gcloud, or the Cloud Console), not implicitly from an SDK call.
+     * <p>
+     * Idempotent: {@code ALREADY_EXISTS} from either creation is swallowed.
      */
     @Override
     public void ensureDatabase(String database) {
+        checkOpen();
         try {
-            // Ensure instance exists first
-            var instanceAdmin = spanner.getInstanceAdminClient();
-            try {
-                instanceAdmin.createInstance(
-                        com.google.cloud.spanner.InstanceInfo.newBuilder(
-                                com.google.cloud.spanner.InstanceId.of(projectId, instanceId))
-                                .setInstanceConfigId(
-                                        com.google.cloud.spanner.InstanceConfigId.of(projectId, "emulator-config"))
-                                .setDisplayName(instanceId)
-                                .setNodeCount(1)
-                                .build()).get();
-                LOG.info("Created Spanner instance: {}", instanceId);
-            } catch (java.util.concurrent.ExecutionException e) {
-                if (e.getCause() instanceof SpannerException se
-                        && se.getErrorCode() == ErrorCode.ALREADY_EXISTS) {
-                    LOG.debug("Spanner instance already exists: {}", instanceId);
-                } else {
-                    throw e;
+            if (emulatorMode) {
+                // Emulator only: create the instance with the built-in emulator config.
+                var instanceAdmin = spanner.getInstanceAdminClient();
+                try {
+                    instanceAdmin.createInstance(
+                            com.google.cloud.spanner.InstanceInfo.newBuilder(
+                                    com.google.cloud.spanner.InstanceId.of(projectId, instanceId))
+                                    .setInstanceConfigId(
+                                            com.google.cloud.spanner.InstanceConfigId.of(
+                                                    projectId, SpannerConstants.EMULATOR_INSTANCE_CONFIG_ID))
+                                    .setDisplayName(instanceId)
+                                    .setNodeCount(1)
+                                    .build()).get();
+                    LOG.info("Created Spanner instance (emulator): {}", instanceId);
+                } catch (java.util.concurrent.ExecutionException e) {
+                    if (e.getCause() instanceof SpannerException se
+                            && se.getErrorCode() == ErrorCode.ALREADY_EXISTS) {
+                        LOG.debug("Spanner instance already exists: {}", instanceId);
+                    } else {
+                        throw e;
+                    }
                 }
             }
 
-            // Ensure database exists
+            // Ensure database exists (both modes).
             DatabaseAdminClient dbAdmin = spanner.getDatabaseAdminClient();
             try {
                 dbAdmin.createDatabase(instanceId, database, List.of()).get();
@@ -603,6 +638,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void ensureContainer(ResourceAddress address) {
+        checkOpen();
         String tableName = address.collection();
         try {
             // Check if table already exists by attempting a trivial query
@@ -668,15 +704,24 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     private String appendResultSetControl(String sql, QueryRequest query) {
         StringBuilder result = new StringBuilder(sql);
         if (query != null && query.orderBy() != null && !query.orderBy().isEmpty()) {
+            boolean sortsByPartitionKey = false;
+            boolean sortsBySortKey = false;
             result.append(" ORDER BY ");
             for (int i = 0; i < query.orderBy().size(); i++) {
                 SortOrder so = query.orderBy().get(i);
                 if (i > 0) result.append(", ");
                 result.append(so.field()).append(" ").append(so.direction().name());
+                if (SpannerConstants.FIELD_PARTITION_KEY.equals(so.field())) sortsByPartitionKey = true;
+                if (SpannerConstants.FIELD_SORT_KEY.equals(so.field())) sortsBySortKey = true;
             }
-            // Add primary key as tiebreaker for deterministic pagination
-            result.append(", ").append(SpannerConstants.FIELD_PARTITION_KEY)
-                  .append(", ").append(SpannerConstants.FIELD_SORT_KEY);
+            // Add only the missing primary key columns as tiebreakers for deterministic
+            // pagination. Avoid duplicating columns the caller already sorted by.
+            if (!sortsByPartitionKey) {
+                result.append(", ").append(SpannerConstants.FIELD_PARTITION_KEY);
+            }
+            if (!sortsBySortKey) {
+                result.append(", ").append(SpannerConstants.FIELD_SORT_KEY);
+            }
         } else if (query != null) {
             // No explicit ordering — use primary key for deterministic OFFSET pagination
             result.append(" ORDER BY ").append(SpannerConstants.FIELD_PARTITION_KEY)
@@ -806,14 +851,19 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * <p>
      * Supported Java types: {@link String}, {@link Long}, {@link Integer},
      * {@link Boolean}, {@link Double}, {@link Float}, and {@code null}
-     * (written as {@code NULL STRING}). Complex types (maps, lists, etc.) are
-     * serialised via {@link Object#toString()}.
+     * (written as {@code NULL STRING}). {@link Map} and {@link java.util.Collection}
+     * values are serialised as JSON with an unambiguous marker prefix
+     * ({@link SpannerConstants#JSON_VALUE_MARKER}); on read, the marker is detected
+     * and the value is parsed back into a JSON node. Any other type falls back to
+     * {@link Object#toString()} to preserve the prior behaviour and avoid surprise
+     * failures for types Jackson cannot handle without extra modules (e.g.,
+     * {@code java.time.Instant}).
      *
      * @param mutation the mutation builder to write the column into
      * @param column   the Spanner column name
      * @param value    the value to write; {@code null} writes a null STRING
      */
-    private static final com.fasterxml.jackson.databind.ObjectMapper JSON_MAPPER =
+    static final com.fasterxml.jackson.databind.ObjectMapper JSON_MAPPER =
             new com.fasterxml.jackson.databind.ObjectMapper();
 
     private void setMutationValue(Mutation.WriteBuilder mutation, String column, Object value) {
@@ -831,14 +881,23 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             mutation.set(column).to(d);
         } else if (value instanceof Float f) {
             mutation.set(column).to((double) f);
-        } else {
-            // Complex types (Map, List, etc.): serialize as JSON string
+        } else if (value instanceof Map<?, ?> || value instanceof Collection<?>) {
+            // Complex containers: encode as JSON with marker prefix so reads can
+            // unambiguously round-trip them back to Map/List without misclassifying
+            // user strings that happen to start with '{' or '['.
             try {
-                mutation.set(column).to(JSON_MAPPER.writeValueAsString(value));
+                mutation.set(column).to(
+                        SpannerConstants.JSON_VALUE_MARKER + JSON_MAPPER.writeValueAsString(value));
             } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
-                throw new IllegalArgumentException(
-                        "Failed to serialize value for column '" + column + "': " + ex.getMessage(), ex);
+                // Nested unsupported value (e.g. java.time.Instant without jsr310 module):
+                // fall back to toString() rather than failing the write.
+                LOG.debug("JSON serialise failed for column '{}', falling back to toString(): {}",
+                        column, ex.getMessage());
+                mutation.set(column).to(value.toString());
             }
+        } else {
+            // Unknown types: preserve historical toString() fallback.
+            mutation.set(column).to(value.toString());
         }
     }
 

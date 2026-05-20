@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Type;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -26,6 +27,12 @@ import java.util.HashSet;
  * result. This lets the SDK distinguish between "explicitly set to null" and
  * "empty schema column" — a distinction that Spanner's fixed schema otherwise
  * loses.
+ * <p>
+ * STRING values written by the SDK as JSON-serialised Map/Collection are
+ * tagged with {@link SpannerConstants#JSON_VALUE_MARKER} (a control-char
+ * prefix). Only marker-prefixed values are parsed back as JSON; ordinary
+ * user strings (including legitimate text starting with {@code [} or
+ * <code>{</code>) are returned verbatim.
  */
 public final class SpannerRowMapper {
 
@@ -48,28 +55,33 @@ public final class SpannerRowMapper {
     public static JsonNode toJsonNode(ResultSet rs) {
         ObjectNode node = MAPPER.createObjectNode();
         Type type = rs.getType();
+        int columnCount = rs.getColumnCount();
 
-        // First pass: check for field-name metadata in the data column
-        Set<String> writtenFields = parseFieldMetadata(rs, type);
+        // Single pre-scan: locate the data column (once) and parse its metadata.
+        int dataColumnIndex = -1;
+        for (int i = 0; i < columnCount; i++) {
+            if (SpannerConstants.FIELD_DATA.equals(type.getStructFields().get(i).getName())) {
+                dataColumnIndex = i;
+                break;
+            }
+        }
+        Set<String> writtenFields = parseFieldMetadata(rs, dataColumnIndex);
 
-        for (int i = 0; i < rs.getColumnCount(); i++) {
+        for (int i = 0; i < columnCount; i++) {
+            if (i == dataColumnIndex) continue; // internal metadata column
+
             String colName = type.getStructFields().get(i).getName();
             Type colType = type.getStructFields().get(i).getType();
 
-            // Skip the internal metadata column
-            if (SpannerConstants.FIELD_DATA.equals(colName)) continue;
-
             if (rs.isNull(i)) {
-                // Only include null columns if they were explicitly written
+                // Only include null columns if they were explicitly written.
                 if (writtenFields != null && writtenFields.contains(colName)) {
                     node.putNull(colName);
-                } else if (writtenFields == null) {
-                    // No metadata — legacy row, skip nulls entirely
                 }
                 continue;
             }
 
-            // For non-null values, include if no metadata or if field is in metadata
+            // For non-null values, include if no metadata or if field is in metadata.
             if (writtenFields != null
                     && !writtenFields.contains(colName)
                     && !SpannerConstants.FIELD_PARTITION_KEY.equals(colName)
@@ -80,12 +92,14 @@ public final class SpannerRowMapper {
             switch (colType.getCode()) {
                 case STRING -> {
                     String s = rs.getString(i);
-                    // Detect JSON-serialized complex values (Map/List stored as JSON strings)
-                    if (s != null && s.length() >= 2
-                            && (s.charAt(0) == '{' || s.charAt(0) == '[')) {
+                    // Only parse as JSON if it carries the explicit SDK marker —
+                    // ordinary user strings are passed through unchanged.
+                    if (s != null && s.startsWith(SpannerConstants.JSON_VALUE_MARKER)) {
+                        String payload = s.substring(SpannerConstants.JSON_VALUE_MARKER.length());
                         try {
-                            node.set(colName, MAPPER.readTree(s));
+                            node.set(colName, MAPPER.readTree(payload));
                         } catch (Exception e) {
+                            // Marker present but payload corrupted — return raw string for diagnosis.
                             node.put(colName, s);
                         }
                     } else {
@@ -124,34 +138,35 @@ public final class SpannerRowMapper {
     public static Map<String, Object> toMap(ResultSet rs) {
         JsonNode node = toJsonNode(rs);
         Map<String, Object> raw = MAPPER.convertValue(node, MAP_TYPE);
-        // Remove null entries — Map.copyOf() in QueryPage rejects nulls, and
-        // schemaless stores (Cosmos, DynamoDB) simply omit absent fields
-        raw.entrySet().removeIf(e -> e.getValue() == null);
-        return raw;
+        // Build a new map filtering out null entries — convertValue may return an
+        // immutable view in some configurations, so mutating it is unsafe.
+        // Map.copyOf() in QueryPage also rejects nulls, and schemaless stores
+        // (Cosmos, DynamoDB) simply omit absent fields.
+        Map<String, Object> filtered = new LinkedHashMap<>(raw.size());
+        for (Map.Entry<String, Object> e : raw.entrySet()) {
+            if (e.getValue() != null) filtered.put(e.getKey(), e.getValue());
+        }
+        return filtered;
     }
 
     /**
-     * Parses the field-name metadata stored in the {@code data} column.
+     * Parses the field-name metadata stored at the given index.
      *
+     * @param rs              the result set positioned on a row
+     * @param dataColumnIndex the column index of the {@code data} column, or
+     *                        {@code -1} if the table has no data column
      * @return set of field names that were explicitly written, or {@code null}
      *         if no metadata is available (legacy row or data column absent)
      */
-    private static Set<String> parseFieldMetadata(ResultSet rs, Type type) {
-        for (int i = 0; i < rs.getColumnCount(); i++) {
-            if (SpannerConstants.FIELD_DATA.equals(type.getStructFields().get(i).getName())) {
-                if (rs.isNull(i)) return null;
-                String dataValue = rs.getString(i);
-                if (dataValue != null && dataValue.startsWith("[")) {
-                    try {
-                        List<String> fields = MAPPER.readValue(dataValue, STRING_LIST_TYPE);
-                        return new HashSet<>(fields);
-                    } catch (Exception e) {
-                        return null;
-                    }
-                }
-                return null;
-            }
+    private static Set<String> parseFieldMetadata(ResultSet rs, int dataColumnIndex) {
+        if (dataColumnIndex < 0 || rs.isNull(dataColumnIndex)) return null;
+        String dataValue = rs.getString(dataColumnIndex);
+        if (dataValue == null || !dataValue.startsWith("[")) return null;
+        try {
+            List<String> fields = MAPPER.readValue(dataValue, STRING_LIST_TYPE);
+            return new HashSet<>(fields);
+        } catch (Exception e) {
+            return null;
         }
-        return null;
     }
 }

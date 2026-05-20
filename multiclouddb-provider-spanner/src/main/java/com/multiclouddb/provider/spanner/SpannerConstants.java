@@ -42,6 +42,17 @@ public final class SpannerConstants {
     /** The data column used for document fields not stored as separate columns. */
     public static final String FIELD_DATA = "data";
 
+    /**
+     * Unambiguous prefix marker that identifies a STRING column value as a
+     * JSON-serialised complex type (Map / Collection). Uses a leading SOH
+     * control character (U+0001) so user-supplied text cannot collide with
+     * the marker in practice.
+     */
+    public static final String JSON_VALUE_MARKER = "\u0001mcdb:json:";
+
+    /** Spanner emulator instance config ID — only valid against the emulator. */
+    public static final String EMULATOR_INSTANCE_CONFIG_ID = "emulator-config";
+
     // ── Query parameter names ─────────────────────────────────────────────────
 
     /** Named parameter bound to the partition key value in scoped queries. */
