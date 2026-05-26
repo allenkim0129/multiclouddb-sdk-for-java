@@ -64,4 +64,54 @@ class SpannerOrderByDetectionTest {
     void nullSqlReturnsFalse() {
         assertFalse(SpannerProviderClient.hasOrderByClause(null));
     }
+
+    @Test
+    @DisplayName("ignores 'ORDER BY' inside a string literal")
+    void stringLiteralFalsePositiveGuard() {
+        // The literal-stripping pass must mask out anything inside single
+        // quotes; otherwise the SDK skips its default ORDER BY when a caller
+        // happens to mention the phrase in a WHERE clause.
+        assertFalse(SpannerProviderClient.hasOrderByClause(
+                "SELECT * FROM items WHERE comment = 'please ORDER BY date'"));
+        assertFalse(SpannerProviderClient.hasOrderByClause(
+                "SELECT 'order by foo' AS msg FROM dual"));
+        // SQL-escaped quotes ('') must still leave the surrounding literal masked.
+        assertFalse(SpannerProviderClient.hasOrderByClause(
+                "SELECT * FROM t WHERE c = 'don''t ORDER BY this'"));
+    }
+
+    @Test
+    @DisplayName("real ORDER BY following a string literal is still detected")
+    void orderByAfterLiteralIsDetected() {
+        assertTrue(SpannerProviderClient.hasOrderByClause(
+                "SELECT * FROM items WHERE comment = 'please' ORDER BY date"));
+    }
+
+    @Test
+    @DisplayName("containsAggregate identifies aggregate functions and GROUP BY")
+    void aggregateDetection() {
+        assertTrue(SpannerProviderClient.containsAggregate("SELECT COUNT(*) FROM items"));
+        assertTrue(SpannerProviderClient.containsAggregate("SELECT SUM(amount) FROM items"));
+        assertTrue(SpannerProviderClient.containsAggregate("SELECT MAX(age) FROM people"));
+        assertTrue(SpannerProviderClient.containsAggregate(
+                "SELECT status, COUNT(*) FROM items GROUP BY status"));
+    }
+
+    @Test
+    @DisplayName("containsAggregate ignores aggregate keywords inside string literals")
+    void aggregateDetectionIgnoresLiterals() {
+        // Same masking pass as hasOrderByClause; a literal containing the
+        // keyword must not be classified as an aggregate.
+        assertFalse(SpannerProviderClient.containsAggregate(
+                "SELECT note FROM items WHERE note = 'COUNT(*) of stuff'"));
+        assertFalse(SpannerProviderClient.containsAggregate(
+                "SELECT * FROM items WHERE note = 'GROUP BY day'"));
+    }
+
+    @Test
+    @DisplayName("containsAggregate returns false for plain projections")
+    void aggregateDetectionNegative() {
+        assertFalse(SpannerProviderClient.containsAggregate("SELECT * FROM items"));
+        assertFalse(SpannerProviderClient.containsAggregate("SELECT id, name FROM items"));
+    }
 }

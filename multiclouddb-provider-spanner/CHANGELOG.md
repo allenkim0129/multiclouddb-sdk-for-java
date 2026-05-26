@@ -7,13 +7,62 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`update()` now uses a read-modify-write transaction to preserve previously
+  written fields.** Earlier `Unreleased` builds overwrote the internal
+  `FIELD_DATA` metadata column with only the fields named in the current
+  call, silently hiding every other previously-written column on the next
+  `read()` (the columns were still in Spanner — they were simply omitted from
+  the SDK-visible projection). The fix merges the existing field set with
+  the new one inside a single `databaseClient.readWriteTransaction()`,
+  adding one read per `update` (acceptable for correctness). Behaviour now
+  matches Cosmos / DynamoDB: partial updates preserve unrelated fields.
+  Callers that relied on the bug to "forget" fields should issue a full
+  document `upsert()` instead.
+- **`upsert()` semantics changed from `INSERT_OR_UPDATE` to `REPLACE`.**
+  Previous releases (incorrectly documented as `INSERT_OR_UPDATE` in the
+  `[0.1.0-beta.1]` notes below — corrected) merged the new document with
+  whatever columns already existed on the row. `REPLACE` deletes the
+  existing row and inserts the new one, so columns absent from the upserted
+  document become NULL on read. This matches the Cosmos / DynamoDB upsert
+  contract (upsert is a *full document replace*). Callers that want partial
+  modification must call `update()`.
+- **Customer-managed tables now require a `data STRING(MAX)` column.** The
+  provider uses this column to store the internal `FIELD_DATA` metadata that
+  distinguishes "explicitly written null" from "absent schema column" — the
+  same distinction that schemaless stores like Cosmos and DynamoDB preserve
+  for free. Tables created by `ensureContainer()` already include this
+  column; tables provisioned outside the SDK must be migrated:
+  ```sql
+  ALTER TABLE <my-table> ADD COLUMN data STRING(MAX);
+  ```
+- **`ensureDatabase(name)` now throws `MulticloudDbException` with category
+  `INVALID_REQUEST` if `name` does not match the configured `databaseId`.**
+  Operations always route to the database the client was constructed with,
+  so accepting a different name silently provisioned the wrong database in
+  earlier releases. The exception message cites both names so the operator
+  can diagnose the mismatch. To target a different database, construct a
+  new client.
+- **Lifecycle errors are now typed.** `checkOpen()` (called by every public
+  entry point) and the `ensureDatabase` name-mismatch validation throw
+  `MulticloudDbException` with categories `CLIENT_CLOSED` and
+  `INVALID_REQUEST` respectively, replacing the prior raw
+  `IllegalStateException` / `IllegalArgumentException`. Consumers that
+  caught the raw JDK exceptions must catch `MulticloudDbException` and
+  branch on `error().category()`. The new `CLIENT_CLOSED` category is
+  available on `MulticloudDbErrorCategory` and is added without breaking the
+  expandable-enum contract (consumers must use `.equals()`, not `switch`).
+- **`SpannerRowMapper.toMap()` now preserves explicitly written `null`
+  values.** Earlier `Unreleased` builds silently filtered nulls out, which
+  diverged from `toJsonNode()` (preserved nulls) and from the Cosmos /
+  DynamoDB schemaless round-trip. `QueryPage` now uses a null-tolerant
+  defensive copy. Callers iterating `page.items().get(i)` must tolerate
+  `null` values, e.g. `Objects.toString(e.getValue(), "")` instead of
+  `e.getValue().toString()`.
+
 ### Changed
 
-- **`ensureDatabase(String)` now validates that the requested database matches
-  the configured `databaseId`.** Operations always route to the database the
-  client was constructed with, so accepting a different name here would silently
-  provision the wrong database. The provider now throws `IllegalArgumentException`
-  if the names disagree.
 - **Spanner instance creation in `ensureDatabase` is gated to emulator mode.**
   In production (no `emulatorHost` configured), the instance is expected to
   pre-exist; only the database is created. Creating a Spanner instance is a
@@ -21,7 +70,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **Complex container values (`Map`, `Collection`) round-trip through STRING
   columns using an unambiguous prefix marker** (`U+0001` + `mcdb:json:`).
   `SpannerRowMapper` only parses values that carry the marker, so user strings
-  that happen to start with `{` or `[` are returned verbatim.
+  that happen to start with `{` or `[` are returned verbatim. A user string
+  that *itself* begins with `U+0001` is escaped at write time (doubled
+  leading `U+0001`) so it cannot collide with the marker and still
+  round-trips verbatim.
 - **`BETWEEN` translation now wraps in parentheses** (`(field BETWEEN @lo AND @hi)`).
   Mirrors the parenthesised form emitted by sibling translators so cross-provider
   query stitching is uniform. GoogleSQL parses both forms correctly, so this is
@@ -30,10 +82,22 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- **Silent data loss on `update()` after partial writes.** See *Breaking
+  changes* above for the read-modify-write transactional fix.
+- **Default `ORDER BY` no longer fires for aggregate queries.** The provider
+  previously appended `ORDER BY partitionKey, sortKey` to *every* SELECT,
+  which GoogleSQL rejects for `SELECT COUNT(*)` / `SUM(...)` / `GROUP BY`
+  queries with `column not aggregated`. The default is now suppressed when
+  the SQL contains an aggregate function or `GROUP BY`; caller-supplied
+  `ORDER BY` on aggregate queries is still honored verbatim.
+- **`ORDER BY` detection ignores string literals.** `WHERE comment = 'please
+  ORDER BY date'` no longer false-positives as "caller already provides
+  ordering"; the literal is stripped before the regex match. SQL-escaped
+  quotes (`''`) inside literals are handled correctly.
 - **Race / NPE hazard in `close()`.** The `Spanner` field is now `final` again
   and `close()` is idempotent via a `volatile boolean closed` flag. All public
   entry points call `checkOpen()` so post-close callers receive a deterministic
-  `IllegalStateException` instead of a racy `NullPointerException`.
+  typed exception instead of a racy `NullPointerException`.
 - **Default ORDER BY no longer duplicates primary-key columns** when the caller
   already sorts by `partitionKey` and/or `sortKey` — only the missing key is
   appended as a tiebreaker. In addition, if the caller-supplied SQL already
@@ -43,6 +107,17 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **`setMutationValue` no longer fails on common Java types** (e.g.
   `java.time.Instant`). JSON serialisation is restricted to `Map`/`Collection`;
   every other type falls back to `value.toString()`.
+
+### Known limitations
+
+- **`setMutationValue` / `bindParameter` write `(String) null` for null
+  values regardless of the target column type.** Writing `null` into a
+  Spanner `INT64`, `BOOL`, or `FLOAT64` column will be rejected by Spanner
+  with `INVALID_ARGUMENT` until the provider performs schema introspection
+  to bind the correctly typed null. Workaround for now: pass a *typed* zero
+  / sentinel value (e.g., `0L`, `false`) instead of `null` for non-STRING
+  columns, or wrap the column in a STRING. A schema-introspection fix is
+  tracked for a follow-up release.
 
 ### Documentation
 
@@ -98,7 +173,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   AND sortKey = @sortKey` via `singleUse().executeQuery()`; returns `null` when
   no row matches
 - `update` — Spanner `UPDATE` mutation (fails if row does not exist)
-- `upsert` — Spanner `INSERT_OR_UPDATE` mutation
+- `upsert` — Spanner `INSERT_OR_UPDATE` mutation (merging upsert; superseded
+  by `REPLACE` semantics in the Unreleased section — see *Breaking changes*
+  above)
 - `delete` — Spanner `DELETE` mutation using `KeySet.singleKey()`; `NOT_FOUND`
   is silently ignored for idempotent delete semantics
 

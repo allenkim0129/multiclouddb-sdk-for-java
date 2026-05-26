@@ -93,7 +93,10 @@ public final class SpannerRowMapper {
                 case STRING -> {
                     String s = rs.getString(i);
                     // Only parse as JSON if it carries the explicit SDK marker —
-                    // ordinary user strings are passed through unchanged.
+                    // ordinary user strings are passed through unchanged. A user
+                    // string that happens to start with U+0001 is escaped at
+                    // write-time with a doubled leading U+0001, which we strip
+                    // here so the verbatim value round-trips.
                     if (s != null && s.startsWith(SpannerConstants.JSON_VALUE_MARKER)) {
                         String payload = s.substring(SpannerConstants.JSON_VALUE_MARKER.length());
                         try {
@@ -102,6 +105,11 @@ public final class SpannerRowMapper {
                             // Marker present but payload corrupted — return raw string for diagnosis.
                             node.put(colName, s);
                         }
+                    } else if (s != null && s.length() >= 2
+                            && s.charAt(0) == '\u0001'
+                            && s.charAt(1) == '\u0001') {
+                        // Escape pair: user string that itself starts with U+0001.
+                        node.put(colName, s.substring(1));
                     } else {
                         node.put(colName, s);
                     }
@@ -131,22 +139,26 @@ public final class SpannerRowMapper {
      * {@code Map<String, Object>}.
      * The cursor must already be positioned on a valid row (i.e., after
      * {@code rs.next()} returned true).
+     * <p>
+     * <strong>Explicit nulls are preserved.</strong> If the SDK wrote a null value
+     * to a column (recorded in the {@code FIELD_DATA} metadata column), it is
+     * returned as a {@code null} entry in the map — matching the schemaless
+     * round-trip behaviour of Cosmos / DynamoDB and keeping the two adjacent
+     * APIs ({@link #toJsonNode}, {@link #toMap}) consistent. Callers must
+     * tolerate {@code null} values when iterating the returned map.
      *
      * @param rs the result set positioned on a row
-     * @return a map of column name to Java value
+     * @return a map of column name to Java value; values may be {@code null}
+     *         for explicitly-written null fields
      */
     public static Map<String, Object> toMap(ResultSet rs) {
         JsonNode node = toJsonNode(rs);
+        // convertValue may return an immutable view in some configurations, so
+        // wrap the result in a fresh LinkedHashMap that preserves null entries
+        // (parity with toJsonNode's null-preservation behaviour and with
+        // schemaless stores like Cosmos / DynamoDB).
         Map<String, Object> raw = MAPPER.convertValue(node, MAP_TYPE);
-        // Build a new map filtering out null entries — convertValue may return an
-        // immutable view in some configurations, so mutating it is unsafe.
-        // Map.copyOf() in QueryPage also rejects nulls, and schemaless stores
-        // (Cosmos, DynamoDB) simply omit absent fields.
-        Map<String, Object> filtered = new LinkedHashMap<>(raw.size());
-        for (Map.Entry<String, Object> e : raw.entrySet()) {
-            if (e.getValue() != null) filtered.put(e.getKey(), e.getValue());
-        }
-        return filtered;
+        return new LinkedHashMap<>(raw);
     }
 
     /**

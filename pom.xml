@@ -327,7 +327,15 @@
         <profile>
             <id>emulator-spanner</id>
             <properties>
-                <test.includedGroups>spanner &amp; emulator</test.includedGroups>
+                <!--
+                    Single-tag include for parity with emulator-cosmos / emulator-dynamo.
+                    Co-presence of @Tag("emulator") on Spanner tests is the established
+                    convention but NOT enforced by this profile, so a future
+                    SpannerSortKeyOrderingTest following the CosmosSortKeyOrderingTest
+                    / DynamoSortKeyOrderingTest convention (@Tag("spanner") only) is
+                    still picked up by the spanner CI job.
+                -->
+                <test.includedGroups>spanner</test.includedGroups>
             </properties>
         </profile>
     </profiles>

@@ -70,7 +70,17 @@ public final class SpannerTestSchema {
                     + "  age INT64"
                     + ") PRIMARY KEY (partitionKey, sortKey)";
 
-    private static volatile boolean provisioned = false;
+    /**
+     * Tracks which {@code (databaseId, table)} pairs this JVM has provisioned
+     * for the lifetime of the test process. Keyed on the pair rather than a
+     * single boolean so a second call with different arguments doesn't
+     * silently no-op (which would surface much later as a confusing
+     * {@code NOT_FOUND} downstream). {@code ConcurrentHashMap.newKeySet()} +
+     * {@code add()} returning {@code false}-if-present gives synchronised
+     * happens-before for free — no {@code synchronized} method needed.
+     */
+    private static final java.util.Set<String> PROVISIONED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private SpannerTestSchema() {
     }
@@ -78,14 +88,16 @@ public final class SpannerTestSchema {
     /**
      * Ensures the Spanner emulator has the test instance, database, and table
      * with the full conformance schema. Thread-safe and idempotent within a
-     * single JVM.
+     * single JVM, keyed on the {@code (databaseId, table)} pair so two test
+     * classes that target different schemas both provision correctly.
      *
      * @param databaseId the database to create/ensure
      * @param table      the table name
      */
-    public static synchronized void ensureSchema(String databaseId, String table)
+    public static void ensureSchema(String databaseId, String table)
             throws ExecutionException, InterruptedException {
-        if (provisioned) return;
+        String key = databaseId + "/" + table;
+        if (!PROVISIONED.add(key)) return;
 
         SpannerOptions options = SpannerOptions.newBuilder()
                 .setEmulatorHost(EMULATOR_HOST)
@@ -109,6 +121,9 @@ public final class SpannerTestSchema {
                         && se.getErrorCode() == ErrorCode.ALREADY_EXISTS) {
                     System.out.println("[SpannerTestSchema] Instance already exists: " + INSTANCE_ID);
                 } else {
+                    // On a hard failure we have NOT actually provisioned, so
+                    // drop the entry from the cache to allow a clean retry.
+                    PROVISIONED.remove(key);
                     throw e;
                 }
             }
@@ -140,11 +155,10 @@ public final class SpannerTestSchema {
                     System.out.println("[SpannerTestSchema] Recreated table: " + table
                             + " with full conformance schema");
                 } else {
+                    PROVISIONED.remove(key);
                     throw e;
                 }
             }
-
-            provisioned = true;
         } finally {
             spanner.close();
         }
