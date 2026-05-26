@@ -142,7 +142,7 @@ structure:
 ### 🟡 Recommendations
 <each finding using the per-finding template>
 
-### �� Suggestions
+### 🟢 Suggestions
 <each finding using the per-finding template>
 
 ### 💬 Observations

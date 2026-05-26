@@ -119,6 +119,7 @@ with data size or request volume, not capped).
 | New behaviour in a provider adapter | per-provider `CHANGELOG.md` (`[Unreleased]`) |
 | New / changed config knob | `docs/configuration.md` |
 | Any user-visible behaviour change | `docs/changelog.md` |
+| New / changed `Capability` constant | `docs/compatibility.md` (per `.github/PULL_REQUEST_TEMPLATE.md` checklist) |
 | Feature work under `specs/<NNN-feature>/` | `spec.md` / `plan.md` / `tasks.md` reflect *shipped* behaviour |
 | New example or runtime entry point | `multiclouddb-e2e/README.md` + module README |
 

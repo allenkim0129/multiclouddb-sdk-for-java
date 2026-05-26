@@ -22,8 +22,10 @@ files in this skill rather than embedding rules inline. That keeps the
 rules in one place and prevents the two-file drift that an earlier draft
 of this work suffered from.
 
-Path note: all script paths are relative to this skill directory (this
-`SKILL.md` file), not the repository root.
+Path note: examples below assume the working directory is the repository
+root (the same convention used by the existing `release.agent.md`). Within
+this skill's own files, references to other skill files use paths relative
+to this `SKILL.md` (e.g. `references/portability-checklist.md`).
 
 ## When to use this skill
 

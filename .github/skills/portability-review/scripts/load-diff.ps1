@@ -200,7 +200,24 @@ switch ($Scope) {
         if ($LASTEXITCODE -ne 0 -or -not $prBase) {
             throw "Failed to query PR $Pr from $Repo. Is 'gh auth' set up?"
         }
-        $stat = & gh pr diff $Pr --repo $Repo --name-only 2>&1 | Out-String
+        # Build a proper stat summary (filename + insertions/deletions) so STAT_PATH
+        # has the same shape as `git diff --stat` for branch/staged scopes.
+        $filesJson = & gh api "repos/$Repo/pulls/$Pr/files" --paginate 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $filesJson) {
+            throw "Failed to query PR $Pr files from $Repo via gh api."
+        }
+        $files = $filesJson | ConvertFrom-Json
+        $statLines = @()
+        $totalAdd = 0
+        $totalDel = 0
+        foreach ($f in $files) {
+            $bar = ('+' * [Math]::Min($f.additions, 40)) + ('-' * [Math]::Min($f.deletions, 40))
+            $statLines += (' {0,-60} | {1,5} {2}' -f $f.filename, ($f.additions + $f.deletions), $bar)
+            $totalAdd += $f.additions
+            $totalDel += $f.deletions
+        }
+        $statLines += " $($files.Count) files changed, $totalAdd insertions(+), $totalDel deletions(-)"
+        $stat = ($statLines -join [Environment]::NewLine)
         $diff = & gh pr diff $Pr --repo $Repo 2>&1 | Out-String
         Write-DiffArtifact -DiffContent $diff -StatContent $stat -BaseRef "$Repo PR #$Pr (base: $prBase)"
     }
