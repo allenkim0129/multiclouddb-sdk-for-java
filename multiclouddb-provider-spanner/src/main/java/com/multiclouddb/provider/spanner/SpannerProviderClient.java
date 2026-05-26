@@ -269,14 +269,19 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                 com.google.cloud.spanner.Struct existing =
                         txn.readRow(table, Key.of(pk, sk), List.of(SpannerConstants.FIELD_DATA));
                 if (existing == null) {
-                    // Row not found — surface the same NOT_FOUND signal that a plain
-                    // UPDATE mutation would. Spanner's UPDATE mutation behaves the
-                    // same way (commit-time NOT_FOUND); using the typed exception
-                    // here keeps the error envelope consistent.
-                    throw new MulticloudDbException(new MulticloudDbError(
-                            MulticloudDbErrorCategory.NOT_FOUND,
-                            "Spanner row not found for update: partitionKey=" + pk + ", sortKey=" + sk,
-                            ProviderId.SPANNER, OperationNames.UPDATE, false, null));
+                    // Row not found — throw a typed SpannerException with the
+                    // NOT_FOUND code so the outer catch + SpannerErrorMapper
+                    // surfaces MulticloudDbErrorCategory.NOT_FOUND, exactly
+                    // matching the behaviour of a plain UPDATE mutation
+                    // (which also fails with NOT_FOUND at commit time).
+                    // Throwing a non-SpannerException here causes the runner
+                    // to wrap it in an opaque SpannerException whose ErrorCode
+                    // is missing, which the mapper then degrades to
+                    // PROVIDER_ERROR — breaking error-normalisation parity.
+                    throw com.google.cloud.spanner.SpannerExceptionFactory.newSpannerException(
+                            ErrorCode.NOT_FOUND,
+                            "Spanner row not found for update: partitionKey=" + pk
+                                    + ", sortKey=" + sk);
                 }
                 if (!existing.isNull(0)) {
                     String existingJson = existing.getString(0);
