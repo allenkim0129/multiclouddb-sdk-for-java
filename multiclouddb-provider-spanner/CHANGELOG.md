@@ -60,6 +60,22 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   defensive copy. Callers iterating `page.items().get(i)` must tolerate
   `null` values, e.g. `Objects.toString(e.getValue(), "")` instead of
   `e.getValue().toString()`.
+- **`ensureDatabase()` and `ensureContainer()` no longer leak raw
+  `RuntimeException` on non-Spanner failures.** `InterruptedException` is now
+  surfaced as `MulticloudDbException(TRANSIENT_FAILURE, retryable=true)`
+  (with the interrupt flag still restored), and a non-Spanner cause inside
+  the admin `ExecutionException` is surfaced as
+  `MulticloudDbException(PROVIDER_ERROR)`, preserving the original cause.
+  Callers that previously caught `RuntimeException` to detect interruption
+  or admin RPC failures must catch `MulticloudDbException` and branch on
+  `error().category()`.
+- **Post-close errors now attribute the failing operation.** The
+  `MulticloudDbError.operation()` value on a post-close exception used to
+  be the literal `"checkOpen"`; it is now the caller's operation name
+  (`create`, `read`, `update`, `upsert`, `delete`, `query`,
+  `queryWithTranslation`, `ensureDatabase`, `ensureContainer`). Telemetry
+  / dashboards aggregating by `operation` will now group post-close
+  failures by the real failing call instead of the lifecycle helper name.
 
 ### Changed
 
@@ -107,6 +123,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **`setMutationValue` no longer fails on common Java types** (e.g.
   `java.time.Instant`). JSON serialisation is restricted to `Map`/`Collection`;
   every other type falls back to `value.toString()`.
+- **Legacy / pre-`FIELD_DATA` rows preserve null columns on read.** When
+  `FIELD_DATA` is absent or malformed, `SpannerRowMapper` now applies the
+  historical "no metadata => no filtering" rule including null columns
+  (earlier `Unreleased` builds silently dropped every null on this path).
+  Tables that pre-date the `FIELD_DATA` metadata column now round-trip
+  null fields consistently with Cosmos / DynamoDB.
 
 ### Known limitations
 

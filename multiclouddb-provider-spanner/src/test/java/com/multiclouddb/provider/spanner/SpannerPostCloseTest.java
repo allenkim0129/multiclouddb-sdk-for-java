@@ -7,6 +7,7 @@ import com.multiclouddb.api.MulticloudDbClientConfig;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.MulticloudDbKey;
+import com.multiclouddb.api.OperationNames;
 import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
@@ -66,46 +67,56 @@ class SpannerPostCloseTest {
         closedField.setBoolean(client, true);
     }
 
-    private static void assertClientClosed(MulticloudDbException e) {
+    private static void assertClientClosed(MulticloudDbException e, String expectedOperation) {
         assertEquals(MulticloudDbErrorCategory.CLIENT_CLOSED, e.error().category(),
                 "every post-close entry point must surface CLIENT_CLOSED, not "
                         + e.error().category());
         assertEquals(ProviderId.SPANNER, e.error().provider());
+        // The operation field must carry the caller's actual operation, not the
+        // generic "checkOpen" literal — telemetry/diagnostics consumers branch
+        // on this to attribute post-close failures to the failing call.
+        assertEquals(expectedOperation, e.error().operation(),
+                "post-close error must attribute operation to the caller's op, not 'checkOpen'");
     }
 
     @Test
     @DisplayName("create() after close() throws CLIENT_CLOSED")
     void createAfterClose() {
         assertClientClosed(assertThrows(MulticloudDbException.class,
-                () -> client.create(ADDR, KEY, Map.of("k", "v"), null)));
+                () -> client.create(ADDR, KEY, Map.of("k", "v"), null)),
+                OperationNames.CREATE);
     }
 
     @Test
     @DisplayName("read() after close() throws CLIENT_CLOSED")
     void readAfterClose() {
         assertClientClosed(assertThrows(MulticloudDbException.class,
-                () -> client.read(ADDR, KEY, null)));
+                () -> client.read(ADDR, KEY, null)),
+                OperationNames.READ);
     }
 
     @Test
     @DisplayName("update() after close() throws CLIENT_CLOSED")
     void updateAfterClose() {
         assertClientClosed(assertThrows(MulticloudDbException.class,
-                () -> client.update(ADDR, KEY, Map.of("k", "v"), null)));
+                () -> client.update(ADDR, KEY, Map.of("k", "v"), null)),
+                OperationNames.UPDATE);
     }
 
     @Test
     @DisplayName("upsert() after close() throws CLIENT_CLOSED")
     void upsertAfterClose() {
         assertClientClosed(assertThrows(MulticloudDbException.class,
-                () -> client.upsert(ADDR, KEY, Map.of("k", "v"), null)));
+                () -> client.upsert(ADDR, KEY, Map.of("k", "v"), null)),
+                OperationNames.UPSERT);
     }
 
     @Test
     @DisplayName("delete() after close() throws CLIENT_CLOSED")
     void deleteAfterClose() {
         assertClientClosed(assertThrows(MulticloudDbException.class,
-                () -> client.delete(ADDR, KEY, null)));
+                () -> client.delete(ADDR, KEY, null)),
+                OperationNames.DELETE);
     }
 
     @Test
@@ -113,21 +124,24 @@ class SpannerPostCloseTest {
     void queryAfterClose() {
         QueryRequest q = QueryRequest.builder().build();
         assertClientClosed(assertThrows(MulticloudDbException.class,
-                () -> client.query(ADDR, q, null)));
+                () -> client.query(ADDR, q, null)),
+                OperationNames.QUERY);
     }
 
     @Test
     @DisplayName("ensureDatabase() after close() throws CLIENT_CLOSED")
     void ensureDatabaseAfterClose() {
         assertClientClosed(assertThrows(MulticloudDbException.class,
-                () -> client.ensureDatabase("test-db")));
+                () -> client.ensureDatabase("test-db")),
+                OperationNames.ENSURE_DATABASE);
     }
 
     @Test
     @DisplayName("ensureContainer() after close() throws CLIENT_CLOSED")
     void ensureContainerAfterClose() {
         assertClientClosed(assertThrows(MulticloudDbException.class,
-                () -> client.ensureContainer(ADDR)));
+                () -> client.ensureContainer(ADDR)),
+                OperationNames.ENSURE_CONTAINER);
     }
 }
 

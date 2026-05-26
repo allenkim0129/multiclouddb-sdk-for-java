@@ -74,8 +74,14 @@ public final class SpannerRowMapper {
             Type colType = type.getStructFields().get(i).getType();
 
             if (rs.isNull(i)) {
-                // Only include null columns if they were explicitly written.
-                if (writtenFields != null && writtenFields.contains(colName)) {
+                // Surface null columns when either:
+                //   - we have FIELD_DATA metadata and the column is listed in it
+                //     (explicitly-written null — must round-trip), or
+                //   - we have no/invalid FIELD_DATA metadata (legacy / pre-FIELD_DATA
+                //     rows): keep the historical "no metadata => no filtering"
+                //     behaviour and emit every null column so existing callers don't
+                //     silently lose null fields on the upgrade.
+                if (writtenFields == null || writtenFields.contains(colName)) {
                     node.putNull(colName);
                 }
                 continue;

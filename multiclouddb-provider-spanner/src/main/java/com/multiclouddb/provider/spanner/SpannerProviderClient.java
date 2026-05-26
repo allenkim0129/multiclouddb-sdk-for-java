@@ -209,7 +209,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
-        checkOpen();
+        checkOpen(OperationNames.CREATE);
         try {
             String table = address.collection();
             Mutation.WriteBuilder mutation = Mutation.newInsertBuilder(table)
@@ -256,7 +256,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
-        checkOpen();
+        checkOpen(OperationNames.UPDATE);
         try {
             String table = address.collection();
             String pk = key.partitionKey();
@@ -336,7 +336,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
-        checkOpen();
+        checkOpen(OperationNames.UPSERT);
         try {
             String table = address.collection();
             Mutation.WriteBuilder mutation = Mutation.newReplaceBuilder(table)
@@ -439,7 +439,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public DocumentResult read(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
-        checkOpen();
+        checkOpen(OperationNames.READ);
         try {
             String table = address.collection();
             String partitionKeyVal = key.partitionKey();
@@ -492,7 +492,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void delete(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
-        checkOpen();
+        checkOpen(OperationNames.DELETE);
         try {
             String table = address.collection();
             String partitionKeyVal = key.partitionKey();
@@ -536,7 +536,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public QueryPage query(ResourceAddress address, QueryRequest query, OperationOptions options) {
-        checkOpen();
+        checkOpen(OperationNames.QUERY);
         try {
             String table = address.collection();
             long offset = SpannerContinuationToken.decode(query.continuationToken());
@@ -614,7 +614,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     @Override
     public QueryPage queryWithTranslation(ResourceAddress address, TranslatedQuery translated,
             QueryRequest query, OperationOptions options) {
-        checkOpen();
+        checkOpen(OperationNames.QUERY_WITH_TRANSLATION);
         try {
             long offset = SpannerContinuationToken.decode(query.continuationToken());
             int pageSize = query.maxPageSize() != null ? query.maxPageSize() : SpannerConstants.PAGE_SIZE_DEFAULT;
@@ -698,16 +698,27 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     /**
      * Guards public entry points against use after {@link #close()}.
      * <p>
+     * Verifies the client is open and throws a typed CLIENT_CLOSED exception otherwise.
+     * <p>
      * Throws a typed {@link MulticloudDbException} with category
      * {@link MulticloudDbErrorCategory#CLIENT_CLOSED} so callers can branch
      * on {@code e.error().category()} without string-matching the message.
+     * <p>
+     * The {@code operation} argument is the caller's operation name (see
+     * {@link OperationNames}). Stamping the actual attempted operation onto
+     * {@link MulticloudDbError#operation()} keeps post-close error telemetry
+     * attributable to the failing call ({@code create}, {@code read}, etc.)
+     * rather than the generic literal {@code "checkOpen"}.
+     *
+     * @param operation the caller's operation name (e.g.
+     *                  {@link OperationNames#CREATE}); must not be {@code null}.
      */
-    private void checkOpen() {
+    private void checkOpen(String operation) {
         if (closed) {
             throw new MulticloudDbException(new MulticloudDbError(
                     MulticloudDbErrorCategory.CLIENT_CLOSED,
                     "SpannerProviderClient has been closed",
-                    ProviderId.SPANNER, "checkOpen", false, null));
+                    ProviderId.SPANNER, operation, false, null));
         }
     }
 
@@ -739,14 +750,14 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void ensureDatabase(String database) {
-        checkOpen();
+        checkOpen(OperationNames.ENSURE_DATABASE);
         if (!databaseId.equals(database)) {
             throw new MulticloudDbException(new MulticloudDbError(
                     MulticloudDbErrorCategory.INVALID_REQUEST,
                     "ensureDatabase('" + database + "') does not match the configured databaseId ('"
                             + databaseId + "'); this client routes operations to the configured "
                             + "database only. Construct a separate client for a different database.",
-                    ProviderId.SPANNER, "ensureDatabase", false, null));
+                    ProviderId.SPANNER, OperationNames.ENSURE_DATABASE, false, null));
         }
         try {
             if (emulatorMode) {
@@ -787,16 +798,30 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                 }
             }
         } catch (InterruptedException e) {
+            // Preserve the interrupt flag (per the standard contract) and surface
+            // the failure through the SDK's typed exception envelope so callers
+            // never have to catch a raw RuntimeException to detect interruption.
+            // TRANSIENT_FAILURE because the operation can usually be retried on a
+            // non-interrupted thread.
             Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted while creating Spanner database: " + database, e);
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.TRANSIENT_FAILURE,
+                    "Interrupted while creating Spanner database: " + database,
+                    ProviderId.SPANNER, OperationNames.ENSURE_DATABASE, true, null), e);
         } catch (java.util.concurrent.ExecutionException e) {
             Throwable cause = e.getCause();
             if (cause instanceof SpannerException se) {
-                throw SpannerErrorMapper.map(se, "ensureDatabase");
+                throw SpannerErrorMapper.map(se, OperationNames.ENSURE_DATABASE);
             }
-            throw new RuntimeException("Failed to create Spanner database: " + database, cause);
+            // Non-Spanner cause (e.g. a runtime failure from the admin RPC layer):
+            // wrap as PROVIDER_ERROR so callers see the SDK's portable error type
+            // instead of a raw RuntimeException. The original cause is attached.
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.PROVIDER_ERROR,
+                    "Failed to create Spanner database: " + database,
+                    ProviderId.SPANNER, OperationNames.ENSURE_DATABASE, false, null), cause);
         } catch (SpannerException se) {
-            throw SpannerErrorMapper.map(se, "ensureDatabase");
+            throw SpannerErrorMapper.map(se, OperationNames.ENSURE_DATABASE);
         }
     }
 
@@ -820,13 +845,13 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      *
      * @param address the logical database + collection; {@code address.collection()} is
      *                used as the Spanner table name
-     * @throws com.multiclouddb.api.MulticloudDbException on DDL errors
-     * @throws RuntimeException if the DDL future completes exceptionally for a non-Spanner
-     *         reason
+     * @throws com.multiclouddb.api.MulticloudDbException on DDL errors, or on a non-Spanner
+     *         cause from the DDL future (wrapped as {@code PROVIDER_ERROR} so callers
+     *         see the typed envelope rather than a raw {@code RuntimeException})
      */
     @Override
     public void ensureContainer(ResourceAddress address) {
-        checkOpen();
+        checkOpen(OperationNames.ENSURE_CONTAINER);
         String tableName = address.collection();
         try {
             // Check if table already exists by attempting a trivial query
@@ -840,7 +865,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
         } catch (SpannerException e) {
             if (e.getErrorCode() != ErrorCode.NOT_FOUND
                     && e.getErrorCode() != ErrorCode.INVALID_ARGUMENT) {
-                throw SpannerErrorMapper.map(e, "ensureContainer");
+                throw SpannerErrorMapper.map(e, OperationNames.ENSURE_CONTAINER);
             }
             // Table doesn't exist — create it
         }
@@ -851,13 +876,32 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             adminClient.updateDatabaseDdl(
                     instanceId, databaseId, List.of(ddl), null).get();
             LOG.info("Created Spanner table: {}", tableName);
+        } catch (InterruptedException e) {
+            // Preserve the interrupt flag and surface as TRANSIENT_FAILURE so
+            // callers don't have to catch a raw RuntimeException for interruption.
+            Thread.currentThread().interrupt();
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.TRANSIENT_FAILURE,
+                    "Interrupted while creating Spanner table: " + tableName,
+                    ProviderId.SPANNER, OperationNames.ENSURE_CONTAINER, true, null), e);
         } catch (Exception e) {
             if (e.getMessage() != null && e.getMessage().contains(SpannerConstants.DDL_ERR_DUPLICATE_NAME)) {
                 LOG.debug("Spanner table already exists (race): {}", tableName);
             } else if (e instanceof SpannerException se) {
-                throw SpannerErrorMapper.map(se, "ensureContainer");
+                throw SpannerErrorMapper.map(se, OperationNames.ENSURE_CONTAINER);
+            } else if (e instanceof java.util.concurrent.ExecutionException ee
+                    && ee.getCause() instanceof SpannerException se) {
+                throw SpannerErrorMapper.map(se, OperationNames.ENSURE_CONTAINER);
             } else {
-                throw new RuntimeException("Failed to create Spanner table: " + tableName, e);
+                // Non-Spanner cause from the DDL future — surface through the
+                // SDK's typed envelope (PROVIDER_ERROR) rather than leaking a
+                // raw RuntimeException to callers.
+                Throwable cause = e instanceof java.util.concurrent.ExecutionException ee ? ee.getCause() : e;
+                throw new MulticloudDbException(new MulticloudDbError(
+                        MulticloudDbErrorCategory.PROVIDER_ERROR,
+                        "Failed to create Spanner table: " + tableName,
+                        ProviderId.SPANNER, OperationNames.ENSURE_CONTAINER, false, null),
+                        cause);
             }
         }
     }
@@ -1084,7 +1128,13 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * @param column   the Spanner column name
      * @param value    the value to write; {@code null} writes a null STRING
      */
-    static final com.fasterxml.jackson.databind.ObjectMapper JSON_MAPPER =
+    /**
+     * Shared serialiser for the SDK's internal {@code FIELD_DATA} JSON envelope
+     * and complex value marshalling. Intentionally {@code private} so unrelated
+     * code (including tests in this package) cannot mutate its configuration
+     * and silently alter the on-the-wire format of every Spanner row.
+     */
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON_MAPPER =
             new com.fasterxml.jackson.databind.ObjectMapper();
 
     private void setMutationValue(Mutation.WriteBuilder mutation, String column, Object value) {

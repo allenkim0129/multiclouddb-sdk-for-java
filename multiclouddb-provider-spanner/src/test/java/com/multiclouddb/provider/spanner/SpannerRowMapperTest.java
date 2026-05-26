@@ -257,4 +257,62 @@ class SpannerRowMapperTest {
                     "columns not present in FIELD_DATA must be filtered out");
         }
     }
+
+    @Test
+    @DisplayName("legacy rows (no FIELD_DATA column) preserve null columns on read")
+    void legacyRowPreservesNullColumns() {
+        // When the table has no FIELD_DATA column at all (legacy pre-FIELD_DATA
+        // schema), the mapper has no metadata to filter on. The pre-FIELD_DATA
+        // behaviour was "every column surfaces, including nulls" — preserving
+        // that on the upgrade is what callers / round-trip tests rely on. A
+        // regression here would silently drop null fields on legacy data.
+        Type rowType = Type.struct(
+                StructField.of("partitionKey", Type.string()),
+                StructField.of("sortKey", Type.string()),
+                StructField.of("title", Type.string()),
+                StructField.of("maybe", Type.string()));
+        Struct row = Struct.newBuilder()
+                .set("partitionKey").to("p")
+                .set("sortKey").to("s")
+                .set("title").to("still visible")
+                .set("maybe").to((String) null)
+                .build();
+
+        try (ResultSet rs = singleRow(rowType, row)) {
+            JsonNode node = SpannerRowMapper.toJsonNode(rs);
+            assertEquals("still visible", node.get("title").asText());
+            assertTrue(node.has("maybe"),
+                    "legacy row null columns must round-trip (no metadata => no filtering)");
+            assertTrue(node.get("maybe").isNull(),
+                    "legacy row null columns must surface as JSON null, not be dropped");
+        }
+    }
+
+    @Test
+    @DisplayName("malformed FIELD_DATA preserves null columns (legacy fallback)")
+    void malformedFieldDataPreservesNullColumns() {
+        // Malformed FIELD_DATA collapses to "no metadata available"; the mapper
+        // must then apply the legacy "no filtering" rule, which includes
+        // surfacing null columns. Previously this path dropped nulls — the
+        // upgrade now surfaces them, matching the unstructured-null behaviour
+        // of Cosmos / Dynamo.
+        Type rowType = Type.struct(
+                StructField.of("partitionKey", Type.string()),
+                StructField.of("sortKey", Type.string()),
+                StructField.of("data", Type.string()),
+                StructField.of("maybe", Type.string()));
+        Struct row = Struct.newBuilder()
+                .set("partitionKey").to("p")
+                .set("sortKey").to("s")
+                .set("data").to("not a json array")
+                .set("maybe").to((String) null)
+                .build();
+
+        try (ResultSet rs = singleRow(rowType, row)) {
+            JsonNode node = SpannerRowMapper.toJsonNode(rs);
+            assertTrue(node.has("maybe"),
+                    "malformed FIELD_DATA must fall back to legacy null-preserving behaviour");
+            assertTrue(node.get("maybe").isNull());
+        }
+    }
 }
