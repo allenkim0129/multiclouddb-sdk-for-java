@@ -11,6 +11,7 @@ import com.multiclouddb.api.OperationNames;
 import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
+import com.multiclouddb.api.query.TranslatedQuery;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -126,6 +127,22 @@ class SpannerPostCloseTest {
         assertClientClosed(assertThrows(MulticloudDbException.class,
                 () -> client.query(ADDR, q, null)),
                 OperationNames.QUERY);
+    }
+
+    @Test
+    @DisplayName("queryWithTranslation() after close() throws CLIENT_CLOSED")
+    void queryWithTranslationAfterClose() {
+        // queryWithTranslation accepts a pre-translated SQL fragment from the
+        // expression translator; the post-close guard must run before any
+        // translation handoff so this path also surfaces CLIENT_CLOSED, not
+        // a raw IllegalStateException. The translated payload is otherwise
+        // irrelevant because checkOpen() returns first.
+        QueryRequest q = QueryRequest.builder().build();
+        TranslatedQuery translated = TranslatedQuery.withNamedParameters(
+                "SELECT 1 FROM dummy", "1=1", java.util.Map.of());
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> client.queryWithTranslation(ADDR, translated, q, null)),
+                OperationNames.QUERY_WITH_TRANSLATION);
     }
 
     @Test

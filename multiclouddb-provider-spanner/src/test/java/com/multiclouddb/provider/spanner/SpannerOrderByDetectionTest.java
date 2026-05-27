@@ -114,4 +114,55 @@ class SpannerOrderByDetectionTest {
         assertFalse(SpannerProviderClient.containsAggregate("SELECT * FROM items"));
         assertFalse(SpannerProviderClient.containsAggregate("SELECT id, name FROM items"));
     }
+
+    // ---- GoogleSQL literal-form coverage (regression for STRING_LITERAL_PATTERN
+    // extension that adds double-quoted, triple-quoted, raw-prefix, and
+    // backslash-escape support beyond the original single-quoted form) ----
+
+    @Test
+    @DisplayName("ignores 'ORDER BY' inside a double-quoted literal")
+    void doubleQuotedLiteralFalsePositiveGuard() {
+        // GoogleSQL accepts both single- and double-quoted string literals;
+        // the masking pass must cover both, otherwise an ORDER BY inside a
+        // double-quoted literal would suppress the default tiebreaker.
+        assertFalse(SpannerProviderClient.hasOrderByClause(
+                "SELECT * FROM items WHERE comment = \"please ORDER BY date\""));
+        assertFalse(SpannerProviderClient.hasOrderByClause(
+                "SELECT \"order by foo\" AS msg FROM dual"));
+    }
+
+    @Test
+    @DisplayName("ignores 'ORDER BY' inside a triple-quoted literal")
+    void tripleQuotedLiteralFalsePositiveGuard() {
+        // Triple-quoted GoogleSQL literals may contain lone quotes and
+        // newlines. The masking pass uses lookaheads to detect the real
+        // close-delimiter so embedded quotes / keywords don't false-positive.
+        assertFalse(SpannerProviderClient.hasOrderByClause(
+                "SELECT * FROM items WHERE c = \"\"\"multi\nORDER BY day\"\"\""));
+        assertFalse(SpannerProviderClient.hasOrderByClause(
+                "SELECT * FROM items WHERE c = '''one ' two '' ORDER BY x'''"));
+    }
+
+    @Test
+    @DisplayName("ignores 'ORDER BY' inside a raw-prefixed literal")
+    void rawPrefixedLiteralFalsePositiveGuard() {
+        // Raw strings (r'...' / r"...") allow backslashes verbatim. The mask
+        // matches them via the optional [rR]? prefix on the literal pattern.
+        assertFalse(SpannerProviderClient.hasOrderByClause(
+                "SELECT * FROM items WHERE c = r'no \\n ORDER BY here'"));
+        assertFalse(SpannerProviderClient.hasOrderByClause(
+                "SELECT * FROM items WHERE c = R\"raw ORDER BY content\""));
+    }
+
+    @Test
+    @DisplayName("ignores aggregate keywords inside non-single-quoted literals")
+    void aggregateDetectionIgnoresExtendedLiteralForms() {
+        // Mirrors aggregateDetectionIgnoresLiterals but for the new literal
+        // forms. Both detection helpers share stripStringLiterals so both
+        // must remain correct after the masking pass is extended.
+        assertFalse(SpannerProviderClient.containsAggregate(
+                "SELECT note FROM items WHERE note = \"COUNT(*) of stuff\""));
+        assertFalse(SpannerProviderClient.containsAggregate(
+                "SELECT note FROM items WHERE note = \"\"\"SUM(amount) embed\"\"\""));
+    }
 }

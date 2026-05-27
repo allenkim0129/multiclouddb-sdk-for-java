@@ -105,59 +105,68 @@ public final class SpannerTestSchema {
                 .build();
         Spanner spanner = options.getService();
         try {
-            // Ensure instance
-            InstanceAdminClient instanceAdmin = spanner.getInstanceAdminClient();
+            // Outer guard: any unhandled failure inside the provisioning body
+            // must drop the cache entry so a later test in the same JVM retries
+            // cleanly. Without this, a failure on the table-recreate path below
+            // would leave `PROVISIONED` populated and subsequent tests would
+            // skip provisioning and run against a missing or stale schema.
             try {
-                instanceAdmin.createInstance(
-                        InstanceInfo.newBuilder(InstanceId.of(PROJECT_ID, INSTANCE_ID))
-                                .setInstanceConfigId(InstanceConfigId.of(PROJECT_ID, "emulator-config"))
-                                .setDisplayName("Test Instance")
-                                .setNodeCount(1)
-                                .build())
-                        .get();
-                System.out.println("[SpannerTestSchema] Created instance: " + INSTANCE_ID);
-            } catch (ExecutionException e) {
-                if (e.getCause() instanceof SpannerException se
-                        && se.getErrorCode() == ErrorCode.ALREADY_EXISTS) {
-                    System.out.println("[SpannerTestSchema] Instance already exists: " + INSTANCE_ID);
-                } else {
-                    // On a hard failure we have NOT actually provisioned, so
-                    // drop the entry from the cache to allow a clean retry.
-                    PROVISIONED.remove(key);
-                    throw e;
+                // Ensure instance
+                InstanceAdminClient instanceAdmin = spanner.getInstanceAdminClient();
+                try {
+                    instanceAdmin.createInstance(
+                            InstanceInfo.newBuilder(InstanceId.of(PROJECT_ID, INSTANCE_ID))
+                                    .setInstanceConfigId(InstanceConfigId.of(PROJECT_ID, "emulator-config"))
+                                    .setDisplayName("Test Instance")
+                                    .setNodeCount(1)
+                                    .build())
+                            .get();
+                    System.out.println("[SpannerTestSchema] Created instance: " + INSTANCE_ID);
+                } catch (ExecutionException e) {
+                    if (e.getCause() instanceof SpannerException se
+                            && se.getErrorCode() == ErrorCode.ALREADY_EXISTS) {
+                        System.out.println("[SpannerTestSchema] Instance already exists: " + INSTANCE_ID);
+                    } else {
+                        throw e;
+                    }
                 }
-            }
 
-            // Ensure database + table
-            DatabaseAdminClient dbAdmin = spanner.getDatabaseAdminClient();
-            String tableDdl = String.format(TABLE_DDL_TEMPLATE, table);
-            try {
-                dbAdmin.createDatabase(INSTANCE_ID, databaseId, List.of(tableDdl)).get();
-                System.out.println("[SpannerTestSchema] Created database: " + databaseId
-                        + " with table: " + table);
-            } catch (ExecutionException e) {
-                if (e.getCause() instanceof SpannerException se
-                        && se.getErrorCode() == ErrorCode.ALREADY_EXISTS) {
-                    System.out.println("[SpannerTestSchema] Database already exists: " + databaseId);
-                    // Drop and recreate table to ensure full schema
-                    try {
+                // Ensure database + table
+                DatabaseAdminClient dbAdmin = spanner.getDatabaseAdminClient();
+                String tableDdl = String.format(TABLE_DDL_TEMPLATE, table);
+                try {
+                    dbAdmin.createDatabase(INSTANCE_ID, databaseId, List.of(tableDdl)).get();
+                    System.out.println("[SpannerTestSchema] Created database: " + databaseId
+                            + " with table: " + table);
+                } catch (ExecutionException e) {
+                    if (e.getCause() instanceof SpannerException se
+                            && se.getErrorCode() == ErrorCode.ALREADY_EXISTS) {
+                        System.out.println("[SpannerTestSchema] Database already exists: " + databaseId);
+                        // Drop and recreate table to ensure full schema
+                        try {
+                            dbAdmin.updateDatabaseDdl(
+                                    INSTANCE_ID, databaseId,
+                                    List.of("DROP TABLE " + table), null).get();
+                            System.out.println("[SpannerTestSchema] Dropped existing table: " + table);
+                        } catch (ExecutionException ex) {
+                            System.out.println("[SpannerTestSchema] Table drop skipped: "
+                                    + ex.getMessage());
+                        }
                         dbAdmin.updateDatabaseDdl(
                                 INSTANCE_ID, databaseId,
-                                List.of("DROP TABLE " + table), null).get();
-                        System.out.println("[SpannerTestSchema] Dropped existing table: " + table);
-                    } catch (ExecutionException ex) {
-                        System.out.println("[SpannerTestSchema] Table drop skipped: "
-                                + ex.getMessage());
+                                List.of(tableDdl), null).get();
+                        System.out.println("[SpannerTestSchema] Recreated table: " + table
+                                + " with full conformance schema");
+                    } else {
+                        throw e;
                     }
-                    dbAdmin.updateDatabaseDdl(
-                            INSTANCE_ID, databaseId,
-                            List.of(tableDdl), null).get();
-                    System.out.println("[SpannerTestSchema] Recreated table: " + table
-                            + " with full conformance schema");
-                } else {
-                    PROVISIONED.remove(key);
-                    throw e;
                 }
+            } catch (Exception e) {
+                // We are no longer in a "provisioned" state — clear the cache
+                // entry so a later test sees a clean retry path. Rethrown so
+                // the failure still surfaces to the caller.
+                PROVISIONED.remove(key);
+                throw e;
             }
         } finally {
             spanner.close();

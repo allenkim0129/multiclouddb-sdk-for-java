@@ -91,19 +91,41 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                     Pattern.CASE_INSENSITIVE);
 
     /**
-     * Matches GoogleSQL / standard SQL single-quoted string literals, including
-     * those that contain doubled-quote escapes ({@code ''}). Used by
-     * {@link #stripStringLiterals(String)} to blank-out literal content before
-     * keyword detection so that {@code 'please ORDER BY x'} doesn't trip the
-     * order-by / aggregate regexes.
+     * Matches GoogleSQL string-literal forms so {@link #stripStringLiterals}
+     * can mask their contents before keyword detection. Covers, in priority
+     * order:
+     * <ol>
+     *   <li>triple-double-quoted {@code """..."""} (allows lone {@code "} and
+     *       {@code ""} inside)</li>
+     *   <li>triple-single-quoted {@code '''...'''} (allows lone {@code '} and
+     *       {@code ''} inside)</li>
+     *   <li>double-quoted {@code "..."} with backslash escapes and {@code ""}
+     *       escape</li>
+     *   <li>single-quoted {@code '...'} with backslash escapes and {@code ''}
+     *       escape</li>
+     * </ol>
+     * All four forms accept an optional {@code r}/{@code R} raw-string prefix;
+     * for masking purposes the raw vs non-raw distinction does not matter
+     * (we are only removing the literal text, not interpreting escapes).
+     * <p>
+     * Triple-quoted alternatives must come before the single-character forms;
+     * otherwise the engine would match the first three quotes of
+     * {@code '''abc'''} as an empty single literal followed by garbage.
+     * The {@code (?s)} DOTALL flag lets literals span newlines.
      */
     private static final Pattern STRING_LITERAL_PATTERN =
-            Pattern.compile("'(?:[^']|'')*'");
+            Pattern.compile(
+                    "(?s)"
+                            + "[rR]?\"\"\"(?:\\\\.|\"(?!\"\")|[^\"\\\\])*\"\"\""
+                            + "|[rR]?'''(?:\\\\.|'(?!'')|[^'\\\\])*'''"
+                            + "|[rR]?\"(?:\\\\.|\"\"|[^\"\\\\])*\""
+                            + "|[rR]?'(?:\\\\.|''|[^'\\\\])*'");
 
     /**
-     * Replaces all single-quoted string literals in a SQL fragment with empty
+     * Replaces all GoogleSQL string literals in a SQL fragment with empty
      * placeholders so that keyword detection (ORDER BY / aggregate) cannot be
-     * confused by literal content.
+     * confused by literal content. Covers single-, double-, and triple-quoted
+     * forms, with the optional {@code r}/{@code R} raw prefix.
      * <p>
      * Package-private for unit testing.
      */
@@ -210,6 +232,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     @Override
     public void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.CREATE);
+        validateNoReservedFields(document, OperationNames.CREATE);
         try {
             String table = address.collection();
             Mutation.WriteBuilder mutation = Mutation.newInsertBuilder(table)
@@ -245,6 +268,15 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * unions the field set with {@code document.keySet()}, and writes the
      * merged metadata together with the partial column updates in a single
      * atomic commit.
+     * <p>
+     * <strong>Cross-provider asymmetry.</strong> This makes Spanner
+     * {@code update()} a partial update that preserves unrelated fields. The
+     * sibling providers do not: Cosmos {@code update()} calls
+     * {@code replaceItem} (full-document replace) and DynamoDB
+     * {@code update()} calls {@code PutItem} with an {@code attribute_exists}
+     * guard (full-item replace). The portable SPI contract for {@code update()}
+     * partial-vs-full semantics is currently undefined; aligning the three
+     * providers is tracked as follow-up work.
      *
      * @param address  the logical database + collection
      * @param key      the document key identifying the row to update
@@ -257,6 +289,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     @Override
     public void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.UPDATE);
+        validateNoReservedFields(document, OperationNames.UPDATE);
         try {
             String table = address.collection();
             String pk = key.partitionKey();
@@ -337,6 +370,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     @Override
     public void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.UPSERT);
+        validateNoReservedFields(document, OperationNames.UPSERT);
         try {
             String table = address.collection();
             Mutation.WriteBuilder mutation = Mutation.newReplaceBuilder(table)
@@ -370,6 +404,36 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * @param document the document payload; may be {@code null} (no fields written)
      * @return the field names that were written by this call (may be empty)
      */
+    /**
+     * Rejects any document that contains a field name reserved by the Spanner
+     * provider for internal metadata. Today the only reserved name is
+     * {@link SpannerConstants#FIELD_DATA}. Called by every write-side public
+     * entry point ({@code create} / {@code update} / {@code upsert}) before
+     * the call enters any Spanner SDK call — including the
+     * {@code readWriteTransaction().run(...)} lambda in {@link #update}, which
+     * would otherwise wrap our typed {@link MulticloudDbException} as an
+     * opaque {@code SpannerException} and degrade the category to
+     * {@code PROVIDER_ERROR}.
+     *
+     * @param document    the document the caller is trying to write; may be {@code null}
+     * @param operationOp the operation name (for the error envelope)
+     * @throws MulticloudDbException category {@code INVALID_REQUEST} if a
+     *         reserved field name is present
+     */
+    private static void validateNoReservedFields(Map<String, Object> document, String operationOp) {
+        if (document == null) return;
+        if (document.containsKey(SpannerConstants.FIELD_DATA)) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.INVALID_REQUEST,
+                    "Field name '" + SpannerConstants.FIELD_DATA + "' is reserved by the "
+                            + "Spanner provider for internal metadata; rename the field in your "
+                            + "document. (Cosmos and DynamoDB do not reserve this name; this is a "
+                            + "Spanner-specific restriction tracked for a future schema-migration "
+                            + "release.)",
+                    ProviderId.SPANNER, operationOp, false, null));
+        }
+    }
+
     private List<String> writeDocumentFields(Mutation.WriteBuilder mutation, Map<String, Object> document) {
         List<String> fieldNames = new ArrayList<>();
         if (document == null) {
@@ -379,10 +443,18 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             String name = entry.getKey();
             Object value = entry.getValue();
 
-            // Skip primary key fields — already set by caller
+            // Skip primary key fields — already set by caller from the
+            // MulticloudDbKey. These names are conventionally not user-document
+            // fields in this SDK (Cosmos/Dynamo also inject them on top of the
+            // user payload), so silent skip is consistent across providers.
             if (SpannerConstants.FIELD_SORT_KEY.equals(name) || SpannerConstants.FIELD_PARTITION_KEY.equals(name))
                 continue;
-            // Skip the internal metadata column — reserved for tracking written fields
+            // Defensive: the internal metadata column is reserved. Public
+            // methods (create/update/upsert) validate up front via
+            // {@link #validateNoReservedFields} before any Spanner SDK call,
+            // so this branch should never be reached. Kept as a no-op skip in
+            // case a future code path constructs a write builder without
+            // routing through that validation.
             if (SpannerConstants.FIELD_DATA.equals(name))
                 continue;
 
@@ -1112,6 +1184,15 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
+     * Shared serialiser for the SDK's internal {@code FIELD_DATA} JSON envelope
+     * and complex value marshalling. Intentionally {@code private} so unrelated
+     * code (including tests in this package) cannot mutate its configuration
+     * and silently alter the on-the-wire format of every Spanner row.
+     */
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON_MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
+    /**
      * Sets a single column value in a Spanner mutation builder.
      * <p>
      * Supported Java types: {@link String}, {@link Long}, {@link Integer},
@@ -1128,15 +1209,6 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * @param column   the Spanner column name
      * @param value    the value to write; {@code null} writes a null STRING
      */
-    /**
-     * Shared serialiser for the SDK's internal {@code FIELD_DATA} JSON envelope
-     * and complex value marshalling. Intentionally {@code private} so unrelated
-     * code (including tests in this package) cannot mutate its configuration
-     * and silently alter the on-the-wire format of every Spanner row.
-     */
-    private static final com.fasterxml.jackson.databind.ObjectMapper JSON_MAPPER =
-            new com.fasterxml.jackson.databind.ObjectMapper();
-
     private void setMutationValue(Mutation.WriteBuilder mutation, String column, Object value) {
         if (value == null) {
             mutation.set(column).to((String) null);

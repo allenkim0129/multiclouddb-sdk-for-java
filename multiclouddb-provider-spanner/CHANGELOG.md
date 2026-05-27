@@ -10,16 +10,31 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Breaking changes
 
 - **`update()` now uses a read-modify-write transaction to preserve previously
-  written fields.** Earlier `Unreleased` builds overwrote the internal
-  `FIELD_DATA` metadata column with only the fields named in the current
-  call, silently hiding every other previously-written column on the next
+  written fields** (Spanner provider only). Earlier `Unreleased` builds overwrote
+  the internal `FIELD_DATA` metadata column with only the fields named in the
+  current call, silently hiding every other previously-written column on the next
   `read()` (the columns were still in Spanner — they were simply omitted from
   the SDK-visible projection). The fix merges the existing field set with
   the new one inside a single `databaseClient.readWriteTransaction()`,
-  adding one read per `update` (acceptable for correctness). Behaviour now
-  matches Cosmos / DynamoDB: partial updates preserve unrelated fields.
-  Callers that relied on the bug to "forget" fields should issue a full
-  document `upsert()` instead.
+  adding one read per `update` (acceptable for correctness).
+  **Known cross-provider asymmetry:** this makes Spanner `update()` a partial
+  update that preserves unrelated fields. The sibling providers do **not**
+  preserve unrelated fields — Cosmos `update()` calls `replaceItem` (full-document
+  replace) and DynamoDB `update()` calls `PutItem` with an `attribute_exists`
+  guard (full-item replace). The portable SPI contract for `update()`
+  partial-vs-full semantics is currently undefined; aligning the three providers
+  is tracked as follow-up. Callers that relied on the bug to "forget" fields
+  should issue a full document `upsert()` instead.
+- **Document field named `data` is now rejected** with
+  `MulticloudDbException(category = INVALID_REQUEST)`. The Spanner provider
+  reserves the `data` column for internal `FIELD_DATA` metadata; previously a
+  user document containing a field named `data` was silently dropped on
+  `create()` / `update()` / `upsert()`, producing silent cross-provider data
+  loss (Cosmos and DynamoDB both persist user fields named `data`). Surfacing
+  this as a typed error gives the caller a deterministic signal. Aligning the
+  three providers by encoding metadata under a non-collidable name is tracked
+  as a follow-up schema-migration release; for now, rename the offending field
+  in your document.
 - **`upsert()` semantics changed from `INSERT_OR_UPDATE` to `REPLACE`.**
   Previous releases (incorrectly documented as `INSERT_OR_UPDATE` in the
   `[0.1.0-beta.1]` notes below — corrected) merged the new document with
