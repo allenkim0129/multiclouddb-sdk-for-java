@@ -44,8 +44,15 @@ public final class SpannerConstants {
      * explicitly written by the SDK on each row, so {@link SpannerRowMapper} can
      * distinguish &quot;explicitly set to null&quot; from &quot;empty schema column&quot;
      * — a distinction that Spanner's fixed schema otherwise loses. This column is
-     * reserved by the SDK; {@link com.multiclouddb.spi.MulticloudDbProviderClient#create}
-     * and friends skip any user-supplied field with this name.
+     * reserved by the SDK: write-side public entry points
+     * ({@link com.multiclouddb.spi.MulticloudDbProviderClient#create create} /
+     * {@link com.multiclouddb.spi.MulticloudDbProviderClient#update update} /
+     * {@link com.multiclouddb.spi.MulticloudDbProviderClient#upsert upsert})
+     * <strong>reject</strong> any user-supplied field whose name matches this
+     * column (case-insensitive, since Spanner column names are case-insensitive)
+     * with {@link com.multiclouddb.api.MulticloudDbErrorCategory#INVALID_REQUEST}.
+     * On the read path, this column is internal metadata and is never surfaced
+     * as a document field to the caller.
      */
     public static final String FIELD_DATA = "data";
 
