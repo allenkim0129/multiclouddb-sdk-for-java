@@ -64,15 +64,25 @@ class SpannerReservedFieldTest {
         closedField.setBoolean(client, true);
     }
 
-    private static void assertReservedFieldRejected(MulticloudDbException e) {
+    private static void assertReservedFieldRejected(MulticloudDbException e, String offendingFieldName) {
         assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, e.error().category(),
                 "reserved-field collision must surface INVALID_REQUEST, not "
                         + e.error().category());
         assertEquals(ProviderId.SPANNER, e.error().provider());
         assertTrue(e.error().message() != null
                         && e.error().message().contains(SpannerConstants.FIELD_DATA),
-                "error message must cite the reserved field name; got: "
+                "error message must cite the canonical reserved field name; got: "
                         + e.error().message());
+        assertTrue(e.error().message() != null
+                        && e.error().message().contains(offendingFieldName),
+                "error message must echo the actual offending field name '" + offendingFieldName
+                        + "' (so the user knows which key in their document to rename); got: "
+                        + e.error().message());
+    }
+
+    private static void assertReservedFieldRejected(MulticloudDbException e) {
+        // Default helper for the canonical lowercase 'data' case.
+        assertReservedFieldRejected(e, SpannerConstants.FIELD_DATA);
     }
 
     @Test
@@ -102,5 +112,40 @@ class SpannerReservedFieldTest {
         doc.put("status", "active");
         assertReservedFieldRejected(assertThrows(MulticloudDbException.class,
                 () -> client.upsert(ADDR, KEY, doc, null)));
+    }
+    // ---- Case-insensitive coverage (regression for round-4 review: Spanner
+    // column names are case-insensitive, so 'Data' / 'DATA' / 'dAtA' all
+    // collide with the internal FIELD_DATA column. Earlier builds rejected
+    // only the exact lowercase 'data', letting other-case variants slip past
+    // validation and surface as a deep INVALID_ARGUMENT from the Spanner
+    // client instead of our friendly INVALID_REQUEST). ----
+
+    @Test
+    @DisplayName("create() with reserved field 'Data' (capital-D) throws INVALID_REQUEST")
+    void createRejectsReservedDataField_capitalD() {
+        Map<String, Object> doc = new HashMap<>();
+        doc.put("Data", "user-payload");
+        doc.put("other", "ok");
+        assertReservedFieldRejected(assertThrows(MulticloudDbException.class,
+                () -> client.create(ADDR, KEY, doc, null)), "Data");
+    }
+
+    @Test
+    @DisplayName("update() with reserved field 'DATA' (all-caps) throws INVALID_REQUEST")
+    void updateRejectsReservedDataField_allCaps() {
+        Map<String, Object> doc = new HashMap<>();
+        doc.put("DATA", "user-payload");
+        assertReservedFieldRejected(assertThrows(MulticloudDbException.class,
+                () -> client.update(ADDR, KEY, doc, null)), "DATA");
+    }
+
+    @Test
+    @DisplayName("upsert() with reserved field 'dAtA' (mixed-case) throws INVALID_REQUEST")
+    void upsertRejectsReservedDataField_mixedCase() {
+        Map<String, Object> doc = new HashMap<>();
+        doc.put("dAtA", "user-payload");
+        doc.put("status", "active");
+        assertReservedFieldRejected(assertThrows(MulticloudDbException.class,
+                () -> client.upsert(ADDR, KEY, doc, null)), "dAtA");
     }
 }

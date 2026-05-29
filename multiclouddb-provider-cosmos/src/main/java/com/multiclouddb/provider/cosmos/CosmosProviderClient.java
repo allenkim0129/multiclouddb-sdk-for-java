@@ -47,6 +47,16 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
 
     private final CosmosClient cosmosClient;
     private final MulticloudDbClientConfig config;
+    /**
+     * Lifecycle flag flipped by {@link #close()}. Public CRUD/query/provisioning
+     * entry points check this first via {@link #checkOpen(String)} and throw
+     * {@link MulticloudDbErrorCategory#CLIENT_CLOSED} instead of leaking the
+     * underlying {@code IllegalStateException} that the azure-cosmos SDK would
+     * surface after its own close. Declared {@code volatile} so cross-thread
+     * close → operation racing observes the flip without locking; double-close
+     * is guarded by the {@code synchronized} {@link #close()} method.
+     */
+    private volatile boolean closed = false;
 
 
     /**
@@ -141,6 +151,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.CREATE);
         try {
             CosmosContainer container = getContainer(address);
             ObjectNode doc = toObjectNode(document);
@@ -174,6 +185,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public DocumentResult read(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
+        checkOpen(OperationNames.READ);
         try {
             CosmosContainer container = getContainer(address);
             PartitionKey pk = resolvePartitionKey(key);
@@ -230,6 +242,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.UPDATE);
         try {
             CosmosContainer container = getContainer(address);
             ObjectNode doc = toObjectNode(document);
@@ -263,6 +276,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.UPSERT);
         try {
             CosmosContainer container = getContainer(address);
             ObjectNode doc = toObjectNode(document);
@@ -296,6 +310,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void delete(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
+        checkOpen(OperationNames.DELETE);
         try {
             CosmosContainer container = getContainer(address);
             PartitionKey pk = resolvePartitionKey(key);
@@ -343,6 +358,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public QueryPage query(ResourceAddress address, QueryRequest query, OperationOptions options) {
+        checkOpen(OperationNames.QUERY);
         try {
             CosmosContainer container = getContainer(address);
             CosmosQueryRequestOptions queryOptions = new CosmosQueryRequestOptions();
@@ -433,6 +449,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     @Override
     public QueryPage queryWithTranslation(ResourceAddress address, TranslatedQuery translated,
             QueryRequest query, OperationOptions options) {
+        checkOpen(OperationNames.QUERY_WITH_TRANSLATION);
         try {
             CosmosContainer container = getContainer(address);
             CosmosQueryRequestOptions queryOptions = new CosmosQueryRequestOptions();
@@ -497,7 +514,32 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
 
     @Override
     public void close() {
-        cosmosClient.close();
+        if (closed) return;
+        synchronized (this) {
+            if (closed) return;
+            closed = true;
+            cosmosClient.close();
+        }
+    }
+
+    /**
+     * Guards public entry points against use after {@link #close()}.
+     * <p>
+     * Provider-level mirror of the facade guard in
+     * {@code DefaultMulticloudDbClient.checkOpen(String)}: callers that talk
+     * directly to the SPI (e.g., conformance harnesses, test fixtures) still
+     * see a typed {@link MulticloudDbErrorCategory#CLIENT_CLOSED} envelope
+     * rather than a raw {@code IllegalStateException} from azure-cosmos.
+     *
+     * @param operation the caller's operation name from {@link OperationNames}
+     */
+    private void checkOpen(String operation) {
+        if (closed) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.CLIENT_CLOSED,
+                    "CosmosProviderClient has been closed",
+                    ProviderId.COSMOS, operation, false, Map.of()));
+        }
     }
 
     // ── Provisioning ─────────────────────────────────────────────────────────
@@ -523,6 +565,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void ensureDatabase(String database) {
+        checkOpen(OperationNames.ENSURE_DATABASE);
         try {
             cosmosClient.createDatabaseIfNotExists(database);
             LOG.info("ensureDatabase: created or verified Cosmos database '{}'", database);
@@ -543,6 +586,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void ensureContainer(ResourceAddress address) {
+        checkOpen(OperationNames.ENSURE_CONTAINER);
         try {
             CosmosDatabase db = cosmosClient.getDatabase(address.database());
             CosmosContainerProperties props = new CosmosContainerProperties(

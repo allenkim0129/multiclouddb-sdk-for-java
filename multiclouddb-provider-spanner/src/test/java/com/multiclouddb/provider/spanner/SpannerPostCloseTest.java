@@ -17,10 +17,14 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.time.Duration;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Locks in the post-close contract for {@link SpannerProviderClient}: every
@@ -63,6 +67,15 @@ class SpannerPostCloseTest {
 
         // Flip the close flag directly so checkOpen() trips; this avoids the
         // session-pool shutdown wait inside Spanner.close().
+        //
+        // Note: this intentionally bypasses the real close() codepath because
+        // the Spanner SDK's session pool blocks waiting for the (unreachable)
+        // emulator host configured here. The real close() codepath is covered
+        // end-to-end by CrudConformanceTests.postCloseOperationsThrowClientClosed
+        // (@Order(21)) against a real emulator, and by CrudConformanceTests
+        // .closeIsIdempotent (@Order(18), inherited by SpannerConformanceTest)
+        // which calls close() twice against a real emulator. The flag-level
+        // short-circuit invariant is locked in below by closeIsIdempotent().
         Field closedField = SpannerProviderClient.class.getDeclaredField("closed");
         closedField.setAccessible(true);
         closedField.setBoolean(client, true);
@@ -159,6 +172,41 @@ class SpannerPostCloseTest {
         assertClientClosed(assertThrows(MulticloudDbException.class,
                 () -> client.ensureContainer(ADDR)),
                 OperationNames.ENSURE_CONTAINER);
+    }
+
+    @Test
+    @DisplayName("close() is idempotent — second close short-circuits before re-entering Spanner.close()")
+    void closeIsIdempotent() throws Exception {
+        // The fixture's setUp() has already flipped the `closed` field to true
+        // via reflection without invoking the real Spanner.close() (which would
+        // block on session-pool shutdown against the unreachable emulator host
+        // configured in setUp()). A correctly-guarded close() must therefore
+        // short-circuit on the closed flag and never call Spanner.close() —
+        // proving the DCL/synchronized guard at the top of close() is in place.
+        //
+        // If a regression removed that guard, close() would re-enter
+        // Spanner.close() which would block on the session-pool shutdown timeout
+        // against the unreachable emulator host. The tight preemptive timeout
+        // turns that hang into a fast, attributable failure.
+        //
+        // This complements CrudConformanceTests.closeIsIdempotent (@Order(18),
+        // inherited by SpannerConformanceTest) which exercises a real
+        // double-close against the real emulator end-to-end. Together they
+        // close the loop the finding warned about: SDK-level idempotency in
+        // Spanner.close() would let a guard-less implementation pass a pure
+        // behavioural test, so the flag-level structural invariant must also
+        // be locked in here.
+        assertTimeoutPreemptively(Duration.ofSeconds(2), () ->
+                assertDoesNotThrow(client::close,
+                        "post-close close() must short-circuit via the closed flag, "
+                                + "not re-enter Spanner.close() (which would block on "
+                                + "session-pool shutdown against the unreachable emulator)"));
+
+        // And the flag must remain set — close() must not toggle it back.
+        Field closedField = SpannerProviderClient.class.getDeclaredField("closed");
+        closedField.setAccessible(true);
+        assertTrue(closedField.getBoolean(client),
+                "closed flag must remain true after a second close() invocation");
     }
 }
 

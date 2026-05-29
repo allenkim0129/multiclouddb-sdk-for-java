@@ -144,6 +144,32 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   (earlier `Unreleased` builds silently dropped every null on this path).
   Tables that pre-date the `FIELD_DATA` metadata column now round-trip
   null fields consistently with Cosmos / DynamoDB.
+- **Legacy / pre-`FIELD_DATA` rows preserve every non-null column on
+  `update()`.** Earlier `Unreleased` builds stamped `FIELD_DATA` with only
+  the keys named in the current `update()` call, so a row that pre-dated this
+  SDK (or was written by a sibling system without the `FIELD_DATA` metadata)
+  had its untouched columns filtered out by the reader on the very next
+  `read()` — silent data loss with no exception or log. The fix tracks
+  whether pre-existing `FIELD_DATA` was successfully parsed; if the row has
+  no trustworthy metadata (NULL or malformed), `update()` deliberately
+  leaves `FIELD_DATA` alone so the reader's "no metadata => project every
+  column" fallback continues to project all legacy columns. A subsequent
+  `upsert()` (REPLACE) or `create()` promotes the row into the metadata
+  regime by writing a complete `FIELD_DATA` stamp. Companion emulator test:
+  `SpannerLegacyRowUpdateEmulatorTest`.
+- **Reserved-field validation is now case-insensitive.** Spanner resolves
+  column names case-insensitively, so a user document containing `Data` /
+  `DATA` / `dAtA` previously slipped past the lowercase-only `data` reserved
+  field check, then surfaced as a deep `INVALID_ARGUMENT: Duplicate column
+  name` from the Spanner client (mapped to `MulticloudDbErrorCategory
+  .INVALID_REQUEST`, but with a less actionable Spanner-internal message
+  instead of the friendly SDK envelope). `validateNoReservedFields` now
+  rejects any case-variant of `data` with `INVALID_REQUEST`, echoing the
+  actual offending field name in the error message so callers can pinpoint
+  which key in their document to rename. The defensive skip in
+  `writeDocumentFields` was also extended to `equalsIgnoreCase` so any
+  future internal caller bypassing the public-entry-point validation is
+  still safe.
 
 ### Known limitations
 

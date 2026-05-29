@@ -3,18 +3,26 @@
 
 package com.multiclouddb.provider.spanner;
 
+import com.multiclouddb.api.QueryRequest;
+import com.multiclouddb.api.SortDirection;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Unit tests for {@link SpannerProviderClient#hasOrderByClause(String)}.
+ * Unit tests for the SQL post-processing helpers in {@link SpannerProviderClient}:
+ * {@link SpannerProviderClient#hasOrderByClause(String)},
+ * {@link SpannerProviderClient#containsAggregate(String)}, and
+ * {@link SpannerProviderClient#appendResultSetControl(String, QueryRequest)}.
  * <p>
  * Ensures the SDK does not append a default/tiebreaker {@code ORDER BY} clause
  * to caller-supplied SQL (e.g., a raw GoogleSQL expression passed via
- * {@code QueryRequest.expression()}) when one is already present.
+ * {@code QueryRequest.expression()}) when one is already present, and that
+ * aggregate queries do not receive the non-grouped-column tiebreaker that
+ * GoogleSQL would reject.
  */
 class SpannerOrderByDetectionTest {
 
@@ -164,5 +172,109 @@ class SpannerOrderByDetectionTest {
                 "SELECT note FROM items WHERE note = \"COUNT(*) of stuff\""));
         assertFalse(SpannerProviderClient.containsAggregate(
                 "SELECT note FROM items WHERE note = \"\"\"SUM(amount) embed\"\"\""));
+    }
+    // ---- appendResultSetControl coverage (round-4 review: previously this
+    // helper was exercised only indirectly through query() integration paths;
+    // these unit tests lock in the no-aggregate / aggregate / caller-supplied
+    // ORDER BY branches without an emulator). The LIMIT/OFFSET tail is appended
+    // separately in executeStatement (which talks to Spanner) and is therefore
+    // outside the scope of these unit tests. ----
+
+    @Test
+    @DisplayName("appendResultSetControl: appends default ORDER BY when caller has none and no aggregate")
+    void appendsDefaultOrderByWhenAbsent_andNoAggregate() {
+        QueryRequest q = QueryRequest.builder().build();
+        String out = SpannerProviderClient.appendResultSetControl(
+                "SELECT * FROM items", q);
+        assertEquals("SELECT * FROM items ORDER BY partitionKey, sortKey", out);
+    }
+
+    @Test
+    @DisplayName("appendResultSetControl: leaves caller-supplied ORDER BY untouched (no tiebreaker)")
+    void doesNotAppendOrderByWhenCallerSupplied() {
+        QueryRequest q = QueryRequest.builder().build();
+        String sql = "SELECT * FROM items ORDER BY createdAt DESC";
+        assertEquals(sql, SpannerProviderClient.appendResultSetControl(sql, q));
+    }
+
+    @Test
+    @DisplayName("appendResultSetControl: skips default ORDER BY for aggregate queries")
+    void doesNotAppendOrderByWhenAggregatePresent() {
+        QueryRequest q = QueryRequest.builder().build();
+        // SELECT COUNT(*) is the canonical case: GoogleSQL would reject
+        // ORDER BY partitionKey, sortKey on a non-grouped column.
+        String sql = "SELECT COUNT(*) FROM items";
+        assertEquals(sql, SpannerProviderClient.appendResultSetControl(sql, q));
+        // GROUP BY also triggers the suppression.
+        String sqlGroup = "SELECT status, COUNT(*) FROM items GROUP BY status";
+        assertEquals(sqlGroup, SpannerProviderClient.appendResultSetControl(sqlGroup, q));
+    }
+
+    @Test
+    @DisplayName("appendResultSetControl: aggregate + caller orderBy() honors caller, no PK tiebreaker")
+    void aggregateWithCallerOrderBy_honorsCallerNoTiebreaker() {
+        // The aggregate branch must honor the caller's explicit ordering but
+        // skip the partitionKey/sortKey tiebreakers (GoogleSQL would reject
+        // those non-grouped columns on an aggregate query).
+        QueryRequest q = QueryRequest.builder()
+                .orderBy("status", SortDirection.DESC)
+                .build();
+        String sql = "SELECT status, COUNT(*) FROM items GROUP BY status";
+        assertEquals(sql + " ORDER BY status DESC",
+                SpannerProviderClient.appendResultSetControl(sql, q));
+    }
+
+    @Test
+    @DisplayName("appendResultSetControl: caller orderBy() lacking PK columns appends them as tiebreakers")
+    void callerOrderByMissingTiebreakers_appended() {
+        // Caller sorts by `name` but neither partitionKey nor sortKey — the
+        // SDK adds both as tiebreakers to guarantee deterministic OFFSET-based
+        // pagination across pages.
+        QueryRequest q = QueryRequest.builder()
+                .orderBy("name", SortDirection.ASC)
+                .build();
+        String out = SpannerProviderClient.appendResultSetControl(
+                "SELECT * FROM items", q);
+        assertEquals(
+                "SELECT * FROM items ORDER BY name ASC, partitionKey, sortKey",
+                out);
+    }
+
+    @Test
+    @DisplayName("appendResultSetControl: caller orderBy() already containing both PKs adds no duplicates")
+    void callerOrderByCoversBothPrimaryKeys_noDuplicates() {
+        QueryRequest q = QueryRequest.builder()
+                .orderBy("partitionKey", SortDirection.ASC)
+                .orderBy("sortKey", SortDirection.DESC)
+                .build();
+        String out = SpannerProviderClient.appendResultSetControl(
+                "SELECT * FROM items", q);
+        assertEquals(
+                "SELECT * FROM items ORDER BY partitionKey ASC, sortKey DESC",
+                out);
+    }
+
+    @Test
+    @DisplayName("appendResultSetControl: caller orderBy() already containing partitionKey adds only missing sortKey")
+    void callerOrderByCoversPartitionKeyOnly_appendsSortKeyTiebreaker() {
+        QueryRequest q = QueryRequest.builder()
+                .orderBy("partitionKey", SortDirection.ASC)
+                .build();
+        String out = SpannerProviderClient.appendResultSetControl(
+                "SELECT * FROM items", q);
+        assertEquals(
+                "SELECT * FROM items ORDER BY partitionKey ASC, sortKey",
+                out);
+    }
+
+    @Test
+    @DisplayName("appendResultSetControl: null QueryRequest emits no ORDER BY (caller-driven path)")
+    void nullQueryRequest_emitsNoDefaultOrderBy() {
+        // The null QueryRequest branch is reached when the caller invokes
+        // executeStatement without a QueryRequest (internal SDK paths). The
+        // helper must return the SQL unchanged — neither tiebreakers nor a
+        // default ORDER BY are appended.
+        String sql = "SELECT * FROM items";
+        assertEquals(sql, SpannerProviderClient.appendResultSetControl(sql, null));
     }
 }

@@ -219,7 +219,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      *       {@code key.partitionKey()}.</li>
      * </ul>
      * All remaining document fields are written as individual columns via
-     * {@link #writeMutationFields}. If the row already exists, the mutation fails
+     * {@link #writeFullDocument}. If the row already exists, the mutation fails
      * with {@link com.multiclouddb.api.MulticloudDbErrorCategory#CONFLICT}.
      *
      * @param address  the logical database + collection; the collection maps directly to
@@ -316,16 +316,29 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                             "Spanner row not found for update: partitionKey=" + pk
                                     + ", sortKey=" + sk);
                 }
+                // Track whether we successfully parsed a pre-existing FIELD_DATA
+                // metadata blob. If FIELD_DATA was NULL (a legacy row that pre-dates
+                // this SDK ever writing to it) or malformed, we cannot know the
+                // complete set of SDK-visible columns for this row. Stamping
+                // FIELD_DATA with only the current update payload's keys would then
+                // cause SpannerRowMapper to filter out every legacy column on the
+                // next read (silent data loss). In that case we deliberately leave
+                // FIELD_DATA alone — the reader's "no metadata => project every
+                // column" fallback (SpannerRowMapper.toJsonNode L84-95 +
+                // SpannerRowMapper.parseFieldMetadata) preserves the legacy columns.
+                boolean hadValidPriorMetadata = false;
                 if (!existing.isNull(0)) {
                     String existingJson = existing.getString(0);
                     try {
                         List<String> parsed = JSON_MAPPER.readValue(existingJson,
                                 JSON_MAPPER.getTypeFactory().constructCollectionType(List.class, String.class));
                         mergedFields.addAll(parsed);
+                        hadValidPriorMetadata = true;
                     } catch (com.fasterxml.jackson.core.JsonProcessingException ignored) {
-                        // Malformed FIELD_DATA on the existing row — fall back to
-                        // an empty pre-existing set (the merge will still include
-                        // the new fields). Mirrors SpannerRowMapper's tolerance.
+                        // Malformed FIELD_DATA on the existing row — treat the row
+                        // as legacy (no trustworthy metadata). hadValidPriorMetadata
+                        // stays false, so we skip the FIELD_DATA stamp below and
+                        // let the reader fallback project every column.
                     }
                 }
 
@@ -340,8 +353,14 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
 
                 // 3) Stamp the merged FIELD_DATA so reads see the union of every
                 //    SDK-written column for this row, not just the partial update.
-                mutation.set(SpannerConstants.FIELD_DATA).to(
-                        serialiseFieldNames(new ArrayList<>(mergedFields), OperationNames.UPDATE));
+                //    Skipped for legacy / malformed-metadata rows — see the
+                //    hadValidPriorMetadata comment above. A subsequent upsert()
+                //    (REPLACE) or create() will promote the row into the
+                //    metadata regime by writing a complete FIELD_DATA.
+                if (hadValidPriorMetadata) {
+                    mutation.set(SpannerConstants.FIELD_DATA).to(
+                            serialiseFieldNames(new ArrayList<>(mergedFields), OperationNames.UPDATE));
+                }
 
                 txn.buffer(mutation.build());
                 return null;
@@ -386,6 +405,52 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
+     * Rejects any document that contains a field name reserved by the Spanner
+     * provider for internal metadata. Today the only reserved name is
+     * {@link SpannerConstants#FIELD_DATA}. Called by every write-side public
+     * entry point ({@code create} / {@code update} / {@code upsert}) before
+     * the call enters any Spanner SDK call — including the
+     * {@code readWriteTransaction().run(...)} lambda in {@link #update}, which
+     * would otherwise wrap our typed {@link MulticloudDbException} as an
+     * opaque {@code SpannerException} and degrade the category to
+     * {@code PROVIDER_ERROR}.
+     *
+     * @param document    the document the caller is trying to write; may be {@code null}
+     * @param operationOp the operation name (for the error envelope)
+     * @throws MulticloudDbException category {@code INVALID_REQUEST} if a
+     *         reserved field name is present
+     */
+    private static void validateNoReservedFields(Map<String, Object> document, String operationOp) {
+        if (document == null) return;
+        // Spanner resolves column names case-insensitively (`Data`, `DATA`, and
+        // `data` all bind to the same column at write time). The reserved-field
+        // check therefore must also be case-insensitive — otherwise a user
+        // document like {"Data": "x"} would slip past validation and the
+        // mutation builder would later try to set both the SDK-internal column
+        // for "Data" *and* our own FIELD_DATA stamp, producing a deep
+        // INVALID_ARGUMENT: Duplicate column name from the Spanner client
+        // instead of the friendly INVALID_REQUEST we want to surface here.
+        String reservedHit = null;
+        for (String key : document.keySet()) {
+            if (key != null && SpannerConstants.FIELD_DATA.equalsIgnoreCase(key)) {
+                reservedHit = key;
+                break;
+            }
+        }
+        if (reservedHit != null) {
+            String message = "Field name '" + reservedHit + "' collides with reserved name '"
+                    + SpannerConstants.FIELD_DATA + "' (case-insensitive match — Spanner column "
+                    + "names are case-insensitive); rename the field in your document. (Cosmos "
+                    + "and DynamoDB do not reserve this name; this is a Spanner-specific "
+                    + "restriction tracked for a future schema-migration release.)";
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.INVALID_REQUEST,
+                    message,
+                    ProviderId.SPANNER, operationOp, false, null));
+        }
+    }
+
+    /**
      * Writes the document field values into a Spanner mutation and returns the
      * list of explicitly-written field names.
      * <p>
@@ -404,36 +469,6 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * @param document the document payload; may be {@code null} (no fields written)
      * @return the field names that were written by this call (may be empty)
      */
-    /**
-     * Rejects any document that contains a field name reserved by the Spanner
-     * provider for internal metadata. Today the only reserved name is
-     * {@link SpannerConstants#FIELD_DATA}. Called by every write-side public
-     * entry point ({@code create} / {@code update} / {@code upsert}) before
-     * the call enters any Spanner SDK call — including the
-     * {@code readWriteTransaction().run(...)} lambda in {@link #update}, which
-     * would otherwise wrap our typed {@link MulticloudDbException} as an
-     * opaque {@code SpannerException} and degrade the category to
-     * {@code PROVIDER_ERROR}.
-     *
-     * @param document    the document the caller is trying to write; may be {@code null}
-     * @param operationOp the operation name (for the error envelope)
-     * @throws MulticloudDbException category {@code INVALID_REQUEST} if a
-     *         reserved field name is present
-     */
-    private static void validateNoReservedFields(Map<String, Object> document, String operationOp) {
-        if (document == null) return;
-        if (document.containsKey(SpannerConstants.FIELD_DATA)) {
-            throw new MulticloudDbException(new MulticloudDbError(
-                    MulticloudDbErrorCategory.INVALID_REQUEST,
-                    "Field name '" + SpannerConstants.FIELD_DATA + "' is reserved by the "
-                            + "Spanner provider for internal metadata; rename the field in your "
-                            + "document. (Cosmos and DynamoDB do not reserve this name; this is a "
-                            + "Spanner-specific restriction tracked for a future schema-migration "
-                            + "release.)",
-                    ProviderId.SPANNER, operationOp, false, null));
-        }
-    }
-
     private List<String> writeDocumentFields(Mutation.WriteBuilder mutation, Map<String, Object> document) {
         List<String> fieldNames = new ArrayList<>();
         if (document == null) {
@@ -452,10 +487,12 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             // Defensive: the internal metadata column is reserved. Public
             // methods (create/update/upsert) validate up front via
             // {@link #validateNoReservedFields} before any Spanner SDK call,
-            // so this branch should never be reached. Kept as a no-op skip in
-            // case a future code path constructs a write builder without
-            // routing through that validation.
-            if (SpannerConstants.FIELD_DATA.equals(name))
+            // so this branch should never be reached. Case-insensitive match —
+            // Spanner column names are case-insensitive, so `Data` / `DATA` /
+            // `data` would all collide with the FIELD_DATA stamp. Kept as a
+            // no-op skip in case a future code path constructs a write builder
+            // without routing through that validation.
+            if (name != null && SpannerConstants.FIELD_DATA.equalsIgnoreCase(name))
                 continue;
 
             setMutationValue(mutation, name, value);
@@ -1016,7 +1053,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      *       {@code ORDER BY <non-grouped column>} on aggregate queries.</li>
      * </ul>
      */
-    private String appendResultSetControl(String sql, QueryRequest query) {
+    static String appendResultSetControl(String sql, QueryRequest query) {
         // Caller-supplied SQL already orders its results — do not emit a
         // second ORDER BY clause, even when the caller also populates
         // QueryRequest.orderBy().

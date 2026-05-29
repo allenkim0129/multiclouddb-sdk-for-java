@@ -7,6 +7,18 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Typed `CLIENT_CLOSED` envelope on post-close entry points.** Every CRUD,
+  query, and provisioning method on `CosmosProviderClient` now consults a
+  lifecycle guard before delegating to `azure-cosmos`. Calling any entry
+  point after `close()` raises `MulticloudDbException` with category
+  `CLIENT_CLOSED` (non-retryable) attributed to the caller's operation,
+  instead of leaking the raw `IllegalStateException` from azure-cosmos's
+  internal client. `close()` itself is now idempotent under concurrent
+  callers (double-checked-locking `volatile` flag); the underlying
+  `cosmosClient.close()` is invoked exactly once.
+
 ### Documentation
 
 - **`delete()` of a missing key remains a silent no-op (idempotent).** The
