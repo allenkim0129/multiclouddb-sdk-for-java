@@ -1,787 +1,618 @@
-# Scalable Change-Feed API — Research & Design
+# Scalable Change-Feed API — v1 Design Document
 
-How to expose change feeds across Cosmos DB, DynamoDB, and Spanner under a
-single portable API that scales from a single thread to multi-host parallel
-consumption without leaking provider-specific runtime dependencies into the SDK.
+> **Status.** v1 design document, draft for review. The API exposes one
+> portable change-feed contract over Cosmos DB, DynamoDB, and Spanner.
+> Glossary at the bottom (`DDB`, `CFP`, `KCL`, `Beam`, `SPI`).
 
 ---
 
-## Design principles
+## 1. Overview
 
-Invariants every later section is judged against. Trade-offs that violate any are flagged in §6.
+### 1.1 Problem statement
 
-1. **Strict portability over convenience** — identical semantics on Cosmos, Dynamo, *and* Spanner, or it doesn't ship.
-2. **All-providers-or-nothing per release** — every public capability lights up across all three providers in the same PR.
-3. **Uniform error contract** — provider-specific failure modes normalized to a small set of portable exceptions.
-4. **Cost-efficient defaults** — no design forces an expensive provider configuration on the user.
-5. **No runtime-dependency leaks** — no Reactor, KCL, Beam, or Dataflow on the user's classpath.
-6. **Clear user guide alongside the API** — a capability that ships without a guide is a hidden API.
-7. **Conformance-first testing plan** — every public behavior asserted across all three providers, plus targeted live tests for what emulators can't reproduce.
+Change feeds are how operational data flows into downstream systems — search indexes, materialized views, cross-region replication, audit pipelines, cache invalidation. For an SDK whose value proposition is database portability, exposing change feeds across the three managed databases under one API is table-stakes.
+
+The hard part is that each provider exposes change-data capture through deeply different surfaces:
+
+| | **Cosmos DB** (DDB stands for *Document DB*, marketing name *Cosmos*) | **DynamoDB** | **Spanner** |
+|---|---|---|---|
+| Native runtime | `ChangeFeedProcessor` (CFP, in-SDK) | Kinesis Client Library (KCL) + DynamoDB Streams Kinesis Adapter | Apache Beam `SpannerIO.readChangeStream` on Dataflow |
+| API style | Push (callback inversion) | Pull (external library) | Job-graph (Beam transforms) |
+| Dependency footprint if adopted | Reactor in core | KCL + Kinesis adapter | ~50 MB of Beam |
+| Server-side retention | None (bounded by item lifetime) | **Hard 24h, non-configurable** | Configurable, default 7 days, min 1 day |
+| Partition lifecycle | Split only; surfaces as exception mid-read | Split only; **silent** (empty record + null iterator) | Split *and* merge; in-stream `ChildPartitionsRecord` |
+| Trim signal | HTTP 410 | `TrimmedDataAccessException` | gRPC `INVALID_ARGUMENT` |
+
+A naïve "lowest common denominator" API hides the differences only on paper; in practice every provider-specific behavior leaks through (silent shard close on DynamoDB, ≥ 1 PU separate metadata DB cost on Spanner, Reactor on Cosmos). v1 must surface *one* contract whose every guarantee actually holds on all three.
+
+### 1.2 Goals
+
+- **One portable API** for reading change events across Cosmos, DynamoDB, and Spanner.
+- **Strict cross-provider parity** — any behavior that cannot be guaranteed identically on all three is excluded from v1.
+- **Minimal v1 surface** — one read method, two cursor factories, two public exceptions. Nothing else.
+- **No runtime-dependency leaks** — no Reactor, KCL, or Beam reaches the user's classpath.
+- **Predictable retention** — single uniform 24-hour token-age contract, enforced client-side.
+- **Forward-compatible** — v1 must not block lease coordination, push wrappers, or scaling helpers in v2.
+
+### 1.3 Non-goals (v1)
+
+The following are explicitly **not** in v1. Each maps to a future extension in §10.
+
+- Built-in lease coordination / managed multi-host scaling.
+- Push / callback-based consumer model.
+- Cursors that start "from the beginning" or at an arbitrary wall-clock timestamp.
+- A multi-thread, single-process processor helper.
+- Partition enumeration in the public API.
+- Cross-partition global ordering (a universal provider limitation; not solvable in the SDK).
+- Exactly-once or at-most-once delivery (all three providers are at-least-once natively).
+
+---
+
+## 2. Design principles
+
+Invariants every later section is judged against. Trade-offs that violate any are flagged in §9.
+
+1. **Portability** — every public behavior must be identical on Cosmos, DynamoDB, and Spanner. Anything that can't ship on all three doesn't ship.
+2. **Minimalism (lean v1)** — the smallest API surface that solves the core problem; complexity must be earned by user feedback, not anticipated.
+3. **Uniform behavior** — same call, same result, same exception type on every provider. No provider-specific error catalog reaches user code.
+4. **No dependency leaks** — no Reactor, KCL, or Beam on the user classpath.
+5. **Forward compatibility** — v1 design must remain compatible with the v2 extensions (lease coordination, push, partition enumeration) without breaking the v1 surface.
 
 **Questions for the review.**
 
-- Are these the right 7? Anything missing (e.g. an explicit operability principle, an upgrade-compatibility principle)?
-- Is principle 2 (all-providers-or-nothing) too strict? Does it preclude useful capability-gated, single-provider experiments — or is that exactly the escape hatch we're trying to avoid?
-- Principle 4 says "cost-efficient defaults" — how do we measure that objectively at review time? Steady-state $/mo? Worst-case provisioning floor? Both?
-- Should principle 1 admit a documented escape hatch (e.g. `UnsafeProviderSpecific` namespace) for power users, or does any escape hatch corrode portability over time?
+- Is "all-three-or-nothing" too strict for v1? Would a single capability flag (`UNSUPPORTED_CAPABILITY`) for narrowly justified exceptions weaken or strengthen the contract?
+- Should "uniform observability" be a separate principle (metrics, logs, tracing names identical across providers), or is that covered by *uniform behavior*?
+- Is "no dependency leaks" really binary, or is there a tier of allowed leaks (e.g., slf4j-api yes, Reactor no)?
 
 ---
 
-## TL;DR
+## 3. API surface
 
-1. **Use a pull-based API**, not a push processor. All three providers' native scaling runtimes — Cosmos `ChangeFeedProcessor` (CFP), the Amazon Kinesis Client Library (KCL) for DynamoDB Streams, and Apache Beam (`SpannerIO.readChangeStream`) — are internally pull-loops; we don't need to expose the callback inversion. Avoids Reactor / KCL / Beam dependency leaks.
-2. **Minimal cursor surface — `now()` and `fromToken(savedToken)` only.** Both are exact on all three providers. Dropped `beginning()` (semantics differ per provider) and `fromTimestamp(t)` (DynamoDB Streams has no timestamp seek). The strict-portability principle wins over convenience features that don't truly portably exist. Historical backfill is an out-of-band concern (§4.6).
-3. **Three layered APIs** built on the same SPI primitives, plus a thin convenience reader for the single-thread, whole-container case:
-   - L1 — `readChanges(cursor)` for single-thread per-partition reads (PR 1 below).
-   - **Container reader** — `openContainerChangeFeed(addr)` for single-thread, whole-container consumption (low-volume webhooks, single-node CDC, dev environments); pure composition over L1 + L2, no new SPI (§2.2).
-   - L2 — `listChangeFeedCursors(addr)` for batch engines that own their coordination (capability-gated).
-   - L3 — `acquireLease()` + `PartitionLease` + `LeaseStore` SPI for managed multi-host scaling.
-4. **24-hour retention is the portable contract — strict, no opt-out.** Token age is capped client-side. Provider-specific behaviors (Cosmos has no server-side knob; Spanner configurable via `retention_period='1d'`; Dynamo native) are handled *internally*. The public API only exposes the portable 24h promise via a uniform `CursorExpiredException`.
-5. **Split / merge handled transparently in L3**, surfaced as `PartitionGoneException` in L1/L2. All provider-specific lifecycle quirks (Cosmos child-range diff, Dynamo parent-shard graph, Spanner merge-dedup) live inside the per-provider SPI impls.
-6. **Ship as 3 focused PRs**, each capability complete and reviewable end-to-end:
-   - PR 1 — Foundation (typed cursor + single-cursor read + all 3 providers + 24h enforcement).
-   - PR 2 — Partition discovery (`listChangeFeedCursors` + capability gating + all 3 providers).
-   - PR 3 — Managed scaling (lease SPI + coordinator + all 3 provider `LeaseStore` impls + split/merge tests).
+Three public types, one method. That is the entire v1 surface.
 
----
+### 3.1 Cursor model
 
-## Background
+```java
+public final class ChangeFeedCursor {
+    public static ChangeFeedCursor now();                 // start at tip
+    public static ChangeFeedCursor fromToken(String t);   // resume from persisted token
+    public String toToken();                              // serialize for persistence
+}
+```
 
-Change feeds are how operational data flows into downstream systems — search indexes, materialized views, analytics pipelines, audit trails, cross-region replication, cache invalidation. For an SDK whose value proposition is database portability, exposing change feeds across Cosmos DB, DynamoDB, and Spanner under one API is table-stakes. The hard part is that the three providers expose change-data capture through deeply different surfaces — push processors, pull iterators, and DoFn-based streaming — with different scaling models, retention models, and failure modes.
+**Only two factories.** Both have identical semantics on every provider.
 
-Designing one portable surface that doesn't quietly leak any of those differences requires answering three coupled questions up front; each forces public-API decisions, and answering any one in isolation produces a partial — and likely incoherent — API. This document answers them together.
+- `now()` — start reading from the live tip; no events before this call are returned. Always valid.
+- `fromToken(t)` — resume from a token previously returned by the SDK. The token is opaque, provider-tagged internally, and carries the metadata the SDK needs for the 24-hour age check (§4) and provider-mismatch detection.
 
-### Q1 — How do we scale change feeds across many hosts?
+**`now()` and `fromToken()` are the only ways to construct a cursor in v1.** A third factory `fromTimestamp(t)` was considered and rejected (§9.1) because DynamoDB Streams has no timestamp-seek primitive. A "from beginning" factory was rejected for the same reason — "beginning" means different things on each provider.
 
-Real workloads have hundreds of partitions and many worker hosts polling concurrently, with split/merge, rebalancing, crash recovery, and back-pressure. Each provider ships its own scaling runtime, and none of them is adoptable as the portable abstraction:
+### 3.2 The read method
 
-| | **Cosmos** | **Dynamo** | **Spanner** |
-|---|---|---|---|
-| **Native scaling runtime** | `ChangeFeedProcessor` (CFP) | Amazon Kinesis Client Library (KCL) + DynamoDB Streams Kinesis Adapter | Apache Beam `SpannerIO.readChangeStream` on Dataflow |
-| **API surface** | Push (callback inversion) | Pull (external library) | Job-graph (Dataflow) |
-| **Dependency leak if adopted** | Reactor into core | KCL + Kinesis adapter | ~50 MB of Beam |
-| **Cost floor of the native runtime** | ~400 RU/s lease container (~$24/mo) | Modest (~$5-6/mo lease table) | ≥ 1 PU separate metadata DB (~$650/mo, per Beam's default recommendation) |
-| **Hard runtime caps** | None | 2 readers/shard; 4 `GetRecords`/sec/shard | None (CPU-bound) |
+```java
+public interface ChangeFeedPage {
+    List<ChangeEvent> events();
+    ChangeFeedCursor nextCursor();
+    boolean hasMore();
+}
 
-Adopting any one as the abstraction would leak its runtime model, dependency footprint, and cost floor into the SDK. We need a scaling model that's portable across all three without dragging Reactor / KCL / Beam into core. → §1 (per-provider analysis), §2 (the layered pull-based design), §2.4 (lease coordinator + cost transparency).
+// The single entry point:
+ChangeFeedPage page = client.readChanges(addr, cursor);
+```
 
-### Q2 — How do we keep the API portable given DynamoDB's 24-hour retention?
+`readChanges(addr, cursor)` returns one page of events and the next cursor. That's it. No `ChangeFeedRequest` builder, no options object in v1 — keep the surface as small as possible. Per-call options (page size hint, polling timeout) are deferred until proven necessary.
 
-DynamoDB Streams enforces a non-configurable 24h retention — any cursor older than 24h is permanently dead, server-side, no opt-out. The other two providers behave very differently:
+### 3.3 Expected usage patterns
 
-| | **Cosmos** | **Dynamo** | **Spanner** |
-|---|---|---|---|
-| **Server-side retention** | No knob; bounded only by item lifetime in container | **Fixed 24h, non-configurable** | Configurable; default 7 days, minimum 1 day |
-| **`fromTimestamp(t)` natively supported?** | ✅ via `IfModifiedSince` / continuation | ❌ no timestamp-seek primitive (only `TRIM_HORIZON`, `LATEST`, sequence-number iterators) | ✅ via `start_timestamp` parameter |
-| **"Read from beginning" semantics** | Months of history (or whatever items survive) | GC-timing-dependent `TRIM_HORIZON` (≈ but ≠ 24h) | Bounded by `retention_period` |
-| **What "lookback > 24h" means** | Routinely possible | Impossible | Possible if `retention_period` raised |
+**Fresh consumer going live.**
 
-A permissive cursor surface (`fromTimestamp(t)`, `beginning()`, "lookback > 24h") works on Cosmos and Spanner but silently fails on Dynamo — exactly the "works on two providers, mysteriously broken on the third" trap the SDK exists to prevent.
+```java
+ChangeFeedCursor cursor = ChangeFeedCursor.now();
+while (running) {
+    ChangeFeedPage page = client.readChanges(addr, cursor);
+    process(page.events());
+    cursor = page.nextCursor();
+    persist(cursor.toToken());
+}
+```
 
-We need a strict portable contract that absorbs the per-provider difference inside the SDK and exposes a single uniform expiration surface — even on providers where the server would happily serve older data. → §2.1 (the minimal `now()` / `fromToken(t)` cursor surface), §4 (the 24h contract and client-side enforcement), §4.6 (the recommended pattern for historical backfill), §6 (the rejected alternatives and why each one breaks portability).
+**Resuming after restart.**
 
-### Q3 — How do we normalize provider-specific lifecycle errors and outages?
+```java
+ChangeFeedCursor cursor = loadSavedToken()
+    .map(ChangeFeedCursor::fromToken)
+    .orElseGet(ChangeFeedCursor::now);
 
-Each provider signals split, merge, trim (data aged out), and liveness through a different *kind* of channel — exception, silent empty response, in-band record, or status code. That heterogeneity, not just the per-event detail, is what makes a portable error surface non-trivial:
+while (running) {
+    try {
+        ChangeFeedPage page = client.readChanges(addr, cursor);
+        process(page.events());
+        cursor = page.nextCursor();
+        persist(cursor.toToken());
+    } catch (CursorExpiredException e) {
+        // Recovery — see §9.3.
+    }
+}
+```
 
-| Signal | **Cosmos** | **Dynamo** | **Spanner** |
-|---|---|---|---|
-| **Split (1 → N)** | Thrown `FeedRangeGoneException`, mid-pagination | **Silent**: closed shard returns empty records + null next iterator (no exception) | In-band record (`ChildPartitionsRecord`) interleaved with data |
-| **Merge (N → 1)** | ❌ No merge — Cosmos physical partitions are split-only, never recombine | ❌ No merge — DynamoDB Streams shards are split-only, never recombine | In-band record, **same child token emitted on every parent's stream** — requires idempotent dedup |
-| **Trim (data aged out)** | HTTP 410 (AVAD mode only) | Thrown `TrimmedDataAccessException` | gRPC `INVALID_ARGUMENT` |
-| **Liveness signal** | Implicit (cursor advances) | Implicit (next iterator returned) | Explicit `HeartbeatRecord` element |
-| **Child-partition discovery delay** | Immediate (diff `getFeedRanges()` against parent's range) | Up to ~30s (`DescribeStream` propagation) | Immediate (in-stream record) |
-| **Network blip** | Standard HTTP retry | Standard SDK retry | gRPC retry |
+**Public exceptions** (the entire v1 catalog):
 
-A portable consumer can't carry three error catalogs and three lifecycle state machines. We need a uniform error surface — `PartitionGoneException` for split/merge, `CursorExpiredException` for trim, transport-layer retry for blips — with all per-provider translation hidden inside the SPI impls. That's what makes "write once, run on three providers" actually true at the operational boundary, where consumers spend most of their time. → §3 (event matrix and detection responsibility by layer), §3.3 (idempotent merge), §3.4 (parent-before-child invariant), §3.5–3.6 (recovery semantics and provider-specific edge cases).
+| Exception | Thrown when | User action |
+|---|---|---|
+| `CursorExpiredException` | `fromToken(t)` cursor's age exceeds the 24-hour contract, or provider-side trim is observed. | Recovery — typically re-snapshot the source and resume from `now()` (see §9.3). |
+| `WrongProviderException` | A token from one provider is used with another provider's client. | Application bug; do not retry. |
+
+Transient provider failures (network blips, throttling, retryable HTTP / gRPC codes) are absorbed inside the SDK's transport-layer retry. They never reach `readChanges` callers in v1.
 
 **Questions for the review.**
 
-- Are Q1 / Q2 / Q3 the right framing, or are we missing a fourth (e.g. "how do we evolve the API when a provider adds a new primitive — Dynamo timestamp-seek, Cosmos merge")?
-- Q1 assumes "no native-runtime adoption is acceptable." Should we also offer a Cosmos-CFP wrapper for the Cosmos-only audience and skip portability for that subset?
-- Q3 normalizes errors aggressively. Is there a class of provider error we *shouldn't* normalize because the right user reaction genuinely differs by provider?
+- Should `readChanges` accept an options object from day one (page-size hint, poll timeout) to avoid a v1 → v2 signature change, or does that violate minimalism?
+- Two factories on `ChangeFeedCursor` cover "live" and "resume." Is there a third user need we're missing that doesn't reduce to those?
 
 ---
 
-## 1. How each provider scales change feed
+## 4. Retention & token handling
 
-| | **Cosmos** | **Dynamo** | **Spanner** |
-|---|---|---|---|
-| **Native runtime** | `ChangeFeedProcessor` (CFP, in-SDK) | Amazon Kinesis Client Library (KCL) + DynamoDB Streams Kinesis Adapter (external library) | Apache Beam `SpannerIO.readChangeStream` on Dataflow |
-| **Coordination store** | Lease container (Cosmos container) | Lease table (DynamoDB table) | Metadata DB (separate Spanner DB recommended) |
-| **Lease unit** | EPK range | Shard ID (+ `parentShardId`) | Partition token (4-state machine) |
-| **Rebalancing** | `EqualPartitionsBalancingStrategy` — steal ≤ 1 lease/cycle | Optimistic lock on `leaseCounter` | Implicit (Beam's SDF element scheduling) |
-| **Split handling** | `FeedRangeGoneException` → child leases via `synchronizer.splitPartition()` | `DynamoDBStreamsShardSyncer` walks `parentShardId` graph | `ChildPartitionsRecord` in-stream |
-| **Merge** | ❌ Split-only (partitions never merge) | ❌ Split-only (shards never merge) | ✅ Child has `parents.size > 1` |
-| **Hard caps** | none | **2 readers/shard, 24h retention, 4 GetRecords/sec/shard** | none (CPU-bound) |
-| **Cost floor** | ~400 RU/s lease container | $5-6/mo lease table + $2/mo per shard | ≥ 1 PU metadata DB + Dataflow worker |
-| **In-SDK orchestrator?** | ✅ | ❌ | ❌ |
-| **Java entry point** | `ChangeFeedProcessorBuilder` | `StreamsSchedulerFactory.createScheduler(...)` | `SpannerIO.readChangeStream()` |
+### 4.1 The 24-hour portable contract
 
-**Architectural insight**: despite different surfaces, all three runtimes do the same thing internally — acquire a per-partition lease, poll the partition, checkpoint on success, renew lease, handle split/merge via children/parents graph. **This is what enables a portable abstraction.** Cosmos exposes a push surface; KCL and Beam wrap pull semantics in framework runtimes.
+> A `fromToken(t)` cursor is readable for up to 24 hours after the SDK last advanced it. After 24 hours, `readChanges` throws `CursorExpiredException` *before any service call*. `now()` cursors are always valid at creation.
+
+Why 24h: it is the **lowest common denominator** across the three providers. DynamoDB Streams enforces 24h server-side, non-configurable; the SDK cannot offer "longer than 24h" portably regardless of what Cosmos and Spanner allow. Clamping client-side to 24h is the only way to guarantee uniform expiration semantics.
+
+### 4.2 Server-side reality (internal, not exposed)
+
+| Provider | Server-side cap | Notes |
+|---|---|---|
+| DynamoDB | **Hard 24h** | Set by AWS, no knob. Approximation `TRIM_HORIZON` ≈ 24h with GC-timing jitter. |
+| Cosmos (latest-version mode) | None | Bounded only by item lifetime in the container. |
+| Cosmos (all-versions-and-deletes, preview) | Tied to continuous backup (7–30 days) | Cannot reduce below 7 days. |
+| Spanner | Configurable, default 7d, min 1d | `CREATE/ALTER CHANGE STREAM ... OPTIONS (retention_period = '1d')`. |
+
+The SDK does not manage server-side retention; DDL is out of scope. The portable 24h contract is enforced client-side regardless of what the server allows.
+
+### 4.3 Token validation flow
+
+Every `readChanges` call funnels through the same client-side validator before any provider round-trip:
+
+```mermaid
+flowchart TD
+    A["readChanges(addr, cursor) called"] --> B{cursor type?}
+    B -->|now()| Z["dispatch to provider"]
+    B -->|fromToken(t)| C["decode token<br/>(opaque, provider-tagged)"]
+    C --> D{"provider tag<br/>matches client?"}
+    D -->|no| W1["throw WrongProviderException"]
+    D -->|yes| E{"(now - lastAdvancedAt)<br/>< 24h?"}
+    E -->|no| W2["throw CursorExpiredException<br/>(no service call)"]
+    E -->|yes| Z
+    Z --> F{"provider returns<br/>trim error?"}
+    F -->|yes<br/>(defense in depth)| W2
+    F -->|no| G["return ChangeFeedPage"]
+```
+
+Two checks, in order:
+
+1. **Provider tag match.** Tokens are tagged with their issuing provider. Cross-provider use throws `WrongProviderException` immediately.
+2. **Age check.** If `now() - lastAdvancedAt > 24h`, throw `CursorExpiredException` *before* the provider call. This is the **client-side rejection** mandate: expired tokens never reach the network.
+
+**Defense in depth.** Each SPI impl also maps server-side trim errors — Cosmos HTTP 410, DynamoDB `TrimmedDataAccessException`, Spanner gRPC `INVALID_ARGUMENT` (with "older than" in the message) — to the same `CursorExpiredException`. This covers clock skew, unexpected early trim, and (importantly) any case where the escape hatch (§4.4) is enabled but the data is genuinely gone server-side.
+
+### 4.4 Escape hatch (controlled override)
+
+Some workloads legitimately need to read older data — recovering from a multi-day consumer outage, hydrating a new downstream from a Spanner stream with `retention_period = '7d'`, debugging a one-off issue against Cosmos's months of history. v1 provides a **single controlled override** that bypasses the client-side 24h check.
+
+**Two equivalent ways to enable it:**
+
+```java
+// At client construction:
+MulticloudDbClient client = MulticloudDbClient.builder()
+    .provider(...)
+    .extendedRetention(ExtendedRetention.allow())
+    .build();
+```
+
+```bash
+# Environment variable (overrides builder default if unset):
+export MULTICLOUDDB_EXTENDED_RETENTION=allow
+```
+
+**What the override changes.** Exactly one thing: the client-side age pre-flight in §4.3 is skipped. Everything else stays the same:
+
+- The provider call still happens; server-side trim is still detected and surfaced as `CursorExpiredException`.
+- DynamoDB still fails at 24h. The escape hatch does not unlock DynamoDB; it cannot.
+- Cosmos and Spanner serve older data up to their own retention limits.
+
+**What the override emits (always):**
+
+- **WARN log on every `readChanges` call:** `extended-retention enabled; portable 24h contract bypassed (provider=<P>, cursorAge=<duration>)`. Single line, no rate-limiting in v1 — visibility is the whole point.
+- **Metric:** `change_feed.extended_retention_calls_total{provider}` increments per call.
+
+**Why a single global flag (per client / per env), not per-call:**
+
+- Per-call would normalize the override into everyday code paths.
+- A client-build-time flag is a deliberate operational choice, surfaced once and reviewed.
+- The env var allows ops to flip the switch without code change for emergencies.
+
+**Risks (documented in javadoc *and* `docs/configuration.md`):**
+
+- **Behavior is no longer uniform across providers.** Code that depends on > 24h lookback is not portable to DynamoDB and will throw `CursorExpiredException` there.
+- The flag does **not** mean "tokens never expire" — provider-side retention still applies. Cosmos: bounded by item lifetime. Spanner: `retention_period` (default 7d, max 7d on the change stream).
+- Once enabled at client build, applies to **every** `readChanges` call on that client. There is no per-call disable.
+- Existing observability stack must surface the WARN log and the metric, or the operational signal is lost.
 
 **Questions for the review.**
 
-- The cost-floor table shows Spanner's native runtime is ~25× Cosmos and ~100× Dynamo. Does our portable design overspend on Cosmos/Dynamo because the Spanner floor forces a certain operational shape?
-- "No portable scaling layer; tell users to drop down to native SDKs per provider" — is this alternative genuinely off the table, or just unappealing? What would change our mind?
-- DynamoDB's 2-readers/shard cap is the only hard server-side cap in the table. Does it deserve a first-class capability declaration (`Capability.LIMITED_READERS_PER_PARTITION`) so users can plan capacity portably?
+- Single global flag vs. per-call `ExtendedRetention` parameter on `readChanges` — does per-call give too much rope, or does global hide the user's intent?
+- WARN-per-call vs. WARN-once-per-client-lifecycle: noisy logs vs. silent normalization. Where is the right line?
+- Should the env var require a non-trivial value (e.g., `MULTICLOUDDB_EXTENDED_RETENTION=I_ACCEPT_NON_PORTABLE_BEHAVIOR`) to prevent accidental enablement in production?
+- Is 24h the right number, or should v1 set it lower (e.g., 12h) to give a safety margin for clock skew and slow consumers?
 
 ---
 
-## 2. Portable design — pull-based layered API
+## 5. Architecture
+
+### 5.1 Module layout
+
+Three modules, plus the SPI seam. The public API sits in `multiclouddb-api`; per-provider impls bind to the SPI in `multiclouddb-spi`.
 
 ```mermaid
 flowchart TB
-    subgraph PUB["Public API — multiclouddb-api"]
+    subgraph PUB["multiclouddb-api (public surface)"]
         direction LR
-        CR["Container reader<br/>openContainerChangeFeed(addr)<br/>single-thread, whole-container<br/>(convenience over L1 + L2)"]
-        L1["L1: readChanges(cursor)<br/>single-thread per-partition"]
-        L2["L2: listChangeFeedCursors(addr)<br/>batch engines (capability-gated)"]
-        L3["L3: acquireLease() + PartitionLease<br/>managed multi-host scaling"]
+        Cur["ChangeFeedCursor<br/>now() / fromToken() / toToken()"]
+        Cli["MulticloudDbClient<br/>readChanges(addr, cursor)"]
+        Exn["CursorExpiredException<br/>WrongProviderException"]
     end
-    SPI["SPI — multiclouddb-spi<br/>ChangeFeedSpi.readChanges / listPartitions / LeaseStore"]
-    subgraph IMPL["Per-provider impls"]
+    Val["Token validator<br/>(24h pre-flight + provider tag)"]
+    SPI["multiclouddb-spi<br/>ChangeFeedSpi.readChanges(spiCursor)"]
+    subgraph IMPL["Per-provider adapters"]
         direction LR
-        Cos["Cosmos<br/>queryChangeFeed +<br/>lease container"]
-        Dyn["Dynamo<br/>DynamoDB Streams +<br/>lease table"]
-        Spa["Spanner<br/>change-stream TVF +<br/>collocated lease table"]
+        Cos["Cosmos<br/>queryChangeFeed + 410 mapping"]
+        Dyn["DynamoDB<br/>DescribeStream / GetRecords + trim mapping"]
+        Spa["Spanner<br/>change-stream TVF + INVALID_ARGUMENT mapping"]
     end
-    CR -.->|uses| L1
-    CR -.->|uses| L2
-    L1 --> SPI
-    L2 --> SPI
-    L3 --> SPI
+    Cli --> Val
+    Val --> SPI
     SPI --> Cos
     SPI --> Dyn
     SPI --> Spa
 ```
 
-*Three SPI-backed public layers plus one convenience reader (single-thread, whole-container, composed over L1 + L2 with no new SPI methods). Per-provider runtime complexity (Cosmos lease container, Dynamo lease table, Spanner change-stream TVF + collocated lease table) stays inside one impl each; nothing provider-specific reaches the public API.*
+*All public types live in `multiclouddb-api`. The SPI seam (`ChangeFeedSpi`) is the only place per-provider code touches the read path. Provider-specific exception types, dependencies, and partition lifecycle quirks never cross this seam.*
 
-### 2.1 Layer 1 — Typed cursor
+### 5.2 Internal abstractions
 
-Replace `StartPosition` + `continuationToken` with a single typed cursor. **Only two constructors** — every operation has exact, identical semantics on every provider:
+Four internal building blocks; none are public in v1.
 
-```java
-public final class ChangeFeedCursor {
-    public static ChangeFeedCursor now();                // start at tip
-    public static ChangeFeedCursor fromToken(String t);  // resume from persistence
-    public String toToken();
-    public Instant lastAdvancedAt();                     // used for 24h enforcement
-}
-
-// Existing API, unchanged otherwise:
-ChangeFeedPage page = client.readChanges(
-    ChangeFeedRequest.builder(addr).cursor(cursor).build(), opts);
-ChangeFeedCursor next = page.nextCursor();
-```
-
-**Why no `beginning()` and no `fromTimestamp(t)`?** Both look portable but aren't (§6 has the full rationale). `beginning()` means different things on each provider (Dynamo: GC-timing-dependent `TRIM_HORIZON`; Cosmos: months of history; Spanner: bounded by `retention_period`). `fromTimestamp(t)` is impossible to implement on Dynamo (no timestamp seek in DynamoDB Streams — only sequence numbers). The portable surface is therefore *only* what every provider can do exactly: start at the tip, or resume from a token the SDK previously issued.
-
-Token is **strictly opaque** to users. Internally provider-tagged for `fromToken()` validation; throws `WrongProviderException` if used against the wrong provider. Internal payload (Dynamo example): `{shardId, sequenceNumber, lastAdvancedAt}`; for Cosmos `{feedRange, continuationToken, lastAdvancedAt}`; for Spanner `{partitionToken, lastReadTimestamp, lastAdvancedAt}`. All providers natively support resume-from-checkpoint, so `fromToken()` is exact everywhere.
-
-For the "I need a historical backfill before going live" use case, see §4.6.
-
-### 2.2 Whole-container reader (single-thread convenience over L1 + L2)
-
-L1 reads one partition per call. L2 enumerates partitions for batch engines that own their own parallelism. L3 manages leases for multi-host scaling. **None of those is the right shape for the single-thread, single-host consumer that just wants every change in the container** — low-volume webhook publishers, single-node CDC pipelines, indexers that fit on one box, dev environments. Forcing those users through L2's per-partition loop or L3's lease coordinator is operational overhead with no value.
-
-This section adds a thin convenience reader built entirely on top of L1 and L2 — **no new SPI methods, no new exception types, no new dependencies, no coordination store**.
-
-```mermaid
-flowchart TB
-    subgraph User["User code (single thread)"]
-        Loop["while running:<br/>page = reader.poll(timeout)<br/>process(page.events())<br/>persist(reader.checkpointToken())"]
-    end
-    subgraph Reader["ContainerChangeFeedReader (multiclouddb-api)"]
-        direction TB
-        Map["In-memory Map&lt;PartitionId, ChangeFeedCursor&gt;"]
-        RR["Round-robin selector<br/>+ split/merge handling<br/>+ composite-token (de)serialize"]
-    end
-    L2["L2: listChangeFeedCursors(addr)<br/>(on open + after split/merge)"]
-    L1["L1: readChanges(cursor)<br/>(per poll, per partition)"]
-    Loop --> Reader
-    RR --> L2
-    RR --> L1
-    L1 -.->|PartitionGoneException| RR
-    L2 -.->|fresh cursor list| Map
-```
-*The container reader is pure user-mode composition: L2 seeds the partition map at open and after every split/merge; L1 drives the per-partition reads. The user sees one page stream and one opaque token.*
-
-**API sketch.**
-
-```java
-ContainerChangeFeedReader reader = client.openContainerChangeFeed(
-    addr,
-    ContainerChangeFeedOptions.builder()
-        .startAt(ChangeFeedCursor.now())            // or .startAtToken(savedToken)
-        .staleCheckpointPolicy(FAIL)                // same enum as L1
-        .pollTimeout(Duration.ofSeconds(5))
-        .build());
-
-try (reader) {
-    while (running) {
-        ChangeFeedPage page = reader.poll();
-        if (page.events().isEmpty()) continue;
-        process(page.events());                     // page.partitionId() tagged for diagnostics
-        persist(reader.checkpointToken());          // one opaque blob — your problem to store
-    }
-} catch (CursorExpiredException e) {
-    // Composite token aged out (oldest per-partition cursor > 24h). Apply staleCheckpointPolicy.
-}
-```
-
-**How it's built.** Pure composition over the existing SPI primitives:
-
-1. **On `open`** — calls L2 `listChangeFeedCursors(addr)` to enumerate current partitions and builds an internal `Map<PartitionId, ChangeFeedCursor>` keyed by partition. If `startAtToken(t)` was supplied, the saved per-partition cursors are restored instead (and any topology drift since then is recovered via step 3).
-2. **Each `poll()`** — picks the next partition round-robin (skipping partitions in idle back-off), calls L1 `readChanges` with that partition's cursor, advances the map entry to `page.nextCursor()`, and returns the page tagged with `partitionId`.
-3. **On L1 `PartitionGoneException(parent, children)`** — drains the parent fully (until empty), removes it from the map, inserts the children with cursors derived from the exception, and continues. Transparent to the user. The parent-before-child invariant from §3.4 is preserved: a child is not polled until *all* its declared parents have been removed (per-child parent set tracked in the map; Spanner merges where the same child token is emitted on multiple parents' streams are handled by idempotent insert + parent-set union, §3.3).
-4. **On L1 `CursorExpiredException`** — rethrown to the user. The same `staleCheckpointPolicy` (`FAIL` / `RESTART_FROM_LATEST` / `RESTART_FROM_NOW`) that L1 already exposes (§4.5) applies.
-5. **`checkpointToken()`** — serializes the full partition→cursor map as one opaque, provider-tagged string; `startAtToken()` rehydrates it. Token age is computed from the *oldest* per-partition `lastAdvancedAt` so a slow partition cannot silently extend the retention window past 24h (§4.3).
-
-**When to use which surface.** This is the only place in the doc that compares all four user-facing entry points side-by-side:
-
-| Workload shape | Recommended surface |
+| Abstraction | Responsibility |
 |---|---|
-| 1 partition / 1 thread / you persist a single token | **L1** `readChanges` directly (§2.1) |
-| Whole container / 1 thread / low volume / 1 host | **Container reader** `openContainerChangeFeed` (this §) |
-| Whole container / multi-thread / 1 host / no lease store | **Multi-thread processor** — deferred (§2.7) |
-| Whole container / N workers / *you* own coordination (Spark, Flink, MapReduce) | **L2** `listChangeFeedCursors` directly (§2.3) |
-| Whole container / N workers / *SDK* owns coordination across many hosts | **L3** `acquireLease` + `LeaseStore` (§2.4) |
+| **Opaque cursor token** | Wire format the SDK emits via `toToken()` and consumes via `fromToken()`. Provider-tagged. Carries the metadata the validator needs (`provider`, `lastAdvancedAt`) plus a provider-specific payload (Cosmos: `{feedRangeList, continuationTokens}`; DynamoDB: `{shardId, sequenceNumber}` list; Spanner: `{partitionTokenList, lastReadTimestamps}`). User sees only an opaque string. |
+| **Token validator** | Client-side pre-flight (§4.3). Single code path for both `now()` and `fromToken()` callers; `now()` skips both checks. |
+| **Provider adapter** | Implements `ChangeFeedSpi.readChanges`. Does three things: translate the SDK-internal cursor payload to the provider's native iterator/query, drive one page of reads, and map provider-side errors to the portable exception catalog. |
+| **Partition transparency layer** | Inside each provider adapter — detects split/merge from the provider's native signal (exception, empty record, in-stream record) and absorbs it into the *next* cursor. Detail in §6. |
 
-**Cross-provider parity.** The container reader behaves identically on all three providers because L1 + L2 already do; the only per-provider difference is what the composite token actually contains:
+### 5.3 How provider differences are hidden
 
-| | **Cosmos** | **Dynamo** | **Spanner** |
-|---|---|---|---|
-| Source of the partition map (L2) | `container.getFeedRanges()` | `DescribeStream` shard list | Seed cursor + in-stream `ChildPartitionsRecord` walk |
-| Per-partition cursor payload | `{feedRange, continuationToken, lastAdvancedAt}` | `{shardId, sequenceNumber, lastAdvancedAt}` | `{partitionToken, lastReadTimestamp, lastAdvancedAt}` |
-| Split handling | L1 `PartitionGoneException` → reader re-lists via L2 | same | same (child record routed through L1 as `PartitionGoneException`) |
-| Merge handling | not applicable — Cosmos is split-only (§3.1) | not applicable — Dynamo is split-only (§3.1) | child token may be emitted on multiple parents' streams; reader's map-insert is idempotent and unions parent sets (§3.3) |
-| Composite token size | ∝ current feed-range count | ∝ current open-shard count | ∝ currently-active partition count |
-
-**Operational properties.**
-
-- **No leases, no coordination store, no extra cost surface.** One polling thread; cost is identical to N back-to-back L1 calls. Nothing is written anywhere on the user's behalf.
-- **Throughput is bounded by what one thread can poll.** Suitable for ≤ ~50 partitions at modest event rates. Above that — or for multi-host scale-out — switch to L3 (§2.4).
-- **Composite token grows with partition count.** Reasonable up to hundreds of partitions (tens of KB token). Operators should monitor token size on very wide containers; persist it the way you'd persist any opaque blob.
-- **24-hour retention contract applies unchanged.** Enforced against the oldest per-partition `lastAdvancedAt` in the composite token (§4.3).
-- **Capability requirement.** Offered only on providers whose `CapabilitySet` includes `LIST_PARTITIONS` — the same gate as L2 (§2.3). All three providers in this SDK supply it.
-
-**Why this is a convenience, not a new layer.** Zero new SPI methods, zero new exception types, zero per-op cost over L1, zero new dependencies. It is the partition-iteration + composite-checkpoint pattern most users would otherwise hand-roll — shipped once, javadoc'd once, and tested in conformance once — exactly the kind of glue a portable SDK should provide so users don't reinvent it (per principle 6 — clear user guide alongside the API).
-
-### 2.3 Layer 2 — List partition cursors (capability-gated)
-
-For batch engines (Spark, Flink) that have their own coordination layer:
-
-```java
-if (!client.supports(addr, Capability.LIST_PARTITIONS)) { ... }
-List<ChangeFeedCursor> seeds = client.listChangeFeedCursors(addr, startAt, opts);
-// User distributes seeds across workers. User owns crash recovery and split handling.
-// On read of a stale cursor → PartitionGoneException with children.
-```
-
-Notes:
-- Cosmos returns one cursor per current feed range.
-- Dynamo returns one cursor per current shard.
-- Spanner returns a **single seed cursor** (`null` partition token); rest discovered in-stream via `ChildPartitionsRecord`. Documented loudly.
-
-### 2.4 Layer 3 — Managed lease-based pull
-
-```java
-public interface PartitionLease extends AutoCloseable {
-    String partitionId();
-    ChangeFeedCursor cursor();
-    Instant expiresAt();
-    boolean isOwned();
-
-    void heartbeat();                              // extend lease, no checkpoint
-    void renew(ChangeFeedCursor newCursor);        // checkpoint + extend
-    void release();                                // graceful, transfer to peer
-}
-
-// User runs N worker threads (virtual threads compose naturally):
-PartitionLease lease = client.acquireLease(addr, leaseOpts);
-if (lease == null) { /* no work — sleep + retry */ }
-try (lease) {
-    ChangeFeedCursor cursor = lease.cursor();
-    while (running && lease.isOwned()) {
-        ChangeFeedPage page = client.readChanges(req(addr, cursor), opts);
-        if (page.events().isEmpty()) { lease.heartbeat(); continue; }
-        process(page.events());
-        cursor = page.nextCursor();
-        lease.renew(cursor);
-    }
-} catch (PartitionGoneException e) {
-    // SDK already inserted children into LeaseStore; next acquireLease picks one up.
-}
-```
-
-`acquireLease()` internally:
-1. Calls SPI `listPartitions()` to get current topology.
-2. Selects a lease where `owner == null || expiresAt < now()` (with steal-from-busy fallback).
-3. CAS-writes `{owner, expiresAt}` into the `LeaseStore`.
-4. Returns the lease.
-
-**`LeaseStore` SPI** is per-provider:
-- **Cosmos** → lease container (`/id` PK).
-- **Dynamo** → lease table with optimistic concurrency on `leaseCounter`.
-- **Spanner** → lease table **collocated with the app DB** (avoids the ≥ 1 PU separate-metadata-DB cost; Beam's separate-DB recommendation is for DDL hygiene, not correctness).
-- **Pluggable** → `withCustomLeaseStore(...)` for Redis / Postgres / in-memory.
-
-### 2.4.1 Cost transparency
-
-Lease coordination is not free. Operators need a budget.
-
-**Capacity modes** (relevant to the costs below):
-
-- **Cosmos provisioned throughput** — reserve a fixed RU/s on a container (minimum 400 RU/s ≈ $24/mo). Predictable monthly bill; requests that exceed the reservation are throttled (HTTP 429).
-- **Cosmos serverless** — pay-per-RU consumed, no reservation, no minimum. Cheaper for low or spiky traffic; per-RU price is higher, so sustained workloads above ~2 M ops/mo end up more expensive than provisioned.
-- **DynamoDB on-demand** — pay-per-request (per RCU/WCU consumed), no reservation. The alternative is *provisioned capacity*; we model on-demand here because lease coordination traffic is bursty (workers come and go, splits cause brief op bursts).
-- **Spanner Processing Units (PU)** — Spanner's capacity unit. 1 PU is the minimum for a database (≈ $650/mo in most regions). Spanner has no serverless tier, which is why a *separate* metadata DB is expensive and our *collocated* design (§2.4) materially matters.
-
-**Per-provider cost components** (steady state):
-
-| Provider | Fixed cost | Per-op cost |
-|---|---|---|
-| Cosmos | ~400 RU/s minimum container (~$24/mo provisioned) or serverless base | ~10 RU per heartbeat / checkpoint / steal |
-| Dynamo | Table free; storage negligible | ~1 WCU per heartbeat / checkpoint; ~1 RCU per scanned lease on acquire |
-| Spanner (collocated, our default) | None — shares app DB capacity | Standard transactional RW per heartbeat / checkpoint |
-| Spanner (separate metadata DB, Beam default) | **≥ 1 PU ≈ $650/mo** | Same as collocated |
-
-**Example workload**: 100 partitions, 10 workers, 5 s heartbeat, checkpoint per page.
-
-```
-Heartbeat ops:   100 / 5s            ≈ 20 ops/sec   ≈ 1.7M ops/day
-Checkpoint ops:  ~event rate / batch ≈ 5-50 ops/sec
-Acquire ops:     sporadic            ≈ 1 op/min/worker
-```
-
-| Provider | Steady-state monthly bill |
+| Difference | How it's hidden in v1 |
 |---|---|
-| Cosmos provisioned | ~$24 base + sustained 2K RU/s → **~$120/mo** |
-| Cosmos serverless | ~$15-30/mo — only beats provisioned at < 2 M ops/mo |
-| Dynamo on-demand | ~1.7 M writes/day → **~$10-15/mo** |
-| Spanner collocated | < 1% of app DB capacity → **effectively free** |
-
-**Native runtime comparison**: we introduce no new cost categories. Cosmos CFP, KCL, and Beam SpannerIO all maintain the same lease pattern. **For Spanner we are cheaper** — Beam recommends a separate metadata DB (~$650/mo); we collocate by default.
-
-### 2.4.2 Cost optimization techniques (built into the coordinator)
-
-Implemented as the default `acquireLease()` coordinator; tunable via `LeaseOptions`.
-
-**Free wins (no performance cost):**
-
-| Technique | Mechanism | Savings |
-|---|---|---|
-| **Batched heartbeats per worker** | One worker holding N leases does one multi-row write per heartbeat tick (Cosmos `TransactionalBatch` with `/workerId` PK; Dynamo `BatchWriteItem` ≤ 25; Spanner multi-mutation tx) | **5-10× fewer heartbeat ops** for typical 5-10 leases/worker |
-| **Heartbeat-checkpoint coalescing** | If a checkpoint is about to fire (advances cursor *and* extends lease), skip the heartbeat. Never two writes within 500 ms. | Eliminates redundant writes |
-| **Indexed acquisition scan** | Filter `(state IN CREATED OR expiresAt < now())` via secondary index (Dynamo GSI on `(state, expiresAt)`; Cosmos composite index; Spanner secondary index) | O(N) → O(eligible) at the lease store, big win at high partition counts |
-| **`InMemoryLeaseStore` for single-process** | If user runs one JVM, no persistent lease store is needed. Documented as the recommended choice for single-process scaling. | **$0** |
-
-**Tunable trade-offs (small perf cost for big savings):**
-
-| Technique | Knob | Savings | Cost |
-|---|---|---|---|
-| **Lazy checkpoint** | `checkpointEvery = N events` or `maxCheckpointLagMs` | 10-100× fewer checkpoint ops | Up to N events re-delivered on crash — no impact if handler is idempotent (which is required for at-least-once anyway) |
-| **Adaptive heartbeat** | Back off 5 s → 10 s → 15 s when recent heartbeats succeed in < 100 ms; reset on first slow / failed ping | 30-50% heartbeat ops at steady state | +5-10 s to detect dead worker |
-| **Idle partition back-off** | After K consecutive reads with 0 events, exponentially back off polling 1 s → 30 s (capped) | 50-90% read ops during off-peak | +N s latency to first event after idle period |
-
-**Has real perf cost — exposed but not the default:**
-
-| Knob | Default | Effect of raising |
-|---|---|---|
-| `leaseTTL` | 30 s (= 6× heartbeat) | 60-120 s reduces heartbeat pressure further but extends worker-failure detection proportionally |
-
-### 2.4.3 Monitoring
-
-The coordinator exposes these metrics (OpenTelemetry conventions):
-
-- `lease_store.ops_per_second{op=heartbeat|checkpoint|acquire|scan}` — cost predictor
-- `lease.acquire_latency_p95` — distribution health
-- `lease.lost_to_steal_total` — high values indicate coordination thrash
-- `lease.heartbeat_failure_rate` — lease store / network health
-
-Operators should alert when `ops_per_second` approaches the provisioned throughput floor.
-
-### 2.5 What's portable, what isn't
-
-| Feature | Portable? |
-|---|---|
-| Multi-host parallel consumption | ✅ |
-| At-least-once delivery, per-partition order | ✅ |
-| Automatic split (and merge for Spanner) handling | ✅ |
-| `PartitionGoneException` on stale cursor | ✅ |
-| `CursorExpiredException` on trimmed data | ✅ |
-| Pluggable `LeaseStore` (Redis, in-memory, etc.) | ✅ |
-| Cross-partition global ordering | ❌ universal limitation |
-| At-most-once / exactly-once semantics | ❌ universal limitation |
-| `beginning()` / "read all history" cursor | ❌ Not exposed — semantics aren't uniform across providers (see §6). Use the native SDK or do an out-of-band backfill (§4.6). |
-| Point-in-time start (`fromTimestamp(Instant)`) | ❌ Not exposed — DynamoDB Streams has no timestamp seek (see §6). |
-| Lookback > 24h | ❌ Not exposed — use the provider-native SDK directly if you need this. |
-
-### 2.6 Push wrapper — deferred
-
-A push-style `ChangeFeedProcessor` is ~100 LOC over Layer 3. Ship later in a separate optional artifact (`multiclouddb-changefeed-processor`) if users ask. Don't drag Reactor / KCL / Beam into core.
-
-### 2.7 Multi-thread single-process processor — deferred (nice-to-have)
-
-A middle ground between the §2.2 single-thread container reader and the §2.4 multi-host managed processor: **a multi-thread, single-process change feed processor** that fans the partitions out over a thread pool *within one JVM* — no cross-host lease coordination, no `LeaseStore` writes, no extra provider ops beyond the L1 + L2 calls already paid for.
-
-**Motivation.** Some workloads outgrow the single-thread container reader (> ~50 partitions, or high per-partition event rates) but don't need multi-host scale-out and don't want the operational cost of running a `LeaseStore`. A thread pool on one box is the right shape for them.
-
-**Prior art.** [`Azure-Samples/cosmosdb-cassandra-changefeed-processor`](https://github.com/Azure-Samples/cosmosdb-cassandra-changefeed-processor) — a parallel change-feed sample shipped to Cosmos DB Cassandra-API customers precisely because Cassandra API exposes only `feedRanges` (no Cosmos CFP). The sample fans feed ranges across worker threads with in-memory coordination only. The pattern is proven, well-bounded, and a near-perfect fit for our SPI (which exposes the same `feedRanges` / partitions primitive on all three providers via L2).
-
-**API sketch.**
-
-```java
-MultiThreadChangeFeedProcessor processor = client.openMultiThreadChangeFeedProcessor(
-    addr,
-    MultiThreadProcessorOptions.builder()
-        .startAt(ChangeFeedCursor.now())                   // or .startAtToken(savedToken)
-        .threads(8)                                        // pool size
-        .checkpointEvery(Duration.ofSeconds(5))            // emitter cadence
-        .onPage((partitionId, page) -> { /* process */ })  // worker callback
-        .onCheckpoint(token -> { /* persist composite */ })// emitter callback
-        .build());
-
-processor.start();
-// ... runtime ...
-processor.close();   // graceful drain; emits final composite checkpoint
-```
-
-**Built on existing primitives.** Pure composition over L1 + L2 — same building blocks as §2.2, no new SPI methods, no new exception types, no `LeaseStore`. The differences vs. §2.2:
-
-- N poll threads instead of 1; per-partition work assigned to thread-pool slots by stable hash so a given partition always lands on the same worker (preserves per-partition ordering trivially).
-- Per-partition cursor advances merged on a single emitter thread; serialized as one composite checkpoint token, same shape as §2.2.
-- Split/merge handled identically to §2.2 — the discovering worker re-lists via L2 and updates the assignment map under a mutex; the parent is drained on its current thread before children become eligible (parent-before-child invariant from §3.4 preserved under threading).
-
-**Operational properties.**
-
-- Same 24-hour retention contract as §2.2 / L1 — enforced against the oldest per-partition `lastAdvancedAt` in the composite token (§4.3).
-- Same exceptions as §2.2 / L1 — `CursorExpiredException` (apply `staleCheckpointPolicy`), `PartitionGoneException` (transparent recovery).
-- Throughput bounded by single-JVM CPU and network. For higher throughput or multi-host scale-out, use L3 (§2.4).
-- No `LeaseStore`, no coordination store. On restart from a saved composite token, in-flight uncheckpointed events per partition are reprocessed (at-least-once, identical to §2.2 / L1).
-
-**How it answers the design principles** (§Design principles — "the exam questions").
-
-| Principle | Answer for the multi-thread processor |
-|---|---|
-| 1. Strict portability | Same `ChangeFeedCursor`, `ChangeFeedPage`, callbacks on all three providers. Pure composition over already-portable L1 + L2. No provider-specific knobs leak through the API. |
-| 2. All-providers-or-nothing | When (if) shipped, it lights up across Cosmos / Dynamo / Spanner in the same PR. Capability-gated on `LIST_PARTITIONS` — the same gate as §2.2 and L2 — which all three providers supply. |
-| 3. Uniform error contract | Same two public exceptions as §2.2 / L1. No new exception types, no new lifecycle states. |
-| 4. Cost-efficient defaults | Zero `LeaseStore` ops; cost surface is identical to N back-to-back L1 calls. The only added cost is the user's thread-pool CPU footprint, which they size. No extra provider ops. |
-| 5. No runtime-dependency leaks | A `ThreadPoolExecutor` plus the existing L1 / L2 calls. No Reactor, no KCL, no Beam — same as §2.2. |
-| 6. Clear user guide alongside the API | Until shipped, the documented pattern is *"wrap §2.2 in your own thread pool"* — a snippet in `docs/guide.md`. Promotion criteria below define when adding a dedicated surface earns its keep. |
-| 7. Conformance-first testing plan | When shipped, gets the §2.2 scenario suite plus a stress test for thread-pool contention: N concurrent writers across M partitions over K threads, asserting per-partition order and exactly-the-events-delivered (no duplicates beyond what at-least-once permits). |
-
-**Why deferred.** §2.2 (single-thread, single-host) and §2.4 (full managed multi-host) cover the two endpoints of the curve. The middle is genuinely *nice-to-have* rather than essential, and the same middle is reachable today via user-mode composition (wrap §2.2 in a thread pool). Shipping more public surfaces without a proven user need violates principle 6 — fewer, well-documented surfaces are easier to teach correctly than many overlapping ones.
-
-**Promotion criteria** (move from deferred to a delivered PR when *all* hold):
-
-- A user reports the §2.2 single-thread container reader is throughput-bound at > ~50 partitions and they have no multi-host requirement.
-- The user is unable or unwilling to operate a `LeaseStore` (§2.4) — operationally, contractually, or cost-wise.
-- The *"wrap §2.2 in your own thread pool"* documented pattern has proven insufficient in practice (recurring user stumbles on split-handling-under-threading is the most likely trigger).
+| Provider-specific exception types (`FeedRangeGoneException`, `TrimmedDataAccessException`, `INVALID_ARGUMENT`) | Mapped to `CursorExpiredException` (trim) or absorbed silently (split — see §6). |
+| Provider-specific cursor formats (continuation tokens vs. sequence numbers vs. partition tokens) | Wrapped in the opaque token with a provider tag. User-side `toToken()`/`fromToken()` work everywhere. |
+| Provider-specific partition lifecycle (split-only vs. split-and-merge; exception vs. silent vs. in-stream) | Detected inside each adapter; the *next* cursor encodes the post-event topology. User sees one cursor advance. |
+| Provider-specific retention windows (none, 24h, configurable) | Clamped to 24h client-side. Escape hatch is the only documented bypass (§4.4). |
+| Provider-specific transport (HTTPS, AWS SDK, gRPC) | Inside each adapter; standard retry on transient codes. |
+| Provider-specific dependencies (Reactor, KCL, Beam) | Confined to their respective `multiclouddb-provider-*` modules. None reach `multiclouddb-api`. |
 
 **Questions for the review.**
 
-- L1 + container reader + L2 + L3 = 4 user-facing surfaces. Is that one too many? Could we drop one without leaving a real user underserved?
-- Should L2 even be public, or is it really an SPI primitive we accidentally exposed? Power users (Spark/Flink) could go through L1 + a partition-list call instead.
-- §2.2 (container reader) and §2.7 (deferred multi-thread processor) overlap meaningfully. Is "deferred" right, or should we just ship the multi-thread version and skip the single-thread one?
-- The Spanner collocated-lease-table design (§2.4) avoids the $650/mo separate-DB cost — but what's the schema-migration story for users who already have a Spanner DB under strict DDL governance?
-- `staleCheckpointPolicy=FAIL` as default — is failing closed always right, or should we default to `RESTART_FROM_NOW` (data loss, but liveness) for the most common case (event-driven analytics)?
+- Should `MulticloudDbClient.readChanges` go through a single in-process validator-as-a-component (testable in isolation), or be inlined in the client (smaller blast radius)?
+- The opaque token carries enough metadata to validate without a server call — should the wire format be versioned from day one (`v1:cosmos:<payload>`) to allow future evolution?
+- One SPI method (`readChanges`) is the v1 SPI surface. Is that the right granularity, or should partition transparency live behind its own SPI method (`describeTopology`) the adapter calls internally?
 
 ---
 
-## 3. Split, merge, and lifecycle handling
+## 6. Partition transparency
 
-### 3.1 Provider event matrix
+### 6.1 The problem
 
-| Event | Cosmos | Dynamo | Spanner |
+Each provider's partition lifecycle is genuinely different — different shape, different signal, different recovery:
+
+| Event | Cosmos | DynamoDB | Spanner |
 |---|---|---|---|
-| Split (1 → N) | `FeedRangeGoneException` mid-read | Parent shard sealed (`EndingSequenceNumber` set); children appear in `DescribeStream` with `parentShardId` set | `ChildPartitionsRecord` in-stream; `parents.size == 1` |
-| Merge (N → 1) | ❌ Cosmos physical partitions only split, never merge | ❌ DynamoDB Streams shards only split (or close on TTL), never merge — each child has a single `parentShardId` | `ChildPartitionsRecord` where `parents.size > 1`; **same child token emitted on every parent's stream** |
-| Trim (data aged out) | latest-version mode: none. AVAD mode: HTTP 410 | `TrimmedDataAccessException` | `INVALID_ARGUMENT` ("timestamp ... is older than") |
-| Heartbeat | implicit (token advances) | implicit (next iterator returned) | explicit `HeartbeatRecord` (default 2000 ms) |
+| **Split (1 → N)** | Thrown `FeedRangeGoneException` mid-pagination | **Silent**: closed shard returns empty records + null next iterator | In-stream `ChildPartitionsRecord` with `parents.size == 1` |
+| **Merge (N → 1)** | ❌ Not possible — Cosmos physical partitions are split-only | ❌ Not possible — DynamoDB Streams shards are split-only | In-stream `ChildPartitionsRecord` with `parents.size > 1` — *same child token emitted on every parent's stream* (requires idempotent dedup) |
+| **Child discovery** | Diff `container.getFeedRanges()` against parent's range | `DescribeStream(ShardFilter=CHILD_SHARDS)`; up to ~30s propagation delay | Immediate (in-stream record) |
+| **Child-cursor start** | Begin where parent left off (continuation tokens fork cleanly) | Begin at shard `TRIM_HORIZON` (parent's last sequence number is per-shard) | `start_timestamp` from the child record (NOT `now()`, NOT parent's last commit) |
+
+A portable consumer cannot carry three lifecycle state machines. The SDK must hide all of it.
+
+### 6.2 The user contract
+
+In v1, **the user sees one cursor and one `readChanges` call.** When the underlying topology changes between two `readChanges` calls (or even mid-call), the SDK:
+
+1. Detects the split/merge via the provider-appropriate signal.
+2. Enumerates the children (provider-appropriate call).
+3. Encodes the new topology into the returned `nextCursor`.
+4. Continues to return events in subsequent `readChanges` calls, drawing from all relevant children.
+
+What the user is guaranteed:
+
+- **No public `PartitionGoneException` or `FeedRangeGoneException` in v1.** Partition-level exceptions do not exist in the v1 surface.
+- **No `shardId`, `feedRange`, or `partitionToken` in the public API.** Topology is fully internal.
+- **Cursors continue working** regardless of how many splits/merges have happened since `now()` or `fromToken()`.
+- **Per-partition ordering is preserved.** A logical key's events arrive in commit order, even across split boundaries.
+- **At-least-once delivery.** A crash between `process(page.events())` and `persist(page.nextCursor().toToken())` can re-deliver the last page; downstream must be idempotent by primary key.
+
+### 6.3 How the cursor encodes a multi-partition state
 
 ```mermaid
 flowchart LR
-    subgraph SPLIT["Split (1 → N) — all 3 providers"]
-        direction TB
-        SP[Parent] --> SA[Child A]
-        SP --> SB[Child B]
+    subgraph T0["t₀: 2 partitions"]
+        P1["Partition A"]
+        P2["Partition B"]
     end
-    subgraph MERGE["Merge (N → 1) — Spanner only"]
-        direction TB
-        MP1[Parent X] --> MC["Child<br/>same token emitted on<br/>both parent streams"]
-        MP2[Parent Y] --> MC
+    subgraph T1["t₁: A splits"]
+        A1["Child A1"]
+        A2["Child A2"]
+        B["Partition B"]
     end
+    subgraph T2["t₂ (Spanner only): B merges with A2"]
+        A1b["Child A1"]
+        M["Merged (A2+B)"]
+    end
+    T0 -->|next readChanges<br/>after split| T1
+    T1 -->|next readChanges<br/>after merge| T2
+
+    subgraph U["User-visible cursor evolution"]
+        C0["cursor₀: {A:cur, B:cur}"]
+        C1["cursor₁: {A1:cur, A2:cur, B:cur}"]
+        C2["cursor₂: {A1:cur, AB-merged:cur}"]
+    end
+    T0 -.-> C0
+    T1 -.-> C1
+    T2 -.-> C2
 ```
 
-*Cosmos physical partitions and DynamoDB Streams shards form strictly split-only DAGs — each child has exactly one parent. Spanner is the only provider whose partitions can fan in, which is what makes idempotent merge dedup (§3.3) a Spanner-only concern.*
+*The cursor is internally a list of per-internal-partition state; the user sees one opaque string. Each `readChanges` call may grow or shrink the internal list as topology evolves.*
 
-**Why merge is Spanner-only.** Cosmos physical partitions subdivide as storage or throughput grows but the engine never recombines them; once a hash range is split, that split is permanent. DynamoDB Streams shards similarly form a strictly split-only DAG — each child carries a single `parentShardId`, and a closed shard is never replaced by a merged successor. Spanner change-stream partitions are the only ones in the matrix that fan in: when write rate drops, two adjacent partitions can merge into a single child (`parents.size > 1`). This is what makes idempotent dedup (§3.3) a Spanner-only concern; on the other two providers, `PartitionGoneException` always carries a child set whose entries each have exactly one parent.
+**Three key implementation details inside the adapters:**
 
-### 3.2 Detection responsibility by layer
-
-- **L1 (`readChanges`)** — provider impl translates native errors → portable `PartitionGoneException(parentId, children)` or `CursorExpiredException(partitionId, latestAvailableCursor)`. Children list is best-effort (empty for Spanner; populated for Cosmos via `getFeedRanges()` and Dynamo via `DescribeStream(ShardFilter=CHILD_SHARDS)`).
-- **L2 (`listChangeFeedCursors`)** — snapshot; goes stale on next split. User re-lists on `PartitionGoneException`.
-- **L3 (lease coordinator)** — catches `PartitionGoneException`, inserts children into `LeaseStore` with `state=CREATED`, marks parent `FINISHED`, releases parent lease. Transparent to user.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant WA as Worker A
-    participant Prov as Provider stream
-    participant LS as L3 LeaseStore
-    participant WB as Worker B
-    WA->>Prov: readChanges(parent.cursor)
-    Prov-->>WA: PartitionGoneException(parent, children=[c1, c2])
-    Note over WA,LS: L3 internals — L1/L2 callers only observe the exception
-    WA->>LS: INSERT IF NOT EXISTS lease(c1), lease(c2) — state=CREATED
-    WA->>LS: lease(parent).state = FINISHED
-    WA->>LS: release(parent)
-    WB->>LS: acquireLease()
-    LS-->>WB: lease(c1)
-    WB->>Prov: readChanges(c1.cursor)
-```
-
-*Steps 3–5 are inside L3 — L1/L2 callers only see the `PartitionGoneException` and the next `acquireLease()` returning a child. Children become eligible only after every parent is `FINISHED` (parent-before-child invariant, §3.4).*
-
-### 3.3 Idempotent merge (Spanner only)
-
-Same child token arrives on every parent's stream. Coordinator uses `INSERT IF NOT EXISTS` keyed on child token; first parent wins, others observe the existing row and just mark themselves `FINISHED`.
-
-### 3.4 Parent-before-child invariant
-
-Required for **Dynamo** (per-key ordering) and **Spanner** (commit-timestamp continuity in both split and merge cases). Not required for Cosmos. Enforced uniformly by `acquireLease()`:
-
-```
-eligible = leases WHERE
-    (owner IS NULL OR expiresAt < now())
-    AND state IN (CREATED, RUNNING)
-    AND (parents IS EMPTY OR ALL p IN parents: leaseStore.get(p).state == FINISHED)
-```
-
-For Cosmos, `parents` is always empty on inserted children → degenerates to immediate eligibility.
-
-### 3.5 Recovery semantics
-
-| Scenario | Recovery | User impact |
-|---|---|---|
-| Worker crash mid-batch | Lease expires; another worker resumes from last persisted cursor | At-least-once redelivery (idempotent handler → no impact) |
-| Split during read | `PartitionGoneException` → coordinator updates `LeaseStore` (§3.2) | Brief pause; no data loss |
-| Merge during read (Spanner) | Idempotent child insert; both parents → `FINISHED` | Brief pause; child not acquirable until all parents drained |
-| Cursor outside retention | `CursorExpiredException` → apply `staleCheckpointPolicy` (`FAIL` / `RESTART_FROM_LATEST` / `RESTART_FROM_NOW`) | Data loss for the gap; always logged at WARN |
-| Network blip | Transport-layer retry; lease heartbeat continues independently | None |
-| `LeaseStore` outage | Coordinator can't heartbeat → releases leases, throws to user | Pause; no data loss |
-
-### 3.6 Provider-specific edge cases
-
-- **Cosmos**: `FeedRangeGoneException` can fire mid-pagination, not just on first call. After catching, compute children by diffing `getFeedRanges()` against the parent's old range.
-- **Dynamo**: a closed shard's last `GetRecords` returns 0 records + null next iterator — not an exception. Detect via `EndingSequenceNumber != null && records.isEmpty()`. Child shards may have up to ~30s propagation delay before appearing in `DescribeStream`.
-- **Spanner**: `ChildPartitionsRecord`, `DataChangeRecord`, and `HeartbeatRecord` interleave in the same TVF result set. Child's `start_timestamp` (from the record) MUST be the child query's `start_timestamp` — not `now()`, not the parent's last commit.
+- **`lastAdvancedAt` is computed as the `min` across the per-partition list.** The slowest internal partition determines the cursor's age. This prevents a fast partition from silently extending the retention window past 24h (§4.3).
+- **Spanner merge dedup.** When the same child token arrives on multiple parents' streams, the merge is idempotent: first parent wins, subsequent ones observe the child already in the cursor and just retire themselves.
+- **Parent-before-child ordering.** For DynamoDB (per-key order) and Spanner (commit-timestamp continuity), a child partition is not polled until its parent(s) have been fully drained. Cosmos has no such requirement; the rule degenerates to a no-op there.
 
 **Questions for the review.**
 
-- Is `PartitionGoneException` the right abstraction, or are we conflating two genuinely different conditions (split vs. trim)? Both currently surface the same way, but the user reaction differs.
-- Should split discovery be a callback (`onSplit(parent, children)`) instead of an exception, so user code doesn't have to wrap every `readChanges` call in try/catch?
-- The parent-before-child invariant (§3.4) is strict. Does it hurt latency for users who don't care about per-key order across the split boundary? Should we expose a "loose mode" toggle?
-- Spanner's merge requires idempotent dedup (§3.3). If the dedup window is bounded by lease TTL, what happens on a long worker pause that exceeds the window?
+- Hiding splits/merges entirely means the user has no hook to react to topology changes (e.g., emit a metric, resize a worker pool). Is that the right call for v1, or should we expose a passive `onTopologyChange` listener?
+- The composite-cursor token grows with partition count. A container with thousands of partitions could produce a ~MB-scale token. Should v1 cap partition count somewhere, or document the upper bound and let users monitor?
+- Spanner's merge dedup is the only provider-specific algorithmic complexity in the hidden layer. If a future provider adds merge support with different semantics (e.g., 3-way merge), does our hiding strategy still hold?
 
 ---
 
-## 4. 24-hour portable retention contract
+## 7. Responsibility model
 
-### 4.1 The contract
+The v1 split between SDK and application is deliberately conservative — the SDK does the portable hard parts; the application owns everything else.
 
-Dynamo Streams enforces a non-configurable 24-hour retention. To keep the SDK fully portable, **the portable API caps token age at 24 hours, strictly**. Provider differences are absorbed internally; users see a single uniform contract.
-
-> "A `ChangeFeedCursor.fromToken(t)` is readable for up to 24 hours after the token was last advanced. Past that, `CursorExpiredException` is thrown. `ChangeFeedCursor.now()` is always valid. Users who need longer history or arbitrary-timestamp starts must use the provider-native SDK directly."
-
-### 4.2 Server-side reality (internal concern, not exposed)
-
-| Provider | Server-side 24h? | Mechanism |
+| Concern | **SDK** | **Application** |
 |---|---|---|
-| Dynamo | ✅ always 24h | Hard-coded by AWS |
-| Spanner | ✅ configurable | `CREATE/ALTER CHANGE STREAM ... OPTIONS (retention_period = '1d')`. Default 7 days. |
-| Cosmos (latest-version) | ❌ no knob | Bounded only by item lifetime in container |
-| Cosmos (all-versions-and-deletes, preview) | ⚠️ tied to continuous backup (7-30 days) | Cannot reduce below 7 days |
+| Reading change events from the provider | ✅ | |
+| Cursor opaque encoding / decoding | ✅ | |
+| Provider-tag validation (cross-client misuse) | ✅ | |
+| 24-hour client-side retention enforcement | ✅ | |
+| Mapping provider trim errors → `CursorExpiredException` | ✅ | |
+| Partition split/merge detection and absorption | ✅ | |
+| Transport-layer retry (network blips, throttling) | ✅ | |
+| Honoring the escape-hatch override (§4.4) and emitting warn/metrics | ✅ | |
+| **Persisting cursor tokens** | | ✅ |
+| **Concurrency** (threads, processes, hosts) | | ✅ |
+| **Distributing work** if running multiple consumers | | ✅ |
+| **Dedup** for at-least-once redelivery | | ✅ |
+| **Downstream idempotency** (by primary key) | | ✅ |
+| Choosing whether to enable the escape hatch | | ✅ |
+| Reacting to `CursorExpiredException` (recovery path) | | ✅ |
 
-The SDK does not configure server-side retention (DDL is out of scope for a data-plane SDK). The portable contract is enforced **client-side** regardless of server-side configuration.
+**Why this split.** The SDK takes everything that *cannot* be done portably without provider-internal knowledge (cursor formats, partition lifecycle quirks, error normalization, retention enforcement). The application takes everything that has portable, well-known operational answers (token persistence in any KV store, concurrency via threads / processes / hosts, downstream idempotency by primary key).
 
-### 4.3 Client-side enforcement (uniform, no opt-out)
+**Questions for the review.**
 
-With the cursor surface restricted to `now()` and `fromToken(t)` (§2.1), enforcement reduces to two checks:
+- Is "application owns concurrency" too laissez-faire for v1, or is it the right minimalism stance with §10.1 lease coordination flagged as the v2 follow-up?
+- Should the SDK provide a non-binding "recommended token persistence" interface (`TokenStore` SPI with reference impls for file, Redis, DynamoDB), or does that pull operational concerns into an SDK that wants to stay minimal?
 
-1. **`ChangeFeedCursor.lastAdvancedAt: Instant`** — stamped on every `fromToken()` decode and updated on every `page.nextCursor()` advance.
-2. **Pre-flight check** in `readChanges()` for `fromToken()` cursors: if `now() - cursor.lastAdvancedAt > 24h`, throw `CursorExpiredException` before the provider round-trip. Always.
-3. **Provider error mapping** in each SPI impl (defense in depth — covers clock skew, unexpected early trim): Cosmos HTTP 410, Dynamo `TrimmedDataAccessException`, Spanner `INVALID_ARGUMENT` → uniform `CursorExpiredException(partitionId, latestAvailableCursor)`.
+---
 
-`now()` cursors never need a check — they're always valid the moment they're created.
+## 8. Scaling model
 
-### 4.4 Configuration guidance (`docs/configuration.md`)
+### 8.1 Single-thread (v1's natural shape)
 
-- **Dynamo**: nothing to do.
-- **Spanner**: recommend `CREATE CHANGE STREAM MyStream FOR ALL OPTIONS (retention_period = '1d');` for cost efficiency (longer retention costs more storage); the SDK enforces 24h regardless of this setting.
-- **Cosmos**: document the SDK's strict 24h enforcement explicitly. Users needing longer history use the Cosmos SDK directly.
+The minimum viable consumer is one thread, one process:
 
-### 4.5 Future: opt-in extended retention via `ArchiveStore`
+```java
+ChangeFeedCursor cursor = loadSavedToken()
+    .map(ChangeFeedCursor::fromToken)
+    .orElseGet(ChangeFeedCursor::now);
 
-A pluggable `ArchiveStore` SPI could tee events to S3/GCS/Cosmos/Dynamo-with-TTL on consumption, then `readChanges()` falls back to the archive when the requested timestamp is past native retention. This would let users portably exceed 24h *without* the portable API leaking provider-specific behavior. Out of scope for the initial implementation; cleanly composable with L3.
+while (running) {
+    ChangeFeedPage page = client.readChanges(addr, cursor);
+    process(page.events());
+    cursor = page.nextCursor();
+    persist(cursor.toToken());
+}
+```
 
-### 4.6 Recommended pattern for "I need historical backfill before going live"
+**Suitable for:**
 
-Since the portable API only exposes `now()` and `fromToken()`, here is the recommended pattern for the common "new consumer wants to catch up" scenario:
+- Low-to-moderate write rates (where one thread can keep up).
+- Single-process consumers (webhook publishers, indexers, materialized-view maintainers, dev environments).
+- Workloads where downstream throughput, not change-feed throughput, is the bottleneck.
 
-| Scenario | Recommended pattern |
+This is the recommended starting shape and the only shape that v1 itself provides any helpers for.
+
+### 8.2 Multi-thread / multi-host (application-owned)
+
+v1 does **not** ship lease coordination. Applications that need parallel consumption build it at the application layer. Two practical patterns:
+
+| Pattern | How | Trade-off |
+|---|---|---|
+| **Sharded by external key range** | Run N consumers, each starts at `now()` and processes a logically disjoint subset of events (e.g., filter by key prefix downstream). Each persists its own token. | Simple; works for *new* consumers only. Cannot retroactively shard a single live cursor. |
+| **External leader election** | Use an existing coordination primitive (Redis lock, ZooKeeper, k8s lease, DynamoDB CAS) to ensure exactly one process holds the cursor at a time; survivors fail over and resume from the last persisted token. | Standard, well-understood pattern; no special SDK help needed. Failover latency = lease TTL. |
+
+**What v1 deliberately does not provide:**
+
+- Automatic partition-to-worker assignment (deferred to v2 — see §10.1).
+- Multi-host coordination store (deferred to v2).
+- A multi-thread, single-process fan-out helper (deferred to v3 — see §10.3).
+
+**If a workload genuinely requires N > 1 workers from day one,** the recommendation is to wait for the v2 lease coordinator, or drop to the provider-native runtime (CFP / KCL / SpannerIO) for that one workload. v1 does not pretend to solve multi-host scaling.
+
+### 8.3 Recommended usage patterns
+
+- **Persist every `nextCursor`** — token serialization is cheap; persisting at every page bounds redelivery on crash to the last page.
+- **Make downstream processing idempotent by primary key** — at-least-once delivery is the universal lower bound; SDK-level dedup is out of scope.
+- **Handle `CursorExpiredException` explicitly.** The default v1 stance is *fail loudly*; the recovery decision (re-snapshot, drop to native SDK, enable the escape hatch) is the application's. See §9.3.
+- **Don't roll your own lease layer.** The v2 lease coordinator (§10.1) will land with conformance coverage; an app-level lease layer built against v1 will not benefit from the v2 partition-aware optimizations.
+- **Monitor cursor age.** Read the `cursorAge` from your own observability (the SDK doesn't expose it as a metric in v1) by stamping the local time alongside the persisted token.
+
+**Questions for the review.**
+
+- "App owns concurrency in v1" — is the gap to v2 lease coordination short enough that this is a reasonable hold, or does it block adopters who need multi-host on day one?
+- Should v1 ship a tiny single-host `ExecutorService`-based wrapper that does nothing but call `readChanges` on multiple threads with the *same* cursor, or is that a footgun (two threads, one cursor, no coordination)?
+
+---
+
+## 9. Trade-offs & risks
+
+### 9.1 What strict portability costs
+
+| Lost capability | Why it was excluded | Application workaround |
+|---|---|---|
+| `ChangeFeedCursor.beginning()` (read from oldest available) | "Beginning" means different things per provider: DynamoDB `TRIM_HORIZON` is GC-jittered ≈ 24h; Cosmos = container creation (months); Spanner = `retention_period`. Cannot guarantee uniform semantics. | Out-of-band snapshot of source table, then `now()` (§9.3 pattern). |
+| `ChangeFeedCursor.fromTimestamp(t)` | DynamoDB Streams has no timestamp-seek primitive — only `TRIM_HORIZON`, `LATEST`, and sequence-number iterators. | Provider-native SDK on Cosmos/Spanner where it exists; not portable. |
+| Lookback > 24h via the portable API | DynamoDB enforces 24h server-side; portable contract is the minimum common. | Escape hatch (§4.4) on Cosmos/Spanner only; provider-native SDK for DynamoDB (requires Kinesis Data Streams integration enabled *before* the event). |
+| Cross-partition global ordering | Universal limitation of all three providers. | Document, don't promise. Application-level merge if needed (rare). |
+| Exactly-once / at-most-once delivery | Universal limitation of all three providers. | Idempotent downstream by primary key. |
+| Partition enumeration in the public API | Forces topology into the public surface; conflicts with §6 partition transparency. | Deferred to v2 (§10.4) under a `LIST_PARTITIONS` capability gate. |
+
+### 9.2 V1 minimalism trade-offs
+
+| What's missing in v1 | Why | When you'll feel it | Mitigation |
+|---|---|---|---|
+| Lease coordination / managed scaling | Out of scope; must be earned by user feedback. | Workloads with > 1 consumer process. | App-level coordination (§8.2), or wait for v2 (§10.1). |
+| Push / callback model | Drags Reactor / KCL / Beam into core. | Reactive-style codebases. | Thin user-side wrapper over `readChanges`. |
+| Multi-thread fan-out helper | Defer until §8.2 patterns prove insufficient. | High-event-rate single-process workloads. | User-side thread pool over `readChanges`. |
+| Partition enumeration | Conflicts with §6 partition transparency. | Batch engines (Spark, Flink) that own coordination. | Deferred to v2 (§10.4). |
+| Per-call options object on `readChanges` | Smallest possible v1 signature. | Workloads needing page-size hints, custom poll timeouts. | Live with defaults; signature is additive-compatible in v2. |
+
+### 9.3 Escape hatch implications
+
+The §4.4 escape hatch is a controlled, observable override — not a portable feature. Risks must be acknowledged at adoption:
+
+- **Code that depends on > 24h lookback is not portable to DynamoDB.** Period. The escape hatch cannot change this; DynamoDB enforces 24h server-side.
+- **Per-call WARN logs and metric are by design.** Operators MUST surface them in their observability stack, or the escape hatch becomes a silent normalization.
+- **Global per-client switch, not per-call.** Once enabled, every `readChanges` call on that client skips the pre-flight. The deliberate friction discourages casual use.
+- **Provider-side retention still applies.** Cosmos: bounded by item lifetime. Spanner: `retention_period` (default 7d, max 7d on the change stream). DynamoDB: 24h. Tokens beyond these still throw `CursorExpiredException` via the defense-in-depth error mapping (§4.3).
+
+**Documented recovery patterns for `CursorExpiredException`:**
+
+| Pattern | What it recovers | What it loses | Portability |
+|---|---|---|---|
+| **Re-snapshot + resume from `now()`** | Current state of every row. | The *events* during the outage window. | All three providers, no escape hatch needed. |
+| **Enable escape hatch + `fromToken(t)`** | Events back to provider-side retention (Cosmos: lifetime; Spanner: ≤ 7d; DynamoDB: still 24h). | Nothing on Cosmos/Spanner if within retention; everything on DynamoDB past 24h. | Non-portable; DynamoDB unaffected. |
+| **Drop to provider-native SDK** | Whatever native retention allows (Cosmos: lifetime; Spanner: ≤ 7d; DynamoDB: 365d via KDS *if* enabled before event). | Nothing within native retention. | Provider-specific; not under the portable SDK. |
+
+The recovery decision is the application's. The SDK provides only the portable contract and the controlled override.
+
+### 9.4 At-least-once and the dedup tax
+
+All three providers offer at-least-once delivery natively. v1 inherits this. **There is no SDK-side dedup in v1.** Downstreams must be idempotent by primary key. This is not a v1 omission — it is the universal lower bound across all three providers, and it does not change in v2.
+
+**Questions for the review.**
+
+- Is the §9.1 "lost capabilities" table the right shape, or should it be a more pointed "don't ship this in v1 even if asked" list?
+- The escape hatch (§4.4 + §9.3) and "drop to native SDK" together are the two non-portable escapes. Are they enough, or does v1 need a third (e.g., bring-your-own-archive)?
+- Should `CursorExpiredException` carry the `provider` tag and `lastAdvancedAt` so the application can route to the right recovery without reconstructing them — or does that bleed provider identity into the portable exception?
+
+---
+
+## 10. Future extensions
+
+The following are deliberately out of v1. Each is sketched here with a forward-compatibility note so v1 reviewers can confirm v1 doesn't paint us into a corner.
+
+### 10.1 Lease coordination / managed multi-host scaling (v2)
+
+A `LeaseStore` SPI + portable coordinator that automatically assigns partitions across workers, handles split/merge, supports multi-host scale-out with crash recovery.
+
+- Each provider ships a `LeaseStore` impl (Cosmos lease container, DynamoDB lease table, Spanner collocated lease table — the Spanner default avoids the Beam-recommended ~$650/mo separate metadata DB).
+- Built over v1 `readChanges` — no v1 API change.
+- Conformance suite extension: multi-host split, worker-death recovery, Spanner merge dedup, cost-regression test.
+
+**Forward compatibility check.** The v2 coordinator wraps v1 `readChanges` and persists cursors in its `LeaseStore`. v1 token format, exception types, and partition transparency layer (§6) are exactly what the v2 coordinator needs. No v1 API change required.
+
+### 10.2 Push / callback model (v2 or later)
+
+A `ChangeFeedProcessor` interface with `onPage(callback)` semantics. Shipped as an optional artifact (`multiclouddb-changefeed-processor`) to keep Reactor / KCL / Beam off the core classpath. Implemented over v1 `readChanges` (or v2 lease coordinator when available).
+
+**Forward compatibility check.** Pure user-mode wrapper over v1 pull primitives. No v1 API change.
+
+### 10.3 Multi-thread, single-process processor (later)
+
+A thread-pool-based reader for single-host workloads that outgrow §8.1 but don't need multi-host coordination. Inspired by [Azure-Samples/cosmosdb-cassandra-changefeed-processor](https://github.com/Azure-Samples/cosmosdb-cassandra-changefeed-processor) (a Cassandra-API customer sample that fans `feedRanges` across worker threads with in-memory coordination only). A near-perfect fit for our v2 partition enumeration (§10.4).
+
+**Forward compatibility check.** Composition over v1 `readChanges` plus v2's partition enumeration. No v1 API change.
+
+### 10.4 Partition enumeration for batch engines (v2)
+
+`Capability.LIST_PARTITIONS` + `listChangeFeedCursors(addr)` for Spark / Flink / MapReduce that own their own coordination. Returns a list of cursors that can be distributed across workers; each worker still goes through v1 `readChanges`.
+
+**Forward compatibility check.** Additive — new method, new capability gate. No v1 API change. The v2 method's return type (`List<ChangeFeedCursor>`) is the same `ChangeFeedCursor` v1 already defines.
+
+### 10.5 Pluggable archive (`ArchiveStore`) for > 24h recovery (later)
+
+A pluggable `ArchiveStore` SPI (S3 / GCS / Azure Blob) that an out-of-process archiver writes to. On `CursorExpiredException`, the SDK transparently falls back to the archive. Strictly opt-in; portable across all three providers when opted in (the archive is provider-symmetric).
+
+**Forward compatibility check.** Requires `CursorExpiredException` to carry `lastAdvancedAt` (a v1 design item to lock in — see §9.3 question).
+
+### 10.6 Soft-warning hook before `CursorExpiredException`
+
+`onApproachingRetentionLimit(cursor, remaining)` callback that fires when a cursor is, e.g., 30 minutes from expiry — letting the application persist faster, scale up, or alert ops before the hard failure.
+
+**Forward compatibility check.** Additive listener interface; no v1 API change.
+
+**Questions for the review.**
+
+- Is this the right ordering (v2 = lease coordination + partition enumeration; later = push, multi-thread, archive, soft-warn), or does a different sequencing better match user demand?
+- Are any of these *required* in v1 disguised as "future" — i.e., does shipping v1 without them strand a user category?
+- Is "additive-only after v1" a hard constraint, or are breaking changes OK at v2 if the v1 contract is found to have a real flaw?
+
+---
+
+## Glossary
+
+| Term | Expansion |
 |---|---|
-| New consumer going live | `now()` → process pages → persist `nextCursor()` on every checkpoint → on restart, `fromToken(savedToken)`. |
-| Need a snapshot of pre-existing data | Do an out-of-band, point-in-time scan of the source data (e.g., `client.queryItems()` with a consistent snapshot). Start the change feed with `now()` *before* the scan begins, persist tokens during the scan, and consume the buffered change feed after the scan completes. |
-| Need > 24h of change history | Use the provider-native SDK directly (Cosmos PITR, Kinesis Data Streams for DynamoDB, Spanner→BQ Beam template). The portable API doesn't pretend to support this. |
-| Test / development | `now()` + write test data; or use the conformance test fixtures. |
-
-This is the same pattern Cosmos CFP, KCL, and Spanner Beam users follow in production — no one starts production consumers from "the beginning of the container." Document this in `docs/guide.md`.
-
-**Questions for the review.**
-
-The 24h cap is one of the largest portability calls in the design. The trade-offs deserve explicit discussion:
-
-- **Benefits of a uniform 24h cap.** Single portable semantics; fail-fast on Dynamo's real ceiling; predictable Spanner retention bill; bounded composite-token TTL (§2.2, §2.7); one number to teach; nothing to misconfigure.
-- **Drawbacks of a uniform 24h cap.** Loses Cosmos's "months of history" advantage; loses Spanner's configurable 7-day default; forces > 24h backfill needs into the §4.6 out-of-band path; surprises Cosmos veterans whose mental model is "the change feed has everything since the container was created."
-
-Open questions:
-
-- Should the cap be **configurable** (e.g. `retentionWindow=Duration.ofHours(24)`) for users on Cosmos/Spanner who explicitly want longer? Or does any configurability re-open the "works on 2 of 3" trap?
-- Is **24 hours** the right number, or should we set it lower (e.g. 12h) to give safety margin for clock skew, slow consumers, and Dynamo's "≈ but not exactly 24h" GC behaviour?
-- Should there be a **soft warning** (`onApproachingRetentionLimit(cursor, remaining)`) before `CursorExpiredException` fires? Or does that just give users a knob they'll fail to wire up correctly?
-- Is the §4.6 out-of-band backfill pattern (snapshot → switch to live cursor) realistic for users who currently use Cosmos's `beginning()` for daily reprocessing pipelines?
+| **CFP** | `ChangeFeedProcessor` — Cosmos DB's in-SDK push-based change-feed runtime. |
+| **KCL** | [Amazon Kinesis Client Library](https://docs.aws.amazon.com/streams/latest/dev/shared-throughput-kcl-consumers.html) — the recommended consumer for DynamoDB Streams (via the Kinesis Adapter). |
+| **Beam** | [Apache Beam](https://beam.apache.org/) — the batch/stream framework Spanner change streams are read through (`SpannerIO.readChangeStream`). |
+| **SPI** | Service Provider Interface — the internal seam between `multiclouddb-api` and per-provider impls in this SDK. |
+| **DDB** (in *Cosmos DB* / *Document DB*) | Cosmos DB's original name; "Cosmos DB" is used throughout this doc. The DynamoDB product is always written *DynamoDB* (never *DDB*) to avoid confusion. |
+| **TVF** | Table-Valued Function — Spanner change streams are queried as TVFs. |
+| **PU** | Processing Unit — Spanner's capacity unit. 1 PU is the minimum for a database. |
+| **AVAD** | "All Versions And Deletes" — Cosmos change-feed mode (preview) that exposes deletes and intermediate versions. |
+| **KDS** | Kinesis Data Streams — AWS's general-purpose stream service; DynamoDB can optionally tee Streams to KDS for ≤ 365-day retention. |
 
 ---
 
-## 5. Delivery plan — 3 PRs
+## References
 
-**Recommendation: ship as 3 focused PRs.** Each PR delivers one user-visible capability end-to-end, including all three provider impls, full conformance coverage, and docs. Provider-specific behavior stays inside each PR's SPI impls; the public API in every PR is fully portable.
-
-### PR 1 — Foundation: single-cursor change feed
-
-**User capability**: read changes from a single thread, portably, with strict 24h retention enforcement.
-
-| Component | Module | Notes |
-|---|---|---|
-| `ChangeFeedCursor` (typed; `now/fromToken/toToken`) with internal `lastAdvancedAt` | `multiclouddb-api` | Replaces `StartPosition` + raw token strings. Opaque, provider-tagged. |
-| `ChangeFeedRequest`, `ChangeFeedPage`, `ChangeEvent` | `multiclouddb-api` | Pagination + page-cursor advancement. |
-| Exceptions: `CursorExpiredException`, `WrongProviderException` | `multiclouddb-api` | Uniform across all providers. |
-| `ChangeFeedSpi.readChanges` | `multiclouddb-spi` | Single SPI method. |
-| `MulticloudDbClient.readChanges(req, opts)` | `multiclouddb-api` | Wraps SPI; enforces 24h retention strictly (§4.3). |
-| Cosmos `ChangeFeedSpi` impl | `multiclouddb-provider-cosmos` | Latest-version mode via `CosmosAsyncContainer.queryChangeFeed`. Maps HTTP 410 → `CursorExpiredException`. |
-| Dynamo `ChangeFeedSpi` impl | `multiclouddb-provider-dynamo` | DynamoDB Streams low-level API. Maps `TrimmedDataAccessException` → `CursorExpiredException`. Honors 2-readers-per-shard server-side cap. |
-| Spanner `ChangeFeedSpi` impl | `multiclouddb-provider-spanner` | TVF query against the change stream. Maps timestamp errors → `CursorExpiredException`. |
-| Portable conformance suite | `multiclouddb-conformance` | Read from now; resume from token; 24h token-age cap; provider mismatch via `fromToken()`. |
-| Docs | `docs/changelog.md`, `docs/configuration.md` | Per-provider retention guidance from §4.4. |
-
-**Outcome**: users can portably consume change feeds single-threaded across all three providers under a uniform `ChangeFeedCursor` + `CursorExpiredException` contract, with strict 24-hour retention enforced client-side.
-
-### PR 2 — Partition discovery: `listChangeFeedCursors`
-
-**User capability**: enumerate the current partition cursors for batch engines (Spark, Flink, MapReduce) that own their own coordination.
-
-| Component | Module | Notes |
-|---|---|---|
-| `Capability.LIST_PARTITIONS` | `multiclouddb-api` | Gates the API; unsupported providers throw `UnsupportedCapabilityException`. |
-| `PartitionGoneException(parentId, children)` | `multiclouddb-api` | Thrown from `readChanges()` when cursor is stale due to split. Children list best-effort. |
-| `MulticloudDbClient.listChangeFeedCursors(addr, startAt, opts)` | `multiclouddb-api` | Returns `List<ChangeFeedCursor>`. |
-| `ChangeFeedSpi.listPartitionSeeds` | `multiclouddb-spi` | Provider returns current topology snapshot. |
-| Cosmos impl | `multiclouddb-provider-cosmos` | Uses `container.getFeedRanges()`. Computes children on `FeedRangeGoneException` via topology diff. |
-| Dynamo impl | `multiclouddb-provider-dynamo` | Uses `DescribeStream`. On parent-shard exhaustion, queries `DescribeStream(ShardFilter=CHILD_SHARDS)` for children. |
-| Spanner impl | `multiclouddb-provider-spanner` | Returns a single seed cursor (`null` partition token). Javadoc explains children are discovered in-stream via `ChildPartitionsRecord`. |
-| `ContainerChangeFeedReader` + `MulticloudDbClient.openContainerChangeFeed(addr, opts)` | `multiclouddb-api` | Single-thread, whole-container convenience reader (§2.2). Pure user-mode composition over L1 + L2 — no new SPI methods, no new exception types. Internal `Map<PartitionId, ChangeFeedCursor>`; round-robin polling; transparent split/merge recovery; composite opaque checkpoint token. |
-| `ContainerChangeFeedOptions` | `multiclouddb-api` | Builder with `startAt` (`ChangeFeedCursor.now()` or `.startAtToken(t)`), `staleCheckpointPolicy` (same enum as L1), `pollTimeout`, `idleBackoff*`. |
-| Conformance suite extension | `multiclouddb-conformance` | L2: list seeds; consume in parallel; trigger split; verify `PartitionGoneException`. Container reader: open + drive writes across N partitions; verify exactly-the-events delivered with per-partition order; persist composite token and restart; trigger split → verify transparent recovery; Spanner merge → verify child-token dedup via composite map. |
-
-**Outcome**: power users have a portable discovery API (L2), and *all* users — including the single-thread, single-host case — have a portable whole-container reader (§2.2) without taking on lease coordination. Provider-specific partition semantics (Cosmos feed ranges, Dynamo shards, Spanner partition tokens) live inside the SPI impls; the public API only sees opaque cursors and a portable exception type.
-
-### PR 3 — Managed scaling: `acquireLease` + `LeaseStore`
-
-**User capability**: multi-host parallel consumption with automatic split/merge handling, crash recovery, and rebalancing — without writing any coordination code.
-
-| Component | Module | Notes |
-|---|---|---|
-| `PartitionLease` (interface) | `multiclouddb-api` | `cursor()`, `heartbeat()`, `renew(cursor)`, `release()`, `AutoCloseable`. |
-| `LeaseStore` SPI + `InMemoryLeaseStore` reference impl | `multiclouddb-spi` | CAS-based ownership + state machine (`CREATED → RUNNING → FINISHED → EXPIRED`). |
-| `MulticloudDbClient.acquireLease(addr, leaseOpts)` | `multiclouddb-api` | Returns next eligible lease or null. |
-| Default lease coordinator | `multiclouddb-api` | Internal: handles `PartitionGoneException` → inserts children, marks parent FINISHED. Enforces parent-before-child invariant. Implements batched heartbeats, heartbeat-checkpoint coalescing, adaptive heartbeat, idle partition back-off (see §2.4.2). |
-| `staleCheckpointPolicy` config | `multiclouddb-api` | `FAIL` (default) / `RESTART_FROM_LATEST` / `RESTART_FROM_NOW`. |
-| `LeaseOptions` tuning knobs | `multiclouddb-api` | `heartbeatInterval`, `leaseTTL`, `checkpointEvery`, `maxCheckpointLagMs`, `idleBackoff*` — each with cost-vs-latency javadoc per §2.4.2. |
-| OpenTelemetry metrics | `multiclouddb-api` | `lease_store.ops_per_second`, `lease.acquire_latency_p95`, `lease.lost_to_steal_total`, `lease.heartbeat_failure_rate` (§2.4.3). |
-| Cosmos `LeaseStore` impl | `multiclouddb-provider-cosmos` | Cosmos container, `/id` PK. Uses `TransactionalBatch` for batched heartbeats. Composite index for acquisition scan. |
-| Dynamo `LeaseStore` impl | `multiclouddb-provider-dynamo` | DynamoDB table with optimistic concurrency on `leaseCounter`. Uses `BatchWriteItem` for batched heartbeats. GSI on `(state, expiresAt)` for acquisition. Encodes parent-shard graph internally. |
-| Spanner `LeaseStore` impl | `multiclouddb-provider-spanner` | Spanner table **collocated with app DB** (no separate metadata DB). Multi-mutation transactions for batched heartbeats. Secondary index for acquisition. Idempotent merge insert. |
-| Conformance suite extension | `multiclouddb-conformance` | Multi-host split; worker-death recovery; trim → `staleCheckpointPolicy`; Spanner merge dedup; cost-regression test (`ops_per_second` budget at fixed workload). |
-
-**Outcome**: users get portable parallel scaling. Every provider-specific behavior — Cosmos feed-range-gone diff, Dynamo parent-shard ordering and 2-reader cap, Spanner merge dedup and `start_timestamp` correctness — is handled inside the per-provider `LeaseStore` impl. The public API surface is identical for all three providers.
-
-### Sequencing and dependencies
-
-```
-PR 1 (foundation) ──> PR 2 (discovery) ──> PR 3 (scaling)
-```
-
-Strict serial; each PR builds on the last. Within each PR, the three provider impls can be reviewed in parallel by provider-area owners but ship together — this ensures the capability isn't half-portable on merge.
-
-### Reviewer-agent gates per PR
-
-The multiclouddb-reviewer agent checks on every PR:
-1. **Portability** — no provider-specific type leaks to the public API; capability flags are explicit, not silent fallbacks.
-2. **Cost-efficiency** — no design forces an expensive provider configuration (e.g., Spanner separate metadata DB).
-3. **Doc/code alignment** — javadoc, changelog, and `docs/configuration.md` reflect the new contract.
-4. **Error uniformity** — all provider-specific trim/split errors mapped to `CursorExpiredException` / `PartitionGoneException`.
-5. **Retention contract honored** — 24h cap is enforced at the SDK boundary; no opt-out path exists.
-
-**Questions for the review.**
-
-- 3 PRs, strictly serial. Could PR 2 and PR 3 be developed in parallel with a feature flag, or does that just create merge churn for no calendar savings?
-- PR 3 is the largest (lease coordinator + 3 provider `LeaseStore` impls + split/merge live tests). Should it split into PR 3a (coordinator + Cosmos + Dynamo) and PR 3b (Spanner with merge handling)?
-- "All 3 provider impls in every PR" is the strictest possible interpretation of principle 2. Should we accept "PR ships when the 3rd provider lands; intermediate commits stage one provider at a time" instead?
-- Are the reviewer-agent gates strong enough to catch the silent-divergence failure mode, or do we also need a runtime conformance harness in CI that fails the PR if any assertion behaves differently across providers?
-
----
-
-## 6. Decisions deliberately rejected
-
-| Idea | Why rejected |
-|---|---|
-| Push `ChangeFeedProcessor` as the primary scaling API | Leaks Reactor (Cosmos) / KCL / Beam runtime deps; ~10× the LOC; harder to compose with virtual threads. Pull is the right primitive; push is sugar. |
-| User-distributed cursor list (`listChangeFeedCursors`) as the primary scaling story | Re-invents the lease layer at the user level. Users would have to implement crash recovery, parent-before-child ordering, the Dynamo 2-reader cap, merge dedup, heartbeats. Most will get it wrong. Use Layer 3 instead. |
-| Provider-native runtime delegation (CFP / KCL / Beam under our SPI) | Three different bootstrap stories and ~50 MB of Beam deps; locks us into Google's job-graph model. Build our own coordinator on top of the pull primitives instead. |
-| Server-side 24h enforcement everywhere | Cosmos has no such knob. Client-side enforcement is the only universal path. |
-| User opt-out from the portable 24h contract (`LOOKBACK_BEYOND_PORTABLE_CONTRACT` capability) | Strict portability means provider-specific behavior stays internal. Exposing an opt-out re-introduces the "this works on Cosmos but not Dynamo" trap the SDK exists to avoid. Users who need longer history use the provider-native SDK directly. |
-| `ChangeFeedCursor.beginning()` (read from oldest available) | Semantics aren't uniform: Dynamo `TRIM_HORIZON` is GC-timing-dependent (≈ but ≠ 24h); Cosmos "from beginning" could be months of history (latest-version mode also drops deletes); Spanner depends on configured `retention_period`. Clamping Cosmos/Spanner to `now - 24h` internally still leaves clock skew and per-provider event semantics differences. Strict portability requires we don't pretend these are equivalent. Use `now()` + persist tokens, or do an out-of-band snapshot (§4.6). |
-| `ChangeFeedCursor.fromTimestamp(Instant t)` (start at arbitrary wall-clock time) | DynamoDB Streams has no timestamp-seek primitive — only `TRIM_HORIZON`, `LATEST`, and sequence-number-based iterators. Approximating via `TRIM_HORIZON` + client-side `ApproximateCreationDateTime` filter requires scanning up to 24h of records before returning the first useful one — a footgun, not a feature. Capability-gating it (Cosmos/Spanner only) would violate strict portability. |
-| Exposing `FeedScope` / `PhysicalPartition` types in the public API | Physical-partition semantics differ too much across providers (Cosmos hash-range PKRangeId, Dynamo Streams `shardId`, Spanner change-stream partition tokens — all with different split/merge lifecycles). Keep partition info inside opaque cursors. |
-| Cross-partition global ordering | Universal limitation across all three providers. Document, don't promise. |
-
-**Questions for the review.**
-
-- For each rejected item — what's the concrete trigger that would force us to reconsider? ("If Dynamo Streams adds timestamp-seek, reconsider `fromTimestamp`" — is there a similar trigger for each rejected item?)
-- Is anything missing from this list that's been informally rejected in discussion but not written down? (e.g. "wrap CFP," "expose `feedRanges` directly," "ship a reactive `Flux<ChangeEvent>` surface.")
-- Is the bar for "rejected" the same as the bar for "deferred" (§2.6, §2.7), or do they mean genuinely different things? If different, should the doc say so?
-
----
-
-## 7. References
-
-- **Cosmos**
-  - `Azure/azure-sdk-for-java`: `ChangeFeedProcessorBuilder.java`, `EqualPartitionsBalancingStrategy.java`, `PartitionControllerImpl.java`
-  - https://learn.microsoft.com/azure/cosmos-db/nosql/change-feed-modes
-  - https://learn.microsoft.com/azure/cosmos-db/nosql/change-feed-processor
-- **Dynamo**
-  - https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html
-  - https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.KCLAdapter.html
-  - https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.LowLevel.Walkthrough.html
-  - `awslabs/dynamodb-streams-kinesis-adapter`: `StreamsSchedulerFactory.java`, `DynamoDBStreamsShardSyncer.java`
+- **Cosmos DB**
+  - [Change feed modes](https://learn.microsoft.com/azure/cosmos-db/nosql/change-feed-modes)
+  - [Change feed processor](https://learn.microsoft.com/azure/cosmos-db/nosql/change-feed-processor)
+  - `Azure/azure-sdk-for-java`: `ChangeFeedProcessorBuilder`, `EqualPartitionsBalancingStrategy`, `PartitionControllerImpl`
+- **DynamoDB**
+  - [DynamoDB Streams](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html)
+  - [Streams KCL adapter walkthrough](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.KCLAdapter.html)
+  - [Low-level Streams API walkthrough](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.LowLevel.Walkthrough.html)
+  - `awslabs/dynamodb-streams-kinesis-adapter`: `StreamsSchedulerFactory`, `DynamoDBStreamsShardSyncer`
 - **Spanner**
-  - https://cloud.google.com/spanner/docs/change-streams
-  - https://cloud.google.com/spanner/docs/change-streams/manage
-  - https://cloud.google.com/spanner/docs/change-streams/use-dataflow
-  - `apache/beam`: `SpannerIO.readChangeStream`, `DetectNewPartitionsDoFn`, `ReadChangeStreamPartitionDoFn`, `PartitionMetadataAdminDao.java`
+  - [Change streams](https://cloud.google.com/spanner/docs/change-streams)
+  - [Manage change streams](https://cloud.google.com/spanner/docs/change-streams/manage)
+  - [Use change streams with Dataflow](https://cloud.google.com/spanner/docs/change-streams/use-dataflow)
+  - `apache/beam`: `SpannerIO.readChangeStream`, `DetectNewPartitionsDoFn`, `ReadChangeStreamPartitionDoFn`, `PartitionMetadataAdminDao`
 - **Spec**: `specs/002-change-feed/`
