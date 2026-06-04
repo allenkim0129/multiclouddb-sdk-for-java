@@ -3,10 +3,10 @@
 > **Status.** v1 design document, draft for review. Aligned with spec
 > `specs/001-clouddb-sdk/spec.md` for the **P0** change-feed features:
 > US14 (parallelism, FR-109–114) and US15 (extended history,
-> FR-115–120). Three P2 features in PR #83 — US21 sinks
-> (FR-144–148), US22 OpenTelemetry (FR-149–154), and external
-> `CheckpointStore` (part of FR-157) — are **deferred to v1.x** for
-> scope reasons; see §7.
+> FR-115–117, FR-119–120). The following spec items are **deferred to
+> v1.x**: US15's DynamoDB archiver (FR-118), US21 sinks (FR-144–148),
+> US22 OpenTelemetry (FR-149–154), and external `CheckpointStore`
+> (part of FR-157). See §7.
 >
 > Glossary at the bottom (`CFP`, `KCL`, `Beam`, `SPI`, `TVF`, `PU`, `KDS`, `ACD`).
 
@@ -38,7 +38,7 @@ A naïve "lowest common denominator" API hides the differences only on paper; in
 - **Strict cross-provider parity** for portable contract behavior; capability-gated extensions where providers diverge (FR-114, FR-120).
 - **Built-in horizontal scaling** via a portable consumer-group abstraction (FR-109–114).
 - **24-hour portable baseline** for cursor age, enforced client-side (FR-115).
-- **Extended history opt-in per provider** — Cosmos native, Spanner native, **DynamoDB via an SDK-managed archiver** writing to a configured external event store (FR-116–120).
+- **Extended history opt-in for Cosmos and Spanner only** — Cosmos native (ACD mode), Spanner native (`retention_period`). **DynamoDB extended history (FR-118) is deferred to v1.x**; v1 keeps DynamoDB at the 24h baseline. Delete-event coverage and capability gating still apply on the supported providers (FR-116, FR-117, FR-119, FR-120).
 - **In-database checkpoint persistence** — provider-neutral tokens, persisted to a SDK-managed collection inside the target database (FR-156, partial FR-157).
 - **No dependency leaks** — no Reactor, KCL, or Beam reaches the user's classpath.
 
@@ -46,6 +46,7 @@ A naïve "lowest common denominator" API hides the differences only on paper; in
 
 These spec items are intentionally **not** in v1 to keep the initial release shippable and the public surface minimal. Details and rationale in §7.
 
+- **DynamoDB extended history** (FR-118). The SDK-managed archiver that would push DynamoDB Streams events to an external event store (Kafka, Kinesis, etc.) is deferred. DynamoDB stays at the 24h portable baseline in v1; customers needing >24h on DynamoDB use the Kinesis Data Streams native escape (§6).
 - **External `CheckpointStore` SPI** (other half of FR-157).
 - **`ChangeFeedSink` abstraction** for forwarding events to external messaging systems (US21, FR-144–148).
 - **OpenTelemetry integration** (US22, FR-149–154).
@@ -159,16 +160,17 @@ Every `readChanges` call funnels through the same client-side validator before a
 3. **Dispatch to the provider.** On the response, if the provider returns a trim error — Cosmos HTTP 410, DynamoDB `TrimmedDataAccessException`, Spanner gRPC `INVALID_ARGUMENT` (with "older than" in the message) — map it to `CursorExpiredException`. Defense in depth covers clock skew.
 4. **Success.** Return a `ChangeFeedPage`.
 
-### 3.3 Extended history (capability-gated, config-only)
+### 3.3 Extended history (Cosmos + Spanner only in v1)
 
-The 24h baseline is the floor. Workloads that need lookback past 24h — multi-day outage recovery, hydrating a new downstream, replaying days of history — opt in via configuration. There is no builder API; bypassing the portable baseline is a deployment decision, not a coding decision (FR-116, consistent with the SDK's escape-hatch policy).
+The 24h baseline is the floor. Workloads on **Cosmos or Spanner** that need lookback past 24h — multi-day outage recovery, hydrating a new downstream, replaying days of history — opt in via configuration. There is no builder API; bypassing the portable baseline is a deployment decision, not a coding decision (FR-116, consistent with the SDK's escape-hatch policy).
+
+**DynamoDB is not covered by extended history in v1.** DynamoDB Streams enforces a hard 24h server-side, and the SDK-managed archiver that would push Streams events to an external event store (FR-118) is deferred to v1.x — see §7. DynamoDB workloads that need >24h history in v1 must use the Kinesis Data Streams native escape (§6), outside the portable SDK.
 
 **Enable via configuration — no code change:**
 
 ```properties
 # multiclouddb.properties
 multiclouddb.changeFeed.extendedHistory=enabled
-multiclouddb.changeFeed.extendedHistory.dynamodb.eventStore=kafka://broker:9092/cdc-archive
 multiclouddb.changeFeed.deleteTracking=enabled    # required for delete events in history (FR-119)
 ```
 
@@ -176,28 +178,26 @@ Equivalent environment variables work without redeploying:
 
 ```bash
 export MULTICLOUDDB_CHANGEFEED_EXTENDEDHISTORY=enabled
-export MULTICLOUDDB_CHANGEFEED_EXTENDEDHISTORY_DYNAMODB_EVENTSTORE=kafka://broker:9092/cdc-archive
+export MULTICLOUDDB_CHANGEFEED_DELETETRACKING=enabled
 ```
 
-**Per-provider mechanism (FR-117, FR-118):**
+**Per-provider mechanism (FR-117):**
 
 | Provider | Mechanism | Infrastructure you provide | Performance vs. baseline |
 |---|---|---|---|
 | **Cosmos DB** | Native change feed in *All Changes and Deletes* (ACD) mode; SDK reads back to container creation or configured retention | None (Cosmos container must be ACD-enabled — a provisioning concern) | Same as baseline |
 | **Spanner** | Native change streams with configurable `retention_period` (default 7d, max ≈ data-retention period) | None (Spanner change stream's `retention_period` setting) | Same as baseline |
-| **DynamoDB** | **SDK-managed archiver** — when extended history is enabled, the SDK runs an internal long-running consumer that pushes DynamoDB Streams events to the configured external event store; historical reads beyond 24h are served from that store | External event store (Kafka topic, Kinesis stream, etc.) provisioned by the customer | Higher latency than native; bounded by store's read throughput |
+| **DynamoDB** | **Not supported in v1** — deferred to v1.x (FR-118 archiver). Use the KDS native escape (§6) for >24h history. | n/a in v1 | n/a in v1 |
 
-The DynamoDB archiver is an **internal SDK component** in v1 — it is *not* built on a public sink API. The user configures the store URL; the SDK manages lifecycle, retries, lag tracking, and error handling.
-
-**What's the same on every provider** (cross-provider parity preserved):
+**What's the same on every supported provider** (cross-provider parity preserved between Cosmos and Spanner):
 
 - Same `ChangeFeedCursor` / `readChanges` / `ConsumerGroup` surface — extended-history reads use the existing API.
-- Same `CursorExpiredException` semantics when data is genuinely gone (Cosmos: bounded by ACD retention; Spanner: bounded by `retention_period`; DynamoDB: bounded by event-store retention you configured).
-- Delete events included on all three when delete tracking is enabled (FR-119).
+- Same `CursorExpiredException` semantics when data is genuinely gone (Cosmos: bounded by ACD retention; Spanner: bounded by `retention_period`).
+- Delete events included on both providers when delete tracking is enabled (FR-119).
 
-**Capability gating.** Extended history is a capability-gated feature (FR-120). The capability manifest declares `EXTENDED_CHANGE_FEED_HISTORY` as supported on all three providers, with an "infrastructure required" footnote for DynamoDB. Applications that target a provider set lacking extended-history support get a compile-time error per FR-123.
+**Capability gating.** Extended history is a capability-gated feature (FR-120). The capability manifest declares `EXTENDED_CHANGE_FEED_HISTORY` as supported on **Cosmos and Spanner** in v1; **DynamoDB declares it unsupported**. Enabling `multiclouddb.changeFeed.extendedHistory` on a client whose target set includes DynamoDB fails capability validation per FR-123. Affected applications must either (a) restrict the deployment target to Cosmos/Spanner, (b) use the DynamoDB→KDS native escape outside the portable contract (§6), or (c) wait for the v1.x DynamoDB archiver.
 
-**Observability (v1).** Extended-history reads log `WARN extended-history read (provider=<P>, cursorAge=<duration>)`. The DynamoDB archiver logs `archiver started/stopped`, periodic lag (`archiver lag=<seconds>`), and errors. Structured metrics (Micrometer / OpenTelemetry) arrive in v1.x — see §7.
+**Observability (v1).** Extended-history reads log `WARN extended-history read (provider=<P>, cursorAge=<duration>)`. Structured metrics (Micrometer / OpenTelemetry) arrive in v1.x — see §7.
 
 ---
 
@@ -222,7 +222,7 @@ flowchart TB
     subgraph IMPL["Per-provider adapters"]
         direction LR
         Cos["Cosmos<br/>queryChangeFeed + lease docs"]
-        Dyn["DynamoDB<br/>DescribeStream + GetRecords + internal archiver"]
+        Dyn["DynamoDB<br/>DescribeStream + GetRecords"]
         Spa["Spanner<br/>change-stream TVF + partition tokens"]
     end
     Cli --> Val
@@ -243,7 +243,7 @@ All public types live in `multiclouddb-api`. The SPI seam is the only place per-
 | Provider exception types (`FeedRangeGoneException`, `TrimmedDataAccessException`, `INVALID_ARGUMENT`) | Mapped to `CursorExpiredException` (trim) or absorbed silently (split — see §4.3) |
 | Provider cursor formats (continuation tokens vs. sequence numbers vs. partition tokens) | Wrapped in an opaque, provider-tagged token. `toToken()` / `fromToken()` work everywhere |
 | Provider partition lifecycle (split-only vs. split-and-merge; exception vs. silent vs. in-stream) | Detected inside each adapter; the *next* cursor encodes the post-event topology |
-| Provider retention windows | Clamped to 24h client-side; extended history opt-in per provider (§3.3) |
+| Provider retention windows | Clamped to 24h client-side; extended history opt-in for Cosmos and Spanner only in v1 (§3.3). DynamoDB stays at the 24h cap in v1. |
 | Provider parallel-consumption primitives (Cosmos leases / DynamoDB shards / Spanner partition tokens) | Hidden behind `ConsumerGroup`; per-provider mapping in §5.3 |
 | Provider transport (HTTPS, AWS SDK, gRPC) | Standard retry on transient codes; never visible to the caller |
 | Provider dependencies (Reactor, KCL, Beam) | Confined to their respective `multiclouddb-provider-*` modules |
@@ -458,20 +458,20 @@ while (running) {
 
 ## 6. Beyond extended history
 
-Extended history (§3.3) covers up to provider-side retention: Cosmos ≤ 30d, Spanner up to your `retention_period`, DynamoDB up to the retention of the configured external event store. For workloads that need to reach back further — or that want a non-portable native escape — these are the practical patterns:
+Extended history (§3.3) covers up to provider-side retention: **Cosmos ≤ 30d** and **Spanner up to your `retention_period`**. **DynamoDB is not covered by extended history in v1 — the 24h cap remains** until the v1.x archiver lands (§7). For workloads that need to reach back further — or that want a non-portable native escape — these are the practical patterns:
 
 | Strategy | What you recover | What you lose | Portability |
 |---|---|---|---|
-| **Extended history (§3.3)** | Cosmos: ≤ 30d; Spanner: `retention_period`; DynamoDB: event-store retention you provisioned | Bounded by provider/store retention | ✅ Portable contract; capability-gated per provider |
+| **Extended history (§3.3)** | Cosmos: ≤ 30d; Spanner: `retention_period`; **DynamoDB: not supported in v1** | Bounded by provider retention; DynamoDB unavailable until v1.x | ✅ Portable contract on Cosmos + Spanner; capability-gated |
 | **Re-snapshot + resume from `now()`** | Current state of every row | The *events* during the gap | ✅ All three providers, no flag |
 | **Drop to the provider-native SDK** | Native retention (Cosmos: container lifetime; Spanner: ≤ 7d; DynamoDB: ≤ 365d via KDS *if* enabled before the event) | Nothing within native retention | ❌ Provider-specific; outside the portable SDK |
 
 **Recommendations by workload pattern.**
 
-- **Disaster recovery after a multi-day outage.** Extended history if your provider/store supports the lookback window; otherwise re-snapshot + resume from `now()`.
+- **Disaster recovery after a multi-day outage.** On Cosmos or Spanner, enable extended history if your provider configuration supports the lookback window; otherwise re-snapshot + resume from `now()`. **On DynamoDB, the only options in v1 are (a) re-snapshot + resume, or (b) the Kinesis Data Streams native escape if you enabled it before the event.**
 - **Backfill / hydration of a new downstream.** Bootstrap from a snapshot, then attach `now()`. Replaying history is rarely the right tool; backfill is.
-- **Compliance / audit with ≥ days of history.** Enable extended history with delete tracking; on DynamoDB, the external event store *is* your audit archive.
-- **Anticipating long-window replay on DynamoDB beyond what your event store can hold.** Enable Kinesis Data Streams integration *before* the event you want to replay (KDS retention is configurable up to 365d). Provider-native escape, outside the portable SDK.
+- **Compliance / audit with ≥ days of history.** On Cosmos/Spanner, enable extended history with delete tracking. **On DynamoDB in v1, route to your own audit pipeline at write time** (e.g., a sink your application maintains over `ConsumerGroup`), or wait for the v1.x DynamoDB archiver.
+- **Anticipating long-window replay on DynamoDB beyond 24h.** Enable Kinesis Data Streams integration *before* the event you want to replay (KDS retention is configurable up to 365d). This is the only path to >24h DynamoDB history in v1, and it is a provider-native escape — outside the portable SDK.
 - **Reducing time-to-recover.** The consumer group checkpoints per page automatically. Alert at ~18h of cursor age once OTel is wired in v1.x (§7).
 
 ---
@@ -482,20 +482,25 @@ These divergences from spec PR #83 are explicit; each is deferred to a v1.x rele
 
 | Spec item | v1 status | Reason | v1.x target |
 |---|---|---|---|
+| **DynamoDB extended history (FR-118)** | Deferred — `EXTENDED_CHANGE_FEED_HISTORY` capability is `false` on DynamoDB in v1; Cosmos and Spanner are `true` | The SDK-managed archiver is effectively a small distributed system (long-running consumer, lag tracking, retries, external event-store provisioning). It also forces choices on event-store schema, ordering, and replay semantics that overlap heavily with the deferred sink abstraction (US21). Best shipped after — or together with — the public `ChangeFeedSink`. | v1.1 — ship the DynamoDB archiver alongside the public `ChangeFeedSink` interface (FR-118 + US21 land together). |
 | External `CheckpointStore` SPI (FR-157(b)) | Deferred — same-database only in v1 | Public SPI shape is hard to lock in without real-world usage from multiple stores. Same-DB default satisfies the bulk of the FR-156/157 intent. | v1.1 — add `CheckpointStore` interface with at least one external impl (Redis or a dedicated table). |
-| `ChangeFeedSink` abstraction (US21, FR-144–148) | Deferred | The internal DynamoDB archiver (§3.3) covers the most pressing customer need (Kafka archive). A general-purpose sink interface should follow once the archiver shape is proven. A user-side wrapper over `ConsumerGroup` works in the interim. | v1.1 or v1.2 — promote the archiver's sink internals to a public `ChangeFeedSink` interface; ship a `KafkaSink` built-in. |
+| `ChangeFeedSink` abstraction (US21, FR-144–148) | Deferred | A general-purpose sink interface should follow once the DynamoDB archiver's shape is proven. A user-side wrapper over `ConsumerGroup` works in the interim. | v1.1 — ship a `ChangeFeedSink` interface with a `KafkaSink` built-in, jointly with FR-118. |
 | OpenTelemetry integration (US22, FR-149–154) | Deferred | OTel is config-only and additive — it can land in any minor release without changing the public API. v1 ships with structured logs and a small Micrometer counter set instead. | v1.1 — `multiclouddb-otel` optional artifact with the span and metric inventory from spec FR-150/151. |
 
 **What v1 still satisfies from these user stories.**
 
+- FR-115 ✓ (24h portable baseline, enforced client-side).
+- FR-116 ✓ (extended history is opt-in by config, not code, on the supported providers).
+- FR-117 ✓ (Cosmos ACD and Spanner native `retention_period` mechanisms).
+- FR-119 ✓ (delete events when delete tracking is enabled, on Cosmos and Spanner).
+- FR-120 ✓ (capability-gated — DynamoDB declares `EXTENDED_CHANGE_FEED_HISTORY` as unsupported in v1).
+- FR-155 ✓ (at-least-once delivery).
 - FR-156 ✓ (portable checkpoint tokens — already in `toToken`/`fromToken`).
 - FR-157(a) ✓ (default same-database checkpoint store).
 - FR-158 ✓ (consumer group resumes from last checkpoint after restart).
 - FR-159 ✓ (per-partition checkpoints in parallel consumption).
-- FR-155 ✓ (at-least-once delivery).
-- The DynamoDB archival mechanism from FR-118 ✓ (covered by the internal archiver, just not exposed as a public sink).
 
-The remaining gaps (FR-144–148 sinks, FR-149–154 OTel, FR-157(b) external store) are tracked in the v1.x backlog.
+The remaining gaps (FR-118 DynamoDB archiver, FR-144–148 sinks, FR-149–154 OTel, FR-157(b) external store) are tracked in the v1.x backlog.
 
 ---
 
@@ -516,8 +521,8 @@ The remaining gaps (FR-144–148 sinks, FR-149–154 OTel, FR-157(b) external st
 
 ## 9. References
 
-- **Spec**: `specs/001-clouddb-sdk/spec.md` — US14 (parallelism, P0), US15 (extended history, P0); FR-109–120; SC-043–047.
-- **Spec deferrals**: PR #83 US21 (sinks, FR-144–148), US22 (OpenTelemetry, FR-149–154), US23 (external checkpoint store, FR-157(b)) — see §7.
+- **Spec**: `specs/001-clouddb-sdk/spec.md` — US14 (parallelism, P0), US15 (extended history, P0); FR-109–117, FR-119–120; SC-043–047. FR-118 (DynamoDB archiver) deferred — see §7.
+- **Spec deferrals**: PR #83 US21 (sinks, FR-144–148), US22 (OpenTelemetry, FR-149–154), US23 (external checkpoint store, FR-157(b)), and US15's FR-118 (DynamoDB extended history archiver) — see §7.
 - **Cosmos DB**
   - [Change feed modes](https://learn.microsoft.com/azure/cosmos-db/nosql/change-feed-modes)
   - [Change feed processor](https://learn.microsoft.com/azure/cosmos-db/nosql/change-feed-processor)
