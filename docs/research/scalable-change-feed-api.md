@@ -1,11 +1,14 @@
 # Scalable Change-Feed API — v1 Design Document
 
 > **Status.** v1 design document, draft for review. Aligned with spec
-> `specs/001-clouddb-sdk/spec.md` user stories US14 (parallelism, P0),
-> US15 (extended history, P0), US21 (sinks, P2), US22 (OpenTelemetry,
-> P2), US23 (delivery semantics, P2).
+> `specs/001-clouddb-sdk/spec.md` for the **P0** change-feed features:
+> US14 (parallelism, FR-109–114) and US15 (extended history,
+> FR-115–120). Three P2 features in PR #83 — US21 sinks
+> (FR-144–148), US22 OpenTelemetry (FR-149–154), and external
+> `CheckpointStore` (part of FR-157) — are **deferred to v1.x** for
+> scope reasons; see §7.
 >
-> Glossary at the bottom (`CFP`, `KCL`, `Beam`, `SPI`, `TVF`, `PU`, `KDS`, `ACD`, `OTel`).
+> Glossary at the bottom (`CFP`, `KCL`, `Beam`, `SPI`, `TVF`, `PU`, `KDS`, `ACD`).
 
 ---
 
@@ -29,28 +32,33 @@ Each provider's change-data capture surface is deeply different:
 
 A naïve "lowest common denominator" API hides the differences only on paper; in practice every provider quirk leaks through. v1 must surface *one* contract whose every guarantee actually holds on all three.
 
-### 1.2 Goals
+### 1.2 Goals (v1)
 
 - **One portable API** for reading change events across Cosmos, DynamoDB, and Spanner.
-- **Strict cross-provider parity** for portable contract behavior; capability-gated extensions where providers diverge (per `specs/001-clouddb-sdk/spec.md` FR-114, FR-120).
-- **Built-in horizontal scaling** via a portable consumer-group abstraction (FR-109–114), not deferred to a future version.
-- **Configurable retention** — uniform 24-hour token-age contract enforced client-side (FR-115); extended history opt-in per provider (FR-116–120).
-- **Configurable checkpoint store** — provider-neutral tokens, same-DB default, external option (FR-156–157).
-- **Optional sinks** — pluggable forwarders to external messaging systems (FR-144–148).
-- **Optional OpenTelemetry** — config-only, zero overhead when disabled (FR-149–154).
+- **Strict cross-provider parity** for portable contract behavior; capability-gated extensions where providers diverge (FR-114, FR-120).
+- **Built-in horizontal scaling** via a portable consumer-group abstraction (FR-109–114).
+- **24-hour portable baseline** for cursor age, enforced client-side (FR-115).
+- **Extended history opt-in per provider** — Cosmos native, Spanner native, **DynamoDB via an SDK-managed archiver** writing to a configured external event store (FR-116–120).
+- **In-database checkpoint persistence** — provider-neutral tokens, persisted to a SDK-managed collection inside the target database (FR-156, partial FR-157).
 - **No dependency leaks** — no Reactor, KCL, or Beam reaches the user's classpath.
+
+### 1.3 Out of scope for v1 (deferred to v1.x)
+
+These spec items are intentionally **not** in v1 to keep the initial release shippable and the public surface minimal. Details and rationale in §7.
+
+- **External `CheckpointStore` SPI** (other half of FR-157).
+- **`ChangeFeedSink` abstraction** for forwarding events to external messaging systems (US21, FR-144–148).
+- **OpenTelemetry integration** (US22, FR-149–154).
 
 ---
 
 ## 2. API surface
 
-The public surface is grouped into three layers:
+The public surface in v1 has three layers:
 
-- **Core read API** — `ChangeFeedCursor`, `readChanges`, exceptions. The primitive every other feature composes on.
+- **Core read API** — `ChangeFeedCursor`, `readChanges`, exceptions.
 - **Parallel consumption** — `ConsumerGroup` for SDK-managed partition assignment and rebalancing.
-- **Persistence** — `CheckpointStore` for cursor durability with same-DB default and pluggable alternates.
-- **Sinks (optional)** — `ChangeFeedSink` for forwarding to Kafka / Pub-Sub / etc.
-- **Observability (optional)** — OpenTelemetry, config-only.
+- **Checkpoint persistence** — same-database, automatic.
 
 ### 2.1 Cursor and `readChanges`
 
@@ -91,32 +99,30 @@ public interface ChangeFeedHandler {
 ConsumerGroup group = client.consumerGroupBuilder(addr, "my-group")
     .handler(handler)
     .assignment(Assignment.dynamic())                     // or Assignment.static(partitions)
-    .checkpointStore(CheckpointStore.sameDatabase())      // default; or .external(...)
     .rebalanceTimeout(Duration.ofSeconds(30))
     .build();
 
 group.start();
 ```
 
-The consumer group owns: partition discovery, assignment among group members, per-partition `readChanges` polling, checkpoint persistence after `onEvents` returns successfully, and rebalancing on join/leave (FR-110, FR-111, FR-159). Members coordinate through the configured checkpoint store; on join/leave, the store records membership and triggers a rebalance.
+The consumer group owns partition discovery, assignment among group members, per-partition `readChanges` polling, checkpoint persistence after `onEvents` returns successfully, and rebalancing on join/leave (FR-110, FR-111, FR-159). Members coordinate through the SDK-managed checkpoint collection (§2.3); on join/leave, the coordination records trigger a rebalance.
 
-### 2.3 Checkpoint store
+### 2.3 Checkpoint persistence (v1: same-database only)
+
+In v1, the SDK persists checkpoints to a managed collection inside the target database — no configuration required, no external infrastructure. The collection name and per-partition write semantics are internal to the SDK and not part of the public surface (satisfies FR-156 + FR-157(a)).
 
 ```java
-public interface CheckpointStore {
-    static CheckpointStore sameDatabase();                // default — uses the target DB
-    static CheckpointStore external(/* impl */);          // bring your own
-    // SPI methods (saveToken, loadToken, listMembers, claim, release, ...) — internal
-}
+// No CheckpointStore builder API in v1 — persistence is automatic.
+// Each (group, partition) pair has its own checkpoint row.
 ```
 
-The default `sameDatabase()` store persists per-`(group, partition)` checkpoint tokens to a SDK-managed collection inside the target database (FR-157). Applications that want isolation, audit, or shared storage across many groups can supply an external impl (Redis, dedicated table, etc.). Checkpoints are per-partition and per-instance (FR-159).
+The spec's external-store option (FR-157(b)) is deferred to v1.x — see §7.
 
 ### 2.4 Exceptions
 
 | Exception | Thrown when | User action |
 |---|---|---|
-| `CursorExpiredException` | `fromToken(t)` age > 24h, or provider-side trim observed | Recover (§8) |
+| `CursorExpiredException` | `fromToken(t)` age > 24h, or provider-side trim observed | Recover (§6) |
 | `WrongProviderException` | Token from provider X used with provider Y's client | Application bug; do not retry |
 | `RetentionWindowExceededException` | Extended history requested without the per-provider gate enabled | Configure extended history (§3.3) |
 
@@ -179,7 +185,9 @@ export MULTICLOUDDB_CHANGEFEED_EXTENDEDHISTORY_DYNAMODB_EVENTSTORE=kafka://broke
 |---|---|---|---|
 | **Cosmos DB** | Native change feed in *All Changes and Deletes* (ACD) mode; SDK reads back to container creation or configured retention | None (Cosmos container must be ACD-enabled — a provisioning concern) | Same as baseline |
 | **Spanner** | Native change streams with configurable `retention_period` (default 7d, max ≈ data-retention period) | None (Spanner change stream's `retention_period` setting) | Same as baseline |
-| **DynamoDB** | **SDK-managed archiver** — when extended history is enabled, the SDK runs a long-running consumer that pushes DynamoDB Streams events to the configured external event store; historical reads beyond 24h are served from that store | External event store (Kafka topic, Kinesis stream, etc.) provisioned by the customer | Higher latency than native; bounded by store's read throughput |
+| **DynamoDB** | **SDK-managed archiver** — when extended history is enabled, the SDK runs an internal long-running consumer that pushes DynamoDB Streams events to the configured external event store; historical reads beyond 24h are served from that store | External event store (Kafka topic, Kinesis stream, etc.) provisioned by the customer | Higher latency than native; bounded by store's read throughput |
+
+The DynamoDB archiver is an **internal SDK component** in v1 — it is *not* built on a public sink API. The user configures the store URL; the SDK manages lifecycle, retries, lag tracking, and error handling.
 
 **What's the same on every provider** (cross-provider parity preserved):
 
@@ -187,9 +195,9 @@ export MULTICLOUDDB_CHANGEFEED_EXTENDEDHISTORY_DYNAMODB_EVENTSTORE=kafka://broke
 - Same `CursorExpiredException` semantics when data is genuinely gone (Cosmos: bounded by ACD retention; Spanner: bounded by `retention_period`; DynamoDB: bounded by event-store retention you configured).
 - Delete events included on all three when delete tracking is enabled (FR-119).
 
-**Capability gating.** Extended history is a capability-gated feature (FR-120). The capability manifest declares `EXTENDED_CHANGE_FEED_HISTORY` as supported on all three providers but with an "infrastructure required" footnote for DynamoDB. Applications that target a provider set lacking extended-history support get a compile-time error per FR-123.
+**Capability gating.** Extended history is a capability-gated feature (FR-120). The capability manifest declares `EXTENDED_CHANGE_FEED_HISTORY` as supported on all three providers, with an "infrastructure required" footnote for DynamoDB. Applications that target a provider set lacking extended-history support get a compile-time error per FR-123.
 
-**Observability when enabled.** Every `readChanges` call that reaches back past 24h logs `WARN extended-history read (provider=<P>, cursorAge=<duration>)` and increments `change_feed.extended_history_reads_total{provider}`. The DynamoDB archiver emits its own metrics: `archiver.events_archived_total`, `archiver.lag_seconds`, `archiver.errors_total`.
+**Observability (v1).** Extended-history reads log `WARN extended-history read (provider=<P>, cursorAge=<duration>)`. The DynamoDB archiver logs `archiver started/stopped`, periodic lag (`archiver lag=<seconds>`), and errors. Structured metrics (Micrometer / OpenTelemetry) arrive in v1.x — see §7.
 
 ---
 
@@ -197,7 +205,7 @@ export MULTICLOUDDB_CHANGEFEED_EXTENDEDHISTORY_DYNAMODB_EVENTSTORE=kafka://broke
 
 ### 4.1 Module layout
 
-The public API sits in `multiclouddb-api`. Per-provider impls bind to the SPI in `multiclouddb-spi`. Optional features ship as separate artifacts to keep the core classpath clean.
+The public API sits in `multiclouddb-api`. Per-provider impls bind to the SPI in `multiclouddb-spi`.
 
 ```mermaid
 flowchart TB
@@ -206,37 +214,27 @@ flowchart TB
         Cur["ChangeFeedCursor<br/>now / fromToken / toToken"]
         Cli["MulticloudDbClient<br/>readChanges + consumerGroupBuilder"]
         Grp["ConsumerGroup + ChangeFeedHandler"]
-        Chk["CheckpointStore"]
         Exn["CursorExpiredException<br/>WrongProviderException<br/>RetentionWindowExceededException"]
     end
     Val["Token validator + extended-history gate"]
-    Coord["Consumer-group coordinator<br/>(partition assignment, rebalance)"]
+    Coord["Consumer-group coordinator<br/>(partition assignment, rebalance, checkpoints)"]
     SPI["multiclouddb-spi<br/>ChangeFeedSpi.readChanges + PartitionDiscoverySpi"]
     subgraph IMPL["Per-provider adapters"]
         direction LR
         Cos["Cosmos<br/>queryChangeFeed + lease docs"]
-        Dyn["DynamoDB<br/>DescribeStream + GetRecords + archiver"]
+        Dyn["DynamoDB<br/>DescribeStream + GetRecords + internal archiver"]
         Spa["Spanner<br/>change-stream TVF + partition tokens"]
-    end
-    subgraph OPT["Optional artifacts"]
-        direction LR
-        Snk["multiclouddb-changefeed-sink<br/>(Kafka, Pub-Sub, custom)"]
-        Otel["multiclouddb-otel<br/>(spans, metrics, W3C propagation)"]
     end
     Cli --> Val
     Val --> SPI
     Grp --> Coord
     Coord --> SPI
-    Coord --> Chk
     SPI --> Cos
     SPI --> Dyn
     SPI --> Spa
-    Grp -.-> Snk
-    Cli -.-> Otel
-    Grp -.-> Otel
 ```
 
-All public types live in `multiclouddb-api`. The SPI seam is the only place per-provider code touches the read path. Provider-specific exception types, dependencies, and partition lifecycle quirks never cross this seam. Sinks and OTel ship as optional artifacts so applications that don't need them don't pay for them.
+All public types live in `multiclouddb-api`. The SPI seam is the only place per-provider code touches the read path. Provider-specific exception types, dependencies, and partition lifecycle quirks never cross this seam.
 
 ### 4.2 How provider differences are hidden
 
@@ -302,7 +300,7 @@ flowchart LR
 
 ## 5. Parallel consumption
 
-This is the production-grade entry point. The SDK ships a portable consumer-group abstraction (FR-109) that handles partition discovery, assignment, rebalancing, and checkpointing for you. App-level patterns from previous design drafts are still available for workloads the consumer group can't satisfy.
+This is the production-grade entry point. The SDK ships a portable consumer-group abstraction (FR-109) that handles partition discovery, assignment, rebalancing, and checkpointing for you. App-level patterns are still available for workloads the consumer group can't satisfy.
 
 > **Process first, then checkpoint.** The consumer group will not advance the checkpoint until `onEvents` returns normally. Throwing from `onEvents` triggers a retry (at-least-once). This is the same property the §5.5 single-thread pattern enforces by hand.
 
@@ -319,7 +317,6 @@ ConsumerGroup group = client.consumerGroupBuilder(addr, "position-updates-v1")
         // No explicit checkpoint call — the SDK checkpoints after onEvents returns normally.
     })
     .assignment(Assignment.dynamic())
-    .checkpointStore(CheckpointStore.sameDatabase())
     .rebalanceTimeout(Duration.ofSeconds(30))
     .build();
 
@@ -339,10 +336,10 @@ group.start();   // blocks; or call on a background thread
 
 | Mode | When to use | Trade-off |
 |---|---|---|
-| `Assignment.dynamic()` (default) | Most workloads; want rebalancing on join/leave | Requires the checkpoint store to support membership coordination — true for `sameDatabase()` and any compliant external impl |
+| `Assignment.dynamic()` (default) | Most workloads; want rebalancing on join/leave | Requires the SDK-managed checkpoint collection (default in v1) |
 | `Assignment.static(partitionIds)` | Deterministic mapping is required; provider lacks dynamic partition discovery; small fixed worker count | No automatic rebalancing on member failure — the failed member's partitions sit idle until it returns |
 
-Dynamic mode is what you want unless you have a specific reason otherwise. Static mode exists primarily as the fallback for "provider doesn't support dynamic partition discovery" (FR-114) — and is documented as such in the capability manifest.
+Dynamic mode is what you want unless you have a specific reason otherwise. Static mode exists primarily as the fallback for "provider doesn't support dynamic partition discovery" (FR-114) — documented as such in the capability manifest.
 
 ### 5.3 Per-provider partition mapping (internal)
 
@@ -351,8 +348,8 @@ The consumer group's coordinator maps to each provider's native primitive (FR-11
 | Provider | Logical partition unit | Discovery | Assignment mechanism |
 |---|---|---|---|
 | **Cosmos DB** | Feed range (physical partition slice) | `container.getFeedRanges()` | Lease docs in a SDK-managed `__leases__` collection — pattern from `ChangeFeedProcessor`, but the user never sees the leases |
-| **DynamoDB** | Shard | `DescribeStream(ShardFilter=CHILD_SHARDS)` | Per-shard ownership records in the checkpoint store; shard close → child shards inherit lineage |
-| **Spanner** | Partition token | In-stream `ChildPartitionsRecord` | Token ownership records in the checkpoint store; merge → dedup by first-claim wins |
+| **DynamoDB** | Shard | `DescribeStream(ShardFilter=CHILD_SHARDS)` | Per-shard ownership records in the SDK-managed checkpoint collection; shard close → child shards inherit lineage |
+| **Spanner** | Partition token | In-stream `ChildPartitionsRecord` | Token ownership records in the SDK-managed checkpoint collection; merge → dedup by first-claim wins |
 
 The application sees `PartitionId` — an opaque, provider-tagged identifier surfaced to `onEvents` so handlers that need per-partition state (caches, queues) can key off it. **No provider-specific shard/range/token types appear on the public surface.**
 
@@ -387,7 +384,7 @@ while (running) {
         cursor = page.nextCursor();
         persist(cursor.toToken());
     } catch (CursorExpiredException e) {
-        cursor = recover(e);   // see §8
+        cursor = recover(e);   // see §6
     }
 }
 ```
@@ -449,98 +446,17 @@ while (running) {
 }
 ```
 
-If you find yourself reaching for this, first check whether the consumer group with a custom `CheckpointStore` over your existing coordination primitive solves the same problem with less code.
-
 ### 5.8 Common pitfalls
 
 - **Don't checkpoint from inside the handler.** The consumer group does it automatically after `onEvents` returns. Manual checkpoints are not part of the v1 surface.
 - **Don't catch and swallow inside `onEvents`.** A clean return tells the SDK "checkpoint this page". If processing failed, throw — the SDK retries.
-- **Downstream idempotency by primary key.** At-least-once is the universal lower bound on all three providers and does not change in v2.
-- **Monitor cursor age client-side.** v1 does not expose it as a metric; OTel (§7) will. Until OTel is wired, stamp `System.currentTimeMillis()` alongside any checkpoint you persist externally.
+- **Downstream idempotency by primary key.** At-least-once is the universal lower bound on all three providers.
+- **Monitor cursor age client-side.** v1 does not expose a structured metric for cursor age — that arrives with OTel in v1.x (§7). Until then, stamp `System.currentTimeMillis()` alongside any checkpoint you persist externally.
 - **Pick `rebalanceTimeout` shorter than your handler's max processing time.** Otherwise the coordinator assumes the handler crashed and reassigns the partition mid-flight, causing the prior owner to find its lease revoked.
 
 ---
 
-## 6. Sinks (optional)
-
-The sink abstraction (FR-144–148, US21) forwards change events to external messaging systems. It ships as the optional `multiclouddb-changefeed-sink` artifact so applications that don't need it don't drag Kafka/Pub-Sub clients onto their classpath.
-
-### 6.1 Interface
-
-```java
-public interface ChangeFeedSink extends AutoCloseable {
-    CompletableFuture<Void> deliver(PartitionId partition, List<ChangeEvent> events);
-}
-```
-
-A sink is "just another handler" — the consumer group dispatches `onEvents` through it before checkpointing:
-
-```java
-ConsumerGroup group = client.consumerGroupBuilder(addr, "cdc-to-kafka")
-    .sink(KafkaSink.builder()
-        .bootstrapServers("broker:9092")
-        .topic("position-updates")
-        .deliveryTimeout(Duration.ofSeconds(10))
-        .build())
-    .build();
-```
-
-When a `sink(...)` is configured, the consumer group routes events through the sink instead of calling a user-supplied handler. You can also combine: `sink(...)` + `handler(...)` runs both; sinks deliver first, then the handler runs locally for projections that need both routes.
-
-### 6.2 Built-in sinks and custom impls
-
-| Sink | Artifact | Notes |
-|---|---|---|
-| `KafkaSink` | `multiclouddb-changefeed-sink-kafka` | Wraps a Kafka producer; keys events by primary key for per-key ordering |
-| `EventHubsSink` | `multiclouddb-changefeed-sink-eventhubs` | Wraps Azure Event Hubs producer client |
-| `PubSubSink` | `multiclouddb-changefeed-sink-pubsub` | Wraps Google Pub/Sub publisher client |
-| Custom | implement `ChangeFeedSink` directly | At-least-once + buffering is your responsibility unless built on the shared `BufferingSinkBase` helper |
-
-### 6.3 Delivery semantics
-
-- **At-least-once** (FR-146). The sink's `deliver` future must complete normally before the consumer group checkpoints. A failed delivery re-delivers the whole page.
-- **Buffering** during transient sink unavailability (FR-146). Built-in sinks include a bounded in-memory buffer with backpressure; full buffer → the consumer group pauses polling for that partition.
-- **Multiple sinks** (FR-147). `.sink(s1).sink(s2)` fans out to both independently; checkpoint waits for all `deliver` futures to complete.
-- **Exactly-once is the destination's job.** The SDK does not guarantee exactly-once to the sink — that requires destination-side dedup (Kafka idempotent producer, Pub/Sub message ordering keys, etc.). Documented in `docs/configuration.md`.
-
-### 6.4 Sink as the DynamoDB extended-history archiver
-
-The DynamoDB archiver from §3.3 is **the same sink mechanism** running internally — a long-running consumer group whose `sink(...)` writes to the configured event store. When you enable `multiclouddb.changeFeed.extendedHistory.dynamodb.eventStore`, the SDK provisions an internal archiver consumer group with the configured destination. No additional user code.
-
----
-
-## 7. Observability via OpenTelemetry (optional)
-
-The OTel integration (FR-149–154, US22) ships as the optional `multiclouddb-otel` artifact. Zero overhead when disabled (FR-153): no span allocation, no metric recording, no context propagation. The integration is **config-only** — no callback hooks on the public API (FR-154).
-
-### 7.1 Enable via configuration
-
-```properties
-multiclouddb.otel.enabled=true
-multiclouddb.otel.endpoint=http://otel-collector:4317
-```
-
-### 7.2 What gets emitted
-
-| Signal | Where | Attributes |
-|---|---|---|
-| `multiclouddb.read_changes` span | Around every `readChanges` call | `provider`, `database`, `collection`, `partition`, `events.count`, `cursor.age_seconds`, status |
-| `multiclouddb.consumer_group.handle` span | Around every `onEvents` invocation | `group`, `partition`, `events.count`, `events.first_timestamp`, `events.last_timestamp`, status |
-| `multiclouddb.sink.deliver` span | Around every sink `deliver` call | `sink.type`, `events.count`, `bytes`, status |
-| Counter `multiclouddb.change_feed.events_processed_total{provider, group}` | After successful checkpoint | — |
-| Counter `multiclouddb.change_feed.handler_errors_total{provider, group, error_type}` | On handler throw | — |
-| Histogram `multiclouddb.change_feed.handler_latency_seconds{provider, group}` | After each `onEvents` | — |
-| Gauge `multiclouddb.change_feed.cursor_age_seconds{provider, group, partition}` | Sampled per poll | — |
-| Counter `multiclouddb.change_feed.extended_history_reads_total{provider}` | Per extended-history call | — |
-| Counter `multiclouddb.change_feed.archiver.events_archived_total{provider}` | Per archived event (DynamoDB only) | — |
-
-### 7.3 W3C Trace Context propagation
-
-If the calling thread has an active OTel context (e.g., the application is handling an incoming HTTP request with a `traceparent` header), the SDK uses that context as the parent for its spans (FR-152). Consumer-group handler invocations create their own root spans (no incoming context) — but if the handler downstream starts further work, those calls inherit from the handler's span.
-
----
-
-## 8. Beyond extended history
+## 6. Beyond extended history
 
 Extended history (§3.3) covers up to provider-side retention: Cosmos ≤ 30d, Spanner up to your `retention_period`, DynamoDB up to the retention of the configured external event store. For workloads that need to reach back further — or that want a non-portable native escape — these are the practical patterns:
 
@@ -556,11 +472,34 @@ Extended history (§3.3) covers up to provider-side retention: Cosmos ≤ 30d, S
 - **Backfill / hydration of a new downstream.** Bootstrap from a snapshot, then attach `now()`. Replaying history is rarely the right tool; backfill is.
 - **Compliance / audit with ≥ days of history.** Enable extended history with delete tracking; on DynamoDB, the external event store *is* your audit archive.
 - **Anticipating long-window replay on DynamoDB beyond what your event store can hold.** Enable Kinesis Data Streams integration *before* the event you want to replay (KDS retention is configurable up to 365d). Provider-native escape, outside the portable SDK.
-- **Reducing time-to-recover.** Checkpoint per page (the consumer group already does); monitor `cursor_age_seconds` (§7) and alert at ~18h.
+- **Reducing time-to-recover.** The consumer group checkpoints per page automatically. Alert at ~18h of cursor age once OTel is wired in v1.x (§7).
 
 ---
 
-## 9. Glossary
+## 7. Spec divergence summary (v1 vs. spec PR #83)
+
+These divergences from spec PR #83 are explicit; each is deferred to a v1.x release rather than rejected outright. The PR review should resolve whether to amend the spec to mark these as v1.x targets or to expand v1 scope to include them.
+
+| Spec item | v1 status | Reason | v1.x target |
+|---|---|---|---|
+| External `CheckpointStore` SPI (FR-157(b)) | Deferred — same-database only in v1 | Public SPI shape is hard to lock in without real-world usage from multiple stores. Same-DB default satisfies the bulk of the FR-156/157 intent. | v1.1 — add `CheckpointStore` interface with at least one external impl (Redis or a dedicated table). |
+| `ChangeFeedSink` abstraction (US21, FR-144–148) | Deferred | The internal DynamoDB archiver (§3.3) covers the most pressing customer need (Kafka archive). A general-purpose sink interface should follow once the archiver shape is proven. A user-side wrapper over `ConsumerGroup` works in the interim. | v1.1 or v1.2 — promote the archiver's sink internals to a public `ChangeFeedSink` interface; ship a `KafkaSink` built-in. |
+| OpenTelemetry integration (US22, FR-149–154) | Deferred | OTel is config-only and additive — it can land in any minor release without changing the public API. v1 ships with structured logs and a small Micrometer counter set instead. | v1.1 — `multiclouddb-otel` optional artifact with the span and metric inventory from spec FR-150/151. |
+
+**What v1 still satisfies from these user stories.**
+
+- FR-156 ✓ (portable checkpoint tokens — already in `toToken`/`fromToken`).
+- FR-157(a) ✓ (default same-database checkpoint store).
+- FR-158 ✓ (consumer group resumes from last checkpoint after restart).
+- FR-159 ✓ (per-partition checkpoints in parallel consumption).
+- FR-155 ✓ (at-least-once delivery).
+- The DynamoDB archival mechanism from FR-118 ✓ (covered by the internal archiver, just not exposed as a public sink).
+
+The remaining gaps (FR-144–148 sinks, FR-149–154 OTel, FR-157(b) external store) are tracked in the v1.x backlog.
+
+---
+
+## 8. Glossary
 
 | Term | Expansion |
 |---|---|
@@ -572,13 +511,13 @@ Extended history (§3.3) covers up to provider-side retention: Cosmos ≤ 30d, S
 | **TVF** | Table-Valued Function — Spanner change streams are queried as TVFs. |
 | **PU** | Processing Unit — Spanner's capacity unit; 1 PU is the minimum for a database. |
 | **KDS** | Kinesis Data Streams — AWS's general-purpose stream service; DynamoDB can optionally tee Streams to KDS for ≤ 365-day retention. |
-| **OTel** | [OpenTelemetry](https://opentelemetry.io/) — the observability standard the SDK integrates with for tracing and metrics. |
 
 ---
 
-## 10. References
+## 9. References
 
-- **Spec**: `specs/001-clouddb-sdk/spec.md` — US14 (parallelism), US15 (extended history), US21 (sinks), US22 (OpenTelemetry), US23 (delivery semantics); FR-109–159; SC-043–054.
+- **Spec**: `specs/001-clouddb-sdk/spec.md` — US14 (parallelism, P0), US15 (extended history, P0); FR-109–120; SC-043–047.
+- **Spec deferrals**: PR #83 US21 (sinks, FR-144–148), US22 (OpenTelemetry, FR-149–154), US23 (external checkpoint store, FR-157(b)) — see §7.
 - **Cosmos DB**
   - [Change feed modes](https://learn.microsoft.com/azure/cosmos-db/nosql/change-feed-modes)
   - [Change feed processor](https://learn.microsoft.com/azure/cosmos-db/nosql/change-feed-processor)
@@ -590,6 +529,3 @@ Extended history (§3.3) covers up to provider-side retention: Cosmos ≤ 30d, S
   - [Change streams](https://cloud.google.com/spanner/docs/change-streams)
   - [Manage change streams](https://cloud.google.com/spanner/docs/change-streams/manage)
   - [Use change streams with Dataflow](https://cloud.google.com/spanner/docs/change-streams/use-dataflow)
-- **OpenTelemetry**
-  - [OTel Java instrumentation guide](https://opentelemetry.io/docs/languages/java/)
-  - [W3C Trace Context spec](https://www.w3.org/TR/trace-context/)
