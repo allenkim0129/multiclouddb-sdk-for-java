@@ -239,18 +239,18 @@ As an application developer, I can specify a read consistency level (e.g., stron
 
 ### User Story 11 - Transparent Large Object (BLOB) Offloading (Priority: P2)
 
-As an application developer, I can store and retrieve binary payloads (serialized objects, protocol buffers, compressed archives) that exceed the SDK's uniform document size limit, and the SDK transparently offloads the oversized payload to provider-appropriate external object storage while maintaining a reference in the database document — so that my application code treats these as normal document fields without awareness of the offloading mechanism.
+As an application developer, I can store and retrieve binary payloads (serialized objects, protocol buffers, compressed archives) that exceed the SDK's uniform document size limit, and the SDK transparently offloads the oversized payload to provider-appropriate external object storage while maintaining a reference in the database document — so that my application code treats these as normal document fields without awareness of the offloading mechanism. Large object handling is enabled by SDK configuration that selects eligible document field paths; no code-level annotations or hooks are required.
 
 **Why this priority**: Applications migrating from Cassandra commonly store large serialized objects inline (e.g., protobuf-encoded aggregated positions, pre-composed cached objects up to 3–4 MB). The SDK's 400 KB uniform document size limit would reject these payloads outright, blocking migration. Transparent offloading enables these workloads without requiring application-level chunking or external storage management code.
 
-**Independent Test**: A sample application stores a 2 MB binary field via the SDK on any supported provider, and reads it back identically. The application code is unchanged between providers — only configuration (storage backend endpoint/credentials) varies.
+**Independent Test**: A sample application stores a 2 MB binary field via the SDK on any supported provider, and reads it back identically. The application code is unchanged between providers — only configuration (including storage backend endpoint/credentials and configured large-object field paths) varies.
 
 **Acceptance Scenarios**:
 
-1. **Given** a document with a field annotated as a large object and a payload of 2 MB, **When** the application upserts the document, **Then** the SDK transparently stores the oversized payload in external object storage and persists a reference in the database document.
+1. **Given** a document with a field selected in configuration for large object handling and a payload of 2 MB, **When** the application upserts the document, **Then** the SDK transparently stores the oversized payload in external object storage and persists a reference in the database document.
 2. **Given** a document with a large object reference stored in the database, **When** the application reads the document, **Then** the SDK transparently retrieves the payload from external storage and returns the complete document to the application with the large object field fully materialized.
 3. **Given** a document with a large object that is deleted from the database, **When** the delete operation completes, **Then** the SDK also removes the corresponding object from external storage (or marks it for deferred cleanup).
-4. **Given** a large object field whose payload is within the SDK's uniform size limit (≤ 400 KB), **When** the document is stored, **Then** the SDK stores it inline in the database document without offloading (no external storage overhead for small payloads).
+4. **Given** a configured large object field whose payload is within the SDK's uniform size limit (≤ 400 KB), **When** the document is stored, **Then** the SDK stores it inline in the database document without offloading (no external storage overhead for small payloads).
 5. **Given** external object storage that is temporarily unavailable, **When** the application attempts to read a document with an offloaded large object, **Then** the SDK returns a clear error indicating the external storage dependency is unavailable.
 
 ---
