@@ -853,7 +853,7 @@ This checklist is used to accept the feature as “done” at the spec level.
 - [ ] Queries specifying a composite key prefix (leading components only) scope efficiently on providers supporting it, and fall back to filtered cross-partition scan on others.
 - [ ] Point operations with incomplete composite key components (missing values) produce a clear validation error.
 - [ ] Composite key component values containing separator characters are safely encoded/decoded without ambiguity.
-- [ ] The existing `Key.of(partitionKey, sortKey)` API continues to work unchanged (backward compatible).
+- [ ] The existing `MulticloudDbKey.of(partitionKey, sortKey)` API continues to work unchanged (backward compatible).
 - [ ] Composite partition key prefix queries are capability-gated and produce a diagnostic warning or error when the provider requires a cross-partition fallback.
 - [ ] The same composite key application code works across Cosmos DB, DynamoDB, and Spanner by changing configuration only.
 
