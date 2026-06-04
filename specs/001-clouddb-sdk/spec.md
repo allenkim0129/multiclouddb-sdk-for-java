@@ -519,8 +519,8 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 
 - **FR-100**: The SDK MUST support composite partition keys consisting of two or more named field values that together define the partition placement of an item.
 - **FR-101**: Composite partition keys MUST be defined via SDK configuration at the collection level, specifying the ordered list of field names that compose the partition key.
-- **FR-102**: The SDK's `Key` abstraction MUST be extended to support composite partition keys: `Key.of(compositePartitionKey, sortKey)` where `compositePartitionKey` can be constructed from multiple named field values (e.g., `CompositeKey.of("tenantId", tenantValue, "entityType", entityValue)`).
-- **FR-103**: Each provider adapter MUST map composite partition keys to the provider's native key model:
+- **FR-102**: Composite partition keys MUST be represented using the SDK's existing `MulticloudDbKey` public type. The key's `components` map MUST contain entries for each configured partition-key field name, and those entries MUST be interpreted in the collection's configured field order when constructing the provider-specific partition key. Any sort-key value MUST continue to be represented using the existing `MulticloudDbKey` fields for sort-key data. For example, a composite partition key for `tenantId` and `entityType` is expressed by a `MulticloudDbKey` whose `components` map includes `tenantId -> tenantValue` and `entityType -> entityValue`.
+- **FR-103**: Each provider adapter MUST map the composite partition key components carried in `MulticloudDbKey` to the provider's native key model:
   - **Cosmos DB**: Map to hierarchical partition keys (available in Cosmos DB v4 SDK) when the collection is configured for hierarchical partitioning, or concatenate with a deterministic separator for single-level partition key collections.
   - **DynamoDB**: Concatenate composite key components into the single partition key attribute value using a deterministic, reversible encoding.
   - **Spanner**: Map composite key components to the leading columns of the primary key (Spanner natively supports multi-column primary keys).
