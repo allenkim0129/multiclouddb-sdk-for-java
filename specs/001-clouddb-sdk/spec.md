@@ -566,7 +566,7 @@ The following operators and functions form the portable query subset, available 
 | Large object offloading (transparent BLOB storage) | Cosmos DB, DynamoDB, Spanner (requires external storage config) |
 | Document chunking (transparent oversized doc splitting) | Cosmos DB, DynamoDB, Spanner |
 | Composite partition keys | Cosmos DB (hierarchical PK), DynamoDB (concatenated), Spanner (multi-column PK) |
-| Composite key prefix queries | Cosmos DB (hierarchical PK), Spanner (multi-column PK) |
+| Efficient composite key prefix scoping | Cosmos DB (hierarchical PK), Spanner (multi-column PK); DynamoDB requires non-efficient fallback query/filtering or capability warning/error per FR-106/FR-107 |
 
 ### Key Entities *(include if feature involves data)*
 
