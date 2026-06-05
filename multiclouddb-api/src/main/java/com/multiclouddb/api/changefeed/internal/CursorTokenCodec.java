@@ -225,12 +225,21 @@ public final class CursorTokenCodec {
             }
         }
 
-        // Client-side age check
-        long ageMillis = nowEpochMillis - issuedAt;
-        if (ageMillis > MAX_TOKEN_AGE_MILLIS) {
-            throw expired(REASON_TOKEN_AGED_OUT,
-                    "token is older than the 24h portable baseline (age=" + ageMillis + "ms)",
-                    null);
+        // Client-side age check.
+        // Skip for unhydrated now() sentinels (anchor=NOW, no resource binding, no
+        // partitions): they have no resumable position to expire — the next read
+        // will hydrate them fresh against the runtime's live tip. This matches
+        // ChangeFeedCursor.isUnhydratedSentinel() and the Javadoc on now().
+        boolean unhydratedSentinel = (anchor == CursorAnchor.NOW)
+                && (resource == null)
+                && partitions.isEmpty();
+        if (!unhydratedSentinel) {
+            long ageMillis = nowEpochMillis - issuedAt;
+            if (ageMillis > MAX_TOKEN_AGE_MILLIS) {
+                throw expired(REASON_TOKEN_AGED_OUT,
+                        "token is older than the 24h portable baseline (age=" + ageMillis + "ms)",
+                        null);
+            }
         }
 
         ProviderId pid;

@@ -79,6 +79,16 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   picking up the children's events.
 - Javadoc on `DynamoChangeFeedReader` now correctly states that `now()`
   hydrates with `LATEST` (it previously said `TRIM_HORIZON`).
+- `readChanges(now())` against a table without DynamoDB Streams enabled now
+  fails fast with `UNSUPPORTED_CAPABILITY` (`reason=stream_not_enabled`)
+  instead of silently hydrating to an empty partition set and returning
+  empty pages indefinitely. Matches the existing `listCursors` behaviour.
+- Change-event payloads now preserve the full DynamoDB type system
+  (`M`/`L`/`SS`/`NS`/nested attributes) by delegating to the shared
+  `DynamoItemMapper.attributeMapToJsonNode(...)` mapper. The previous
+  per-reader mapper fell back to `AttributeValue.toString()` for any value
+  outside `S`/`N`/`BOOL`/`NUL`, which corrupted maps, lists, and number/string
+  sets.
 
 ## [0.1.0-beta.1] — 2026-04-23
 

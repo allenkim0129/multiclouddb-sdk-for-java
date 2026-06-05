@@ -49,6 +49,18 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- `SpannerChangeFeedReader.unwrapOrNull` now resolves the canonical
+  (case-sensitive) struct-field name before calling `row.getStruct(...)`,
+  matching the case-canonical fix already applied to `hasNonNullField`.
+  Some Spanner change-stream TVF columns are returned as upper-case
+  identifiers, and the previous code threw `IllegalArgumentException`
+  whenever the caller's lookup key did not exactly match Spanner's casing.
+- `SpannerChangeFeedReader.parseContinuation` no longer silently falls back
+  to `Timestamp.now()` when a saved continuation fails to parse. A non-empty
+  continuation that cannot be parsed now throws an internal
+  `MalformedContinuation`, which `readChanges` surfaces as
+  `CursorExpiredException` with `reason=MALFORMED`. The legitimate
+  "no continuation yet" (`null` / blank) case still anchors at "now".
 - `hasNonNullField()` in `SpannerChangeFeedReader` no longer mismatches when
   Spanner returns a field name in different case than the lookup key. The
   helper now resolves the canonical field name from

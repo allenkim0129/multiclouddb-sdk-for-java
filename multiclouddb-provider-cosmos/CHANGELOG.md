@@ -58,6 +58,11 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Cosmos `@@PIT:<epoch-millis>` continuation strings with a non-numeric
+  suffix (tampered / corrupted tokens) now surface as
+  `CursorExpiredException` with `reason=MALFORMED` and provider context,
+  instead of bubbling an unchecked `NumberFormatException` out of
+  `readChanges`.
 - **`BETWEEN` translation now wraps in parentheses** (`(c.field BETWEEN @lo AND @hi)`).
   Without the wrapping parens, Cosmos NoSQL's parser greedily binds the
   `BETWEEN`'s inner `AND` together with any trailing logical `AND`, producing

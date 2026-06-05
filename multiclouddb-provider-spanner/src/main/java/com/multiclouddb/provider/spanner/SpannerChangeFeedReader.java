@@ -209,7 +209,16 @@ final class SpannerChangeFeedReader {
         }
 
         String streamName = streamNameFor(address.collection());
-        ContState state = parseContinuation(pos.continuation());
+        ContState state;
+        try {
+            state = parseContinuation(pos.continuation());
+        } catch (MalformedContinuation mc) {
+            throw new CursorExpiredException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.CURSOR_EXPIRED,
+                    mc.getMessage(),
+                    providerId, "readChanges", false,
+                    Map.of("reason", "MALFORMED")), mc);
+        }
         Timestamp end = addMillis(state.startTs, WINDOW_MS);
 
         Statement stmt = Statement.newBuilder(
@@ -308,21 +317,8 @@ final class SpannerChangeFeedReader {
     }
 
     private static boolean hasNonNullField(Struct s, String field) {
-        // Find the canonical name as Spanner returned it (case-insensitive match),
-        // then pass that exact name to isNull(). Spanner's Struct lookup methods are
-        // case-sensitive, so passing a differently-cased name throws
-        // IllegalArgumentException even when the field is present.
-        try {
-            String canonical = s.getType().getStructFields().stream()
-                    .map(f -> f.getName())
-                    .filter(n -> n.equalsIgnoreCase(field))
-                    .findFirst()
-                    .orElse(null);
-            if (canonical == null) return false;
-            return !s.isNull(canonical);
-        } catch (IllegalArgumentException ex) {
-            return false;
-        }
+        String canonical = canonicalField(s, field);
+        return canonical != null && !s.isNull(canonical);
     }
 
     // ── Data change extraction ─────────────────────────────────────────────
@@ -436,12 +432,35 @@ final class SpannerChangeFeedReader {
     }
 
     private static Struct unwrapOrNull(Struct row, String field) {
-        if (hasNonNullField(row, field)) return row.getStruct(field);
-        if (hasNonNullField(row, "ChangeRecord")) {
-            Struct inner = row.getStruct("ChangeRecord");
-            if (hasNonNullField(inner, field)) return inner.getStruct(field);
+        // Same case-canonical lookup as hasNonNullField: Spanner's Struct accessors
+        // are case-sensitive, so we must look up the exact name Spanner returned
+        // rather than the caller's lookup key.
+        String canonical = canonicalField(row, field);
+        if (canonical != null && !row.isNull(canonical)) return row.getStruct(canonical);
+        String wrapper = canonicalField(row, "ChangeRecord");
+        if (wrapper != null && !row.isNull(wrapper)) {
+            Struct inner = row.getStruct(wrapper);
+            String innerName = canonicalField(inner, field);
+            if (innerName != null && !inner.isNull(innerName)) return inner.getStruct(innerName);
         }
         return null;
+    }
+
+    /**
+     * Resolve the actual (case-sensitive) field name Spanner returned for a
+     * case-insensitive lookup key. Returns {@code null} if no field with that
+     * name (under any casing) is present in the struct's type.
+     */
+    private static String canonicalField(Struct s, String field) {
+        try {
+            return s.getType().getStructFields().stream()
+                    .map(f -> f.getName())
+                    .filter(n -> n.equalsIgnoreCase(field))
+                    .findFirst()
+                    .orElse(null);
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
     }
 
     // ── Continuation encoding ──────────────────────────────────────────────
@@ -459,16 +478,33 @@ final class SpannerChangeFeedReader {
         return ts.toString() + "|" + recordSeq;
     }
 
+    /**
+     * Parse a Spanner change-feed continuation. Returns a {@link ContState} starting
+     * from "now" only when the continuation is null/blank (a freshly bootstrapped
+     * cursor with no recorded position). Any non-empty continuation that fails to
+     * parse is surfaced as a {@link MalformedContinuation} — silently falling back
+     * to {@link Timestamp#now()} would skip history and lie about the cursor's
+     * actual position.
+     */
     private static ContState parseContinuation(String c) {
         if (c == null || c.isBlank()) return new ContState(Timestamp.now(), 0L);
         int bar = c.lastIndexOf('|');
-        if (bar < 0) return new ContState(Timestamp.parseTimestamp(c), 0L);
         try {
+            if (bar < 0) return new ContState(Timestamp.parseTimestamp(c), 0L);
             Timestamp ts = Timestamp.parseTimestamp(c.substring(0, bar));
             long seq = Long.parseLong(c.substring(bar + 1));
             return new ContState(ts, seq);
         } catch (RuntimeException e) {
-            return new ContState(Timestamp.now(), 0L);
+            throw new MalformedContinuation(c, e);
+        }
+    }
+
+    /** Marker for a continuation string we could not parse. Caught by readChanges. */
+    private static final class MalformedContinuation extends RuntimeException {
+        final String continuation;
+        MalformedContinuation(String continuation, Throwable cause) {
+            super("malformed Spanner change-feed continuation: " + continuation, cause);
+            this.continuation = continuation;
         }
     }
 

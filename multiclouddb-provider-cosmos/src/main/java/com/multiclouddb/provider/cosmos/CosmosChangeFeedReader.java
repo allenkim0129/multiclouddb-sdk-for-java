@@ -189,8 +189,20 @@ final class CosmosChangeFeedReader {
         CosmosChangeFeedRequestOptions opts;
         String cont = pos.continuation();
         if (cont != null && cont.startsWith(CONT_PIT_PREFIX)) {
-            // Resume from the exact instant captured at mint time.
-            long pitMs = Long.parseLong(cont.substring(CONT_PIT_PREFIX.length()));
+            // Resume from the exact instant captured at mint time. A corrupted /
+            // tampered token (non-numeric suffix) must surface as the portable
+            // CursorExpiredException(MALFORMED) — never as an unchecked
+            // NumberFormatException.
+            long pitMs;
+            try {
+                pitMs = Long.parseLong(cont.substring(CONT_PIT_PREFIX.length()));
+            } catch (NumberFormatException nfe) {
+                throw new CursorExpiredException(new MulticloudDbError(
+                        MulticloudDbErrorCategory.CURSOR_EXPIRED,
+                        "Cosmos cursor has a malformed @@PIT continuation: " + cont,
+                        providerId, "readChanges", false,
+                        Map.of("reason", "MALFORMED")), nfe);
+            }
             opts = CosmosChangeFeedRequestOptions.createForProcessingFromPointInTime(
                     java.time.Instant.ofEpochMilli(pitMs), range);
         } else if (CONT_FROM_NOW.equals(cont) || cont == null) {

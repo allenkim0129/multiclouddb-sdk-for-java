@@ -4,8 +4,6 @@
 package com.multiclouddb.provider.dynamo;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.multiclouddb.api.MulticloudDbClientConfig;
 import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
@@ -85,7 +83,6 @@ import java.util.Map;
 final class DynamoChangeFeedReader {
 
     private static final Logger LOG = LoggerFactory.getLogger(DynamoChangeFeedReader.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final int DEFAULT_PAGE_SIZE = 100;
 
     /** Carried in the partition continuation to indicate "start from TRIM_HORIZON". */
@@ -359,7 +356,21 @@ final class DynamoChangeFeedReader {
 
     private CursorToken hydrateSentinel(DynamoDbClient ddb, ResourceAddress address, String tableName) {
         String streamArn = describeStreamArn(ddb, tableName);
-        List<Shard> shards = streamArn == null ? List.of() : listOpenShards(streamArn);
+        if (streamArn == null) {
+            // Fail fast (and consistent with listCursors): surfacing the
+            // misconfiguration is strictly safer than silently returning empty pages
+            // for the lifetime of the cursor.
+            throw new com.multiclouddb.api.MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    "DynamoDB table '" + tableName
+                            + "' does not have a stream enabled; "
+                            + "set StreamSpecification(NEW_AND_OLD_IMAGES) on the table",
+                    providerId,
+                    "readChanges",
+                    false,
+                    Map.of("table", tableName, "reason", "stream_not_enabled")));
+        }
+        List<Shard> shards = listOpenShards(streamArn);
         List<PartitionPosition> positions = new ArrayList<>();
         for (Shard s : shards) {
             // Eagerly resolve a LATEST iterator (same rationale as listCursors): anchor
@@ -484,7 +495,7 @@ final class DynamoChangeFeedReader {
                         ? rec.dynamodb().oldImage()
                         : rec.dynamodb().newImage())
                 : null;
-        ObjectNode data = imageAttrs != null ? attrMapToJson(imageAttrs) : null;
+        JsonNode data = imageAttrs != null ? DynamoItemMapper.attributeMapToJsonNode(imageAttrs) : null;
 
         return new ChangeEvent(key, type, commitTs, data, eventId);
     }
@@ -494,21 +505,6 @@ final class DynamoChangeFeedReader {
         if (v.s() != null) return v.s();
         if (v.n() != null) return v.n();
         return "";
-    }
-
-    private static ObjectNode attrMapToJson(Map<String, AttributeValue> map) {
-        ObjectNode node = MAPPER.createObjectNode();
-        for (Map.Entry<String, AttributeValue> e : map.entrySet()) {
-            AttributeValue v = e.getValue();
-            if (v.s() != null) node.put(e.getKey(), v.s());
-            else if (v.n() != null) {
-                try { node.put(e.getKey(), Double.parseDouble(v.n())); }
-                catch (NumberFormatException nfe) { node.put(e.getKey(), v.n()); }
-            } else if (v.bool() != null) node.put(e.getKey(), v.bool());
-            else if (Boolean.TRUE.equals(v.nul())) node.putNull(e.getKey());
-            else node.put(e.getKey(), v.toString());
-        }
-        return node;
     }
 
     private static boolean isTrimmed(DynamoDbException e) {

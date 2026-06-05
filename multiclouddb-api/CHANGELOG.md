@@ -49,6 +49,17 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `NOT_FOUND` on a missing key, but it requires a document body and
   **overwrites on hit**, so it is not a safe pure existence probe.
 
+### Fixed
+
+- `CursorTokenCodec.decode` no longer applies the 24-hour client-side age
+  cap to unhydrated `ChangeFeedCursor.now()` sentinels (anchor=NOW with no
+  resource binding and no partition positions). The age check still applies
+  to every hydrated cursor — i.e., every token that represents a real
+  resumable position — but a persisted `now()` sentinel that has not yet
+  been read against any resource has no provider-side position to expire
+  against and is now correctly accepted as a "start from the live tip
+  *now*" instruction.
+
 ## [0.1.0-beta.1] — 2026-04-23
 
 ### Added
