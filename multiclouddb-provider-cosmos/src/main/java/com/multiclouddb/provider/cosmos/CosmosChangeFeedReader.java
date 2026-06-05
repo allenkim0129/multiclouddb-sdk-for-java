@@ -75,6 +75,14 @@ final class CosmosChangeFeedReader {
      * on the first read.
      */
     private static final String CONT_FROM_NOW = "@@FROM_NOW";
+    /**
+     * Continuation prefix anchoring a cursor to a specific point in time, captured at
+     * {@code listCursors()} or {@code now()}-hydrate time. The suffix is an epoch-millis
+     * timestamp. Using a point-in-time anchor (rather than the {@code CONT_FROM_NOW}
+     * sentinel which re-anchors to the moment of the read) prevents silent event loss
+     * for writes that happen between cursor mint and first read.
+     */
+    private static final String CONT_PIT_PREFIX = "@@PIT:";
 
     private final ProviderId providerId;
     private final String avadMode;
@@ -96,8 +104,13 @@ final class CosmosChangeFeedReader {
             }
             List<ChangeFeedCursor> cursors = new ArrayList<>(ranges.size());
             long now = System.currentTimeMillis();
+            String pit = CONT_PIT_PREFIX + now;
             for (FeedRange range : ranges) {
-                PartitionPosition pos = new PartitionPosition(encodeRange(range), CONT_FROM_NOW);
+                // Anchor each range to *this* instant. If we instead used the
+                // CONT_FROM_NOW sentinel here, the first readChanges() would
+                // re-anchor at the moment of the read and silently skip any events
+                // written between listCursors() and the first read.
+                PartitionPosition pos = new PartitionPosition(encodeRange(range), pit);
                 CursorToken token = new CursorToken(
                         providerId, address, now, CursorAnchor.NOW, List.of(pos));
                 cursors.add(new ChangeFeedCursor(token));
@@ -142,10 +155,16 @@ final class CosmosChangeFeedReader {
         FeedRange range = decodeRange(pos.partitionId());
 
         CosmosChangeFeedRequestOptions opts;
-        if (CONT_FROM_NOW.equals(pos.continuation()) || pos.continuation() == null) {
+        String cont = pos.continuation();
+        if (cont != null && cont.startsWith(CONT_PIT_PREFIX)) {
+            // Resume from the exact instant captured at mint time.
+            long pitMs = Long.parseLong(cont.substring(CONT_PIT_PREFIX.length()));
+            opts = CosmosChangeFeedRequestOptions.createForProcessingFromPointInTime(
+                    java.time.Instant.ofEpochMilli(pitMs), range);
+        } else if (CONT_FROM_NOW.equals(cont) || cont == null) {
             opts = CosmosChangeFeedRequestOptions.createForProcessingFromNow(range);
         } else {
-            opts = CosmosChangeFeedRequestOptions.createForProcessingFromContinuation(pos.continuation());
+            opts = CosmosChangeFeedRequestOptions.createForProcessingFromContinuation(cont);
         }
         if (MODE_AVAD.equalsIgnoreCase(avadMode)) {
             opts = opts.allVersionsAndDeletes();

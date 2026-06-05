@@ -69,6 +69,15 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- `now()` cursors no longer silently lose events written between cursor mint
+  and first read. Previously, `listCursors()` and `now()`-hydrate carried a
+  `CONT_FROM_NOW` sentinel; the first `readChanges()` call resolved
+  `createForProcessingFromNow(range)` at *that* moment, so any events written
+  between cursor mint and first read were skipped. The reader now captures
+  `Instant.now()` at cursor-mint time and persists it in a new
+  `@@PIT:<epoch-millis>` continuation; subsequent reads resolve
+  `createForProcessingFromPointInTime(Instant, FeedRange)` against the
+  captured anchor.
 - `CursorExpiredException` thrown from `decodeRange()` (malformed cursor
   partitionId) now carries the active `providerId` instead of `null`, matching
   the surrounding `CursorExpiredException` paths.
