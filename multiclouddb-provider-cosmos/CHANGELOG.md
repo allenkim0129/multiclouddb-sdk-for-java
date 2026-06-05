@@ -73,11 +73,15 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   and first read. Previously, `listCursors()` and `now()`-hydrate carried a
   `CONT_FROM_NOW` sentinel; the first `readChanges()` call resolved
   `createForProcessingFromNow(range)` at *that* moment, so any events written
-  between cursor mint and first read were skipped. The reader now captures
-  `Instant.now()` at cursor-mint time and persists it in a new
-  `@@PIT:<epoch-millis>` continuation; subsequent reads resolve
-  `createForProcessingFromPointInTime(Instant, FeedRange)` against the
-  captured anchor.
+  between cursor mint and first read were skipped. `listCursors()` now eagerly
+  executes a one-shot `createForProcessingFromNow(range)` "warmup" query per
+  feed range to obtain a real Cosmos continuation token at mint time, and
+  persists that token in the cursor. Subsequent reads use
+  `createForProcessingFromContinuation(token)` against the captured bookmark.
+  If the warmup query cannot produce a continuation, the reader falls back to
+  a `@@PIT:<epoch-millis>` timestamp anchor (resolved via
+  `createForProcessingFromPointInTime`); if that path is also unavailable
+  (e.g., older SDK), the legacy `@@FROM_NOW` sentinel still works as before.
 - `CursorExpiredException` thrown from `decodeRange()` (malformed cursor
   partitionId) now carries the active `providerId` instead of `null`, matching
   the surrounding `CursorExpiredException` paths.

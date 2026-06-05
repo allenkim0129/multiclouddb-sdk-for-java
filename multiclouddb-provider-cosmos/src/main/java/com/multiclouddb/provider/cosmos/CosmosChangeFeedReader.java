@@ -95,6 +95,16 @@ final class CosmosChangeFeedReader {
     /**
      * Enumerate the container's feed ranges and mint one {@link ChangeFeedCursor}
      * per range, each positioned at the live tip.
+     * <p>
+     * For each range we eagerly execute a {@link CosmosChangeFeedRequestOptions#createForProcessingFromNow(FeedRange)
+     * createForProcessingFromNow} query and persist the returned continuation
+     * token. This "warmup" round-trip captures a real bookmark at mint time so
+     * that any subsequent {@code readChanges()} resumes from that exact point —
+     * not from a re-anchored {@code FROM_NOW} at read-time, which would silently
+     * skip any events written between cursor mint and first read. If the warmup
+     * fails (network error, no continuation returned), we fall back to a
+     * {@link #CONT_PIT_PREFIX} timestamp anchor, then to the legacy
+     * {@link #CONT_FROM_NOW} sentinel.
      */
     List<ChangeFeedCursor> listCursors(CosmosContainer container, ResourceAddress address) {
         try {
@@ -104,13 +114,9 @@ final class CosmosChangeFeedReader {
             }
             List<ChangeFeedCursor> cursors = new ArrayList<>(ranges.size());
             long now = System.currentTimeMillis();
-            String pit = CONT_PIT_PREFIX + now;
             for (FeedRange range : ranges) {
-                // Anchor each range to *this* instant. If we instead used the
-                // CONT_FROM_NOW sentinel here, the first readChanges() would
-                // re-anchor at the moment of the read and silently skip any events
-                // written between listCursors() and the first read.
-                PartitionPosition pos = new PartitionPosition(encodeRange(range), pit);
+                String continuation = warmupContinuation(container, range, now);
+                PartitionPosition pos = new PartitionPosition(encodeRange(range), continuation);
                 CursorToken token = new CursorToken(
                         providerId, address, now, CursorAnchor.NOW, List.of(pos));
                 cursors.add(new ChangeFeedCursor(token));
@@ -119,6 +125,32 @@ final class CosmosChangeFeedReader {
         } catch (CosmosException e) {
             throw CosmosErrorMapper.map(e, "listCursors");
         }
+    }
+
+    /**
+     * Execute one {@code createForProcessingFromNow(range)} query to obtain a real
+     * Cosmos continuation token that bookmarks the live tip at this instant.
+     * Falls back to a {@link #CONT_PIT_PREFIX} timestamp anchor (then to
+     * {@link #CONT_FROM_NOW}) if the warmup query cannot produce one.
+     */
+    private String warmupContinuation(CosmosContainer container, FeedRange range, long nowMs) {
+        try {
+            CosmosChangeFeedRequestOptions warmup =
+                    CosmosChangeFeedRequestOptions.createForProcessingFromNow(range);
+            if (MODE_AVAD.equalsIgnoreCase(avadMode)) {
+                warmup = warmup.allVersionsAndDeletes();
+            }
+            warmup.setMaxItemCount(1);
+            Iterator<FeedResponse<JsonNode>> it =
+                    container.queryChangeFeed(warmup, JsonNode.class).iterableByPage().iterator();
+            if (it.hasNext()) {
+                String c = it.next().getContinuationToken();
+                if (c != null && !c.isBlank()) return c;
+            }
+        } catch (RuntimeException e) {
+            // Fall through to the timestamp anchor below.
+        }
+        return CONT_PIT_PREFIX + nowMs;
     }
 
     /**
