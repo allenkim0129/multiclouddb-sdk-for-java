@@ -51,6 +51,15 @@ portable API surface and error mapping reference, see
   - [Limiting Results](#limiting-results)
   - [Ordering Results](#ordering-results)
   - [Combining with Native Expressions](#combining-with-native-expressions)
+- [Change Feeds](#change-feeds)
+  - [When to use change feeds](#when-to-use-change-feeds)
+  - [The three primitives](#the-three-primitives)
+  - [Provider provisioning prerequisites](#provider-provisioning-prerequisites)
+  - [Reading a change feed (single-thread)](#reading-a-change-feed-single-thread)
+  - [Persisting cursors across restarts](#persisting-cursors-across-restarts)
+  - [Recovering from an expired cursor](#recovering-from-an-expired-cursor)
+  - [Multi-threaded pattern (one worker per cursor)](#multi-threaded-pattern-one-worker-per-cursor)
+  - [Provider semantics & caveats](#provider-semantics--caveats)
 - [Document TTL (Time-to-Live)](#document-ttl-time-to-live)
   - [Prerequisite: Enable Container-Level TTL](#prerequisite-enable-container-level-ttl)
   - [Writing with TTL](#writing-with-ttl)
@@ -1222,6 +1231,208 @@ QueryRequest q = QueryRequest.builder()
             "ORDER BY c.marketValue DESC")
         .build();
 ```
+
+---
+
+## Change Feeds
+
+Change feeds let you read the **ordered stream of modifications** (`CREATE`,
+`UPDATE`, `DELETE`) to a collection, so downstream systems can react to data
+changes without polling the full collection. The SDK exposes a single portable
+model that works the same across Cosmos DB, DynamoDB Streams, and Spanner
+change streams.
+
+### When to use change feeds
+
+Use the change-feed API when you need to:
+
+- Materialise a downstream view (search index, cache, analytics warehouse)
+  from an authoritative store.
+- Trigger workflows when documents change (notifications, audit pipelines,
+  webhooks).
+- Replicate a subset of data to another system.
+
+Change feeds are **not** a replacement for `query()`. They surface change
+events in commit order, not snapshot semantics; if you need a consistent
+point-in-time read of a whole collection, use `query()`.
+
+### The three primitives
+
+| Type / Method | Purpose |
+|---|---|
+| `ChangeFeedCursor` | An opaque, immutable position in the stream. Encodes a Base64URL-encoded JSON token containing provider id, resource binding (`database/collection`), and per-partition continuations. **Persistable**. |
+| `ChangeFeedCursor.now()` | A provider-agnostic sentinel meaning "the live tip at the time of the next read". The first `readChanges` call hydrates it. |
+| `client.listCursors(address)` | Discovers the current set of provider-side partitions and returns one cursor per partition, each positioned at the live tip. Use this to seed a multi-threaded reader. |
+| `client.readChanges(address, cursor)` | Drains **one page** of events from `cursor` and returns a `ChangeFeedPage` carrying `events`, `nextCursor`, `hasMore`, and `terminal` flags. |
+| `CursorExpiredException` | Thrown when the SDK detects that a cursor can no longer be honoured (provider trimmed events, client-side 24h age cap, malformed/wrong-provider/wrong-resource token). |
+
+Cursors are **opaque to your application**. Persist them as the
+`String` returned by `cursor.toToken()` and restore them with
+`ChangeFeedCursor.fromToken(String)` — do not introspect the token
+structure.
+
+Check capability before you call:
+
+```java
+CapabilitySet caps = client.capabilities();
+if (!caps.isSupported(Capability.CHANGE_FEED)) {
+    throw new IllegalStateException(
+            "Provider " + caps.providerId() + " does not support change feeds");
+}
+```
+
+### Provider provisioning prerequisites
+
+The SDK does **not** auto-provision change-stream infrastructure on
+`provisionSchema()` — you must configure it once per collection so that
+CREATE / UPDATE / DELETE distinctions are preserved.
+
+| Provider | What you must provision | How |
+|---|---|---|
+| **Azure Cosmos DB** | Container created with **All-Versions-and-Deletes (AVAD)** change-feed mode, on an account with **continuous backup** enabled. | Configure container settings in Azure Portal / ARM / Bicep; in SDK, set the connection key `changeFeed.mode=allVersionsAndDeletes`. |
+| **Amazon DynamoDB** | Table stream enabled with `StreamSpecification(NEW_AND_OLD_IMAGES)`. | Enable via `UpdateTable` API or table console. The 24-hour retention is fixed by the service. |
+| **Google Cloud Spanner** | `CREATE CHANGE STREAM <name> FOR <table> OPTIONS (value_capture_type = 'NEW_ROW')` DDL applied to the database. | Run as part of your schema migration. The default stream name resolved by the SDK is `<collection>_changes`; override per collection with the `changeStream.<collection>` connection key. |
+
+Without these, the SDK will either fail with `UNSUPPORTED_CAPABILITY` (Dynamo
+stream not enabled) or silently downgrade event types (Cosmos in LatestVersion
+mode emits everything as `UPDATE` and never surfaces deletes).
+
+### Reading a change feed (single-thread)
+
+```java
+ResourceAddress address = ResourceAddress.of("appdb", "orders");
+
+// Start from the live tip (skip historical events).
+ChangeFeedCursor cursor = ChangeFeedCursor.now();
+
+while (true) {
+    ChangeFeedPage page = client.readChanges(address, cursor);
+
+    for (ChangeEvent ev : page.events()) {
+        System.out.printf("%s %s commitTs=%s%n",
+                ev.changeType(), ev.key(), ev.commitTimestamp());
+        applyDownstream(ev);
+    }
+
+    cursor = page.nextCursor();
+    persist(cursor.toToken()); // save after every successful batch
+
+    if (!page.hasMore()) {
+        // Caught up. Sleep briefly to avoid hot-spinning the provider.
+        Thread.sleep(500);
+    }
+}
+```
+
+### Persisting cursors across restarts
+
+`ChangeFeedCursor` is engineered so a single `String` is the complete state.
+Persist `cursor.toToken()` after **every successful** batch — typically in the
+same transaction as the downstream side-effect to guarantee at-least-once
+delivery:
+
+```java
+String token = cursor.toToken();
+saveTokenToDurableStore(workerId, token);
+
+// On restart:
+ChangeFeedCursor restored = ChangeFeedCursor.fromToken(
+        loadTokenFromDurableStore(workerId));
+```
+
+The token carries:
+
+- The provider id (`cosmos` / `dynamo` / `spanner`).
+- The resource binding (`database/collection`).
+- The per-partition continuation positions.
+- An issued-at timestamp, refreshed every time the SDK returns a `nextCursor`.
+
+If a restored token's issued-at is more than **24 hours** in the past, the
+SDK throws `CursorExpiredException` client-side without contacting the
+provider — see the [recovery guidance](#recovering-from-an-expired-cursor)
+below.
+
+### Recovering from an expired cursor
+
+`CursorExpiredException` is thrown on `readChanges` (or eagerly on
+`ChangeFeedCursor.fromToken` for client-side issues) when the cursor cannot
+be honoured. The reason is exposed in
+`exception.toError().providerDetails().get("reason")`:
+
+| `reason` | Cause | Recovery |
+|---|---|---|
+| `TOKEN_AGED_OUT` | The cursor's issued-at is > 24 h old. | Mint a fresh `ChangeFeedCursor.now()` and accept the gap. |
+| `PROVIDER_TRIMMED` | The provider trimmed events the cursor was about to read (Cosmos 410, Dynamo `TrimmedDataAccessException`, Spanner partition outside retention). | Re-bootstrap with `listCursors()` and accept the gap. |
+| `MALFORMED` / `VERSION_UNSUPPORTED` | Token isn't a valid SDK token, or was minted by a newer codec. | Reject the token and start fresh. |
+| `PROVIDER_MISMATCH` / `RESOURCE_MISMATCH` | Token was minted against a different provider or `database/collection`. | Operator / configuration error — do not silently restart; alert. |
+
+The portable recovery pattern is:
+
+```java
+try {
+    page = client.readChanges(address, cursor);
+} catch (CursorExpiredException e) {
+    String reason = e.toError().providerDetails().getOrDefault("reason", "");
+    if ("PROVIDER_MISMATCH".equals(reason) || "RESOURCE_MISMATCH".equals(reason)) {
+        throw e; // configuration bug — fail loud.
+    }
+    // Best-effort restart at the live tip; downstream will get a gap.
+    LOG.warn("Cursor expired ({}). Restarting from live tip.", reason);
+    cursor = ChangeFeedCursor.now();
+    continue;
+}
+```
+
+### Multi-threaded pattern (one worker per cursor)
+
+For throughput, scale horizontally by dedicating **one worker thread per
+cursor** returned by `listCursors`. Each worker drives its own cursor; the
+SDK does not require coordination between workers.
+
+A complete runnable worker-pool example will ship in a follow-up release. The
+sketch:
+
+```java
+List<ChangeFeedCursor> cursors = client.listCursors(address);
+ExecutorService pool = Executors.newFixedThreadPool(cursors.size());
+for (ChangeFeedCursor seed : cursors) {
+    pool.submit(() -> runWorker(client, address, seed));
+}
+
+// In runWorker:
+ChangeFeedCursor cursor = restoredOr(seed);
+while (!Thread.currentThread().isInterrupted()) {
+    ChangeFeedPage page = client.readChanges(address, cursor);
+    for (ChangeEvent ev : page.events()) apply(ev);
+    cursor = page.nextCursor();
+    persistPerWorker(workerId, cursor.toToken());
+    if (!page.hasMore()) Thread.sleep(500);
+}
+```
+
+Provider-side partition splits and merges are absorbed transparently by the
+SDK: the next cursor's token carries the updated set of partitions, so the
+worker continues without re-listing.
+
+### Provider semantics & caveats
+
+| Concern | Cosmos DB | DynamoDB | Spanner |
+|---|---|---|---|
+| Maximum history horizon | Account retention (7 d default for AVAD with continuous backup) | **24 h fixed** | Stream retention (1–7 d, configured at `CREATE CHANGE STREAM`) |
+| `commitTimestamp` source | `_ts` (second resolution) | `ApproximateCreationDateTime` (sub-second, approximate) | True commit timestamp (microsecond) |
+| Default mode emits `DELETE`? | **No** — only AVAD mode emits deletes | Yes (with `NEW_AND_OLD_IMAGES`) | Yes |
+| CREATE vs UPDATE distinguishable? | Only in AVAD mode | Yes (via `OperationType`) | Yes (via `mod_type`) |
+| Partition discovery cost | Cheap — `getFeedRanges()` is a metadata call | One `DescribeStream` per call | One bootstrap TVF call |
+
+For applications that need history older than 24 h with cross-provider
+portability, plan around the lowest common denominator (DynamoDB Streams)
+or restrict portability claims to the two providers that support longer
+retention. The compatibility matrix in [compatibility.md](compatibility.md)
+calls this out.
+
+`commitTimestamp` is documented as "the provider's authoritative ordering
+timestamp," not necessarily a true commit time. Use it for ordering and
+checkpointing, not as a precise clock reading.
 
 ---
 

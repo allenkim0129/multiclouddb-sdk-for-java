@@ -7,6 +7,26 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added — Change-Feed support
+
+- Change-feed reader backed by Spanner change streams, queried through the
+  TVF `READ_<stream>(start_timestamp, end_timestamp, partition_token,
+  heartbeat_milliseconds)` against a single-use read-only transaction.
+  `listCursors` bootstraps the partition tree by calling the TVF with a
+  `NULL` partition token; `readChanges` drains a bounded 5-second window per
+  call and absorbs `child_partitions_record` rows (splits/merges) by
+  rotating the active partition set.
+- Per-collection stream-name resolution: defaults to `<collection>_changes`;
+  override via the `changeStream.<collection>` connection key.
+- Each `data_change_record.mod` is surfaced as one `ChangeEvent` with a
+  stable `providerEventId` of
+  `<server_transaction_id>:<commit_ts>:<record_sequence>:<mod_index>`.
+- `INVALID_ARGUMENT`, `NOT_FOUND` and `OUT_OF_RANGE` on the TVF call (most
+  commonly a partition token outside the stream's retention window) are
+  mapped to `CursorExpiredException` with `reason=PROVIDER_TRIMMED`.
+- Provisioning requirement: a change stream must exist for the target
+  table — `CREATE CHANGE STREAM <name> FOR <table> OPTIONS (value_capture_type = 'NEW_ROW')`.
+
 ### Documentation
 
 - **`delete()` of a missing key remains a silent no-op (idempotent).** The

@@ -19,6 +19,11 @@ import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
+import com.multiclouddb.api.changefeed.ChangeFeedCursor;
+import com.multiclouddb.api.changefeed.ChangeFeedPage;
+import com.multiclouddb.api.changefeed.CursorExpiredException;
+import com.multiclouddb.api.changefeed.internal.CursorToken;
+import com.multiclouddb.api.changefeed.internal.CursorTokenCodec;
 import com.multiclouddb.api.query.Expression;
 import com.multiclouddb.api.query.ExpressionParseException;
 import com.multiclouddb.api.query.ExpressionParser;
@@ -34,6 +39,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletionException;
@@ -272,6 +278,64 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
     @Override
     public void close() throws Exception {
         providerClient.close();
+    }
+
+    // ── Change Feed ────────────────────────────────────────────────────────────
+
+    @Override
+    public List<ChangeFeedCursor> listCursors(ResourceAddress address) {
+        Objects.requireNonNull(address, "address");
+        checkCapability(Capability.CHANGE_FEED,
+                "Change feed is not supported by provider " + config.provider().id());
+        Instant start = Instant.now();
+        try {
+            List<ChangeFeedCursor> cursors = providerClient.listCursors(address);
+            LOG.debug("listCursors completed: address={}, cursors={}, duration={}ms",
+                    address, cursors.size(), Duration.between(start, Instant.now()).toMillis());
+            return cursors;
+        } catch (MulticloudDbException e) {
+            throw enrichException(e, "listCursors", start);
+        } catch (Exception e) {
+            throw wrapUnexpected(e, "listCursors", start);
+        }
+    }
+
+    @Override
+    public ChangeFeedPage readChanges(ResourceAddress address, ChangeFeedCursor cursor) {
+        return readChanges(address, cursor, OperationOptions.defaults());
+    }
+
+    @Override
+    public ChangeFeedPage readChanges(ResourceAddress address, ChangeFeedCursor cursor,
+                                      OperationOptions options) {
+        Objects.requireNonNull(address, "address");
+        Objects.requireNonNull(cursor, "cursor");
+        Objects.requireNonNull(options, "options");
+        checkCapability(Capability.CHANGE_FEED,
+                "Change feed is not supported by provider " + config.provider().id());
+
+        // Validate cursor binding before touching the provider. An unhydrated
+        // sentinel (now()) is always accepted — the provider hydrates it on first read.
+        CursorToken token = cursor.token();
+        if (!cursor.isUnhydratedSentinel()) {
+            CursorTokenCodec.validateProviderMatch(token, config.provider());
+            CursorTokenCodec.validateResourceMatch(token, address);
+        }
+
+        Instant start = Instant.now();
+        try {
+            ChangeFeedPage page = providerClient.readChanges(address, cursor, options);
+            LOG.debug("readChanges completed: address={}, events={}, hasMore={}, terminal={}, duration={}ms",
+                    address, page.events().size(), page.hasMore(), page.isTerminal(),
+                    Duration.between(start, Instant.now()).toMillis());
+            return page;
+        } catch (MulticloudDbException e) {
+            // enrichException mutates and returns the same instance, so a
+            // CursorExpiredException still surfaces as CursorExpiredException.
+            throw enrichException(e, "readChanges", start);
+        } catch (Exception e) {
+            throw wrapUnexpected(e, "readChanges", start);
+        }
     }
 
     private MulticloudDbException enrichException(MulticloudDbException e, String operation, Instant start) {

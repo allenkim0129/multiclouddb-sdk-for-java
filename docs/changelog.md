@@ -11,6 +11,33 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
+**Added — Change-Feed API (3-primitive cursor model):**
+
+- `com.multiclouddb.api.changefeed` package — new portable change-feed surface
+  comprising `ChangeFeedCursor` (opaque, immutable position;
+  `now()` sentinel + `fromToken`/`toToken` for persistence),
+  `ChangeFeedPage` (events + `nextCursor` + `hasMore`/`terminal`),
+  `ChangeEvent` (key + `ChangeType` + `commitTimestamp` + data +
+  `providerEventId`), `ChangeType` enum (`CREATE`/`UPDATE`/`DELETE`), and
+  `CursorExpiredException`.
+- `MulticloudDbClient.listCursors(ResourceAddress)` — discovers one cursor per
+  provider partition at the live tip.
+- `MulticloudDbClient.readChanges(ResourceAddress, ChangeFeedCursor)` /
+  `readChanges(ResourceAddress, ChangeFeedCursor, OperationOptions)` — drains
+  one page of change events from a cursor and returns a fresh `nextCursor`.
+- `MulticloudDbErrorCategory.CURSOR_EXPIRED` — new well-known category for
+  trimmed / aged-out / mismatched cursors. Provider details key `reason`
+  carries one of `TOKEN_AGED_OUT`, `PROVIDER_TRIMMED`, `MALFORMED`,
+  `VERSION_UNSUPPORTED`, `PROVIDER_MISMATCH`, `RESOURCE_MISMATCH`.
+- SPI: `MulticloudDbProviderClient.listCursors` / `readChanges` default to
+  throwing `UNSUPPORTED_CAPABILITY` so existing adapters compile unchanged.
+- `DefaultMulticloudDbClient` enforces capability-gating, validates the
+  cursor's provider id and resource binding against the call site, and
+  enforces a client-side 24-hour cap on the cursor's last-issued timestamp.
+- Cursor token format documented as opaque, version-tagged
+  (`{"v":1,...}` Base64URL JSON) and stable across SDK versions; the
+  `internal` subpackage holds the codec for provider implementations.
+
 **Documentation:**
 
 - `MulticloudDbClient.delete(...)` is documented as idempotent — silent on
@@ -59,6 +86,21 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## multiclouddb-provider-cosmos
 
 ### [Unreleased]
+
+**Added — Change-Feed support:**
+
+- Pull-mode change-feed reader backed by
+  `CosmosContainer.queryChangeFeed(CosmosChangeFeedRequestOptions, JsonNode.class)`
+  and `CosmosContainer.getFeedRanges()`. `listCursors` mints one cursor per
+  feed range at the live tip; `readChanges` drains one page at a time and
+  refreshes the per-range continuation token.
+- AVAD opt-in via the `changeFeed.mode=allVersionsAndDeletes` connection key.
+  In AVAD mode the reader maps `metadata.operationType` to
+  `CREATE`/`UPDATE`/`DELETE`; in the default LatestVersion mode every event
+  is surfaced as `UPDATE` and deletes are silently absent (Cosmos limitation —
+  documented in [guide.md - Change Feeds](guide.md#change-feeds)).
+- HTTP 410 GONE on `queryChangeFeed` is mapped to
+  `CursorExpiredException` with `reason=PROVIDER_TRIMMED`.
 
 **Added:**
 
@@ -134,6 +176,27 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
+**Added — Change-Feed support:**
+
+- Change-feed reader backed by DynamoDB Streams (`DescribeStream`,
+  `GetShardIterator`, `GetRecords`). `listCursors` returns one cursor per
+  open shard at the live tip; `readChanges` drains one shard's
+  next page per call and absorbs shard splits/closes by re-describing the
+  stream and emitting child shards in the next cursor.
+- Continuation sentinels (`@@TRIM_HORIZON`, `@@LATEST`) preserve the correct
+  `ShardIteratorType` on resume after an empty page.
+- `TrimmedDataAccessException` (records older than the fixed 24-hour
+  Streams retention) is mapped to `CursorExpiredException` with
+  `reason=PROVIDER_TRIMMED`.
+- Provisioning requirement: table must have
+  `StreamSpecification(NEW_AND_OLD_IMAGES)` enabled — `listCursors` returns
+  `UNSUPPORTED_CAPABILITY` with `reason=stream_not_enabled` otherwise. The
+  24-hour Streams retention naturally matches the portable client-side
+  baseline.
+- Note: the AWS SDK v2 ships the Streams client classes inside the main
+  `dynamodb` artifact (`software.amazon.awssdk.services.dynamodb.streams.*`)
+  as of 2.34.x; no separate `dynamodbstreams` artifact is required.
+
 **Changed:**
 
 - `BETWEEN` translation now wraps in parentheses (`(field BETWEEN ? AND ?)`).
@@ -173,6 +236,26 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## multiclouddb-provider-spanner
 
 ### [Unreleased]
+
+**Added — Change-Feed support:**
+
+- Change-feed reader backed by Spanner change streams, queried through the
+  TVF `READ_<stream>(start_timestamp, end_timestamp, partition_token,
+  heartbeat_milliseconds)` against a single-use read-only transaction.
+  `listCursors` bootstraps the partition tree by calling the TVF with a
+  `NULL` partition token; `readChanges` drains a bounded 5-second window per
+  call and absorbs `child_partitions_record` rows (splits/merges) by
+  rotating the active partition set.
+- Per-collection stream-name resolution: defaults to `<collection>_changes`;
+  override via the `changeStream.<collection>` connection key.
+- Each `data_change_record.mod` is surfaced as one `ChangeEvent` with a
+  stable `providerEventId` of
+  `<server_transaction_id>:<commit_ts>:<record_sequence>:<mod_index>`.
+- `INVALID_ARGUMENT`, `NOT_FOUND` and `OUT_OF_RANGE` on the TVF call (most
+  commonly a partition token outside the stream's retention window) are
+  mapped to `CursorExpiredException` with `reason=PROVIDER_TRIMMED`.
+- Provisioning requirement: a change stream must exist for the target table —
+  `CREATE CHANGE STREAM <name> FOR <table> OPTIONS (value_capture_type = 'NEW_ROW')`.
 
 **Changed:**
 

@@ -47,6 +47,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
 
     private final CosmosClient cosmosClient;
     private final MulticloudDbClientConfig config;
+    private final CosmosChangeFeedReader changeFeedReader;
 
 
     /**
@@ -114,6 +115,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         builder.userAgentSuffix(SdkUserAgent.userAgent(config));
 
         this.cosmosClient = builder.buildClient();
+        this.changeFeedReader = new CosmosChangeFeedReader(ProviderId.COSMOS, config.connection());
         LOG.info("Cosmos client created for endpoint: {}", endpoint);
         LOG.info("Cosmos read consistency: {}", readConsistencyOverride != null ? readConsistencyOverride : "account default");
     }
@@ -498,6 +500,24 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     @Override
     public void close() {
         cosmosClient.close();
+    }
+
+    // ── Change Feed ──────────────────────────────────────────────────────────
+
+    @Override
+    public java.util.List<com.multiclouddb.api.changefeed.ChangeFeedCursor> listCursors(
+            ResourceAddress address) {
+        CosmosContainer container = getContainer(address);
+        return changeFeedReader.listCursors(container, address);
+    }
+
+    @Override
+    public com.multiclouddb.api.changefeed.ChangeFeedPage readChanges(
+            ResourceAddress address,
+            com.multiclouddb.api.changefeed.ChangeFeedCursor cursor,
+            OperationOptions options) {
+        CosmosContainer container = getContainer(address);
+        return changeFeedReader.readChanges(container, address, cursor, options);
     }
 
     // ── Provisioning ─────────────────────────────────────────────────────────

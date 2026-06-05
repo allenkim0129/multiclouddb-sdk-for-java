@@ -7,6 +7,27 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added — Change-Feed support
+
+- Change-feed reader backed by DynamoDB Streams (`DescribeStream`,
+  `GetShardIterator`, `GetRecords`). `listCursors` returns one cursor per
+  open shard at the live tip; `readChanges` drains one shard's next page per
+  call and absorbs shard splits/closes by re-describing the stream and
+  emitting child shards in the next cursor.
+- Continuation sentinels (`@@TRIM_HORIZON`, `@@LATEST`) preserve the correct
+  `ShardIteratorType` on resume after an empty page.
+- `TrimmedDataAccessException` (records older than the fixed 24-hour Streams
+  retention) is mapped to `CursorExpiredException` with
+  `reason=PROVIDER_TRIMMED`.
+- Provisioning requirement: table must have
+  `StreamSpecification(NEW_AND_OLD_IMAGES)` enabled — `listCursors` returns
+  `UNSUPPORTED_CAPABILITY` with `reason=stream_not_enabled` otherwise. The
+  24-hour Streams retention naturally matches the portable client-side
+  baseline.
+- AWS SDK v2 (2.34.x) ships the Streams client classes inside the main
+  `dynamodb` artifact at `software.amazon.awssdk.services.dynamodb.streams.*`;
+  no separate `dynamodbstreams` dependency is required.
+
 ### Documentation
 
 - **`delete()` of a missing key remains a silent no-op (idempotent).** The

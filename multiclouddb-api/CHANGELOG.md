@@ -7,6 +7,36 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added — Change-Feed API (3-primitive cursor model)
+
+- **`com.multiclouddb.api.changefeed` package** — new portable change-feed surface
+  comprising `ChangeFeedCursor` (opaque, immutable position;
+  `now()` sentinel + `fromToken`/`toToken` for persistence),
+  `ChangeFeedPage` (events + `nextCursor` + `hasMore`/`terminal`),
+  `ChangeEvent` (key + `ChangeType` + `commitTimestamp` + data +
+  `providerEventId`), `ChangeType` enum (`CREATE`/`UPDATE`/`DELETE`), and
+  `CursorExpiredException`.
+- **`MulticloudDbClient.listCursors(ResourceAddress)`** — discovers one cursor
+  per provider partition at the live tip.
+- **`MulticloudDbClient.readChanges(ResourceAddress, ChangeFeedCursor)`** and
+  the `OperationOptions` overload — drains one page of change events from a
+  cursor and returns a fresh `nextCursor`.
+- **`MulticloudDbErrorCategory.CURSOR_EXPIRED`** — new well-known category for
+  trimmed / aged-out / mismatched cursors. Provider details key `reason`
+  carries one of `TOKEN_AGED_OUT`, `PROVIDER_TRIMMED`, `MALFORMED`,
+  `VERSION_UNSUPPORTED`, `PROVIDER_MISMATCH`, `RESOURCE_MISMATCH`.
+- **SPI**: `MulticloudDbProviderClient.listCursors` / `readChanges` default to
+  throwing `UNSUPPORTED_CAPABILITY` so existing adapters compile unchanged.
+- **`DefaultMulticloudDbClient`** enforces capability-gating, validates the
+  cursor's provider id and resource binding against the call site, and
+  enforces a client-side 24-hour cap on the cursor's last-issued timestamp.
+- Cursor token format documented as opaque, version-tagged (`{"v":1,...}`
+  Base64URL JSON) and stable across SDK versions; the `internal` subpackage
+  holds the codec for provider implementations.
+- 30 new unit tests in `com.multiclouddb.api.changefeed` covering the cursor
+  primitives, page semantics, exception details, and the round-trip /
+  expiry / mismatch / tampering paths of the token codec.
+
 ### Documentation
 
 - **`MulticloudDbClient.delete(...)` is documented as idempotent — silent on

@@ -71,6 +71,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     private final String projectId;
     private final String instanceId;
     private final String databaseId;
+    private final SpannerChangeFeedReader changeFeedReader;
 
     /**
      * Constructs a Cloud Spanner provider client from the supplied configuration.
@@ -110,6 +111,8 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
         this.spanner = builder.build().getService();
         this.databaseClient = spanner.getDatabaseClient(
                 DatabaseId.of(projectId, instanceId, databaseId));
+        this.changeFeedReader = SpannerChangeFeedReader.create(
+                ProviderId.SPANNER, this.databaseClient, config);
         LOG.info("Spanner client created for project={}, instance={}, database={}, emulator={}",
                 projectId, instanceId, databaseId, emulatorHost != null ? emulatorHost : "none");
     }
@@ -500,6 +503,22 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
         if (spanner != null) {
             spanner.close();
         }
+    }
+
+    // ── Change Feed ─────────────────────────────────────────────────────────
+
+    @Override
+    public java.util.List<com.multiclouddb.api.changefeed.ChangeFeedCursor> listCursors(
+            ResourceAddress address) {
+        return changeFeedReader.listCursors(address);
+    }
+
+    @Override
+    public com.multiclouddb.api.changefeed.ChangeFeedPage readChanges(
+            ResourceAddress address,
+            com.multiclouddb.api.changefeed.ChangeFeedCursor cursor,
+            OperationOptions options) {
+        return changeFeedReader.readChanges(address, cursor, options);
     }
 
     // ── Provisioning ────────────────────────────────────────────────────────

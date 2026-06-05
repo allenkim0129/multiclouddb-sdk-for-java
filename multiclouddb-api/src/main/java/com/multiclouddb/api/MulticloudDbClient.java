@@ -3,6 +3,11 @@
 
 package com.multiclouddb.api;
 
+import com.multiclouddb.api.changefeed.ChangeFeedCursor;
+import com.multiclouddb.api.changefeed.ChangeFeedPage;
+import com.multiclouddb.api.changefeed.CursorExpiredException;
+
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -203,6 +208,88 @@ public interface MulticloudDbClient extends AutoCloseable {
      * @throws MulticloudDbException if any database or container creation fails
      */
     void provisionSchema(java.util.Map<String, java.util.List<String>> schema);
+
+    // ── Change Feed ────────────────────────────────────────────────────────────
+    // Portable pull-based change feed across Cosmos, DynamoDB, and Spanner.
+    // See docs/guide.md "Change Feeds" chapter for the multi-thread patterns
+    // these primitives compose into. Three primitives, no inversion of control,
+    // no managed parallelism in v1.
+
+    /**
+     * Discover the current live partitions of the change feed for {@code address}.
+     * <p>
+     * Returns one {@link ChangeFeedCursor} per provider-side partition that exists
+     * <em>at the moment of the call</em>, each positioned at the live tip of its
+     * partition — no events that occurred before {@code listCursors} returns are
+     * surfaced.
+     * <p>
+     * <b>This is the partition-discovery primitive.</b> Distribute the returned
+     * cursors across worker threads / processes for parallel consumption. Re-call
+     * periodically to detect topology changes — new cursors appear after a split,
+     * existing cursors go {@linkplain ChangeFeedPage#isTerminal() terminal} after
+     * a merge.
+     * <p>
+     * Cursors are <em>independent</em> — concurrent {@code readChanges} calls on
+     * different cursors do not interfere. Do not, however, share a single cursor
+     * across threads.
+     *
+     * @param address target database + collection
+     * @return one cursor per partition; never {@code null}, never empty for a
+     *         provider that has provisioned change feed; ordered as the
+     *         provider reports partitions (no portable ordering guarantee).
+     * @throws MulticloudDbException with category
+     *         {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} if the
+     *         provider does not support change feed (see
+     *         {@link Capability#CHANGE_FEED}); other categories for transient or
+     *         permanent provider failures.
+     */
+    List<ChangeFeedCursor> listCursors(ResourceAddress address);
+
+    /**
+     * Read one page of change events from the given cursor.
+     * <p>
+     * Each call returns a {@link ChangeFeedPage} containing zero or more
+     * {@link com.multiclouddb.api.changefeed.ChangeEvent}s plus a forward-only
+     * {@link ChangeFeedPage#nextCursor() nextCursor} that you must use for the
+     * next call. The token encoded inside {@code nextCursor} has a fresh
+     * issued-at timestamp — the client-side 24-hour age clock resets on every
+     * successful page, so a continuously reading worker never observes the
+     * client-side expiry.
+     * <p>
+     * Provider-side topology changes are absorbed transparently inside this
+     * call where the provider supports it — a worker holding a cursor across a
+     * split continues to receive events from <em>all</em> child partitions
+     * through the returned {@code nextCursor}. Re-call {@link #listCursors} to
+     * <em>gain</em> parallelism after a split (the children become distinct
+     * cursors).
+     *
+     * @param address target database + collection (must match the
+     *                cursor's resource binding, if any)
+     * @param cursor  the cursor to read from. For a freshly minted
+     *                {@link ChangeFeedCursor#now()} sentinel, the SDK starts at
+     *                the live tip of {@code address} and binds the returned
+     *                {@code nextCursor} to {@code address}.
+     * @return a page; never {@code null}.
+     * @throws CursorExpiredException if the cursor's token is older than the
+     *         24-hour portable baseline, the provider has trimmed the cursor's
+     *         events, or the cursor was minted for a different provider or
+     *         resource.
+     * @throws MulticloudDbException with category
+     *         {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} if the
+     *         provider does not support change feed; other categories for
+     *         transient or permanent provider failures.
+     */
+    ChangeFeedPage readChanges(ResourceAddress address, ChangeFeedCursor cursor);
+
+    /**
+     * Read one page of change events using the supplied operation options.
+     * <p>
+     * Provider implementations may honour {@link OperationOptions#timeout()}
+     * as a per-page upper bound; other fields are typically ignored by the
+     * change-feed path.
+     */
+    ChangeFeedPage readChanges(ResourceAddress address, ChangeFeedCursor cursor,
+                               OperationOptions options);
 
     /**
      * Get the provider ID for this client.

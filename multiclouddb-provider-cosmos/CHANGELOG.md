@@ -7,6 +7,21 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added — Change-Feed support
+
+- Pull-mode change-feed reader backed by
+  `CosmosContainer.queryChangeFeed(CosmosChangeFeedRequestOptions, JsonNode.class)`
+  and `CosmosContainer.getFeedRanges()`. `listCursors` mints one cursor per
+  feed range at the live tip; `readChanges` drains one page at a time and
+  refreshes the per-range continuation token.
+- AVAD opt-in via the `changeFeed.mode=allVersionsAndDeletes` connection key.
+  In AVAD mode the reader maps `metadata.operationType` to
+  `CREATE`/`UPDATE`/`DELETE`; in the default LatestVersion mode every event
+  is surfaced as `UPDATE` and deletes are silently absent (Cosmos limitation —
+  documented in [guide.md - Change Feeds](../docs/guide.md#change-feeds)).
+- HTTP 410 GONE on `queryChangeFeed` is mapped to
+  `CursorExpiredException` with `reason=PROVIDER_TRIMMED`.
+
 ### Documentation
 
 - **`delete()` of a missing key remains a silent no-op (idempotent).** The

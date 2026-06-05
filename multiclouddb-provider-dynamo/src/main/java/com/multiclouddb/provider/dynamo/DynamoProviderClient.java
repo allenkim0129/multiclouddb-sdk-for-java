@@ -87,6 +87,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
 
     private final MulticloudDbClientConfig config;
     private final DynamoDbClient dynamoClient;
+    private final DynamoChangeFeedReader changeFeedReader;
 
     /**
      * Constructs a DynamoDB provider client from the supplied configuration.
@@ -138,6 +139,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         }
 
         this.dynamoClient = builder.build();
+        this.changeFeedReader = DynamoChangeFeedReader.create(ProviderId.DYNAMO, config);
         LOG.info("DynamoDB client created for region: {}, endpoint: {}", region,
                 endpoint != null ? endpoint : "default");
     }
@@ -145,6 +147,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     /** Package-private constructor for testing — injects a pre-configured {@link DynamoDbClient}. */
     DynamoProviderClient(DynamoDbClient dynamoClient) {
         this.dynamoClient = dynamoClient;
+        this.changeFeedReader = null;
         this.config = MulticloudDbClientConfig.builder()
                 .provider(com.multiclouddb.api.ProviderId.DYNAMO)
                 .build();
@@ -915,6 +918,35 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     @Override
     public void close() {
         dynamoClient.close();
+        if (changeFeedReader != null) changeFeedReader.close();
+    }
+
+    // ── Change Feed ─────────────────────────────────────────────────────────
+
+    @Override
+    public java.util.List<com.multiclouddb.api.changefeed.ChangeFeedCursor> listCursors(
+            ResourceAddress address) {
+        if (changeFeedReader == null) {
+            throw new com.multiclouddb.api.MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    "Change feed reader not initialized (test-only constructor)",
+                    ProviderId.DYNAMO, "listCursors", false, java.util.Map.of()));
+        }
+        return changeFeedReader.listCursors(dynamoClient, address, resolveTableName(address));
+    }
+
+    @Override
+    public com.multiclouddb.api.changefeed.ChangeFeedPage readChanges(
+            ResourceAddress address,
+            com.multiclouddb.api.changefeed.ChangeFeedCursor cursor,
+            OperationOptions options) {
+        if (changeFeedReader == null) {
+            throw new com.multiclouddb.api.MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    "Change feed reader not initialized (test-only constructor)",
+                    ProviderId.DYNAMO, "readChanges", false, java.util.Map.of()));
+        }
+        return changeFeedReader.readChanges(dynamoClient, address, resolveTableName(address), cursor, options);
     }
 
     // ── Provisioning ────────────────────────────────────────────────────────

@@ -65,7 +65,7 @@ QueryPage page = client.query(address, query);
 | **Transactions** | Multi-document transactional operations |
 | **Batch operations** | Batch read/write for throughput efficiency |
 | **Strong consistency** | Strongly-consistent reads |
-| **Change feed** | Change feed / change streams |
+| **Change feed** | Change feed / change streams — see [guide.md - Change Feeds](guide.md#change-feeds) |
 
 ### Diagnostics & Error Handling
 
@@ -94,6 +94,7 @@ The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 | `TRANSIENT_FAILURE`  | HTTP 449, 500, 502, 503  | HTTP 500–5xx  | UNAVAILABLE  |
 | `PERMANENT_FAILURE`  | -  | ItemCollectionSizeLimitExceededException  | -  |
 | `UNSUPPORTED_CAPABILITY`  | -  | -  | UNIMPLEMENTED  |
+| `CURSOR_EXPIRED` (change-feed) | HTTP 410 GONE  | `TrimmedDataAccessException`  | `INVALID_ARGUMENT` / `OUT_OF_RANGE` (partition outside retention)  |
 | `PROVIDER_ERROR`  | Other  | Other  | INTERNAL, Other  |
 
 > ¹ DynamoDB uses `ConditionalCheckFailedException` for both the 409 (duplicate-key on `create`) and 412
