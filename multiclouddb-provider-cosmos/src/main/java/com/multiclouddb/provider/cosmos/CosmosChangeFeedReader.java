@@ -254,14 +254,14 @@ final class CosmosChangeFeedReader {
         return range.toString();
     }
 
-    private static FeedRange decodeRange(String partitionId) {
+    private FeedRange decodeRange(String partitionId) {
         try {
             return FeedRange.fromString(partitionId);
         } catch (Exception e) {
             throw new CursorExpiredException(new MulticloudDbError(
                     MulticloudDbErrorCategory.CURSOR_EXPIRED,
                     "Unable to decode Cosmos FeedRange from cursor partitionId: " + partitionId,
-                    null,
+                    providerId,
                     "readChanges",
                     false,
                     Map.of("reason", "MALFORMED")), e);

@@ -59,9 +59,12 @@ import java.util.Map;
  * <ul>
  *   <li>{@link DescribeStreamRequest} → enumerate open shards on the table's
  *       latest stream (one cursor per shard).</li>
- *   <li>{@link GetShardIteratorRequest} ({@link ShardIteratorType#TRIM_HORIZON}
- *       for the {@code now()} sentinel hydrate, {@link ShardIteratorType#AFTER_SEQUENCE_NUMBER}
- *       on resume) → derive a per-shard iterator.</li>
+ *   <li>{@link GetShardIteratorRequest} ({@link ShardIteratorType#LATEST}
+ *       for the {@code now()} sentinel hydrate, {@link ShardIteratorType#TRIM_HORIZON}
+ *       for child-shard absorption, {@link ShardIteratorType#AFTER_SEQUENCE_NUMBER}
+ *       on sequence-numbered resume, or a persisted iterator string for
+ *       {@code LATEST} resumes that have yet to see their first record) → derive a
+ *       per-shard iterator.</li>
  *   <li>{@link GetRecordsRequest} → drain one page of records per
  *       {@link #readChanges} call.</li>
  *   <li>Shard splits / closes are absorbed by re-{@link DescribeStreamRequest
@@ -89,6 +92,18 @@ final class DynamoChangeFeedReader {
     static final String ANCHOR_BEGINNING = "@@TRIM_HORIZON";
     /** Carried in the partition continuation to indicate "start from LATEST". */
     static final String ANCHOR_NOW = "@@LATEST";
+    /**
+     * Carried in the partition continuation when a {@code now()}-anchored read returned
+     * zero records. The suffix is a DynamoDB Streams shard iterator string returned by
+     * the previous {@code GetRecords} call. Persisting the iterator (rather than
+     * re-resolving {@code LATEST} on the next read) prevents silent event loss in the
+     * window between two reads. DynamoDB Streams shard iterators expire after ~5 minutes
+     * of inactivity; if no records arrive within that window the next read will surface
+     * {@link com.multiclouddb.api.changefeed.CursorExpiredException} with reason
+     * {@code ITERATOR_EXPIRED} and the caller must re-bootstrap via
+     * {@code listCursors()}.
+     */
+    static final String ANCHOR_ITER_PREFIX = "@@ITER:";
 
     private final ProviderId providerId;
     private final DynamoDbStreamsClient streamsClient;
@@ -145,11 +160,39 @@ final class DynamoChangeFeedReader {
             return cursors;
         }
         for (Shard shard : shards) {
-            PartitionPosition pos = new PartitionPosition(streamArn + "::" + shard.shardId(), ANCHOR_NOW);
+            // Eagerly resolve a LATEST iterator at mint time and persist it.
+            // If we instead carried ANCHOR_NOW here, the next readChanges() would
+            // resolve GetShardIterator(LATEST) at *that* moment, silently skipping
+            // events written between listCursors() and the first read.
+            String iter = resolveLatestIteratorOrAnchor(streamArn, shard.shardId());
+            PartitionPosition pos = new PartitionPosition(streamArn + "::" + shard.shardId(), iter);
             CursorToken token = new CursorToken(providerId, address, now, CursorAnchor.NOW, List.of(pos));
             cursors.add(new ChangeFeedCursor(token));
         }
         return cursors;
+    }
+
+    /**
+     * Resolve a {@link ShardIteratorType#LATEST} iterator string and wrap it in the
+     * {@link #ANCHOR_ITER_PREFIX} envelope. Returns {@link #ANCHOR_NOW} as a fallback
+     * if the iterator cannot be resolved (shard transition mid-call) — the next read
+     * will retry resolution.
+     */
+    private String resolveLatestIteratorOrAnchor(String streamArn, String shardId) {
+        try {
+            GetShardIteratorResponse resp = streamsClient.getShardIterator(
+                    GetShardIteratorRequest.builder()
+                            .streamArn(streamArn)
+                            .shardId(shardId)
+                            .shardIteratorType(ShardIteratorType.LATEST)
+                            .build());
+            String iter = resp.shardIterator();
+            return iter != null ? ANCHOR_ITER_PREFIX + iter : ANCHOR_NOW;
+        } catch (DynamoDbException e) {
+            LOG.debug("dynamo.changefeed: eager LATEST iterator resolution failed for "
+                    + "stream={} shard={} — falling back to lazy ANCHOR_NOW", streamArn, shardId, e);
+            return ANCHOR_NOW;
+        }
     }
 
     /**
@@ -190,7 +233,8 @@ final class DynamoChangeFeedReader {
             }
             List<PartitionPosition> newPositions = new ArrayList<>();
             for (Shard s : shards) {
-                newPositions.add(new PartitionPosition(streamArn + "::" + s.shardId(), ANCHOR_NOW));
+                String iter = resolveLatestIteratorOrAnchor(streamArn, s.shardId());
+                newPositions.add(new PartitionPosition(streamArn + "::" + s.shardId(), iter));
             }
             CursorToken next = token.withPartitions(newPositions, System.currentTimeMillis());
             return new ChangeFeedPage(List.of(), new ChangeFeedCursor(next), true, false);
@@ -207,7 +251,7 @@ final class DynamoChangeFeedReader {
                     providerId, "readChanges", false,
                     Map.of("reason", "PROVIDER_TRIMMED")), e);
         } catch (DynamoDbException e) {
-            throw mapStreamsException(e, "readChanges");
+            throw maybeExpiredIterator(e, "readChanges");
         }
         if (iterator == null) {
             // Shard is closed and we are at its end — re-describe stream to find children.
@@ -238,11 +282,21 @@ final class DynamoChangeFeedReader {
                                 : token.withPartitions(positions, System.currentTimeMillis()),
                         positions, streamArn, shardId, events);
             }
-            // Continuation = "<lastSeq>" or "<ANCHOR_NOW>" if no records consumed yet.
+            // Continuation strategy:
+            //   - We saw records: use the last sequence number (AFTER_SEQUENCE_NUMBER on resume).
+            //   - Zero records, anchored to a sequence number already: keep the same sequence
+            //     number (AFTER_SEQUENCE_NUMBER on resume is idempotent).
+            //   - Zero records, anchored to ANCHOR_NOW (LATEST) or ANCHOR_ITER (a previously
+            //     persisted iterator): persist the next iterator returned by GetRecords so the
+            //     next read continues from exactly where this one left off. Re-resolving
+            //     LATEST on every read would silently lose events that arrived between reads.
             if (lastSeq != null) {
                 newContinuation = lastSeq;
+            } else if (ANCHOR_NOW.equals(pos.continuation())
+                    || (pos.continuation() != null
+                            && pos.continuation().startsWith(ANCHOR_ITER_PREFIX))) {
+                newContinuation = ANCHOR_ITER_PREFIX + nextIter;
             } else {
-                // No records — keep the anchor (so next read uses the same iterator type).
                 newContinuation = pos.continuation();
             }
             positions.set(0, new PartitionPosition(pos.partitionId(), newContinuation));
@@ -256,8 +310,37 @@ final class DynamoChangeFeedReader {
                     providerId, "readChanges", false,
                     Map.of("reason", "PROVIDER_TRIMMED")), e);
         } catch (DynamoDbException e) {
-            throw mapStreamsException(e, "readChanges");
+            throw maybeExpiredIterator(e, "readChanges");
         }
+    }
+
+    private com.multiclouddb.api.MulticloudDbException maybeExpiredIterator(
+            DynamoDbException e, String operation) {
+        // ExpiredIteratorException surfaces when a persisted shard iterator
+        // (typically from an ANCHOR_ITER continuation) has aged past the ~5-minute
+        // iterator-lifetime window. Map it to CursorExpiredException so callers can
+        // re-bootstrap with listCursors().
+        String code = e.awsErrorDetails() != null ? e.awsErrorDetails().errorCode() : null;
+        if ("ExpiredIteratorException".equals(code)) {
+            return new CursorExpiredException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.CURSOR_EXPIRED,
+                    "DynamoDB Streams shard iterator has expired (5-minute inactivity window). "
+                            + "Re-bootstrap by calling listCursors().",
+                    providerId, operation, false,
+                    Map.of("reason", "ITERATOR_EXPIRED")), e);
+        }
+        // Defensive: if the SDK ever delivers a Trimmed exception as a generic
+        // DynamoDbException with the errorCode set instead of a typed
+        // TrimmedDataAccessException, surface it the same way the typed-catch does.
+        if (isTrimmed(e)) {
+            return new CursorExpiredException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.CURSOR_EXPIRED,
+                    "DynamoDB Streams returned TrimmedDataAccessException; the cursor's "
+                            + "records are older than the 24h stream retention",
+                    providerId, operation, false,
+                    Map.of("reason", "PROVIDER_TRIMMED")), e);
+        }
+        return mapStreamsException(e, operation);
     }
 
     private static com.multiclouddb.api.MulticloudDbException mapStreamsException(
@@ -279,7 +362,10 @@ final class DynamoChangeFeedReader {
         List<Shard> shards = streamArn == null ? List.of() : listOpenShards(streamArn);
         List<PartitionPosition> positions = new ArrayList<>();
         for (Shard s : shards) {
-            positions.add(new PartitionPosition(streamArn + "::" + s.shardId(), ANCHOR_NOW));
+            // Eagerly resolve a LATEST iterator (same rationale as listCursors): anchor
+            // the cursor at the stream tip *now*, not at first-read time.
+            String iter = resolveLatestIteratorOrAnchor(streamArn, s.shardId());
+            positions.add(new PartitionPosition(streamArn + "::" + s.shardId(), iter));
         }
         return new CursorToken(providerId, address, System.currentTimeMillis(),
                 CursorAnchor.NOW, positions);
@@ -306,11 +392,18 @@ final class DynamoChangeFeedReader {
         CursorToken next = terminal
                 ? token.withIssuedAt(System.currentTimeMillis())
                 : token.withPartitions(updated, System.currentTimeMillis());
+        // hasMore must be true whenever child shards exist (regardless of whether we
+        // drained events on this call) so callers immediately keep reading from them.
         return new ChangeFeedPage(drainedEvents, new ChangeFeedCursor(next),
-                !drainedEvents.isEmpty() && !terminal, terminal);
+                !terminal, terminal);
     }
 
     private String resolveShardIterator(String streamArn, String shardId, String continuation) {
+        // A previously persisted iterator (from an earlier zero-record page off
+        // ANCHOR_NOW). Use it directly — no GetShardIterator round-trip needed.
+        if (continuation != null && continuation.startsWith(ANCHOR_ITER_PREFIX)) {
+            return continuation.substring(ANCHOR_ITER_PREFIX.length());
+        }
         GetShardIteratorRequest.Builder req = GetShardIteratorRequest.builder()
                 .streamArn(streamArn)
                 .shardId(shardId);

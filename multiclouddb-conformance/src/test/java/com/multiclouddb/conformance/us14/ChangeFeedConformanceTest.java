@@ -58,6 +58,21 @@ public abstract class ChangeFeedConformanceTest {
     protected abstract ResourceAddress getAddress();
 
     /**
+     * Whether the provider configuration under test surfaces the full
+     * CREATE / UPDATE / DELETE distinction.
+     * <p>
+     * Some provider configurations (notably Cosmos in the default LatestVersion
+     * change-feed mode, without AVAD) emit every write as {@link ChangeType#UPDATE}
+     * and do not surface delete events at all. Subclasses targeting such a
+     * configuration override this to {@code false}; tests that depend on the
+     * distinction ({@code FR-cf-003} CREATE and {@code FR-cf-005} DELETE) skip
+     * via {@link Assumptions#assumeTrue(boolean, String)}.
+     */
+    protected boolean supportsCreateUpdateDeleteDistinction() {
+        return true;
+    }
+
+    /**
      * How long to wait between a write and the corresponding event surfacing on
      * the change feed. Providers with eventual / lag-prone delivery should override
      * (Cosmos &lt; 5s, Dynamo &lt; 10s, Spanner &lt; 5s typically).
@@ -117,6 +132,9 @@ public abstract class ChangeFeedConformanceTest {
     @Order(3)
     @DisplayName("FR-cf-003: CREATE event surfaces after upsert of a new key")
     void createEventSurfacesAfterUpsert() throws Exception {
+        Assumptions.assumeTrue(supportsCreateUpdateDeleteDistinction(),
+                "Provider configuration under test does not surface the "
+                        + "CREATE/UPDATE distinction (e.g., Cosmos LatestVersion mode)");
         ChangeFeedCursor[] cursors = client.listCursors(getAddress()).toArray(new ChangeFeedCursor[0]);
         MulticloudDbKey key = ConformanceHarness.uniqueKey("cf-create");
         try {
@@ -155,6 +173,9 @@ public abstract class ChangeFeedConformanceTest {
     @Order(5)
     @DisplayName("FR-cf-005: DELETE event surfaces after delete")
     void deleteEventSurfacesAfterDelete() throws Exception {
+        Assumptions.assumeTrue(supportsCreateUpdateDeleteDistinction(),
+                "Provider configuration under test does not surface DELETE events "
+                        + "(e.g., Cosmos LatestVersion mode)");
         MulticloudDbKey key = ConformanceHarness.uniqueKey("cf-delete");
         client.upsert(getAddress(), key, Map.of("v", 1));
         ChangeFeedCursor[] cursors = client.listCursors(getAddress()).toArray(new ChangeFeedCursor[0]);

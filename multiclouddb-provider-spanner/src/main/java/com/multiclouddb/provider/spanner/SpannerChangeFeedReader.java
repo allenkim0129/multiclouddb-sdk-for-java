@@ -308,10 +308,18 @@ final class SpannerChangeFeedReader {
     }
 
     private static boolean hasNonNullField(Struct s, String field) {
+        // Find the canonical name as Spanner returned it (case-insensitive match),
+        // then pass that exact name to isNull(). Spanner's Struct lookup methods are
+        // case-sensitive, so passing a differently-cased name throws
+        // IllegalArgumentException even when the field is present.
         try {
-            return s.getType().getStructFields().stream()
-                    .anyMatch(f -> f.getName().equalsIgnoreCase(field))
-                    && !s.isNull(field);
+            String canonical = s.getType().getStructFields().stream()
+                    .map(f -> f.getName())
+                    .filter(n -> n.equalsIgnoreCase(field))
+                    .findFirst()
+                    .orElse(null);
+            if (canonical == null) return false;
+            return !s.isNull(canonical);
         } catch (IllegalArgumentException ex) {
             return false;
         }

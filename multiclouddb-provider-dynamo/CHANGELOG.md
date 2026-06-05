@@ -48,6 +48,38 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   not a correctness fix on Dynamo — purely a consistency improvement. The
   output of `TranslatedQuery.whereClause()` is now parenthesised.
 
+### Fixed
+
+- `now()` cursors no longer silently lose events between mint and first
+  read, or between successive reads. Previously, `listCursors()` /
+  `ChangeFeedCursor.now()` carried an `ANCHOR_NOW` sentinel; the iterator
+  was only resolved (`GetShardIterator(LATEST)`) at the first `readChanges()`
+  call, so any events written in the window between mint and first read were
+  silently skipped. Likewise, a `readChanges()` that returned zero records
+  kept the `ANCHOR_NOW` sentinel — the next call re-resolved LATEST and
+  advanced past any events that arrived in the meantime. The reader now:
+  - Eagerly resolves a LATEST iterator at `listCursors()` / `now()`-hydrate
+    time and persists it in a new `@@ITER:<iterator>` continuation.
+  - When a subsequent `readChanges()` returns zero records, persists the
+    `nextShardIterator` returned by `GetRecords` in the same `@@ITER:`
+    continuation so the next call resumes from exactly where this one left off.
+  - When the first record is observed, transitions to a sequence-number
+    (`AFTER_SEQUENCE_NUMBER`) continuation, which is good for the full
+    24-hour stream-retention window.
+
+  DynamoDB Streams iterators expire after ~5 minutes of inactivity; if no
+  records have arrived and the iterator has expired by the next read, the
+  call surfaces `CursorExpiredException` with `reason=ITERATOR_EXPIRED`
+  and the caller must re-bootstrap via `listCursors()`. This caveat only
+  applies to cursors that have not yet observed their first record.
+- `absorbClosedShard()` now reports `hasMore=true` whenever child shards
+  exist, regardless of whether the call drained events. Previously the flag
+  was tied to "drained at least one event AND has children", so callers that
+  observed only the child-shard transition would stop draining instead of
+  picking up the children's events.
+- Javadoc on `DynamoChangeFeedReader` now correctly states that `now()`
+  hydrates with `LATEST` (it previously said `TRIM_HORIZON`).
+
 ## [0.1.0-beta.1] — 2026-04-23
 
 ### Added

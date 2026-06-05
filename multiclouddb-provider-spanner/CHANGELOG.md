@@ -47,6 +47,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   not a correctness fix on Spanner — purely a consistency improvement. The
   output of `TranslatedQuery.whereClause()` is now parenthesised.
 
+### Fixed
+
+- `hasNonNullField()` in `SpannerChangeFeedReader` no longer mismatches when
+  Spanner returns a field name in different case than the lookup key. The
+  helper now resolves the canonical field name from
+  `getType().getStructFields()` (case-insensitive) and passes that exact name
+  to `Struct.isNull()`, which is case-sensitive.
+
 ## [0.1.0-beta.1] — 2026-04-23
 
 ### Added

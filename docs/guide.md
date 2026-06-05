@@ -1277,7 +1277,7 @@ Check capability before you call:
 CapabilitySet caps = client.capabilities();
 if (!caps.isSupported(Capability.CHANGE_FEED)) {
     throw new IllegalStateException(
-            "Provider " + caps.providerId() + " does not support change feeds");
+            "Provider " + client.providerId() + " does not support change feeds");
 }
 ```
 
@@ -1300,7 +1300,7 @@ mode emits everything as `UPDATE` and never surfaces deletes).
 ### Reading a change feed (single-thread)
 
 ```java
-ResourceAddress address = ResourceAddress.of("appdb", "orders");
+ResourceAddress address = new ResourceAddress("appdb", "orders");
 
 // Start from the live tip (skip historical events).
 ChangeFeedCursor cursor = ChangeFeedCursor.now();
@@ -1310,7 +1310,7 @@ while (true) {
 
     for (ChangeEvent ev : page.events()) {
         System.out.printf("%s %s commitTs=%s%n",
-                ev.changeType(), ev.key(), ev.commitTimestamp());
+                ev.type(), ev.key(), ev.commitTimestamp());
         applyDownstream(ev);
     }
 
@@ -1357,7 +1357,7 @@ below.
 `CursorExpiredException` is thrown on `readChanges` (or eagerly on
 `ChangeFeedCursor.fromToken` for client-side issues) when the cursor cannot
 be honoured. The reason is exposed in
-`exception.toError().providerDetails().get("reason")`:
+`exception.error().providerDetails().get("reason")`:
 
 | `reason` | Cause | Recovery |
 |---|---|---|
@@ -1372,7 +1372,7 @@ The portable recovery pattern is:
 try {
     page = client.readChanges(address, cursor);
 } catch (CursorExpiredException e) {
-    String reason = e.toError().providerDetails().getOrDefault("reason", "");
+    String reason = e.error().providerDetails().getOrDefault("reason", "");
     if ("PROVIDER_MISMATCH".equals(reason) || "RESOURCE_MISMATCH".equals(reason)) {
         throw e; // configuration bug — fail loud.
     }

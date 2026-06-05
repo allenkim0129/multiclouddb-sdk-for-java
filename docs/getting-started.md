@@ -221,7 +221,7 @@ Subscribe to inserts, updates and deletes with three primitives —
 per provider partition), and `readChanges` (one page at a time).
 
 ```java
-ResourceAddress orders = ResourceAddress.of("appdb", "orders");
+ResourceAddress orders = new ResourceAddress("appdb", "orders");
 
 // Start from the live tip — historical events are skipped.
 ChangeFeedCursor cursor = ChangeFeedCursor.now();
@@ -231,7 +231,7 @@ while (true) {
 
     for (ChangeEvent ev : page.events()) {
         System.out.printf("%s %s @ %s%n",
-                ev.changeType(), ev.key(), ev.commitTimestamp());
+                ev.type(), ev.key(), ev.commitTimestamp());
     }
 
     cursor = page.nextCursor();

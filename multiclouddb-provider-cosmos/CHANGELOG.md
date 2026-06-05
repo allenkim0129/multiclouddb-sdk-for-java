@@ -67,6 +67,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   at the query-execution level, but consumers that string-match the where
   clause should update their expectations.
 
+### Fixed
+
+- `CursorExpiredException` thrown from `decodeRange()` (malformed cursor
+  partitionId) now carries the active `providerId` instead of `null`, matching
+  the surrounding `CursorExpiredException` paths.
+
 ## [0.1.0-beta.1] — 2026-04-23
 
 ### Added

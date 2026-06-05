@@ -44,9 +44,9 @@ contract.
 |------|-------------|
 | `ChangeFeedCursor` | Opaque, immutable position in a change feed. `now()` mints a sentinel at the live tip; `toToken()` / `fromToken(String)` persist it. |
 | `ChangeFeedPage` | A page of change events plus `nextCursor`, `hasMore`, and `terminal` flags. |
-| `ChangeEvent` | A single change with `key`, `changeType`, `commitTimestamp`, `data`, and `providerEventId`. |
+| `ChangeEvent` | A single change with `key`, `type`, `commitTimestamp`, `data`, and `providerEventId`. |
 | `ChangeType` | Enum: `CREATE`, `UPDATE`, `DELETE`. |
-| `CursorExpiredException` | Thrown when a cursor cannot be honoured (trimmed, aged-out, mismatched). `toError().providerDetails().get("reason")` carries the cause. |
+| `CursorExpiredException` | Thrown when a cursor cannot be honoured (trimmed, aged-out, mismatched). `error().providerDetails().get("reason")` carries the cause. |
 
 See [guide.md - Change Feeds](guide.md#change-feeds) for the full workflow,
 provisioning prerequisites, and multi-thread pattern.
