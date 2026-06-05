@@ -281,6 +281,8 @@ Parallelism, checkpoint persistence, and process coordination are the **user's r
 
 > **Persist after processing.** Every pattern follows the same rule: do work, then persist `cursor.toToken()`, then loop. Persisting before processing risks losing events on crash; persisting after is the at-least-once contract (FR-155).
 
+> **TODO — runnable multi-thread example.** The snippets below are illustrative and elide helpers (`process`, `persist`, `loadSavedToken`, `cursorIdentity`, `resumeOrDiscover`, `recover`, `spawnWorker`, `signalExit`, `isTerminal`). Before v1 GA, ship a complete, copy-pasteable end-to-end multi-thread example under `multiclouddb-e2e/` that users can follow — covering the §5.2 worker-pool pattern wired to a real token store, with §5.5 topology re-discovery on a scheduled thread and §6 expiry recovery. Each §5 subsection should link to the corresponding section of that example.
+
 ### 5.1 Single-thread baseline
 
 For one-off jobs, dev environments, low-volume backfills, or prototyping. A single cursor traverses the whole address; topology changes are absorbed inside `readChanges`; persistence is one token.
