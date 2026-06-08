@@ -144,10 +144,13 @@ final class SpannerChangeFeedReader {
         long mintedAt = System.currentTimeMillis();
         try (ResultSet rs = databaseClient.singleUse().executeQuery(stmt)) {
             while (rs.next()) {
-                List<String> children = extractChildPartitionTokens(rs.getCurrentRowAsStruct());
-                for (String token : children) {
-                    partitions.add(new PartitionPosition(token,
-                            continuation(now, 0L)));
+                Struct row = rs.getCurrentRowAsStruct();
+                for (LogicalRecord lr : decomposeRow(row)) {
+                    if (lr.kind != RecordKind.CHILD_PARTITIONS) continue;
+                    for (String token : extractChildPartitionTokens(lr.record)) {
+                        partitions.add(new PartitionPosition(token,
+                                continuation(now, 0L)));
+                    }
                 }
             }
         } catch (SpannerException e) {
@@ -242,29 +245,30 @@ final class SpannerChangeFeedReader {
         try (ResultSet rs = databaseClient.singleUse().executeQuery(stmt)) {
             while (rs.next()) {
                 Struct row = rs.getCurrentRowAsStruct();
-                RecordKind kind = classify(row);
-                switch (kind) {
-                    case DATA:
-                        DataChangeBatch batch = readDataChange(row, address);
-                        events.addAll(batch.events);
-                        if (batch.commitTs != null) lastCommitTs = batch.commitTs;
-                        lastRecordSeq = batch.recordSeq;
-                        break;
-                    case CHILD_PARTITIONS:
-                        partitionClosed = true;
-                        for (String child : extractChildPartitionTokens(row)) {
-                            newChildren.add(new PartitionPosition(child,
-                                    continuation(lastCommitTs, 0L)));
-                        }
-                        break;
-                    case HEARTBEAT:
-                        Timestamp hb = extractHeartbeatTimestamp(row);
-                        if (hb != null) lastCommitTs = hb;
-                        break;
-                    case UNKNOWN:
-                    default:
-                        // Silently skip; logged at debug.
-                        LOG.debug("Skipping unrecognised change-stream row");
+                for (LogicalRecord lr : decomposeRow(row)) {
+                    switch (lr.kind) {
+                        case DATA:
+                            DataChangeBatch batch = readDataChange(lr.record, address);
+                            events.addAll(batch.events);
+                            if (batch.commitTs != null) lastCommitTs = batch.commitTs;
+                            lastRecordSeq = batch.recordSeq;
+                            break;
+                        case CHILD_PARTITIONS:
+                            partitionClosed = true;
+                            for (String child : extractChildPartitionTokens(lr.record)) {
+                                newChildren.add(new PartitionPosition(child,
+                                        continuation(lastCommitTs, 0L)));
+                            }
+                            break;
+                        case HEARTBEAT:
+                            Timestamp hb = extractHeartbeatTimestamp(lr.record);
+                            if (hb != null) lastCommitTs = hb;
+                            break;
+                        case UNKNOWN:
+                        default:
+                            // Silently skip; logged at debug.
+                            LOG.debug("Skipping unrecognised change-stream row");
+                    }
                 }
             }
         } catch (SpannerException e) {
@@ -302,18 +306,42 @@ final class SpannerChangeFeedReader {
 
     private enum RecordKind { DATA, HEARTBEAT, CHILD_PARTITIONS, UNKNOWN }
 
-    private RecordKind classify(Struct row) {
-        if (hasNonNullField(row, "data_change_record")) return RecordKind.DATA;
-        if (hasNonNullField(row, "child_partitions_record")) return RecordKind.CHILD_PARTITIONS;
-        if (hasNonNullField(row, "heartbeat_record")) return RecordKind.HEARTBEAT;
-        // ChangeRecord wrapper variant.
-        if (hasNonNullField(row, "ChangeRecord")) {
-            Struct inner = row.getStruct("ChangeRecord");
-            if (hasNonNullField(inner, "data_change_record")) return RecordKind.DATA;
-            if (hasNonNullField(inner, "child_partitions_record")) return RecordKind.CHILD_PARTITIONS;
-            if (hasNonNullField(inner, "heartbeat_record")) return RecordKind.HEARTBEAT;
+    /** One logical change record (data/heartbeat/child-partitions) carried by a TVF row. */
+    private static final class LogicalRecord {
+        final RecordKind kind;
+        final Struct record;
+        LogicalRecord(RecordKind kind, Struct record) {
+            this.kind = kind;
+            this.record = record;
         }
-        return RecordKind.UNKNOWN;
+    }
+
+    /**
+     * Decompose a Spanner change-stream TVF row into the logical records it carries.
+     * <p>
+     * In the current schema each row has a single column {@code ChangeRecord} of
+     * type {@code ARRAY<STRUCT<data_change_record ARRAY<...>, heartbeat_record
+     * ARRAY<...>, child_partitions_record ARRAY<...>>>}. Typically the outer
+     * array has one element, and exactly one of the three sub-arrays is
+     * non-empty.
+     */
+    private List<LogicalRecord> decomposeRow(Struct row) {
+        List<LogicalRecord> out = new ArrayList<>();
+        String chgCol = canonicalField(row, "ChangeRecord");
+        if (chgCol != null && !row.isNull(chgCol)) {
+            for (Struct outer : row.getStructList(chgCol)) {
+                for (Struct rec : getStructListOrEmpty(outer, "data_change_record")) {
+                    out.add(new LogicalRecord(RecordKind.DATA, rec));
+                }
+                for (Struct rec : getStructListOrEmpty(outer, "heartbeat_record")) {
+                    out.add(new LogicalRecord(RecordKind.HEARTBEAT, rec));
+                }
+                for (Struct rec : getStructListOrEmpty(outer, "child_partitions_record")) {
+                    out.add(new LogicalRecord(RecordKind.CHILD_PARTITIONS, rec));
+                }
+            }
+        }
+        return out;
     }
 
     private static boolean hasNonNullField(Struct s, String field) {
@@ -334,12 +362,12 @@ final class SpannerChangeFeedReader {
         }
     }
 
-    private DataChangeBatch readDataChange(Struct row, ResourceAddress address) {
-        // address is reserved for future use (table_name fallback). All Struct
+    private DataChangeBatch readDataChange(Struct rec, ResourceAddress address) {
+        // address is reserved for future use (table_name fallback). `rec` is the
+        // inner `data_change_record` struct produced by decomposeRow(...) — all
         // field accesses below go through canonicalField(...) helpers so we
         // tolerate Spanner returning TVF column names with different casing
         // across client versions.
-        Struct rec = unwrap(row, "data_change_record");
         Timestamp commitTs = getTimestampOrNull(rec, "commit_timestamp");
         long recordSeq = parseSequence(rec, "record_sequence");
         String txnIdRaw = getStringOrNull(rec, "server_transaction_id");
@@ -415,46 +443,22 @@ final class SpannerChangeFeedReader {
 
     // ── Child partitions extraction ────────────────────────────────────────
 
-    private List<String> extractChildPartitionTokens(Struct row) {
-        Struct rec = unwrapOrNull(row, "child_partitions_record");
-        if (rec == null) return List.of();
+    /** Extract child partition tokens from an inner {@code child_partitions_record} struct. */
+    private List<String> extractChildPartitionTokens(Struct rec) {
         List<String> tokens = new ArrayList<>();
-        List<Struct> children = getStructListOrEmpty(rec, "child_partitions");
-        for (Struct c : children) {
+        for (Struct c : getStructListOrEmpty(rec, "child_partitions")) {
             String tk = getStringOrNull(c, "token");
             if (tk != null) tokens.add(tk);
         }
         return tokens;
     }
 
-    private Timestamp extractHeartbeatTimestamp(Struct row) {
-        Struct rec = unwrapOrNull(row, "heartbeat_record");
-        if (rec == null) return null;
+    /** Extract the heartbeat timestamp from an inner {@code heartbeat_record} struct. */
+    private Timestamp extractHeartbeatTimestamp(Struct rec) {
         return getTimestampOrNull(rec, "timestamp");
     }
 
-    // ── Unwrap helpers (tolerate ChangeRecord wrapper) ──────────────────────
-
-    private static Struct unwrap(Struct row, String field) {
-        Struct s = unwrapOrNull(row, field);
-        if (s == null) throw new IllegalStateException("Missing field: " + field);
-        return s;
-    }
-
-    private static Struct unwrapOrNull(Struct row, String field) {
-        // Same case-canonical lookup as hasNonNullField: Spanner's Struct accessors
-        // are case-sensitive, so we must look up the exact name Spanner returned
-        // rather than the caller's lookup key.
-        String canonical = canonicalField(row, field);
-        if (canonical != null && !row.isNull(canonical)) return row.getStruct(canonical);
-        String wrapper = canonicalField(row, "ChangeRecord");
-        if (wrapper != null && !row.isNull(wrapper)) {
-            Struct inner = row.getStruct(wrapper);
-            String innerName = canonicalField(inner, field);
-            if (innerName != null && !inner.isNull(innerName)) return inner.getStruct(innerName);
-        }
-        return null;
-    }
+    // ── Field name canonicalization ─────────────────────────────────────────
 
     /**
      * Resolve the actual (case-sensitive) field name Spanner returned for a

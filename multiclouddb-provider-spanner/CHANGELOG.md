@@ -26,6 +26,16 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   mapped to `CursorExpiredException` with `reason=PROVIDER_TRIMMED`.
 - Provisioning requirement: a change stream must exist for the target
   table — `CREATE CHANGE STREAM <name> FOR <table> OPTIONS (value_capture_type = 'NEW_ROW')`.
+- Decodes the documented Spanner change-stream TVF schema: each row carries a
+  single column `ChangeRecord` of type
+  `ARRAY<STRUCT<data_change_record ARRAY<STRUCT<...>>, heartbeat_record ARRAY<STRUCT<...>>, child_partitions_record ARRAY<STRUCT<...>>>>`.
+  The reader decomposes each row into its constituent inner records before
+  dispatching to `readDataChange` / `extractHeartbeatTimestamp` /
+  `extractChildPartitionTokens`. Earlier `Unreleased` builds attempted to read
+  `ChangeRecord` as a single `STRUCT`, which failed at runtime against the
+  Spanner Emulator with
+  `Column ChangeRecord is not of correct type: expected STRUCT<…> but was ARRAY<STRUCT<…>>`.
+
 ### Breaking changes
 
 - **`update()` now uses a read-modify-write transaction to preserve previously
