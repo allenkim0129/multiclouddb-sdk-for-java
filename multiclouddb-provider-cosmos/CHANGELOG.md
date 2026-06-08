@@ -9,6 +9,16 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- `CosmosChangeFeedReader.readChanges()` now rotates the cursor's partition
+  list so multi-range cursors (e.g., the `now()` sentinel hydrate that merges
+  every feed range) visit each range in true round-robin order. Previously a
+  multi-range cursor would only ever advance the first range and silently
+  starve every range after index 0. `hasMore` is signalled eagerly when a
+  multi-range cursor returned any events (not only on a full page), so the
+  caller drains the remaining ranges before sleeping. The cursor wire format
+  is unchanged; the partition list order now encodes the active-partition
+  state. Same fix is applied to `DynamoChangeFeedReader` and
+  `SpannerChangeFeedReader` for cross-provider parity.
 - `CosmosChangeFeedReader.listCursors()` now stamps each minted `CursorToken`'s
   `issuedAtEpochMillis` with the wall-clock instant captured immediately after
   the warmup continuation is obtained (previously a single pre-loop timestamp

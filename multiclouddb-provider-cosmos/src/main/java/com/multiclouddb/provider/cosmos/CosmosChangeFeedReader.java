@@ -217,10 +217,14 @@ final class CosmosChangeFeedReader {
             return new ChangeFeedPage(List.of(), new ChangeFeedCursor(refreshed), false, false);
         }
 
-        // Round-robin: read one page from one partition per call.
-        // This keeps the per-call cost predictable; callers driving many cursors
-        // in parallel will get balanced throughput across partitions naturally.
-        // We pick the first partition; callers can drive partitions explicitly via listCursors.
+        // Round-robin across partitions: read one page from the head partition
+        // per call. The partition list order is the active-partition state — see
+        // the rotation at the bottom of the try block (and inside the catch for
+        // CURSOR_EXPIRED on 410 GONE, which we deliberately do NOT rotate so the
+        // caller's recovery path sees the same partition that triggered the
+        // expiry). Without rotation, multi-partition cursors (e.g., the now()
+        // sentinel hydrate that merges all feed ranges) would starve every
+        // partition after index 0.
         List<PartitionPosition> partitions = new ArrayList<>(token.partitions());
         PartitionPosition pos = partitions.get(0);
         FeedRange range = decodeRange(pos.partitionId());
@@ -274,6 +278,15 @@ final class CosmosChangeFeedReader {
             }
 
             partitions.set(0, new PartitionPosition(pos.partitionId(), newContinuation));
+            // Rotate the just-advanced partition to the end so the next call
+            // visits the next partition in round-robin order.
+            if (partitions.size() > 1) {
+                Collections.rotate(partitions, -1);
+                // If this call returned events from a multi-partition cursor,
+                // the OTHER partitions may also have events ready; signal
+                // hasMore so the caller keeps draining before sleeping.
+                if (!events.isEmpty()) hasMore = true;
+            }
             CursorToken nextToken = token.withPartitions(partitions, System.currentTimeMillis());
             return new ChangeFeedPage(events, new ChangeFeedCursor(nextToken), hasMore, false);
         } catch (CosmosException e) {

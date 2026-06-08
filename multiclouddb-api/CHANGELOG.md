@@ -23,8 +23,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   cursor and returns a fresh `nextCursor`.
 - **`MulticloudDbErrorCategory.CURSOR_EXPIRED`** — new well-known category for
   trimmed / aged-out / mismatched cursors. Provider details key `reason`
-  carries one of `TOKEN_AGED_OUT`, `PROVIDER_TRIMMED`, `MALFORMED`,
-  `VERSION_UNSUPPORTED`, `PROVIDER_MISMATCH`, `RESOURCE_MISMATCH`.
+  carries one of `TOKEN_AGED_OUT`, `PROVIDER_TRIMMED`, `ITERATOR_EXPIRED`,
+  `MALFORMED`, `VERSION_UNSUPPORTED`, `PROVIDER_MISMATCH`,
+  `RESOURCE_MISMATCH`. All seven values are public constants on
+  `com.multiclouddb.api.changefeed.internal.CursorTokenCodec`
+  (`REASON_*`) so providers and callers share a single source of truth
+  for the wire-format-stable strings.
 - **SPI**: `MulticloudDbProviderClient.listCursors` / `readChanges` default to
   throwing `UNSUPPORTED_CAPABILITY` so existing adapters compile unchanged.
 - **`DefaultMulticloudDbClient`** enforces capability-gating, validates the

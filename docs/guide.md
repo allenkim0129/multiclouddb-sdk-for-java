@@ -1363,6 +1363,7 @@ be honoured. The reason is exposed in
 |---|---|---|
 | `TOKEN_AGED_OUT` | The cursor's issued-at is > 24 h old. | Mint a fresh `ChangeFeedCursor.now()` and accept the gap. |
 | `PROVIDER_TRIMMED` | The provider trimmed events the cursor was about to read (Cosmos 410, Dynamo `TrimmedDataAccessException`, Spanner partition outside retention). | Re-bootstrap with `listCursors()` and accept the gap. |
+| `ITERATOR_EXPIRED` | A persisted server-side iterator handle aged out before its next read (today: DynamoDB Streams' ~5-minute inactivity window on a persisted shard iterator). Events at that position may still exist but the bookmark is no longer addressable. | Re-bootstrap with `listCursors()` from the live tip; records produced between the expired iterator's position and the new live tip will be skipped. |
 | `MALFORMED` / `VERSION_UNSUPPORTED` | Token isn't a valid SDK token, or was minted by a newer codec. | Reject the token and start fresh. |
 | `PROVIDER_MISMATCH` / `RESOURCE_MISMATCH` | Token was minted against a different provider or `database/collection`. | Operator / configuration error — do not silently restart; alert. |
 

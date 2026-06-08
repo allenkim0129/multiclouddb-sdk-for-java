@@ -9,13 +9,20 @@ import com.azure.cosmos.models.FeedRange;
 import com.azure.cosmos.models.FeedResponse;
 import com.azure.cosmos.util.CosmosPagedIterable;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.multiclouddb.api.OperationOptions;
 import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.ResourceAddress;
 import com.multiclouddb.api.changefeed.ChangeFeedCursor;
+import com.multiclouddb.api.changefeed.ChangeFeedPage;
+import com.multiclouddb.api.changefeed.internal.CursorAnchor;
+import com.multiclouddb.api.changefeed.internal.CursorToken;
+import com.multiclouddb.api.changefeed.internal.PartitionPosition;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -225,5 +232,61 @@ class CosmosChangeFeedReaderTest {
                 "empty getFeedRanges() must still produce one cursor (forFullRange fallback)");
         ChangeFeedCursor c = cursors.get(0);
         assertNotNull(c.token().partitions().get(0).partitionId());
+    }
+
+    // ── Round-robin multi-range readChanges advances every range ────────────
+
+    @Test
+    @DisplayName("readChanges() rotates: a 3-range cursor visits each range in round-robin order")
+    @SuppressWarnings("unchecked")
+    void readChangesRotatesAcrossMultiRangeCursor() {
+        CosmosContainer container = mock(CosmosContainer.class);
+
+        // Build a multi-range CursorToken using real FeedRange-encoded
+        // partition ids (the reader calls FeedRange.fromString() on them).
+        // Distinct PartitionKey values give 3 distinct partition ids.
+        String rangeA = FeedRange.forLogicalPartition(new com.azure.cosmos.models.PartitionKey("A")).toString();
+        String rangeB = FeedRange.forLogicalPartition(new com.azure.cosmos.models.PartitionKey("B")).toString();
+        String rangeC = FeedRange.forLogicalPartition(new com.azure.cosmos.models.PartitionKey("C")).toString();
+        List<PartitionPosition> partitions = new ArrayList<>();
+        // Use the @@FROM_NOW sentinel so the reader takes the
+        // createForProcessingFromNow(range) branch — we only care about the
+        // rotation behavior here, not the continuation-decode branch.
+        partitions.add(new PartitionPosition(rangeA, "@@FROM_NOW"));
+        partitions.add(new PartitionPosition(rangeB, "@@FROM_NOW"));
+        partitions.add(new PartitionPosition(rangeC, "@@FROM_NOW"));
+        CursorToken seed = new CursorToken(ProviderId.COSMOS, ADDR, System.currentTimeMillis(),
+                CursorAnchor.NOW, partitions);
+        ChangeFeedCursor cursor = new ChangeFeedCursor(seed);
+
+        // Each queryChangeFeed call returns an empty page with a fresh
+        // continuation; we just want to observe the head-partition rotation.
+        CosmosPagedIterable<JsonNode> paged = mock(CosmosPagedIterable.class);
+        Iterable<FeedResponse<JsonNode>> pages = mock(Iterable.class);
+        Iterator<FeedResponse<JsonNode>> it = mock(Iterator.class);
+        FeedResponse<JsonNode> resp = mock(FeedResponse.class);
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+                .thenReturn(paged);
+        when(paged.iterableByPage()).thenReturn(pages);
+        when(pages.iterator()).thenReturn(it);
+        when(it.hasNext()).thenReturn(true);
+        when(it.next()).thenReturn(resp);
+        when(resp.getResults()).thenReturn(List.of());
+        when(resp.getContinuationToken()).thenReturn("next-continuation");
+
+        Set<String> headPartitionIds = new HashSet<>();
+        for (int i = 0; i < 3; i++) {
+            String headId = cursor.token().partitions().get(0).partitionId();
+            headPartitionIds.add(headId);
+            ChangeFeedPage page = newReader().readChanges(
+                    container, ADDR, cursor, OperationOptions.defaults());
+            cursor = page.nextCursor();
+        }
+
+        assertEquals(3, headPartitionIds.size(),
+                "three successive readChanges() calls must visit three distinct ranges "
+                        + "(starvation guard); visited heads were " + headPartitionIds);
+        assertEquals(rangeA, cursor.token().partitions().get(0).partitionId(),
+                "after N readChanges() calls on an N-range cursor, partition order should be restored");
     }
 }

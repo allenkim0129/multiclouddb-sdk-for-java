@@ -3,9 +3,16 @@
 
 package com.multiclouddb.provider.dynamo;
 
+import com.multiclouddb.api.OperationOptions;
 import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.ResourceAddress;
 import com.multiclouddb.api.changefeed.ChangeFeedCursor;
+import com.multiclouddb.api.changefeed.ChangeFeedPage;
+import com.multiclouddb.api.changefeed.CursorExpiredException;
+import com.multiclouddb.api.changefeed.internal.CursorAnchor;
+import com.multiclouddb.api.changefeed.internal.CursorToken;
+import com.multiclouddb.api.changefeed.internal.CursorTokenCodec;
+import com.multiclouddb.api.changefeed.internal.PartitionPosition;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
@@ -15,6 +22,8 @@ import software.amazon.awssdk.services.dynamodb.model.DescribeStreamResponse;
 import software.amazon.awssdk.services.dynamodb.model.DescribeTableRequest;
 import software.amazon.awssdk.services.dynamodb.model.DescribeTableResponse;
 import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
+import software.amazon.awssdk.services.dynamodb.model.GetRecordsRequest;
+import software.amazon.awssdk.services.dynamodb.model.GetRecordsResponse;
 import software.amazon.awssdk.services.dynamodb.model.GetShardIteratorRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetShardIteratorResponse;
 import software.amazon.awssdk.services.dynamodb.model.SequenceNumberRange;
@@ -23,6 +32,7 @@ import software.amazon.awssdk.services.dynamodb.model.StreamDescription;
 import software.amazon.awssdk.services.dynamodb.model.TableDescription;
 import software.amazon.awssdk.services.dynamodb.streams.DynamoDbStreamsClient;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -251,5 +261,86 @@ class DynamoChangeFeedReaderTest {
                     "issuedAt (" + issuedAt + ") must be within [preLoop=" + preLoop
                             + ", postLoop=" + postLoop + "]");
         }
+    }
+
+    // ── Round-robin multi-shard readChanges advances every shard ────────────
+
+    @Test
+    @DisplayName("readChanges() rotates: a 3-shard cursor visits each shard in round-robin order")
+    void readChangesRotatesAcrossMultiShardCursor() {
+        DynamoDbStreamsClient streams = mock(DynamoDbStreamsClient.class);
+        // Each shard's continuation is a pre-resolved @@ITER: handle so
+        // resolveShardIterator does not call streamsClient.getShardIterator
+        // (we want to isolate the rotation behavior, not iterator resolution).
+        List<PartitionPosition> partitions = new ArrayList<>();
+        partitions.add(new PartitionPosition(STREAM_ARN + "::shard-A", "@@ITER:iter-A"));
+        partitions.add(new PartitionPosition(STREAM_ARN + "::shard-B", "@@ITER:iter-B"));
+        partitions.add(new PartitionPosition(STREAM_ARN + "::shard-C", "@@ITER:iter-C"));
+        CursorToken seed = new CursorToken(ProviderId.DYNAMO, ADDR, System.currentTimeMillis(),
+                CursorAnchor.NOW, partitions);
+        ChangeFeedCursor cursor = new ChangeFeedCursor(seed);
+
+        // Every GetRecords returns zero records but a non-null nextShardIterator
+        // so the shard never "closes" (which would route into absorbClosedShard).
+        when(streams.getRecords(any(GetRecordsRequest.class)))
+                .thenReturn(GetRecordsResponse.builder()
+                        .records(List.of())
+                        .nextShardIterator("next-iter")
+                        .build());
+
+        DynamoChangeFeedReader reader = new DynamoChangeFeedReader(ProviderId.DYNAMO, streams);
+        DynamoDbClient ddb = mockDdbWithStream(STREAM_ARN);
+
+        Set<String> headPartitionIds = new HashSet<>();
+        for (int i = 0; i < 3; i++) {
+            // The head partition (index 0) is what this call will read.
+            String headId = cursor.token().partitions().get(0).partitionId();
+            headPartitionIds.add(headId);
+            ChangeFeedPage page = reader.readChanges(ddb, ADDR, TABLE, cursor, OperationOptions.defaults());
+            cursor = page.nextCursor();
+        }
+
+        assertEquals(3, headPartitionIds.size(),
+                "three successive readChanges() calls must visit three distinct shards "
+                        + "(starvation guard); visited heads were " + headPartitionIds);
+        // After three rotations the list is back to its original order — the very
+        // first partition is once again at index 0.
+        assertEquals(STREAM_ARN + "::shard-A",
+                cursor.token().partitions().get(0).partitionId(),
+                "after N readChanges() calls on an N-shard cursor, partition order should be restored");
+    }
+
+    // ── ExpiredIteratorException maps to portable ITERATOR_EXPIRED reason ───
+
+    @Test
+    @DisplayName("ExpiredIteratorException → CursorExpiredException with reason=CursorTokenCodec.REASON_ITERATOR_EXPIRED")
+    void expiredIteratorMapsToPortableReason() {
+        DynamoDbStreamsClient streams = mock(DynamoDbStreamsClient.class);
+        PartitionPosition pos = new PartitionPosition(
+                STREAM_ARN + "::shard-1", "@@ITER:stale-iter-handle");
+        CursorToken seed = new CursorToken(ProviderId.DYNAMO, ADDR, System.currentTimeMillis(),
+                CursorAnchor.NOW, List.of(pos));
+        ChangeFeedCursor cursor = new ChangeFeedCursor(seed);
+
+        DynamoDbException expired = (DynamoDbException) DynamoDbException.builder()
+                .message("Iterator expired")
+                .awsErrorDetails(AwsErrorDetails.builder()
+                        .errorCode("ExpiredIteratorException")
+                        .build())
+                .build();
+        when(streams.getRecords(any(GetRecordsRequest.class))).thenThrow(expired);
+
+        DynamoChangeFeedReader reader = new DynamoChangeFeedReader(ProviderId.DYNAMO, streams);
+        DynamoDbClient ddb = mockDdbWithStream(STREAM_ARN);
+
+        CursorExpiredException ex = org.junit.jupiter.api.Assertions.assertThrows(
+                CursorExpiredException.class,
+                () -> reader.readChanges(ddb, ADDR, TABLE, cursor, OperationOptions.defaults()));
+        String reason = ex.error().providerDetails().get(CursorTokenCodec.DETAIL_REASON);
+        assertEquals(CursorTokenCodec.REASON_ITERATOR_EXPIRED, reason,
+                "ExpiredIteratorException must map to the portable ITERATOR_EXPIRED reason; "
+                        + "the public docs/guide.md recovery table relies on this exact string");
+        assertEquals("ITERATOR_EXPIRED", reason,
+                "constant value must remain ITERATOR_EXPIRED -- wire-format break otherwise");
     }
 }

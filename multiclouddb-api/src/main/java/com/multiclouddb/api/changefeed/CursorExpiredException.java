@@ -21,7 +21,13 @@ import com.multiclouddb.api.MulticloudDbException;
  *   <li><b>Provider-side trim</b> — the provider has dropped the events the
  *       cursor pointed at (Cosmos {@code 410 GONE} /
  *       {@code TrimmedDataAccessException} / Spanner
- *       {@code INVALID_ARGUMENT}). The {@code reason} detail is provider-specific.</li>
+ *       {@code INVALID_ARGUMENT}). The {@code reason} detail is
+ *       {@code PROVIDER_TRIMMED}.</li>
+ *   <li><b>Iterator expired</b> — a persisted server-side iterator handle has
+ *       aged out (DynamoDB Streams' ~5-minute inactivity window on a
+ *       persisted shard iterator) before the cursor observed its next page.
+ *       The {@code reason} detail is {@code ITERATOR_EXPIRED}; recovery is to
+ *       re-bootstrap with {@code listCursors()} from the live tip.</li>
  *   <li><b>Token mismatch</b> — the token was minted by a different provider
  *       or for a different resource ({@code PROVIDER_MISMATCH} /
  *       {@code RESOURCE_MISMATCH}).</li>
@@ -44,8 +50,9 @@ import com.multiclouddb.api.MulticloudDbException;
  * and is one of the public string constants on
  * {@link com.multiclouddb.api.changefeed.internal.CursorTokenCodec}
  * ({@code MALFORMED}, {@code VERSION_UNSUPPORTED}, {@code TOKEN_AGED_OUT},
- * {@code PROVIDER_MISMATCH}, {@code RESOURCE_MISMATCH}) — providers may also
- * surface their native trim signal under a provider-specific reason key.
+ * {@code PROVIDER_MISMATCH}, {@code RESOURCE_MISMATCH},
+ * {@code PROVIDER_TRIMMED}, {@code ITERATOR_EXPIRED}) — providers may also
+ * surface additional diagnostic details under provider-specific keys.
  *
  * <p>Always carries
  * {@link MulticloudDbErrorCategory#CURSOR_EXPIRED} as the error category.

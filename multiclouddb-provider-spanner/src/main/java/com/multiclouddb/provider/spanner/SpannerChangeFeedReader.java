@@ -34,6 +34,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -324,16 +325,29 @@ final class SpannerChangeFeedReader {
         }
 
         // Update partition state.
+        // The partition list order is the active-partition state — without
+        // rotation, multi-partition cursors (e.g., the now() sentinel hydrate
+        // that merges all child partitions, or a cursor that has absorbed
+        // split/merge children) would starve every partition after index 0.
         if (partitionClosed) {
-            // Replace this partition with its children.
+            // Replace this partition with its children. Append the children to
+            // the END of the partition list so we naturally visit the OTHER
+            // pre-existing partitions before draining the new children — fair
+            // round-robin rather than starvation of the rest of the cursor.
             partitions.remove(0);
-            partitions.addAll(0, newChildren);
+            partitions.addAll(newChildren);
         } else {
             // Advance the continuation to the end of the window so the next call
-            // picks up where we left off.
+            // picks up where we left off, then rotate the just-advanced
+            // partition to the end so the next call visits the next partition.
             partitions.set(0, new PartitionPosition(partitionToken, continuation(end, lastRecordSeq)));
+            if (partitions.size() > 1) Collections.rotate(partitions, -1);
         }
 
+        // hasMore: per-partition signal (events present or this partition was
+        // closed and we appended its children). Already eager for any events,
+        // so the caller naturally rotates through remaining partitions before
+        // sleeping in a multi-partition cursor.
         boolean hasMore = !events.isEmpty() || partitionClosed;
         CursorToken next = token.withPartitions(partitions, System.currentTimeMillis());
         return new ChangeFeedPage(events, new ChangeFeedCursor(next), hasMore, false);

@@ -50,11 +50,16 @@ import java.util.Map;
  *   <li>{@code VERSION_UNSUPPORTED} — token codec version higher than the SDK supports.</li>
  *   <li>{@code TOKEN_AGED_OUT} — issued-at is older than {@link #MAX_TOKEN_AGE_MILLIS}.</li>
  * </ul>
+ * Providers may additionally surface {@code PROVIDER_TRIMMED} (events trimmed
+ * out from the provider's retention window) or {@code ITERATOR_EXPIRED} (a
+ * persisted server-side iterator handle aged out before its next read) from
+ * {@code readChanges}; see {@link com.multiclouddb.api.changefeed.CursorExpiredException}.
+ * <p>
  * Provider mismatch and resource mismatch are <em>not</em> raised here — they
  * are detected at {@code readChanges(addr, cursor)} time when both the cursor
  * and the runtime context are known. See
  * {@link #validateProviderMatch(CursorToken, ProviderId)} and
- * {@link #validateResourceMatch(CursorToken, ResourceAddress)}.
+ * {@link #validateResourceMatch(CursorToken, ResourceAddress, ProviderId)}.
  *
  * <h3>Concurrency</h3>
  * All methods are stateless and safe for concurrent use.
@@ -70,6 +75,26 @@ public final class CursorTokenCodec {
     public static final String REASON_TOKEN_AGED_OUT       = "TOKEN_AGED_OUT";
     public static final String REASON_PROVIDER_MISMATCH    = "PROVIDER_MISMATCH";
     public static final String REASON_RESOURCE_MISMATCH    = "RESOURCE_MISMATCH";
+    /**
+     * Provider-side trim: the provider has dropped the events the cursor was
+     * about to read (Cosmos {@code 410 GONE}, Dynamo
+     * {@code TrimmedDataAccessException}, Spanner partition outside retention).
+     * Recovery: re-bootstrap with
+     * {@link com.multiclouddb.api.MulticloudDbClient#listCursors(
+     * com.multiclouddb.api.ResourceAddress)} and accept the gap.
+     */
+    public static final String REASON_PROVIDER_TRIMMED     = "PROVIDER_TRIMMED";
+    /**
+     * Server-side iterator handle expired. The provider's bookmark addressing
+     * the next page has aged out (e.g., DynamoDB Streams' ~5-minute inactivity
+     * window on a persisted shard iterator); events at that position may still
+     * exist in the stream but the bookmark is no longer addressable. Recovery:
+     * re-bootstrap with {@link com.multiclouddb.api.MulticloudDbClient#listCursors(
+     * com.multiclouddb.api.ResourceAddress)} from the live tip. Records produced
+     * between the expired iterator's position and the new live tip will be
+     * skipped — downstream pipelines must be idempotent at the primary-key level.
+     */
+    public static final String REASON_ITERATOR_EXPIRED     = "ITERATOR_EXPIRED";
 
     /**
      * Maximum client-side age of a token before {@link #decode(String)} treats

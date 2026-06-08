@@ -18,6 +18,7 @@ import com.multiclouddb.api.changefeed.ChangeType;
 import com.multiclouddb.api.changefeed.CursorExpiredException;
 import com.multiclouddb.api.changefeed.internal.CursorAnchor;
 import com.multiclouddb.api.changefeed.internal.CursorToken;
+import com.multiclouddb.api.changefeed.internal.CursorTokenCodec;
 import com.multiclouddb.api.changefeed.internal.PartitionPosition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,6 +47,7 @@ import software.amazon.awssdk.services.dynamodb.streams.DynamoDbStreamsClient;
 
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -237,7 +239,12 @@ final class DynamoChangeFeedReader {
     }
 
     /**
-     * Drain one page of events. Reads from the first partition in the cursor.
+     * Drain one page of events. Reads from the head partition in the cursor,
+     * then rotates the partition list so the next call visits the next partition
+     * in round-robin order. The partition list order is the active-partition
+     * state — without rotation, multi-partition cursors (e.g., a cursor that
+     * has absorbed child shards into its partition list) would starve every
+     * partition after index 0.
      */
     ChangeFeedPage readChanges(DynamoDbClient ddb, ResourceAddress address, String tableName,
                                ChangeFeedCursor cursor, OperationOptions options) {
@@ -349,6 +356,14 @@ final class DynamoChangeFeedReader {
             }
             positions.set(0, new PartitionPosition(pos.partitionId(), newContinuation));
             boolean hasMore = resp.records().size() >= DEFAULT_PAGE_SIZE;
+            // Rotate the just-advanced shard to the end so the next call visits
+            // the next shard in round-robin order. For multi-shard cursors,
+            // signal hasMore eagerly when this call returned events so the
+            // caller keeps draining other shards before sleeping.
+            if (positions.size() > 1) {
+                Collections.rotate(positions, -1);
+                if (!events.isEmpty()) hasMore = true;
+            }
             CursorToken next = token.withPartitions(positions, System.currentTimeMillis());
             return new ChangeFeedPage(events, new ChangeFeedCursor(next), hasMore, false);
         } catch (TrimmedDataAccessException e) {
@@ -375,7 +390,8 @@ final class DynamoChangeFeedReader {
                     "DynamoDB Streams shard iterator has expired (5-minute inactivity window). "
                             + "Re-bootstrap by calling listCursors().",
                     providerId, operation, false,
-                    Map.of("reason", "ITERATOR_EXPIRED")), e);
+                    Map.of(CursorTokenCodec.DETAIL_REASON,
+                            CursorTokenCodec.REASON_ITERATOR_EXPIRED)), e);
         }
         // Defensive: if the SDK ever delivers a Trimmed exception as a generic
         // DynamoDbException with the errorCode set instead of a typed

@@ -9,6 +9,21 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- `DynamoChangeFeedReader.readChanges()` now rotates the cursor's partition
+  list so multi-shard cursors (e.g., a cursor that has absorbed child shards
+  via split/close into its partition list) visit each shard in true
+  round-robin order. Previously such cursors would only ever advance the
+  first shard and silently starve every shard after index 0. `hasMore` is
+  signalled eagerly when a multi-shard cursor returned any events (not only
+  on a full page) so the caller drains the remaining shards before sleeping.
+  The cursor wire format is unchanged; the partition list order now encodes
+  the active-shard state.
+- `DynamoChangeFeedReader` now standardises the `ExpiredIteratorException`
+  mapping on the portable `ITERATOR_EXPIRED` reason
+  (`CursorTokenCodec.REASON_ITERATOR_EXPIRED`), and uses the shared
+  `CursorTokenCodec.DETAIL_REASON` key. No behavioural change — the
+  on-the-wire string is unchanged; this just removes the string-literal
+  duplication and aligns the provider with the canonical reason set.
 - `DynamoChangeFeedReader.listCursors()` now stamps each minted `CursorToken`'s
   `issuedAtEpochMillis` per shard with the wall-clock instant captured
   immediately after `GetShardIterator.shardIterator()` returns (previously a

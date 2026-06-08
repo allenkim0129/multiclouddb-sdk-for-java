@@ -11,6 +11,22 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
+**Changed:**
+
+- `CursorExpiredException`'s `providerDetails.reason` set is now documented as
+  a single canonical list across all providers — `TOKEN_AGED_OUT`,
+  `PROVIDER_TRIMMED`, `ITERATOR_EXPIRED`, `MALFORMED`, `VERSION_UNSUPPORTED`,
+  `PROVIDER_MISMATCH`, `RESOURCE_MISMATCH`. All seven are public constants
+  on `CursorTokenCodec` (`REASON_*`). The `ITERATOR_EXPIRED` reason is new
+  in this release; it is surfaced by DynamoDB Streams when a persisted shard
+  iterator ages out (~5 minutes) before its next read. Recovery: re-bootstrap
+  with `listCursors()` from the live tip. See `docs/guide.md` recovery table.
+- All three change-feed readers (Cosmos / Dynamo / Spanner) now rotate the
+  cursor's partition list inside `readChanges()` so multi-partition cursors
+  visit each partition in true round-robin order. Previously such cursors
+  silently starved every partition after index 0. The cursor wire format is
+  unchanged.
+
 **Added — Change-Feed API (3-primitive cursor model):**
 
 - `com.multiclouddb.api.changefeed` package — new portable change-feed surface

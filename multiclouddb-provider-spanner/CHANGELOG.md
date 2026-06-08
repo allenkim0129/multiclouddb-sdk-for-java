@@ -9,6 +9,16 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- `SpannerChangeFeedReader.readChanges()` now rotates the cursor's partition
+  list so multi-partition cursors visit each partition in true round-robin
+  order. Previously such cursors would only ever advance the first partition
+  and silently starve every partition after index 0. When a partition closes
+  via split/merge absorption, its child partitions are now appended to the
+  END of the partition list (previously prepended) so the cursor visits the
+  remaining pre-existing partitions before draining the new children — fair
+  round-robin rather than starvation of the rest of the cursor. The cursor
+  wire format is unchanged; the partition list order now encodes the
+  active-partition state.
 - `SpannerChangeFeedReader.listCursors()` now stamps each minted `CursorToken`'s
   `issuedAtEpochMillis` per row with the wall-clock instant captured
   immediately after `ResultSet.next()` returns `true` for the
