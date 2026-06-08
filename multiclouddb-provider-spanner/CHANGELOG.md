@@ -7,6 +7,28 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- `SpannerChangeFeedReader.listCursors()` now anchors each minted cursor's
+  read bookmark at the **later** of (a) the wall-clock at which
+  `listCursors()` was called and (b) the child partition's own
+  `start_timestamp`. Previously the bookmark was always the partition's
+  own `start_timestamp` — which for pre-existing partitions is the
+  partition's creation time, potentially far in the past. As a result,
+  events committed BEFORE `listCursors()` would surface on the first
+  `readChanges()` call, breaking the `now()` cursor semantic asserted
+  by `FR-cf-006` and by the `updateEventSurfacesAfterUpsert` /
+  `deleteEventSurfacesAfterDelete` conformance tests (which set up
+  prior writes, then mint a cursor, then mutate, then expect to see
+  only the post-cursor event). The bookmark is computed as
+  `max(now, childStart)`, so cursors for pre-existing partitions
+  resolve to `now`, and just-split children (which have not happened
+  yet at `listCursors()` time, only at `readChanges()` time) continue
+  to use their own `start_timestamp` via the readChanges path. No
+  wire-format change (the continuation format is unchanged); already-
+  issued cursors continue to read from the timestamp encoded in their
+  continuation.
+
 ### Changed
 
 - `SpannerChangeFeedReader.readChanges()` now rotates the cursor's partition

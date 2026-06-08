@@ -172,13 +172,25 @@ final class SpannerChangeFeedReader {
                 Struct row = rs.getCurrentRowAsStruct();
                 for (LogicalRecord lr : decomposeRow(row)) {
                     if (lr.kind != RecordKind.CHILD_PARTITIONS) continue;
-                    // Each child_partitions_record carries its own start_timestamp;
-                    // every child partition is only readable from that timestamp
-                    // forward, so use it as the continuation instead of `now`.
+                    // The child_partitions_record carries the partition's own
+                    // start_timestamp (typically the moment the partition was
+                    // created — could be far in the past for pre-existing
+                    // partitions). Spanner rejects any start_timestamp earlier
+                    // than that. But we ALSO must not anchor the cursor before
+                    // `now` — otherwise events committed before listCursors()
+                    // would surface, breaking FR-cf-006 (now() cursor must
+                    // ignore prior events). So the bookmark is the LATER of
+                    // `now` (the live tip listCursors was asked for) and
+                    // childStart (the earliest readable instant for this
+                    // partition). For pre-existing partitions this resolves to
+                    // `now`; the partition's own start_timestamp is only used
+                    // if the partition was created at or after `now`, which
+                    // cannot happen here (the TVF returned it at start_ts=now).
                     Timestamp childStart = childPartitionStart(lr.record, now);
+                    Timestamp bookmark = maxTimestamp(now, childStart);
                     for (String token : extractChildPartitionTokens(lr.record)) {
                         PartitionPosition pos = new PartitionPosition(token,
-                                continuation(childStart, 0L));
+                                continuation(bookmark, 0L));
                         CursorToken tok = new CursorToken(
                                 providerId, address, effectiveAtMs, CursorAnchor.NOW, List.of(pos));
                         cursors.add(new ChangeFeedCursor(tok));
@@ -631,6 +643,11 @@ final class SpannerChangeFeedReader {
         long secs = total / 1000L;
         int nanos = (int) ((total % 1000L) * 1_000_000L);
         return Timestamp.ofTimeSecondsAndNanos(secs, nanos);
+    }
+
+    /** Returns the later of two Spanner timestamps (a if equal). */
+    private static Timestamp maxTimestamp(Timestamp a, Timestamp b) {
+        return a.compareTo(b) >= 0 ? a : b;
     }
 
     private static String sanitize(String streamName) {
