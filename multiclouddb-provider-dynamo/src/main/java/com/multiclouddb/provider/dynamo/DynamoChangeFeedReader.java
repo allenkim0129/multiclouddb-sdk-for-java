@@ -131,6 +131,21 @@ final class DynamoChangeFeedReader {
     /**
      * Discover the open shards on the table's stream and mint one cursor per shard,
      * each positioned at the live tip ({@link ShardIteratorType#LATEST}).
+     * <p>
+     * The {@code issuedAtEpochMillis} stamped on each minted
+     * {@link CursorToken} is captured <em>after</em> the per-shard
+     * {@code GetShardIterator(LATEST)} call returns, so it matches the instant
+     * the iterator bookmark is effective rather than a single pre-loop
+     * timestamp shared across the whole list. On the {@link #ANCHOR_NOW}
+     * fallback path (iterator resolution failed for that shard) the timestamp
+     * is captured at the moment of the fallback decision — the closest
+     * approximation available because the actual bookmark instant is the
+     * future moment {@link #readChanges} re-resolves
+     * {@code GetShardIterator(LATEST)} for this shard. For the no-shards
+     * placeholder branch the timestamp is captured at the moment the
+     * placeholder is minted. This matches the semantics already used by
+     * {@link #readChanges} (which captures
+     * {@link System#currentTimeMillis()} after each page is read).
      */
     List<ChangeFeedCursor> listCursors(DynamoDbClient ddb, ResourceAddress address, String tableName) {
         String streamArn = describeStreamArn(ddb, tableName);
@@ -147,12 +162,13 @@ final class DynamoChangeFeedReader {
         }
         List<Shard> shards = listOpenShards(streamArn);
         List<ChangeFeedCursor> cursors = new ArrayList<>(Math.max(shards.size(), 1));
-        long now = System.currentTimeMillis();
         if (shards.isEmpty()) {
             // Edge case: no shards yet. Mint a placeholder cursor so the next read
             // re-describes the stream and picks up new shards as they appear.
             PartitionPosition placeholder = new PartitionPosition(streamArn + "::__placeholder__", ANCHOR_NOW);
-            CursorToken token = new CursorToken(providerId, address, now, CursorAnchor.NOW, List.of(placeholder));
+            long placeholderAt = System.currentTimeMillis();
+            CursorToken token = new CursorToken(
+                    providerId, address, placeholderAt, CursorAnchor.NOW, List.of(placeholder));
             cursors.add(new ChangeFeedCursor(token));
             return cursors;
         }
@@ -161,21 +177,43 @@ final class DynamoChangeFeedReader {
             // If we instead carried ANCHOR_NOW here, the next readChanges() would
             // resolve GetShardIterator(LATEST) at *that* moment, silently skipping
             // events written between listCursors() and the first read.
-            String iter = resolveLatestIteratorOrAnchor(streamArn, shard.shardId());
-            PartitionPosition pos = new PartitionPosition(streamArn + "::" + shard.shardId(), iter);
-            CursorToken token = new CursorToken(providerId, address, now, CursorAnchor.NOW, List.of(pos));
+            ShardIteratorResult r = resolveLatestIteratorOrAnchor(streamArn, shard.shardId());
+            PartitionPosition pos = new PartitionPosition(streamArn + "::" + shard.shardId(), r.iterator());
+            CursorToken token = new CursorToken(
+                    providerId, address, r.effectiveAtMs(), CursorAnchor.NOW, List.of(pos));
             cursors.add(new ChangeFeedCursor(token));
         }
         return cursors;
     }
 
     /**
-     * Resolve a {@link ShardIteratorType#LATEST} iterator string and wrap it in the
-     * {@link #ANCHOR_ITER_PREFIX} envelope. Returns {@link #ANCHOR_NOW} as a fallback
-     * if the iterator cannot be resolved (shard transition mid-call) — the next read
-     * will retry resolution.
+     * Holder for a per-shard iterator resolution: the iterator bookmark string
+     * (either {@link #ANCHOR_ITER_PREFIX}-wrapped shard iterator on the success
+     * path or {@link #ANCHOR_NOW} on the fallback path) plus the wall-clock
+     * instant at which that bookmark is effective.
+     * <p>
+     * On the success path {@code effectiveAtMs} is captured immediately after
+     * {@code GetShardIteratorResponse.shardIterator()} returns. On the
+     * fallback path it is captured at the moment of the fallback decision,
+     * mirroring the per-iteration capture invariant the Cosmos reader
+     * established.
      */
-    private String resolveLatestIteratorOrAnchor(String streamArn, String shardId) {
+    private record ShardIteratorResult(String iterator, long effectiveAtMs) {}
+
+    /**
+     * Resolve a {@link ShardIteratorType#LATEST} iterator string and wrap it in the
+     * {@link #ANCHOR_ITER_PREFIX} envelope, paired with the wall-clock instant at
+     * which the bookmark is effective. Returns {@link #ANCHOR_NOW} (with the
+     * fallback-decision timestamp) if the iterator cannot be resolved (shard
+     * transition mid-call) — the next read will retry resolution.
+     * <p>
+     * On the success path {@code effectiveAtMs} is captured immediately after
+     * {@code GetShardIteratorResponse.shardIterator()} returns so the caller can
+     * stamp {@code issuedAtEpochMillis} with the instant the iterator bookmark
+     * is actually valid, not the moment we began resolution. On the fallback
+     * path {@code effectiveAtMs} is captured at the fallback decision.
+     */
+    private ShardIteratorResult resolveLatestIteratorOrAnchor(String streamArn, String shardId) {
         try {
             GetShardIteratorResponse resp = streamsClient.getShardIterator(
                     GetShardIteratorRequest.builder()
@@ -184,11 +222,17 @@ final class DynamoChangeFeedReader {
                             .shardIteratorType(ShardIteratorType.LATEST)
                             .build());
             String iter = resp.shardIterator();
-            return iter != null ? ANCHOR_ITER_PREFIX + iter : ANCHOR_NOW;
+            // Capture wall-clock immediately after the iterator materialises so
+            // the CursorToken's issuedAt matches the instant the bookmark is
+            // valid — not the moment we *started* resolving.
+            long effectiveAt = System.currentTimeMillis();
+            return iter != null
+                    ? new ShardIteratorResult(ANCHOR_ITER_PREFIX + iter, effectiveAt)
+                    : new ShardIteratorResult(ANCHOR_NOW, effectiveAt);
         } catch (DynamoDbException e) {
             LOG.debug("dynamo.changefeed: eager LATEST iterator resolution failed for "
                     + "stream={} shard={} — falling back to lazy ANCHOR_NOW", streamArn, shardId, e);
-            return ANCHOR_NOW;
+            return new ShardIteratorResult(ANCHOR_NOW, System.currentTimeMillis());
         }
     }
 
@@ -229,11 +273,18 @@ final class DynamoChangeFeedReader {
                 return new ChangeFeedPage(List.of(), new ChangeFeedCursor(refreshed), false, false);
             }
             List<PartitionPosition> newPositions = new ArrayList<>();
+            long compositeIssuedAt = 0L;
             for (Shard s : shards) {
-                String iter = resolveLatestIteratorOrAnchor(streamArn, s.shardId());
-                newPositions.add(new PartitionPosition(streamArn + "::" + s.shardId(), iter));
+                // The composite token can only carry one issuedAt; use the max of
+                // per-shard effectiveAtMs values so the timestamp is >= every
+                // constituent bookmark's effective instant (without adding the
+                // extra delay of a post-loop System.currentTimeMillis()).
+                ShardIteratorResult r = resolveLatestIteratorOrAnchor(streamArn, s.shardId());
+                newPositions.add(new PartitionPosition(streamArn + "::" + s.shardId(), r.iterator()));
+                if (r.effectiveAtMs() > compositeIssuedAt) compositeIssuedAt = r.effectiveAtMs();
             }
-            CursorToken next = token.withPartitions(newPositions, System.currentTimeMillis());
+            if (compositeIssuedAt == 0L) compositeIssuedAt = System.currentTimeMillis();
+            CursorToken next = token.withPartitions(newPositions, compositeIssuedAt);
             return new ChangeFeedPage(List.of(), new ChangeFeedCursor(next), true, false);
         }
 
@@ -372,13 +423,19 @@ final class DynamoChangeFeedReader {
         }
         List<Shard> shards = listOpenShards(streamArn);
         List<PartitionPosition> positions = new ArrayList<>();
+        long compositeIssuedAt = 0L;
         for (Shard s : shards) {
-            // Eagerly resolve a LATEST iterator (same rationale as listCursors): anchor
-            // the cursor at the stream tip *now*, not at first-read time.
-            String iter = resolveLatestIteratorOrAnchor(streamArn, s.shardId());
-            positions.add(new PartitionPosition(streamArn + "::" + s.shardId(), iter));
+            // Eagerly resolve a LATEST iterator (same rationale as listCursors):
+            // anchor the cursor at the stream tip *now*, not at first-read time.
+            // The composite token can only carry one issuedAt; use the max of
+            // per-shard effectiveAtMs values so the timestamp is >= every
+            // constituent bookmark's effective instant.
+            ShardIteratorResult r = resolveLatestIteratorOrAnchor(streamArn, s.shardId());
+            positions.add(new PartitionPosition(streamArn + "::" + s.shardId(), r.iterator()));
+            if (r.effectiveAtMs() > compositeIssuedAt) compositeIssuedAt = r.effectiveAtMs();
         }
-        return new CursorToken(providerId, address, System.currentTimeMillis(),
+        if (compositeIssuedAt == 0L) compositeIssuedAt = System.currentTimeMillis();
+        return new CursorToken(providerId, address, compositeIssuedAt,
                 CursorAnchor.NOW, positions);
     }
 

@@ -27,11 +27,15 @@ import java.util.Objects;
  *       or {@code null} for an unhydrated {@code now()} sentinel. Resuming
  *       against a different address throws
  *       {@link com.multiclouddb.api.changefeed.CursorExpiredException}.</li>
- *   <li>{@code issuedAtEpochMillis} — wall-clock millisecond when the SDK
- *       last issued this token. Refreshed on every {@code readChanges}
- *       → {@code nextCursor()}. Tokens older than
- *       {@link CursorTokenCodec#MAX_TOKEN_AGE_MILLIS} fail client-side as
- *       expired.</li>
+ *   <li>{@code issuedAtEpochMillis} — wall-clock instant at which the
+ *       bookmark carried by this token is effective. For tokens minted by
+ *       {@code listCursors()} this is captured immediately after the provider
+ *       returns the continuation (or, on the point-in-time fallback path, the
+ *       same instant encoded in the continuation suffix); for tokens returned
+ *       by {@code readChanges()} this is captured immediately after the page
+ *       is read. Refreshed on every {@code readChanges} → {@code nextCursor()}.
+ *       Tokens older than {@link CursorTokenCodec#MAX_TOKEN_AGE_MILLIS} fail
+ *       client-side as expired.</li>
  *   <li>{@code anchor} — see {@link CursorAnchor}.</li>
  *   <li>{@code partitions} — list of {@link PartitionPosition}; empty for a
  *       {@code now()} sentinel that has not yet been read.</li>

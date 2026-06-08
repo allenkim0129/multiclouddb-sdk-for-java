@@ -123,6 +123,17 @@ final class SpannerChangeFeedReader {
     /**
      * Bootstrap the partition tree by calling the TVF with a NULL partition token,
      * which returns the root {@code child_partitions_record} entries.
+     * <p>
+     * The {@code issuedAtEpochMillis} stamped on each minted {@link CursorToken}
+     * is captured <em>per row</em>, immediately after {@code ResultSet.next()}
+     * returns {@code true} for the {@code child_partitions_record} row that
+     * yielded that cursor's partition token. This matches the instant the
+     * partition bookmark is effective rather than a single pre-loop timestamp
+     * shared across the whole list, and aligns with the semantics already used
+     * by {@link #readChanges} (which captures
+     * {@link System#currentTimeMillis()} after each page is read). On the
+     * bootstrap-placeholder path (TVF returned no child partitions) the
+     * timestamp is captured at the moment the placeholder is minted.
      */
     List<ChangeFeedCursor> listCursors(ResourceAddress address) {
         String streamName = streamNameFor(address.collection());
@@ -140,10 +151,23 @@ final class SpannerChangeFeedReader {
                 .bind("heartbeat").to(HEARTBEAT_MS)
                 .build();
 
-        List<PartitionPosition> partitions = new ArrayList<>();
-        long mintedAt = System.currentTimeMillis();
+        List<ChangeFeedCursor> cursors = new ArrayList<>();
+        long exhaustedAtMs = 0L;
         try (ResultSet rs = databaseClient.singleUse().executeQuery(stmt)) {
-            while (rs.next()) {
+            while (true) {
+                if (!rs.next()) {
+                    // Capture the moment the TVF result is observed exhausted.
+                    // This is the effective instant of the placeholder bookmark
+                    // below, used both when the result was empty from the start
+                    // and when rows existed but emitted no child partitions.
+                    exhaustedAtMs = System.currentTimeMillis();
+                    break;
+                }
+                // Capture wall-clock immediately after the row materialises so
+                // every cursor minted from this row's child_partitions_record
+                // carries an issuedAt matching the instant the bookmark is
+                // effective, not the moment we started the TVF query.
+                long effectiveAtMs = System.currentTimeMillis();
                 Struct row = rs.getCurrentRowAsStruct();
                 for (LogicalRecord lr : decomposeRow(row)) {
                     if (lr.kind != RecordKind.CHILD_PARTITIONS) continue;
@@ -152,8 +176,11 @@ final class SpannerChangeFeedReader {
                     // forward, so use it as the continuation instead of `now`.
                     Timestamp childStart = childPartitionStart(lr.record, now);
                     for (String token : extractChildPartitionTokens(lr.record)) {
-                        partitions.add(new PartitionPosition(token,
-                                continuation(childStart, 0L)));
+                        PartitionPosition pos = new PartitionPosition(token,
+                                continuation(childStart, 0L));
+                        CursorToken tok = new CursorToken(
+                                providerId, address, effectiveAtMs, CursorAnchor.NOW, List.of(pos));
+                        cursors.add(new ChangeFeedCursor(tok));
                     }
                 }
             }
@@ -161,18 +188,20 @@ final class SpannerChangeFeedReader {
             throw mapSpannerException(e, "listCursors");
         }
 
-        if (partitions.isEmpty()) {
-            // Edge case: TVF returned no child partitions. Mint a placeholder that
-            // re-bootstraps on the next read.
-            partitions.add(new PartitionPosition("__bootstrap__", continuation(now, 0L)));
-        }
-
-        List<ChangeFeedCursor> cursors = new ArrayList<>(partitions.size());
-        for (PartitionPosition pos : partitions) {
+        if (cursors.isEmpty()) {
+            // Edge case: TVF returned no child partitions (either empty result
+            // or rows that emitted none). Mint a placeholder that re-bootstraps
+            // on the next read. Use the instant the result-set was observed
+            // exhausted as issuedAt — the closest available approximation for
+            // a "we read the stream and there was nothing" bookmark.
+            long placeholderAt = exhaustedAtMs != 0L ? exhaustedAtMs : System.currentTimeMillis();
+            PartitionPosition placeholder = new PartitionPosition(
+                    "__bootstrap__", continuation(now, 0L));
             CursorToken tok = new CursorToken(
-                    providerId, address, mintedAt, CursorAnchor.NOW, List.of(pos));
+                    providerId, address, placeholderAt, CursorAnchor.NOW, List.of(placeholder));
             cursors.add(new ChangeFeedCursor(tok));
         }
+
         return cursors;
     }
 

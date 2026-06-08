@@ -7,6 +7,21 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- `SpannerChangeFeedReader.listCursors()` now stamps each minted `CursorToken`'s
+  `issuedAtEpochMillis` per row with the wall-clock instant captured
+  immediately after `ResultSet.next()` returns `true` for the
+  `child_partitions_record` row that yielded that cursor's partition token
+  (previously a single pre-query timestamp was reused for every cursor). The
+  bootstrap-placeholder branch (empty TVF result) captures its timestamp at
+  the moment the result-set is observed exhausted. The two-pass
+  "accumulate-positions then mint-cursors" loop is collapsed into a single
+  pass so per-row freshness is preserved. This aligns token age with the
+  actual bookmark effective time and matches the semantics already used by
+  `readChanges()`. The on-the-wire continuation format is unchanged, and
+  callers that do not inspect `issuedAtEpochMillis` see no behavioural change.
+
 ### Added — Change-Feed support
 
 - Change-feed reader backed by Spanner change streams, queried through the

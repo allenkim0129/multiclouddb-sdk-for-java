@@ -105,6 +105,18 @@ final class CosmosChangeFeedReader {
      * fails (network error, no continuation returned), we fall back to a
      * {@link #CONT_PIT_PREFIX} timestamp anchor, then to the legacy
      * {@link #CONT_FROM_NOW} sentinel.
+     * <p>
+     * The {@code issuedAtEpochMillis} stamped on each minted {@link CursorToken}
+     * is captured <em>after</em> the warmup query returns, so it matches the
+     * instant the continuation bookmark is effective rather than the moment the
+     * SDK began warming up. On the PIT fallback path the two values are
+     * identical by construction (the same {@code nowMs} is embedded in the
+     * {@code @@PIT:<nowMs>} suffix and used as {@code issuedAtEpochMillis}). A
+     * fresh {@code nowMs} is captured per range so each cursor's
+     * {@code issuedAt} independently reflects its own bookmark moment instead
+     * of a single pre-loop timestamp shared across the whole list. This matches
+     * the semantics already used by {@link #readChanges} (which captures
+     * {@code System.currentTimeMillis()} after each page is read).
      */
     List<ChangeFeedCursor> listCursors(CosmosContainer container, ResourceAddress address) {
         try {
@@ -113,12 +125,12 @@ final class CosmosChangeFeedReader {
                 ranges = Collections.singletonList(FeedRange.forFullRange());
             }
             List<ChangeFeedCursor> cursors = new ArrayList<>(ranges.size());
-            long now = System.currentTimeMillis();
             for (FeedRange range : ranges) {
-                String continuation = warmupContinuation(container, range, now);
-                PartitionPosition pos = new PartitionPosition(encodeRange(range), continuation);
+                long beforeWarmup = System.currentTimeMillis();
+                WarmupResult w = warmupContinuation(container, range, beforeWarmup);
+                PartitionPosition pos = new PartitionPosition(encodeRange(range), w.continuation());
                 CursorToken token = new CursorToken(
-                        providerId, address, now, CursorAnchor.NOW, List.of(pos));
+                        providerId, address, w.effectiveAtMs(), CursorAnchor.NOW, List.of(pos));
                 cursors.add(new ChangeFeedCursor(token));
             }
             return cursors;
@@ -128,12 +140,34 @@ final class CosmosChangeFeedReader {
     }
 
     /**
+     * Holder for a warmup result: the continuation token that bookmarks the
+     * live tip plus the wall-clock instant at which that bookmark is effective.
+     * <p>
+     * On the warmup-success path {@code effectiveAtMs} is captured immediately
+     * after {@code FeedResponse.getContinuationToken()} returns, so it reflects
+     * when the bookmark actually materialised (not when the warmup call
+     * started). On the PIT fallback path {@code effectiveAtMs == nowMs} by
+     * construction — the same value is embedded in the
+     * {@code @@PIT:<nowMs>} suffix so the encoded anchor and the stamped
+     * {@code issuedAtEpochMillis} agree.
+     */
+    private record WarmupResult(String continuation, long effectiveAtMs) {}
+
+    /**
      * Execute one {@code createForProcessingFromNow(range)} query to obtain a real
      * Cosmos continuation token that bookmarks the live tip at this instant.
      * Falls back to a {@link #CONT_PIT_PREFIX} timestamp anchor (then to
      * {@link #CONT_FROM_NOW}) if the warmup query cannot produce one.
+     * <p>
+     * The returned {@link WarmupResult} carries both the continuation string
+     * and the wall-clock instant at which that bookmark is effective. On the
+     * warmup-success path {@code effectiveAtMs} is captured immediately after
+     * {@link FeedResponse#getContinuationToken()} returns. On the PIT fallback
+     * path {@code effectiveAtMs == nowMs} by construction so the value embedded
+     * in {@code @@PIT:<nowMs>} matches the {@code issuedAtEpochMillis} the
+     * caller stamps on the cursor.
      */
-    private String warmupContinuation(CosmosContainer container, FeedRange range, long nowMs) {
+    private WarmupResult warmupContinuation(CosmosContainer container, FeedRange range, long nowMs) {
         try {
             CosmosChangeFeedRequestOptions warmup =
                     CosmosChangeFeedRequestOptions.createForProcessingFromNow(range);
@@ -145,12 +179,17 @@ final class CosmosChangeFeedReader {
                     container.queryChangeFeed(warmup, JsonNode.class).iterableByPage().iterator();
             if (it.hasNext()) {
                 String c = it.next().getContinuationToken();
-                if (c != null && !c.isBlank()) return c;
+                // Capture wall-clock immediately after the bookmark materialises so
+                // the CursorToken's issuedAt matches the instant the continuation
+                // is valid for — not the moment we *started* warming up.
+                long effectiveAt = System.currentTimeMillis();
+                if (c != null && !c.isBlank()) return new WarmupResult(c, effectiveAt);
             }
         } catch (RuntimeException e) {
             // Fall through to the timestamp anchor below.
         }
-        return CONT_PIT_PREFIX + nowMs;
+        // PIT fallback: the continuation itself encodes nowMs, so issuedAt = nowMs.
+        return new WarmupResult(CONT_PIT_PREFIX + nowMs, nowMs);
     }
 
     /**

@@ -7,6 +7,23 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- `DynamoChangeFeedReader.listCursors()` now stamps each minted `CursorToken`'s
+  `issuedAtEpochMillis` per shard with the wall-clock instant captured
+  immediately after `GetShardIterator.shardIterator()` returns (previously a
+  single pre-loop timestamp was reused for every cursor). On the
+  `DynamoDbException` fallback path the timestamp is captured at the moment of
+  the fallback decision. The no-shards placeholder branch captures its
+  timestamp at the moment of the placeholder mint. Composite tokens built by
+  `readChanges` (placeholder rehydration and sentinel hydration) use the
+  `max` of per-shard `effectiveAtMs` values as the token's single `issuedAt`,
+  so the timestamp is `>=` every constituent bookmark's effective instant.
+  This aligns token age with the actual bookmark effective time and matches
+  the semantics already used by `readChanges()` itself. The on-the-wire
+  continuation format is unchanged, and callers that do not inspect
+  `issuedAtEpochMillis` see no behavioural change.
+
 ### Added — Change-Feed support
 
 - Change-feed reader backed by DynamoDB Streams (`DescribeStream`,

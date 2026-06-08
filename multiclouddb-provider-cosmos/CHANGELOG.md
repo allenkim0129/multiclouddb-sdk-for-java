@@ -7,6 +7,23 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- `CosmosChangeFeedReader.listCursors()` now stamps each minted `CursorToken`'s
+  `issuedAtEpochMillis` with the wall-clock instant captured immediately after
+  the warmup continuation is obtained (previously a single pre-loop timestamp
+  was reused for every cursor). This aligns token age with the actual bookmark
+  effective time and matches the semantics already used by `readChanges()`. On
+  the PIT fallback path the stamped `issuedAt` equals the numeric suffix of the
+  `@@PIT:<nowMs>` continuation by construction. The on-the-wire continuation
+  format is unchanged, and callers that do not inspect `issuedAtEpochMillis`
+  see no behavioural change. The
+  `com.multiclouddb.api.changefeed.internal.CursorToken` Javadoc for
+  `issuedAtEpochMillis` is tightened in the same change to spell out the new
+  invariant. The Dynamo and Spanner providers receive the same alignment in
+  this release (see their respective changelogs); the cross-provider invariant
+  is now uniform.
+
 ### Added — Change-Feed support
 
 - Pull-mode change-feed reader backed by
