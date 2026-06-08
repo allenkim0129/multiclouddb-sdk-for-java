@@ -57,6 +57,17 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
     private final MulticloudDbProviderClient providerClient;
     private final MulticloudDbClientConfig config;
     private volatile ExpressionTranslator expressionTranslator;
+    /**
+     * Lifecycle flag flipped to {@code true} by {@link #close()}. All public
+     * entry points consult {@link #checkOpen(String)} first so a post-close
+     * call always surfaces {@link MulticloudDbErrorCategory#CLIENT_CLOSED}
+     * before any other validation (e.g. {@link DocumentSizeValidator}) runs.
+     * Declared {@code volatile} so a thread that races with {@link #close()}
+     * sees the flip without locking. See also the matching provider-level
+     * guards in {@code SpannerProviderClient}, {@code CosmosProviderClient},
+     * and {@code DynamoProviderClient}.
+     */
+    private volatile boolean closed = false;
 
     public DefaultMulticloudDbClient(MulticloudDbProviderClient providerClient, MulticloudDbClientConfig config) {
         this.providerClient = Objects.requireNonNull(providerClient, "providerClient");
@@ -72,6 +83,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
 
     @Override
     public void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.CREATE);
         Instant start = Instant.now();
         try {
             DocumentSizeValidator.validate(document, OperationNames.CREATE);
@@ -87,6 +99,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
 
     @Override
     public DocumentResult read(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
+        checkOpen(OperationNames.READ);
         Instant start = Instant.now();
         try {
             DocumentResult result = providerClient.read(address, key, options);
@@ -102,6 +115,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
 
     @Override
     public void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.UPDATE);
         Instant start = Instant.now();
         try {
             DocumentSizeValidator.validate(document, OperationNames.UPDATE);
@@ -117,6 +131,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
 
     @Override
     public void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.UPSERT);
         Instant start = Instant.now();
         try {
             DocumentSizeValidator.validate(document, OperationNames.UPSERT);
@@ -132,6 +147,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
 
     @Override
     public void delete(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
+        checkOpen(OperationNames.DELETE);
         Instant start = Instant.now();
         try {
             providerClient.delete(address, key, options);
@@ -146,6 +162,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
 
     @Override
     public QueryPage query(ResourceAddress address, QueryRequest query, OperationOptions options) {
+        checkOpen(OperationNames.QUERY);
         Instant start = Instant.now();
         try {
             QueryPage page;
@@ -220,6 +237,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
 
     @Override
     public void ensureDatabase(String database) {
+        checkOpen(OperationNames.ENSURE_DATABASE);
         Instant start = Instant.now();
         try {
             providerClient.ensureDatabase(database);
@@ -234,6 +252,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
 
     @Override
     public void ensureContainer(ResourceAddress address) {
+        checkOpen(OperationNames.ENSURE_CONTAINER);
         Instant start = Instant.now();
         try {
             providerClient.ensureContainer(address);
@@ -248,6 +267,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
 
     @Override
     public void provisionSchema(Map<String, java.util.List<String>> schema) {
+        checkOpen(OperationNames.PROVISION_SCHEMA);
         Instant start = Instant.now();
         try {
             providerClient.provisionSchema(schema);
@@ -276,14 +296,40 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
     }
 
     @Override
-    public void close() throws Exception {
+    public synchronized void close() throws Exception {
+        if (closed) return;
+        closed = true;
         providerClient.close();
+    }
+
+    /**
+     * Guards public {@link MulticloudDbClient} entry points against use after
+     * {@link #close()}.
+     * <p>
+     * Throws a typed {@link MulticloudDbException} with category
+     * {@link MulticloudDbErrorCategory#CLIENT_CLOSED} <em>before</em> any
+     * other validation (size checks, expression parsing, capability checks)
+     * runs, so callers can branch on {@code e.error().category()} without
+     * string-matching the message. Provider-level adapters have matching
+     * guards as a defense-in-depth layer for callers that talk to the SPI
+     * directly.
+     *
+     * @param operation the caller's operation name from {@link OperationNames}
+     */
+    private void checkOpen(String operation) {
+        if (closed) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.CLIENT_CLOSED,
+                    "MulticloudDbClient has been closed",
+                    config.provider(), operation, false, Map.of()));
+        }
     }
 
     // ── Change Feed ────────────────────────────────────────────────────────────
 
     @Override
     public List<ChangeFeedCursor> listCursors(ResourceAddress address) {
+        checkOpen(OperationNames.LIST_CURSORS);
         Objects.requireNonNull(address, "address");
         checkCapability(Capability.CHANGE_FEED,
                 "Change feed is not supported by provider " + config.provider().id());
@@ -294,9 +340,9 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
                     address, cursors.size(), Duration.between(start, Instant.now()).toMillis());
             return cursors;
         } catch (MulticloudDbException e) {
-            throw enrichException(e, "listCursors", start);
+            throw enrichException(e, OperationNames.LIST_CURSORS, start);
         } catch (Exception e) {
-            throw wrapUnexpected(e, "listCursors", start);
+            throw wrapUnexpected(e, OperationNames.LIST_CURSORS, start);
         }
     }
 
@@ -308,6 +354,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
     @Override
     public ChangeFeedPage readChanges(ResourceAddress address, ChangeFeedCursor cursor,
                                       OperationOptions options) {
+        checkOpen(OperationNames.READ_CHANGES);
         Objects.requireNonNull(address, "address");
         Objects.requireNonNull(cursor, "cursor");
         Objects.requireNonNull(options, "options");
@@ -332,9 +379,9 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         } catch (MulticloudDbException e) {
             // enrichException mutates and returns the same instance, so a
             // CursorExpiredException still surfaces as CursorExpiredException.
-            throw enrichException(e, "readChanges", start);
+            throw enrichException(e, OperationNames.READ_CHANGES, start);
         } catch (Exception e) {
-            throw wrapUnexpected(e, "readChanges", start);
+            throw wrapUnexpected(e, OperationNames.READ_CHANGES, start);
         }
     }
 

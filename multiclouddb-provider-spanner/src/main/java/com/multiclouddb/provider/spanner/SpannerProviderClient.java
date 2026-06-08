@@ -40,6 +40,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.regex.Pattern;
 
 /**
  * Google Cloud Spanner provider client implementing CRUD + query operations.
@@ -65,6 +66,95 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
 
     private static final Logger LOG = LoggerFactory.getLogger(SpannerProviderClient.class);
 
+    /**
+     * Detects an {@code ORDER BY} clause already present in caller-supplied SQL
+     * (e.g., a raw GoogleSQL expression passed via {@link QueryRequest#expression()}
+     * or a {@link TranslatedQuery} that already includes ordering).
+     * Used by {@link #appendResultSetControl} to avoid emitting a duplicate
+     * {@code ORDER BY} clause.
+     * <p>
+     * Detection is performed after {@link #stripStringLiterals(String)} so that
+     * an {@code ORDER BY} substring inside a quoted literal (e.g.
+     * {@code WHERE note = 'please ORDER BY date'}) does not false-positive.
+     */
+    private static final Pattern ORDER_BY_CLAUSE =
+            Pattern.compile("\\bORDER\\s+BY\\b", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Matches aggregate functions / GROUP BY clauses that GoogleSQL forbids
+     * combining with a default {@code ORDER BY partitionKey, sortKey} (the
+     * non-aggregated column references would be illegal). Covers COUNT, SUM,
+     * MIN, MAX, AVG (the GoogleSQL set that mirrors the Cosmos peer).
+     */
+    private static final Pattern AGGREGATE_PATTERN =
+            Pattern.compile("\\b(COUNT|SUM|MIN|MAX|AVG)\\s*\\(|\\bGROUP\\s+BY\\b",
+                    Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Matches GoogleSQL string-literal forms so {@link #stripStringLiterals}
+     * can mask their contents before keyword detection. Covers, in priority
+     * order:
+     * <ol>
+     *   <li>triple-double-quoted {@code """..."""} (allows lone {@code "} and
+     *       {@code ""} inside)</li>
+     *   <li>triple-single-quoted {@code '''...'''} (allows lone {@code '} and
+     *       {@code ''} inside)</li>
+     *   <li>double-quoted {@code "..."} with backslash escapes and {@code ""}
+     *       escape</li>
+     *   <li>single-quoted {@code '...'} with backslash escapes and {@code ''}
+     *       escape</li>
+     * </ol>
+     * All four forms accept an optional {@code r}/{@code R} raw-string prefix;
+     * for masking purposes the raw vs non-raw distinction does not matter
+     * (we are only removing the literal text, not interpreting escapes).
+     * <p>
+     * Triple-quoted alternatives must come before the single-character forms;
+     * otherwise the engine would match the first three quotes of
+     * {@code '''abc'''} as an empty single literal followed by garbage.
+     * The {@code (?s)} DOTALL flag lets literals span newlines.
+     */
+    private static final Pattern STRING_LITERAL_PATTERN =
+            Pattern.compile(
+                    "(?s)"
+                            + "[rR]?\"\"\"(?:\\\\.|\"(?!\"\")|[^\"\\\\])*\"\"\""
+                            + "|[rR]?'''(?:\\\\.|'(?!'')|[^'\\\\])*'''"
+                            + "|[rR]?\"(?:\\\\.|\"\"|[^\"\\\\])*\""
+                            + "|[rR]?'(?:\\\\.|''|[^'\\\\])*'");
+
+    /**
+     * Replaces all GoogleSQL string literals in a SQL fragment with empty
+     * placeholders so that keyword detection (ORDER BY / aggregate) cannot be
+     * confused by literal content. Covers single-, double-, and triple-quoted
+     * forms, with the optional {@code r}/{@code R} raw prefix.
+     * <p>
+     * Package-private for unit testing.
+     */
+    static String stripStringLiterals(String sql) {
+        return sql == null ? null : STRING_LITERAL_PATTERN.matcher(sql).replaceAll("''");
+    }
+
+    /**
+     * Returns {@code true} if {@code sql} already contains an {@code ORDER BY}
+     * clause (case-insensitive), after stripping string literals so that an
+     * {@code ORDER BY} substring inside a quoted literal does not false-positive.
+     * Package-private for unit testing.
+     */
+    static boolean hasOrderByClause(String sql) {
+        return sql != null && ORDER_BY_CLAUSE.matcher(stripStringLiterals(sql)).find();
+    }
+
+    /**
+     * Returns {@code true} if {@code sql} contains an aggregate function call
+     * ({@code COUNT|SUM|MIN|MAX|AVG}) or a {@code GROUP BY} clause, after
+     * stripping string literals. Used to suppress the default
+     * {@code ORDER BY partitionKey, sortKey} tiebreaker for aggregate queries
+     * (GoogleSQL rejects ORDER BY columns that aren't aggregated or in
+     * GROUP BY). Package-private for unit testing.
+     */
+    static boolean containsAggregate(String sql) {
+        return sql != null && AGGREGATE_PATTERN.matcher(stripStringLiterals(sql)).find();
+    }
+
     private final Spanner spanner;
     private final DatabaseClient databaseClient;
     private final MulticloudDbClientConfig config;
@@ -72,6 +162,8 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     private final String instanceId;
     private final String databaseId;
     private final SpannerChangeFeedReader changeFeedReader;
+    private final boolean emulatorMode;
+    private volatile boolean closed = false;
 
     /**
      * Constructs a Cloud Spanner provider client from the supplied configuration.
@@ -91,6 +183,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
         this.instanceId = config.connection().get(SpannerConstants.CONFIG_INSTANCE_ID);
         this.databaseId = config.connection().get(SpannerConstants.CONFIG_DATABASE_ID);
         String emulatorHost = config.connection().get(SpannerConstants.CONFIG_EMULATOR_HOST);
+        this.emulatorMode = emulatorHost != null && !emulatorHost.isBlank();
 
         if (instanceId == null || instanceId.isBlank()) {
             throw new IllegalArgumentException(SpannerConstants.ERR_INSTANCE_ID_REQUIRED);
@@ -104,7 +197,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                 .setHeaderProvider(FixedHeaderProvider.create(
                         "user-agent", SdkUserAgent.userAgent(config)));
 
-        if (emulatorHost != null && !emulatorHost.isBlank()) {
+        if (emulatorMode) {
             builder.setEmulatorHost(emulatorHost);
         }
 
@@ -129,7 +222,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      *       {@code key.partitionKey()}.</li>
      * </ul>
      * All remaining document fields are written as individual columns via
-     * {@link #writeMutationFields}. If the row already exists, the mutation fails
+     * {@link #writeFullDocument}. If the row already exists, the mutation fails
      * with {@link com.multiclouddb.api.MulticloudDbErrorCategory#CONFLICT}.
      *
      * @param address  the logical database + collection; the collection maps directly to
@@ -141,13 +234,15 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.CREATE);
+        validateNoReservedFields(document, OperationNames.CREATE);
         try {
             String table = address.collection();
             Mutation.WriteBuilder mutation = Mutation.newInsertBuilder(table)
                     .set(SpannerConstants.FIELD_PARTITION_KEY).to(key.partitionKey())
                     .set(SpannerConstants.FIELD_SORT_KEY).to(key.sortKey() != null ? key.sortKey() : key.partitionKey());
 
-            writeMutationFields(mutation, document);
+            writeFullDocument(mutation, document, OperationNames.CREATE);
             databaseClient.write(List.of(mutation.build()));
             logItemDiagnostics(OperationNames.CREATE, address);
         } catch (SpannerException e) {
@@ -156,31 +251,124 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
-     * Replaces an existing row in Spanner (UPDATE mutation).
+     * Replaces field values on an existing row in Spanner (partial update).
      * <p>
      * Uses a Spanner {@code UPDATE} mutation, which requires the row to already exist.
      * If the row is not found, Spanner throws a {@code NOT_FOUND} error which is mapped
      * to {@link com.multiclouddb.api.MulticloudDbErrorCategory#NOT_FOUND}.
-     * The primary key columns and all document fields are written consistently with
-     * {@link #create}.
+     * <p>
+     * <strong>FIELD_DATA merge.</strong> Because Spanner's {@code UPDATE} mutation
+     * is a <em>partial</em> write — columns not present in {@code document} are
+     * <em>preserved</em> at the row level, not overwritten — but the SDK uses the
+     * internal {@link SpannerConstants#FIELD_DATA} metadata column to track which
+     * fields are SDK-visible on read (so {@link SpannerRowMapper} can distinguish
+     * "explicitly null" from "absent schema column"), naively rewriting
+     * {@code FIELD_DATA} with only the keys in {@code document} would hide
+     * every previously-written field on the next {@code read()}.
+     * <p>
+     * To avoid that silent-data-loss bug, this method runs inside a
+     * {@code readWriteTransaction}: it reads the existing {@code FIELD_DATA},
+     * unions the field set with {@code document.keySet()}, and writes the
+     * merged metadata together with the partial column updates in a single
+     * atomic commit.
+     * <p>
+     * <strong>Cross-provider asymmetry.</strong> This makes Spanner
+     * {@code update()} a partial update that preserves unrelated fields. The
+     * sibling providers do not: Cosmos {@code update()} calls
+     * {@code replaceItem} (full-document replace) and DynamoDB
+     * {@code update()} calls {@code PutItem} with an {@code attribute_exists}
+     * guard (full-item replace). The portable SPI contract for {@code update()}
+     * partial-vs-full semantics is currently undefined; aligning the three
+     * providers is tracked as follow-up work.
      *
      * @param address  the logical database + collection
      * @param key      the document key identifying the row to update
-     * @param document the new document payload; replaces all non-key columns
+     * @param document the document payload; fields present here become column values,
+     *                 fields absent here keep their existing values
      * @param options  operation options (currently unused by this provider)
      * @throws com.multiclouddb.api.MulticloudDbException category {@code NOT_FOUND} if
      *         the row does not exist, or any other Spanner error
      */
     @Override
     public void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.UPDATE);
+        validateNoReservedFields(document, OperationNames.UPDATE);
         try {
             String table = address.collection();
-            Mutation.WriteBuilder mutation = Mutation.newUpdateBuilder(table)
-                    .set(SpannerConstants.FIELD_PARTITION_KEY).to(key.partitionKey())
-                    .set(SpannerConstants.FIELD_SORT_KEY).to(key.sortKey() != null ? key.sortKey() : key.partitionKey());
+            String pk = key.partitionKey();
+            String sk = key.sortKey() != null ? key.sortKey() : key.partitionKey();
 
-            writeMutationFields(mutation, document);
-            databaseClient.write(List.of(mutation.build()));
+            databaseClient.readWriteTransaction().run(txn -> {
+                // 1) Read the existing FIELD_DATA so we can merge the field set.
+                //    Use a forward-compat null on missing column (legacy rows).
+                Set<String> mergedFields = new LinkedHashSet<>();
+                com.google.cloud.spanner.Struct existing =
+                        txn.readRow(table, Key.of(pk, sk), List.of(SpannerConstants.FIELD_DATA));
+                if (existing == null) {
+                    // Row not found — throw a typed SpannerException with the
+                    // NOT_FOUND code so the outer catch + SpannerErrorMapper
+                    // surfaces MulticloudDbErrorCategory.NOT_FOUND, exactly
+                    // matching the behaviour of a plain UPDATE mutation
+                    // (which also fails with NOT_FOUND at commit time).
+                    // Throwing a non-SpannerException here causes the runner
+                    // to wrap it in an opaque SpannerException whose ErrorCode
+                    // is missing, which the mapper then degrades to
+                    // PROVIDER_ERROR — breaking error-normalisation parity.
+                    throw com.google.cloud.spanner.SpannerExceptionFactory.newSpannerException(
+                            ErrorCode.NOT_FOUND,
+                            "Spanner row not found for update: partitionKey=" + pk
+                                    + ", sortKey=" + sk);
+                }
+                // Track whether we successfully parsed a pre-existing FIELD_DATA
+                // metadata blob. If FIELD_DATA was NULL (a legacy row that pre-dates
+                // this SDK ever writing to it) or malformed, we cannot know the
+                // complete set of SDK-visible columns for this row. Stamping
+                // FIELD_DATA with only the current update payload's keys would then
+                // cause SpannerRowMapper to filter out every legacy column on the
+                // next read (silent data loss). In that case we deliberately leave
+                // FIELD_DATA alone — the reader's "no metadata => project every
+                // column" fallback (SpannerRowMapper.toJsonNode L84-95 +
+                // SpannerRowMapper.parseFieldMetadata) preserves the legacy columns.
+                boolean hadValidPriorMetadata = false;
+                if (!existing.isNull(0)) {
+                    String existingJson = existing.getString(0);
+                    try {
+                        List<String> parsed = JSON_MAPPER.readValue(existingJson,
+                                JSON_MAPPER.getTypeFactory().constructCollectionType(List.class, String.class));
+                        mergedFields.addAll(parsed);
+                        hadValidPriorMetadata = true;
+                    } catch (com.fasterxml.jackson.core.JsonProcessingException ignored) {
+                        // Malformed FIELD_DATA on the existing row — treat the row
+                        // as legacy (no trustworthy metadata). hadValidPriorMetadata
+                        // stays false, so we skip the FIELD_DATA stamp below and
+                        // let the reader fallback project every column.
+                    }
+                }
+
+                // 2) Build the partial-update mutation. Document fields go in via
+                //    writeDocumentFields; the merged FIELD_DATA is set explicitly
+                //    after, so previously-written columns remain visible on read.
+                Mutation.WriteBuilder mutation = Mutation.newUpdateBuilder(table)
+                        .set(SpannerConstants.FIELD_PARTITION_KEY).to(pk)
+                        .set(SpannerConstants.FIELD_SORT_KEY).to(sk);
+                List<String> newFields = writeDocumentFields(mutation, document);
+                mergedFields.addAll(newFields);
+
+                // 3) Stamp the merged FIELD_DATA so reads see the union of every
+                //    SDK-written column for this row, not just the partial update.
+                //    Skipped for legacy / malformed-metadata rows — see the
+                //    hadValidPriorMetadata comment above. A subsequent upsert()
+                //    (REPLACE) or create() will promote the row into the
+                //    metadata regime by writing a complete FIELD_DATA.
+                if (hadValidPriorMetadata) {
+                    mutation.set(SpannerConstants.FIELD_DATA).to(
+                            serialiseFieldNames(new ArrayList<>(mergedFields), OperationNames.UPDATE));
+                }
+
+                txn.buffer(mutation.build());
+                return null;
+            });
+
             logItemDiagnostics(OperationNames.UPDATE, address);
         } catch (SpannerException e) {
             throw SpannerErrorMapper.map(e, OperationNames.UPDATE);
@@ -188,10 +376,12 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
-     * Creates or replaces a row in Spanner (INSERT_OR_UPDATE mutation / upsert semantics).
+     * Creates or replaces a row in Spanner (REPLACE mutation / upsert semantics).
      * <p>
-     * Uses a Spanner {@code INSERT_OR_UPDATE} mutation, which inserts the row if it does
-     * not exist, or updates it in-place if it does.
+     * Uses a Spanner {@code REPLACE} mutation, which deletes the existing row (if any)
+     * and inserts the new one. This ensures full document replacement: columns not present
+     * in the new document are set to {@code NULL}, matching the behavior of schemaless
+     * stores (Cosmos, DynamoDB) where upsert fully replaces the document.
      *
      * @param address  the logical database + collection
      * @param key      the document key
@@ -201,13 +391,15 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.UPSERT);
+        validateNoReservedFields(document, OperationNames.UPSERT);
         try {
             String table = address.collection();
-            Mutation.WriteBuilder mutation = Mutation.newInsertOrUpdateBuilder(table)
+            Mutation.WriteBuilder mutation = Mutation.newReplaceBuilder(table)
                     .set(SpannerConstants.FIELD_PARTITION_KEY).to(key.partitionKey())
                     .set(SpannerConstants.FIELD_SORT_KEY).to(key.sortKey() != null ? key.sortKey() : key.partitionKey());
 
-            writeMutationFields(mutation, document);
+            writeFullDocument(mutation, document, OperationNames.UPSERT);
             databaseClient.write(List.of(mutation.build()));
             logItemDiagnostics(OperationNames.UPSERT, address);
         } catch (SpannerException e) {
@@ -216,28 +408,132 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
-     * Writes all document fields (except primary key columns) into a Spanner mutation.
+     * Rejects any document that contains a field name reserved by the Spanner
+     * provider for internal metadata. Today the only reserved name is
+     * {@link SpannerConstants#FIELD_DATA}. Called by every write-side public
+     * entry point ({@code create} / {@code update} / {@code upsert}) before
+     * the call enters any Spanner SDK call — including the
+     * {@code readWriteTransaction().run(...)} lambda in {@link #update}, which
+     * would otherwise wrap our typed {@link MulticloudDbException} as an
+     * opaque {@code SpannerException} and degrade the category to
+     * {@code PROVIDER_ERROR}.
+     *
+     * @param document    the document the caller is trying to write; may be {@code null}
+     * @param operationOp the operation name (for the error envelope)
+     * @throws MulticloudDbException category {@code INVALID_REQUEST} if a
+     *         reserved field name is present
+     */
+    private static void validateNoReservedFields(Map<String, Object> document, String operationOp) {
+        if (document == null) return;
+        // Spanner resolves column names case-insensitively (`Data`, `DATA`, and
+        // `data` all bind to the same column at write time). The reserved-field
+        // check therefore must also be case-insensitive — otherwise a user
+        // document like {"Data": "x"} would slip past validation and the
+        // mutation builder would later try to set both the SDK-internal column
+        // for "Data" *and* our own FIELD_DATA stamp, producing a deep
+        // INVALID_ARGUMENT: Duplicate column name from the Spanner client
+        // instead of the friendly INVALID_REQUEST we want to surface here.
+        String reservedHit = null;
+        for (String key : document.keySet()) {
+            if (key != null && SpannerConstants.FIELD_DATA.equalsIgnoreCase(key)) {
+                reservedHit = key;
+                break;
+            }
+        }
+        if (reservedHit != null) {
+            String message = "Field name '" + reservedHit + "' collides with reserved name '"
+                    + SpannerConstants.FIELD_DATA + "' (case-insensitive match — Spanner column "
+                    + "names are case-insensitive); rename the field in your document. (Cosmos "
+                    + "and DynamoDB do not reserve this name; this is a Spanner-specific "
+                    + "restriction tracked for a future schema-migration release.)";
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.INVALID_REQUEST,
+                    message,
+                    ProviderId.SPANNER, operationOp, false, null));
+        }
+    }
+
+    /**
+     * Writes the document field values into a Spanner mutation and returns the
+     * list of explicitly-written field names.
      * <p>
-     * The fields {@code partitionKey} and {@code sortKey} are skipped because they are
-     * set by the caller before invoking this method. Each remaining entry is written
-     * via {@link #setMutationValue}.
+     * The fields {@code partitionKey} and {@code sortKey} are skipped because they
+     * are set by the caller before invoking this method. The internal
+     * {@link SpannerConstants#FIELD_DATA} column is also skipped (it is reserved
+     * for SDK metadata and is written by the caller, not from user input).
+     * Each remaining entry is written via {@link #setMutationValue}.
+     * <p>
+     * The returned list reflects only the fields written by <em>this</em> call —
+     * the caller is responsible for merging with any previously-stored
+     * {@code FIELD_DATA} when partial-update semantics require it (see
+     * {@link #update}).
      *
      * @param mutation the mutation builder to populate
      * @param document the document payload; may be {@code null} (no fields written)
+     * @return the field names that were written by this call (may be empty)
      */
-    private void writeMutationFields(Mutation.WriteBuilder mutation, Map<String, Object> document) {
-        if (document != null) {
-            for (Map.Entry<String, Object> entry : document.entrySet()) {
-                String name = entry.getKey();
-                Object value = entry.getValue();
-
-                // Skip primary key fields — already set by caller
-                if (SpannerConstants.FIELD_SORT_KEY.equals(name) || SpannerConstants.FIELD_PARTITION_KEY.equals(name))
-                    continue;
-
-                setMutationValue(mutation, name, value);
-            }
+    private List<String> writeDocumentFields(Mutation.WriteBuilder mutation, Map<String, Object> document) {
+        List<String> fieldNames = new ArrayList<>();
+        if (document == null) {
+            return fieldNames;
         }
+        for (Map.Entry<String, Object> entry : document.entrySet()) {
+            String name = entry.getKey();
+            Object value = entry.getValue();
+
+            // Skip primary key fields — already set by caller from the
+            // MulticloudDbKey. These names are conventionally not user-document
+            // fields in this SDK (Cosmos/Dynamo also inject them on top of the
+            // user payload), so silent skip is consistent across providers.
+            if (SpannerConstants.FIELD_SORT_KEY.equals(name) || SpannerConstants.FIELD_PARTITION_KEY.equals(name))
+                continue;
+            // Defensive: the internal metadata column is reserved. Public
+            // methods (create/update/upsert) validate up front via
+            // {@link #validateNoReservedFields} before any Spanner SDK call,
+            // so this branch should never be reached. Case-insensitive match —
+            // Spanner column names are case-insensitive, so `Data` / `DATA` /
+            // `data` would all collide with the FIELD_DATA stamp. Kept as a
+            // no-op skip in case a future code path constructs a write builder
+            // without routing through that validation.
+            if (name != null && SpannerConstants.FIELD_DATA.equalsIgnoreCase(name))
+                continue;
+
+            setMutationValue(mutation, name, value);
+            fieldNames.add(name);
+        }
+        return fieldNames;
+    }
+
+    /**
+     * Serialises a list of field names for storage in the {@code FIELD_DATA}
+     * metadata column. Wraps the rare {@link com.fasterxml.jackson.core.JsonProcessingException}
+     * as a {@link MulticloudDbException} so callers don't see a raw
+     * {@code IllegalStateException}.
+     */
+    private static String serialiseFieldNames(List<String> fieldNames, String op) {
+        try {
+            return JSON_MAPPER.writeValueAsString(fieldNames);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.PROVIDER_ERROR,
+                    "Failed to serialise FIELD_DATA: " + e.getMessage(),
+                    ProviderId.SPANNER, op, false, null));
+        }
+    }
+
+    /**
+     * Writes document fields into a mutation and stamps the {@link
+     * SpannerConstants#FIELD_DATA} metadata column with the full set of fields
+     * written by this call. Suitable for full-document write paths
+     * ({@code create} / {@code upsert}, where the entire row is being written).
+     * <p>
+     * Do not call this from {@code update()} — partial updates require
+     * read-merge-write of {@code FIELD_DATA} so previously-written columns
+     * remain visible (see {@link #update}).
+     */
+    private void writeFullDocument(Mutation.WriteBuilder mutation, Map<String, Object> document, String op) {
+        List<String> fieldNames = writeDocumentFields(mutation, document);
+        mutation.set(SpannerConstants.FIELD_DATA).to(serialiseFieldNames(fieldNames, op));
     }
 
     /**
@@ -255,6 +551,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public DocumentResult read(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
+        checkOpen(OperationNames.READ);
         try {
             String table = address.collection();
             String partitionKeyVal = key.partitionKey();
@@ -307,6 +604,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void delete(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
+        checkOpen(OperationNames.DELETE);
         try {
             String table = address.collection();
             String partitionKeyVal = key.partitionKey();
@@ -350,6 +648,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public QueryPage query(ResourceAddress address, QueryRequest query, OperationOptions options) {
+        checkOpen(OperationNames.QUERY);
         try {
             String table = address.collection();
             long offset = SpannerContinuationToken.decode(query.continuationToken());
@@ -427,6 +726,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     @Override
     public QueryPage queryWithTranslation(ResourceAddress address, TranslatedQuery translated,
             QueryRequest query, OperationOptions options) {
+        checkOpen(OperationNames.QUERY_WITH_TRANSLATION);
         try {
             long offset = SpannerContinuationToken.decode(query.continuationToken());
             int pageSize = query.maxPageSize() != null ? query.maxPageSize() : SpannerConstants.PAGE_SIZE_DEFAULT;
@@ -499,9 +799,38 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     @Override
-    public void close() {
-        if (spanner != null) {
-            spanner.close();
+    public synchronized void close() {
+        if (closed) return;
+        closed = true;
+        // Spanner.close() is idempotent in the SDK; we keep the reference final
+        // so concurrent callers cannot observe a NULL or half-replaced field.
+        spanner.close();
+    }
+
+    /**
+     * Guards public entry points against use after {@link #close()}.
+     * <p>
+     * Verifies the client is open and throws a typed CLIENT_CLOSED exception otherwise.
+     * <p>
+     * Throws a typed {@link MulticloudDbException} with category
+     * {@link MulticloudDbErrorCategory#CLIENT_CLOSED} so callers can branch
+     * on {@code e.error().category()} without string-matching the message.
+     * <p>
+     * The {@code operation} argument is the caller's operation name (see
+     * {@link OperationNames}). Stamping the actual attempted operation onto
+     * {@link MulticloudDbError#operation()} keeps post-close error telemetry
+     * attributable to the failing call ({@code create}, {@code read}, etc.)
+     * rather than the generic literal {@code "checkOpen"}.
+     *
+     * @param operation the caller's operation name (e.g.
+     *                  {@link OperationNames#CREATE}); must not be {@code null}.
+     */
+    private void checkOpen(String operation) {
+        if (closed) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.CLIENT_CLOSED,
+                    "SpannerProviderClient has been closed",
+                    ProviderId.SPANNER, operation, false, null));
         }
     }
 
@@ -510,6 +839,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     @Override
     public java.util.List<com.multiclouddb.api.changefeed.ChangeFeedCursor> listCursors(
             ResourceAddress address) {
+        checkOpen(OperationNames.LIST_CURSORS);
         return changeFeedReader.listCursors(address);
     }
 
@@ -518,17 +848,111 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             ResourceAddress address,
             com.multiclouddb.api.changefeed.ChangeFeedCursor cursor,
             OperationOptions options) {
+        checkOpen(OperationNames.READ_CHANGES);
         return changeFeedReader.readChanges(address, cursor, options);
     }
 
     // ── Provisioning ────────────────────────────────────────────────────────
 
     /**
-     * No-op — the Spanner database is set at client construction time.
+     * Ensures the Spanner database exists, creating it if absent.
+     * <p>
+     * The {@code database} argument <em>must equal</em> the {@code databaseId} this
+     * client was constructed with — operations route to the bound database regardless
+     * of {@link com.multiclouddb.api.ResourceAddress#database()}, so accepting a
+     * different name here would silently provision the wrong database. A
+     * {@link MulticloudDbException} with category
+     * {@link MulticloudDbErrorCategory#INVALID_REQUEST} is thrown if the names disagree
+     * — typed so callers can branch on {@code e.error().category()} rather than
+     * string-matching the message.
+     * <p>
+     * <strong>Emulator mode</strong> ({@code emulatorHost} configured): also ensures the
+     * Spanner instance exists, creating it with the emulator's built-in
+     * {@code emulator-config} instance config if necessary. This is required because
+     * the local emulator starts with no instances.
+     * <p>
+     * <strong>Production mode</strong> (live Cloud Spanner): the instance is expected to
+     * already exist; only the database is created. Creating a Spanner instance is a
+     * billable, region-specific operation that should be done deliberately (via Terraform,
+     * gcloud, or the Cloud Console), not implicitly from an SDK call.
+     * <p>
+     * Idempotent: {@code ALREADY_EXISTS} from either creation is swallowed.
      */
     @Override
     public void ensureDatabase(String database) {
-        LOG.debug("ensureDatabase is a no-op for Spanner (database={})", database);
+        checkOpen(OperationNames.ENSURE_DATABASE);
+        if (!databaseId.equals(database)) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.INVALID_REQUEST,
+                    "ensureDatabase('" + database + "') does not match the configured databaseId ('"
+                            + databaseId + "'); this client routes operations to the configured "
+                            + "database only. Construct a separate client for a different database.",
+                    ProviderId.SPANNER, OperationNames.ENSURE_DATABASE, false, null));
+        }
+        try {
+            if (emulatorMode) {
+                // Emulator only: create the instance with the built-in emulator config.
+                var instanceAdmin = spanner.getInstanceAdminClient();
+                try {
+                    instanceAdmin.createInstance(
+                            com.google.cloud.spanner.InstanceInfo.newBuilder(
+                                    com.google.cloud.spanner.InstanceId.of(projectId, instanceId))
+                                    .setInstanceConfigId(
+                                            com.google.cloud.spanner.InstanceConfigId.of(
+                                                    projectId, SpannerConstants.EMULATOR_INSTANCE_CONFIG_ID))
+                                    .setDisplayName(instanceId)
+                                    .setNodeCount(1)
+                                    .build()).get();
+                    LOG.info("Created Spanner instance (emulator): {}", instanceId);
+                } catch (java.util.concurrent.ExecutionException e) {
+                    if (e.getCause() instanceof SpannerException se
+                            && se.getErrorCode() == ErrorCode.ALREADY_EXISTS) {
+                        LOG.debug("Spanner instance already exists: {}", instanceId);
+                    } else {
+                        throw e;
+                    }
+                }
+            }
+
+            // Ensure database exists (both modes).
+            DatabaseAdminClient dbAdmin = spanner.getDatabaseAdminClient();
+            try {
+                dbAdmin.createDatabase(instanceId, database, List.of()).get();
+                LOG.info("Created Spanner database: {}", database);
+            } catch (java.util.concurrent.ExecutionException e) {
+                if (e.getCause() instanceof SpannerException se
+                        && se.getErrorCode() == ErrorCode.ALREADY_EXISTS) {
+                    LOG.debug("Spanner database already exists: {}", database);
+                } else {
+                    throw e;
+                }
+            }
+        } catch (InterruptedException e) {
+            // Preserve the interrupt flag (per the standard contract) and surface
+            // the failure through the SDK's typed exception envelope so callers
+            // never have to catch a raw RuntimeException to detect interruption.
+            // TRANSIENT_FAILURE because the operation can usually be retried on a
+            // non-interrupted thread.
+            Thread.currentThread().interrupt();
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.TRANSIENT_FAILURE,
+                    "Interrupted while creating Spanner database: " + database,
+                    ProviderId.SPANNER, OperationNames.ENSURE_DATABASE, true, null), e);
+        } catch (java.util.concurrent.ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof SpannerException se) {
+                throw SpannerErrorMapper.map(se, OperationNames.ENSURE_DATABASE);
+            }
+            // Non-Spanner cause (e.g. a runtime failure from the admin RPC layer):
+            // wrap as PROVIDER_ERROR so callers see the SDK's portable error type
+            // instead of a raw RuntimeException. The original cause is attached.
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.PROVIDER_ERROR,
+                    "Failed to create Spanner database: " + database,
+                    ProviderId.SPANNER, OperationNames.ENSURE_DATABASE, false, null), cause);
+        } catch (SpannerException se) {
+            throw SpannerErrorMapper.map(se, OperationNames.ENSURE_DATABASE);
+        }
     }
 
     /**
@@ -551,12 +975,13 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      *
      * @param address the logical database + collection; {@code address.collection()} is
      *                used as the Spanner table name
-     * @throws com.multiclouddb.api.MulticloudDbException on DDL errors
-     * @throws RuntimeException if the DDL future completes exceptionally for a non-Spanner
-     *         reason
+     * @throws com.multiclouddb.api.MulticloudDbException on DDL errors, or on a non-Spanner
+     *         cause from the DDL future (wrapped as {@code PROVIDER_ERROR} so callers
+     *         see the typed envelope rather than a raw {@code RuntimeException})
      */
     @Override
     public void ensureContainer(ResourceAddress address) {
+        checkOpen(OperationNames.ENSURE_CONTAINER);
         String tableName = address.collection();
         try {
             // Check if table already exists by attempting a trivial query
@@ -570,7 +995,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
         } catch (SpannerException e) {
             if (e.getErrorCode() != ErrorCode.NOT_FOUND
                     && e.getErrorCode() != ErrorCode.INVALID_ARGUMENT) {
-                throw SpannerErrorMapper.map(e, "ensureContainer");
+                throw SpannerErrorMapper.map(e, OperationNames.ENSURE_CONTAINER);
             }
             // Table doesn't exist — create it
         }
@@ -581,13 +1006,32 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             adminClient.updateDatabaseDdl(
                     instanceId, databaseId, List.of(ddl), null).get();
             LOG.info("Created Spanner table: {}", tableName);
+        } catch (InterruptedException e) {
+            // Preserve the interrupt flag and surface as TRANSIENT_FAILURE so
+            // callers don't have to catch a raw RuntimeException for interruption.
+            Thread.currentThread().interrupt();
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.TRANSIENT_FAILURE,
+                    "Interrupted while creating Spanner table: " + tableName,
+                    ProviderId.SPANNER, OperationNames.ENSURE_CONTAINER, true, null), e);
         } catch (Exception e) {
             if (e.getMessage() != null && e.getMessage().contains(SpannerConstants.DDL_ERR_DUPLICATE_NAME)) {
                 LOG.debug("Spanner table already exists (race): {}", tableName);
             } else if (e instanceof SpannerException se) {
-                throw SpannerErrorMapper.map(se, "ensureContainer");
+                throw SpannerErrorMapper.map(se, OperationNames.ENSURE_CONTAINER);
+            } else if (e instanceof java.util.concurrent.ExecutionException ee
+                    && ee.getCause() instanceof SpannerException se) {
+                throw SpannerErrorMapper.map(se, OperationNames.ENSURE_CONTAINER);
             } else {
-                throw new RuntimeException("Failed to create Spanner table: " + tableName, e);
+                // Non-Spanner cause from the DDL future — surface through the
+                // SDK's typed envelope (PROVIDER_ERROR) rather than leaking a
+                // raw RuntimeException to callers.
+                Throwable cause = e instanceof java.util.concurrent.ExecutionException ee ? ee.getCause() : e;
+                throw new MulticloudDbException(new MulticloudDbError(
+                        MulticloudDbErrorCategory.PROVIDER_ERROR,
+                        "Failed to create Spanner table: " + tableName,
+                        ProviderId.SPANNER, OperationNames.ENSURE_CONTAINER, false, null),
+                        cause);
             }
         }
     }
@@ -615,16 +1059,68 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     /**
      * Appends ORDER BY and LIMIT N clauses for result-set control.
      * ORDER BY is appended before LIMIT/OFFSET is applied in {@link #executeStatement}.
+     * <p>
+     * When no explicit ordering is requested, a default {@code ORDER BY partitionKey, sortKey}
+     * is appended to guarantee deterministic OFFSET-based pagination.
+     * <p>
+     * The default tiebreaker is <b>skipped</b> when:
+     * <ul>
+     *   <li>The caller-supplied SQL already contains an {@code ORDER BY} clause
+     *       (idempotency guard — uses a word-boundary regex applied to a
+     *       string-literal-stripped copy of the SQL, so quoted text containing
+     *       "ORDER BY" does not false-positive). The caller owns ordering.</li>
+     *   <li>The SQL contains an aggregate function ({@code COUNT, SUM, MIN,
+     *       MAX, AVG}) or a {@code GROUP BY} clause — GoogleSQL rejects
+     *       {@code ORDER BY <non-grouped column>} on aggregate queries.</li>
+     * </ul>
      */
-    private String appendResultSetControl(String sql, QueryRequest query) {
+    static String appendResultSetControl(String sql, QueryRequest query) {
+        // Caller-supplied SQL already orders its results — do not emit a
+        // second ORDER BY clause, even when the caller also populates
+        // QueryRequest.orderBy().
+        if (hasOrderByClause(sql)) {
+            return sql;
+        }
+        // Aggregate queries reject ORDER BY on non-aggregated columns.
+        boolean aggregate = containsAggregate(sql);
         StringBuilder result = new StringBuilder(sql);
         if (query != null && query.orderBy() != null && !query.orderBy().isEmpty()) {
+            if (aggregate) {
+                // Caller-supplied ordering on an aggregate query — honor the
+                // caller's explicit ordering, but skip the primary-key
+                // tiebreakers (GoogleSQL would reject them).
+                result.append(" ORDER BY ");
+                for (int i = 0; i < query.orderBy().size(); i++) {
+                    SortOrder so = query.orderBy().get(i);
+                    if (i > 0) result.append(", ");
+                    result.append(so.field()).append(" ").append(so.direction().name());
+                }
+                return result.toString();
+            }
+            boolean sortsByPartitionKey = false;
+            boolean sortsBySortKey = false;
             result.append(" ORDER BY ");
             for (int i = 0; i < query.orderBy().size(); i++) {
                 SortOrder so = query.orderBy().get(i);
                 if (i > 0) result.append(", ");
                 result.append(so.field()).append(" ").append(so.direction().name());
+                if (SpannerConstants.FIELD_PARTITION_KEY.equals(so.field())) sortsByPartitionKey = true;
+                if (SpannerConstants.FIELD_SORT_KEY.equals(so.field())) sortsBySortKey = true;
             }
+            // Add only the missing primary key columns as tiebreakers for deterministic
+            // pagination. Avoid duplicating columns the caller already sorted by.
+            if (!sortsByPartitionKey) {
+                result.append(", ").append(SpannerConstants.FIELD_PARTITION_KEY);
+            }
+            if (!sortsBySortKey) {
+                result.append(", ").append(SpannerConstants.FIELD_SORT_KEY);
+            }
+        } else if (query != null && !aggregate) {
+            // No explicit ordering — use primary key for deterministic OFFSET pagination.
+            // Skipped for aggregate queries: GoogleSQL rejects ORDER BY on non-aggregated
+            // columns (e.g. SELECT COUNT(*) FROM t ORDER BY partitionKey is invalid).
+            result.append(" ORDER BY ").append(SpannerConstants.FIELD_PARTITION_KEY)
+                  .append(", ").append(SpannerConstants.FIELD_SORT_KEY);
         }
         return result.toString();
     }
@@ -746,12 +1242,26 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
+     * Shared serialiser for the SDK's internal {@code FIELD_DATA} JSON envelope
+     * and complex value marshalling. Intentionally {@code private} so unrelated
+     * code (including tests in this package) cannot mutate its configuration
+     * and silently alter the on-the-wire format of every Spanner row.
+     */
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON_MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
+    /**
      * Sets a single column value in a Spanner mutation builder.
      * <p>
      * Supported Java types: {@link String}, {@link Long}, {@link Integer},
      * {@link Boolean}, {@link Double}, {@link Float}, and {@code null}
-     * (written as {@code NULL STRING}). Complex types (maps, lists, etc.) are
-     * serialised via {@link Object#toString()}.
+     * (written as {@code NULL STRING}). {@link Map} and {@link java.util.Collection}
+     * values are serialised as JSON with an unambiguous marker prefix
+     * ({@link SpannerConstants#JSON_VALUE_MARKER}); on read, the marker is detected
+     * and the value is parsed back into a JSON node. Any other type falls back to
+     * {@link Object#toString()} to preserve the prior behaviour and avoid surprise
+     * failures for types Jackson cannot handle without extra modules (e.g.,
+     * {@code java.time.Instant}).
      *
      * @param mutation the mutation builder to write the column into
      * @param column   the Spanner column name
@@ -761,7 +1271,15 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
         if (value == null) {
             mutation.set(column).to((String) null);
         } else if (value instanceof String s) {
-            mutation.set(column).to(s);
+            // Escape leading SOH (U+0001) so a user string starting with the
+            // SDK's JSON_VALUE_MARKER (which begins with U+0001) cannot collide
+            // with marker-prefixed encoded values on read. Reader strips one
+            // leading SOH when it sees the U+0001 U+0001 escape pair.
+            if (!s.isEmpty() && s.charAt(0) == '\u0001') {
+                mutation.set(column).to('\u0001' + s);
+            } else {
+                mutation.set(column).to(s);
+            }
         } else if (value instanceof Long l) {
             mutation.set(column).to(l);
         } else if (value instanceof Integer i) {
@@ -772,8 +1290,22 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             mutation.set(column).to(d);
         } else if (value instanceof Float f) {
             mutation.set(column).to((double) f);
+        } else if (value instanceof Map<?, ?> || value instanceof Collection<?>) {
+            // Complex containers: encode as JSON with marker prefix so reads can
+            // unambiguously round-trip them back to Map/List without misclassifying
+            // user strings that happen to start with '{' or '['.
+            try {
+                mutation.set(column).to(
+                        SpannerConstants.JSON_VALUE_MARKER + JSON_MAPPER.writeValueAsString(value));
+            } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+                // Nested unsupported value (e.g. java.time.Instant without jsr310 module):
+                // fall back to toString() rather than failing the write.
+                LOG.debug("JSON serialise failed for column '{}', falling back to toString(): {}",
+                        column, ex.getMessage());
+                mutation.set(column).to(value.toString());
+            }
         } else {
-            // Complex types: serialize as JSON string
+            // Unknown types: preserve historical toString() fallback.
             mutation.set(column).to(value.toString());
         }
     }

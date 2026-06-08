@@ -36,6 +36,30 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - 30 new unit tests in `com.multiclouddb.api.changefeed` covering the cursor
   primitives, page semantics, exception details, and the round-trip /
   expiry / mismatch / tampering paths of the token codec.
+### Added
+
+- **`MulticloudDbErrorCategory.CLIENT_CLOSED` — portable post-close error
+  category.** A new typed category that every provider now surfaces when a
+  CRUD, query, or provisioning call is made after `MulticloudDbClient.close()`.
+  Previously the post-close behaviour was provider-specific: callers
+  received a raw `IllegalStateException` from azure-cosmos / aws-sdk, an
+  `IllegalStateException` from Spanner, or `null` / undefined behaviour
+  depending on the provider. Telemetry, retry-policy, and circuit-breaker
+  layers can now branch on the typed envelope; `CLIENT_CLOSED` is
+  declared non-retryable because closing is a terminal lifecycle state.
+- **`OperationNames.PROVISION_SCHEMA` — operation-name constant.** The
+  `provisionSchema()` entry point now reports its operation name through
+  the typed `MulticloudDbError.operation()` field for diagnostics
+  attribution, matching every other entry point.
+- **`DefaultMulticloudDbClient` facade post-close guard.** The facade now
+  short-circuits every public entry point with `CLIENT_CLOSED` *before*
+  any per-request validation (document size, query parsing, etc.) runs.
+  This guarantees that a closed client never reports `REQUEST_TOO_LARGE`
+  or other category errors that would mask the underlying lifecycle bug.
+  **`MulticloudDbClient.close()` itself is now idempotent**: a second
+  `close()` is a synchronized no-op, and the underlying
+  `providerClient.close()` is invoked exactly once even under concurrent
+  callers.
 
 ### Documentation
 

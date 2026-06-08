@@ -492,6 +492,86 @@ public abstract class CrudConformanceTests {
                 "ensureContainer must be idempotent on subsequent calls");
     }
 
+    @Test @Order(21)
+    @DisplayName("post-close operations throw MulticloudDbException(CLIENT_CLOSED, retryable=false)")
+    void postCloseOperationsThrowClientClosed() throws Exception {
+        // Use a dedicated throwaway client so the shared @BeforeEach/@AfterEach
+        // lifecycle is not perturbed. The shared `client` field is left untouched,
+        // so @AfterEach will close exactly one (still-open) client as designed.
+        //
+        // Provider-portability contract: after close(), every public CRUD/query/
+        // provisioning entry point must surface a typed CLIENT_CLOSED envelope
+        // rather than leaking a raw IllegalStateException from the underlying
+        // SDK (azure-cosmos, aws-sdk, google-cloud-spanner). Telemetry,
+        // retry-policy, and circuit-breaker layers all branch on the typed
+        // category, so a raw exception would silently bypass those layers and
+        // be classified as a generic transport error.
+        //
+        // CLIENT_CLOSED must also be retryable()==false: closing is a terminal
+        // lifecycle state, and a retrying caller would loop indefinitely.
+        MulticloudDbClient throwaway = createClient();
+        throwaway.close();
+
+        ResourceAddress address = getAddress();
+        String marker = "closed-" + UUID.randomUUID().toString().substring(0, 8);
+        MulticloudDbKey key = MulticloudDbKey.of(marker, marker);
+        QueryRequest q = QueryRequest.builder().build();
+
+        // Mutating ops fail before any network call, so no cleanup is needed —
+        // the closed client cannot have written anything.
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.create(address, key, Map.of("k", "v"), null)),
+                "create");
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.read(address, key, null)),
+                "read");
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.update(address, key, Map.of("k", "v"), null)),
+                "update");
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.upsert(address, key, Map.of("k", "v"), null)),
+                "upsert");
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.delete(address, key, null)),
+                "delete");
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.query(address, q, null)),
+                "query");
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.ensureDatabase(address.database())),
+                "ensureDatabase");
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.ensureContainer(address)),
+                "ensureContainer");
+        // Schema contents are irrelevant here: checkOpen() at
+        // DefaultMulticloudDbClient.provisionSchema runs *before* any
+        // delegation to the SPI default, so a closed client throws
+        // CLIENT_CLOSED before the SPI's empty-schema no-op
+        // (MulticloudDbProviderClient.provisionSchema) is ever consulted.
+        // The non-empty schema is kept only to match the shape callers
+        // would normally pass.
+        Map<String, List<String>> schema = Map.of(
+                address.database(), List.of(address.collection()));
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.provisionSchema(schema)),
+                "provisionSchema");
+    }
+
+    private static void assertClientClosed(MulticloudDbException ex, String operation) {
+        assertEquals(MulticloudDbErrorCategory.CLIENT_CLOSED, ex.error().category(),
+                operation + ": post-close operation must surface CLIENT_CLOSED, not "
+                        + ex.error().category());
+        assertFalse(ex.error().retryable(),
+                operation + ": CLIENT_CLOSED must be non-retryable (terminal lifecycle state)");
+        // Telemetry / diagnostics / retry layers branch on the operation name to
+        // attribute post-close failures; assert it matches the caller's op so a
+        // future regression renaming the OperationNames constants or wiring the
+        // wrong constant into a checkOpen() call fails loudly here.
+        assertEquals(operation, ex.error().operation(),
+                operation + ": post-close error must attribute operation to the caller's op, "
+                        + "not '" + ex.error().operation() + "'");
+    }
+
     // ── Portable expression runtime parity ────────────────────────────────────
     //
     // The us1b ExpressionTranslationTest already covers translation. These tests

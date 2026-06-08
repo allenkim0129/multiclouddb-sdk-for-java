@@ -27,6 +27,23 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - AWS SDK v2 (2.34.x) ships the Streams client classes inside the main
   `dynamodb` artifact at `software.amazon.awssdk.services.dynamodb.streams.*`;
   no separate `dynamodbstreams` dependency is required.
+- The new change-feed entry points (`listCursors`, `readChanges`) honour the
+  lifecycle guard described in **Added** below — calls after `close()` raise
+  `MulticloudDbException(CLIENT_CLOSED)` attributed to
+  `listCursors`/`readChanges`. `close()` now also disposes the embedded
+  DynamoDB Streams client owned by `DynamoChangeFeedReader`.
+
+### Added
+
+- **Typed `CLIENT_CLOSED` envelope on post-close entry points.** Every CRUD,
+  query, and provisioning method on `DynamoProviderClient` now consults a
+  lifecycle guard before delegating to the AWS SDK. Calling any entry
+  point after `close()` raises `MulticloudDbException` with category
+  `CLIENT_CLOSED` (non-retryable) attributed to the caller's operation,
+  instead of leaking the raw `IllegalStateException` from the AWS SDK
+  client. `close()` itself is now idempotent under concurrent callers
+  (double-checked-locking `volatile` flag); the underlying
+  `dynamoClient.close()` is invoked exactly once.
 
 ### Documentation
 
