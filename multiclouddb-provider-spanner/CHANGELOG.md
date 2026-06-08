@@ -9,6 +9,21 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- `upsert(address, key, document)` now uses a Spanner `INSERT_OR_UPDATE`
+  mutation instead of `REPLACE`. A `REPLACE` on an existing row is internally
+  a delete-then-insert, which Spanner change streams surface as
+  `mod_type=INSERT` — causing the cross-provider change-feed contract to
+  observe a second upsert of the same key as `ChangeType.CREATE` instead of
+  `ChangeType.UPDATE`. `INSERT_OR_UPDATE` emits `mod_type=INSERT` on the
+  first write and `mod_type=UPDATE` on subsequent writes, matching the
+  `UPDATE` / `MODIFY` behaviour of Cosmos AVAD and DynamoDB Streams. The
+  observable upsert semantics are unchanged: `writeFullDocument` continues to
+  stamp `FIELD_DATA` with only the new document's fields, and
+  `SpannerRowMapper` filters reads by `FIELD_DATA` so columns from a prior
+  write that are not in the new document remain invisible to the SDK — i.e.,
+  `CrudConformanceTests.upsertOverwrites` (full-replacement contract) still
+  passes. Resolves
+  `SpannerChangeFeedConformanceTest.updateEventSurfacesAfterUpsert`.
 - `SpannerChangeFeedReader.listCursors()` now anchors each minted cursor's
   read bookmark at the **later** of (a) the wall-clock at which
   `listCursors()` was called and (b) the child partition's own
@@ -28,12 +43,17 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   filter rather than relying solely on the TVF. Newly-spawned child partitions
   during `readChanges()` inherit the parent cursor's anchor so the live-tip
   filter continues to apply.
-- Together these two fixes resolve the
-  `SpannerChangeFeedConformanceTest.updateEventSurfacesAfterUpsert` /
-  `.deleteEventSurfacesAfterDelete` conformance failures: tests that mint a
-  cursor after a prior write, then mutate, then assert the post-cursor event
-  surfaces (and not the pre-cursor one) — i.e., the `FR-cf-006` "now() cursor
-  ignores prior events" contract.
+- Together these two fixes deliver the `FR-cf-006` "now() cursor ignores
+  prior events" contract on the Spanner emulator (and on real Spanner under
+  TrueTime) — tests that mint a cursor after a prior write, then mutate,
+  then assert the post-cursor event surfaces (and not the pre-cursor one).
+  Specifically, `SpannerChangeFeedConformanceTest.deleteEventSurfacesAfterDelete`
+  no longer surfaces the prior `upsert`'s `CREATE` event in place of the
+  `DELETE` it is asserting on.
+  (`updateEventSurfacesAfterUpsert` additionally required the
+  `REPLACE` → `INSERT_OR_UPDATE` mutation change above; `REPLACE`
+  surfaced the second upsert as `mod_type=INSERT` regardless of the cursor
+  anchor.)
 
 ### Changed
 

@@ -358,7 +358,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                 //    SDK-written column for this row, not just the partial update.
                 //    Skipped for legacy / malformed-metadata rows — see the
                 //    hadValidPriorMetadata comment above. A subsequent upsert()
-                //    (REPLACE) or create() will promote the row into the
+                //    (INSERT_OR_UPDATE) or create() will promote the row into the
                 //    metadata regime by writing a complete FIELD_DATA.
                 if (hadValidPriorMetadata) {
                     mutation.set(SpannerConstants.FIELD_DATA).to(
@@ -376,12 +376,27 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
-     * Creates or replaces a row in Spanner (REPLACE mutation / upsert semantics).
+     * Creates or replaces a row in Spanner (INSERT_OR_UPDATE mutation / upsert semantics).
      * <p>
-     * Uses a Spanner {@code REPLACE} mutation, which deletes the existing row (if any)
-     * and inserts the new one. This ensures full document replacement: columns not present
-     * in the new document are set to {@code NULL}, matching the behavior of schemaless
-     * stores (Cosmos, DynamoDB) where upsert fully replaces the document.
+     * Uses a Spanner {@code INSERT_OR_UPDATE} mutation paired with a freshly stamped
+     * {@link SpannerConstants#FIELD_DATA} listing only the new document's fields. On
+     * read, {@link SpannerRowMapper} filters columns by {@code FIELD_DATA}, so any
+     * column from a prior write that is not in the new document is invisible to the
+     * SDK — preserving the "full document replacement" semantics that {@code upsert}
+     * provides on schemaless stores (Cosmos, DynamoDB).
+     * <p>
+     * <b>Why INSERT_OR_UPDATE rather than REPLACE.</b> A Spanner {@code REPLACE}
+     * mutation on an existing row is internally a delete-then-insert and surfaces in
+     * change streams as {@code mod_type=INSERT} (i.e.,
+     * {@link com.multiclouddb.api.changefeed.ChangeType#CREATE}). That breaks
+     * cross-provider change-feed parity: Cosmos AVAD and DynamoDB Streams both
+     * report a second upsert of an existing key as {@code UPDATE} / {@code MODIFY},
+     * which the SDK maps to {@link com.multiclouddb.api.changefeed.ChangeType#UPDATE}.
+     * {@code INSERT_OR_UPDATE} preserves the same observable upsert semantics for
+     * reads (via {@code FIELD_DATA} filtering) while emitting {@code mod_type=INSERT}
+     * on first write and {@code mod_type=UPDATE} on subsequent writes of the same
+     * key, matching the conformance contract asserted by
+     * {@code ChangeFeedConformanceTest.updateEventSurfacesAfterUpsert}.
      *
      * @param address  the logical database + collection
      * @param key      the document key
@@ -395,7 +410,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
         validateNoReservedFields(document, OperationNames.UPSERT);
         try {
             String table = address.collection();
-            Mutation.WriteBuilder mutation = Mutation.newReplaceBuilder(table)
+            Mutation.WriteBuilder mutation = Mutation.newInsertOrUpdateBuilder(table)
                     .set(SpannerConstants.FIELD_PARTITION_KEY).to(key.partitionKey())
                     .set(SpannerConstants.FIELD_SORT_KEY).to(key.sortKey() != null ? key.sortKey() : key.partitionKey());
 
