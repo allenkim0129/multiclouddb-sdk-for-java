@@ -147,9 +147,13 @@ final class SpannerChangeFeedReader {
                 Struct row = rs.getCurrentRowAsStruct();
                 for (LogicalRecord lr : decomposeRow(row)) {
                     if (lr.kind != RecordKind.CHILD_PARTITIONS) continue;
+                    // Each child_partitions_record carries its own start_timestamp;
+                    // every child partition is only readable from that timestamp
+                    // forward, so use it as the continuation instead of `now`.
+                    Timestamp childStart = childPartitionStart(lr.record, now);
                     for (String token : extractChildPartitionTokens(lr.record)) {
                         partitions.add(new PartitionPosition(token,
-                                continuation(now, 0L)));
+                                continuation(childStart, 0L)));
                     }
                 }
             }
@@ -255,9 +259,13 @@ final class SpannerChangeFeedReader {
                             break;
                         case CHILD_PARTITIONS:
                             partitionClosed = true;
+                            // Use the child partition's own start_timestamp when
+                            // available — readChanges of a child partition
+                            // rejects any start_timestamp earlier than that.
+                            Timestamp childStart = childPartitionStart(lr.record, lastCommitTs);
                             for (String child : extractChildPartitionTokens(lr.record)) {
                                 newChildren.add(new PartitionPosition(child,
-                                        continuation(lastCommitTs, 0L)));
+                                        continuation(childStart, 0L)));
                             }
                             break;
                         case HEARTBEAT:
@@ -443,6 +451,16 @@ final class SpannerChangeFeedReader {
 
     // ── Child partitions extraction ────────────────────────────────────────
 
+    /**
+     * Extract the {@code start_timestamp} of a {@code child_partitions_record}
+     * (the inclusive timestamp from which the child partitions become readable).
+     * Falls back to the supplied default if the record omits it.
+     */
+    private static Timestamp childPartitionStart(Struct rec, Timestamp fallback) {
+        Timestamp ts = getTimestampOrNull(rec, "start_timestamp");
+        return ts != null ? ts : fallback;
+    }
+
     /** Extract child partition tokens from an inner {@code child_partitions_record} struct. */
     private List<String> extractChildPartitionTokens(Struct rec) {
         List<String> tokens = new ArrayList<>();
@@ -537,10 +555,20 @@ final class SpannerChangeFeedReader {
         }
     }
 
-    /** Safe string accessor that honours canonical (case-insensitive) field lookup. */
+    /**
+     * Safe string accessor that honours canonical (case-insensitive) field lookup.
+     * <p>
+     * Spanner change-stream rows carry {@code mods.keys}, {@code mods.new_values}
+     * and {@code mods.old_values} as {@code JSON}, not {@code STRING}, but emitter
+     * versions disagree, so we transparently accept either Spanner type and
+     * return the JSON-encoded payload as a Java {@link String}.
+     */
     private static String getStringOrNull(Struct s, String field) {
         String cf = canonicalField(s, field);
-        return (cf != null && !s.isNull(cf)) ? s.getString(cf) : null;
+        if (cf == null || s.isNull(cf)) return null;
+        com.google.cloud.spanner.Type.Code code = s.getColumnType(cf).getCode();
+        if (code == com.google.cloud.spanner.Type.Code.JSON) return s.getJson(cf);
+        return s.getString(cf);
     }
 
     /** Safe timestamp accessor that honours canonical (case-insensitive) field lookup. */

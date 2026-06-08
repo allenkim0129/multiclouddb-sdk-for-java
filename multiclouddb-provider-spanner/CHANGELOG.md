@@ -36,6 +36,18 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   Spanner Emulator with
   `Column ChangeRecord is not of correct type: expected STRUCT<…> but was ARRAY<STRUCT<…>>`.
 
+- Reads `mods.keys`, `mods.new_values` and `mods.old_values` via Spanner's
+  `getJson()` accessor when the column type reports `JSON` and falls back to
+  `getString()` otherwise. Earlier `Unreleased` builds called `getString()`
+  unconditionally, which failed against the Spanner Emulator with
+  `Column keys is not of correct type: expected one of [STRING, NUMERIC] but was JSON`.
+- Honours each `child_partitions_record.start_timestamp` when minting the
+  continuation for the child partition tokens it announces. Earlier
+  `Unreleased` builds reused the original bootstrap `start_timestamp` (or the
+  parent partition's `lastCommitTs`), which the emulator rejected with
+  `OUT_OF_RANGE: Specified start_timestamp is invalid for the partition`
+  when the child window opened slightly later than the bootstrap call.
+
 ### Breaking changes
 
 - **`update()` now uses a read-modify-write transaction to preserve previously
