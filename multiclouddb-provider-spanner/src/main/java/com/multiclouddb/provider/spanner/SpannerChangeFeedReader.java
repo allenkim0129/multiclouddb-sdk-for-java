@@ -9,10 +9,12 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.ErrorCode;
+import com.google.cloud.spanner.ReadOnlyTransaction;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.SpannerException;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
+import com.google.cloud.spanner.TimestampBound;
 import com.multiclouddb.api.MulticloudDbClientConfig;
 import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
@@ -138,7 +140,14 @@ final class SpannerChangeFeedReader {
      */
     List<ChangeFeedCursor> listCursors(ResourceAddress address) {
         String streamName = streamNameFor(address.collection());
-        Timestamp now = Timestamp.now();
+        // Use Spanner-derived "now" rather than Java wall-clock. The Spanner
+        // emulator (and real Spanner under TrueTime) assigns commit_timestamps
+        // that can lead the Java client's System.currentTimeMillis(), so a
+        // cursor anchored at Java's now() may end up BEFORE prior commits and
+        // would surface them on the next readChanges. A strong-read snapshot
+        // timestamp is guaranteed >= all commits acknowledged before listCursors
+        // started, so it is a safe live-tip anchor.
+        Timestamp now = readStrongSnapshotTimestamp();
         Timestamp end = addMillis(now, WINDOW_MS);
 
         Statement stmt = Statement.newBuilder(
@@ -705,6 +714,31 @@ final class SpannerChangeFeedReader {
     /** Convert a Spanner Timestamp to wall-clock epoch milliseconds (truncated). */
     private static long timestampToEpochMillis(Timestamp t) {
         return t.getSeconds() * 1000L + t.getNanos() / 1_000_000L;
+    }
+
+    /**
+     * Obtain a Spanner-side strong-read snapshot timestamp. Guaranteed to be
+     * greater than or equal to every commit_timestamp acknowledged before this
+     * call started — exactly the "live tip" semantics a now() cursor needs.
+     * <p>
+     * Falls back to {@link Timestamp#now()} (Java wall-clock) if the strong-read
+     * probe fails for any reason — preferring a possibly-too-early anchor over
+     * a hard failure of {@code listCursors()}. In practice the probe succeeds
+     * whenever the database is reachable.
+     */
+    private Timestamp readStrongSnapshotTimestamp() {
+        try (ReadOnlyTransaction ro =
+                databaseClient.singleUseReadOnlyTransaction(TimestampBound.strong())) {
+            try (ResultSet rs = ro.executeQuery(Statement.of("SELECT 1"))) {
+                if (rs.next()) {
+                    Timestamp ts = ro.getReadTimestamp();
+                    if (ts != null) return ts;
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // fall through to Java wall-clock fallback
+        }
+        return Timestamp.now();
     }
 
     private static String sanitize(String streamName) {
