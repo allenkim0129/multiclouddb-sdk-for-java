@@ -12,22 +12,28 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - `SpannerChangeFeedReader.listCursors()` now anchors each minted cursor's
   read bookmark at the **later** of (a) the wall-clock at which
   `listCursors()` was called and (b) the child partition's own
-  `start_timestamp`. Previously the bookmark was always the partition's
-  own `start_timestamp` — which for pre-existing partitions is the
-  partition's creation time, potentially far in the past. As a result,
-  events committed BEFORE `listCursors()` would surface on the first
-  `readChanges()` call, breaking the `now()` cursor semantic asserted
-  by `FR-cf-006` and by the `updateEventSurfacesAfterUpsert` /
-  `deleteEventSurfacesAfterDelete` conformance tests (which set up
-  prior writes, then mint a cursor, then mutate, then expect to see
-  only the post-cursor event). The bookmark is computed as
-  `max(now, childStart)`, so cursors for pre-existing partitions
-  resolve to `now`, and just-split children (which have not happened
-  yet at `listCursors()` time, only at `readChanges()` time) continue
-  to use their own `start_timestamp` via the readChanges path. No
-  wire-format change (the continuation format is unchanged); already-
-  issued cursors continue to read from the timestamp encoded in their
-  continuation.
+  `start_timestamp` (`max(now, childStart)`). Previously the bookmark was
+  always the partition's own `start_timestamp` — which for pre-existing
+  partitions is the partition's creation time, potentially far in the past.
+- `SpannerChangeFeedReader.readChanges()` now filters out events whose
+  `commit_timestamp` predates the cursor's live-tip anchor. The anchor is
+  the wall-clock millisecond captured at `listCursors()` time and is
+  embedded in the continuation string as an optional third pipe-delimited
+  field (`<startTs>|<recordSeq>|<anchorMs>`). The 2-field form continues to
+  parse correctly (zero anchor → no filtering) so already-issued continuations
+  remain compatible. The Spanner change-stream TVF's `start_timestamp`
+  parameter is not always a strict lower bound under the emulator (the
+  emulator's commit timestamps can lead the Java wall-clock that `listCursors`
+  captured), so the cursor honours its `now()` contract client-side via this
+  filter rather than relying solely on the TVF. Newly-spawned child partitions
+  during `readChanges()` inherit the parent cursor's anchor so the live-tip
+  filter continues to apply.
+- Together these two fixes resolve the
+  `SpannerChangeFeedConformanceTest.updateEventSurfacesAfterUpsert` /
+  `.deleteEventSurfacesAfterDelete` conformance failures: tests that mint a
+  cursor after a prior write, then mutate, then assert the post-cursor event
+  surfaces (and not the pre-cursor one) — i.e., the `FR-cf-006` "now() cursor
+  ignores prior events" contract.
 
 ### Changed
 

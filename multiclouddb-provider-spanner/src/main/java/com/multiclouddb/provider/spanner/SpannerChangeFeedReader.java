@@ -188,9 +188,10 @@ final class SpannerChangeFeedReader {
                     // cannot happen here (the TVF returned it at start_ts=now).
                     Timestamp childStart = childPartitionStart(lr.record, now);
                     Timestamp bookmark = maxTimestamp(now, childStart);
+                    long anchorMs = timestampToEpochMillis(now);
                     for (String token : extractChildPartitionTokens(lr.record)) {
                         PartitionPosition pos = new PartitionPosition(token,
-                                continuation(bookmark, 0L));
+                                continuation(bookmark, 0L, anchorMs));
                         CursorToken tok = new CursorToken(
                                 providerId, address, effectiveAtMs, CursorAnchor.NOW, List.of(pos));
                         cursors.add(new ChangeFeedCursor(tok));
@@ -209,7 +210,7 @@ final class SpannerChangeFeedReader {
             // a "we read the stream and there was nothing" bookmark.
             long placeholderAt = exhaustedAtMs != 0L ? exhaustedAtMs : System.currentTimeMillis();
             PartitionPosition placeholder = new PartitionPosition(
-                    "__bootstrap__", continuation(now, 0L));
+                    "__bootstrap__", continuation(now, 0L, timestampToEpochMillis(now)));
             CursorToken tok = new CursorToken(
                     providerId, address, placeholderAt, CursorAnchor.NOW, List.of(placeholder));
             cursors.add(new ChangeFeedCursor(tok));
@@ -295,7 +296,20 @@ final class SpannerChangeFeedReader {
                     switch (lr.kind) {
                         case DATA:
                             DataChangeBatch batch = readDataChange(lr.record, address);
-                            events.addAll(batch.events);
+                            for (ChangeEvent ev : batch.events) {
+                                // Drop events that committed before the cursor's
+                                // live-tip anchor. The Spanner change-stream TVF's
+                                // start_timestamp is not always a strict lower
+                                // bound under the emulator (the emulator's commit
+                                // timestamps can lead the Java wall-clock that
+                                // listCursors() captured), so the cursor honors
+                                // its now() contract client-side via this filter.
+                                if (state.anchorMs > 0L
+                                        && ev.commitTimestamp().toEpochMilli() < state.anchorMs) {
+                                    continue;
+                                }
+                                events.add(ev);
+                            }
                             if (batch.commitTs != null) lastCommitTs = batch.commitTs;
                             lastRecordSeq = batch.recordSeq;
                             break;
@@ -304,10 +318,13 @@ final class SpannerChangeFeedReader {
                             // Use the child partition's own start_timestamp when
                             // available — readChanges of a child partition
                             // rejects any start_timestamp earlier than that.
+                            // Inherit the parent's anchorMs so the live-tip
+                            // filter continues to apply to events from the
+                            // newly-spawned children.
                             Timestamp childStart = childPartitionStart(lr.record, lastCommitTs);
                             for (String child : extractChildPartitionTokens(lr.record)) {
                                 newChildren.add(new PartitionPosition(child,
-                                        continuation(childStart, 0L)));
+                                        continuation(childStart, 0L, state.anchorMs)));
                             }
                             break;
                         case HEARTBEAT:
@@ -352,7 +369,8 @@ final class SpannerChangeFeedReader {
             // Advance the continuation to the end of the window so the next call
             // picks up where we left off, then rotate the just-advanced
             // partition to the end so the next call visits the next partition.
-            partitions.set(0, new PartitionPosition(partitionToken, continuation(end, lastRecordSeq)));
+            partitions.set(0, new PartitionPosition(partitionToken,
+                    continuation(end, lastRecordSeq, state.anchorMs)));
             if (partitions.size() > 1) Collections.rotate(partitions, -1);
         }
 
@@ -555,14 +573,40 @@ final class SpannerChangeFeedReader {
     private static final class ContState {
         final Timestamp startTs;
         final long recordSeq;
-        ContState(Timestamp startTs, long recordSeq) {
+        /**
+         * Wall-clock millisecond at which {@code listCursors()} minted this
+         * cursor's lineage. Used to filter out events whose commit_timestamp
+         * is before the cursor's intended live-tip anchor — necessary because
+         * the Spanner change-stream TVF's {@code start_timestamp} parameter
+         * is not always a strict lower bound on what the emulator returns
+         * (commit-timestamp generation may lead the Java wall-clock that
+         * {@code listCursors} captured). Zero or negative means "no filter
+         * applied" — preserved for backward compatibility with continuations
+         * minted before this filter was introduced.
+         */
+        final long anchorMs;
+        ContState(Timestamp startTs, long recordSeq, long anchorMs) {
             this.startTs = startTs;
             this.recordSeq = recordSeq;
+            this.anchorMs = anchorMs;
         }
     }
 
+    /** Two-field continuation (legacy form — no anchor; no event filtering). */
     private static String continuation(Timestamp ts, long recordSeq) {
         return ts.toString() + "|" + recordSeq;
+    }
+
+    /**
+     * Three-field continuation with an anchor wall-clock millisecond. New
+     * cursors minted by {@code listCursors()} use this form so subsequent
+     * {@code readChanges} calls can filter out events whose commit_timestamp
+     * predates the live-tip anchor. The format is backward-compatible: older
+     * 2-field continuations parse to {@code anchorMs == 0} (no filtering).
+     */
+    private static String continuation(Timestamp ts, long recordSeq, long anchorMs) {
+        if (anchorMs <= 0L) return continuation(ts, recordSeq);
+        return ts.toString() + "|" + recordSeq + "|" + anchorMs;
     }
 
     /**
@@ -571,16 +615,24 @@ final class SpannerChangeFeedReader {
      * cursor with no recorded position). Any non-empty continuation that fails to
      * parse is surfaced as a {@link MalformedContinuation} — silently falling back
      * to {@link Timestamp#now()} would skip history and lie about the cursor's
-     * actual position.
+     * actual position. Tolerates both 2-field (legacy, no anchor) and 3-field
+     * (with anchorMs) formats for backward compatibility.
      */
     private static ContState parseContinuation(String c) {
-        if (c == null || c.isBlank()) return new ContState(Timestamp.now(), 0L);
-        int bar = c.lastIndexOf('|');
+        if (c == null || c.isBlank()) return new ContState(Timestamp.now(), 0L, 0L);
         try {
-            if (bar < 0) return new ContState(Timestamp.parseTimestamp(c), 0L);
-            Timestamp ts = Timestamp.parseTimestamp(c.substring(0, bar));
-            long seq = Long.parseLong(c.substring(bar + 1));
-            return new ContState(ts, seq);
+            String[] parts = c.split("\\|", -1);
+            if (parts.length == 1) return new ContState(Timestamp.parseTimestamp(parts[0]), 0L, 0L);
+            if (parts.length == 2) {
+                return new ContState(Timestamp.parseTimestamp(parts[0]),
+                        Long.parseLong(parts[1]), 0L);
+            }
+            if (parts.length == 3) {
+                return new ContState(Timestamp.parseTimestamp(parts[0]),
+                        Long.parseLong(parts[1]),
+                        Long.parseLong(parts[2]));
+            }
+            throw new IllegalArgumentException("expected 1, 2, or 3 pipe-delimited fields; got " + parts.length);
         } catch (RuntimeException e) {
             throw new MalformedContinuation(c, e);
         }
@@ -648,6 +700,11 @@ final class SpannerChangeFeedReader {
     /** Returns the later of two Spanner timestamps (a if equal). */
     private static Timestamp maxTimestamp(Timestamp a, Timestamp b) {
         return a.compareTo(b) >= 0 ? a : b;
+    }
+
+    /** Convert a Spanner Timestamp to wall-clock epoch milliseconds (truncated). */
+    private static long timestampToEpochMillis(Timestamp t) {
+        return t.getSeconds() * 1000L + t.getNanos() / 1_000_000L;
     }
 
     private static String sanitize(String streamName) {
