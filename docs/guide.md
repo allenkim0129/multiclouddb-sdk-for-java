@@ -1260,7 +1260,7 @@ point-in-time read of a whole collection, use `query()`.
 
 | Type / Method | Purpose |
 |---|---|
-| `ChangeFeedCursor` | An opaque, immutable position in the stream. Encodes a Base64URL-encoded JSON token containing provider id, resource binding (`database/collection`), and per-partition continuations. **Persistable**. |
+| `ChangeFeedCursor` | An opaque, immutable position in the stream. Persist via `cursor.toToken()` / `ChangeFeedCursor.fromToken(String)`; the token wire format is intentionally opaque and may evolve across SDK versions. |
 | `ChangeFeedCursor.now()` | A provider-agnostic sentinel meaning "the live tip at the time of the next read". The first `readChanges` call hydrates it. |
 | `client.listCursors(address)` | Discovers the current set of provider-side partitions and returns one cursor per partition, each positioned at the live tip. Use this to seed a multi-threaded reader. |
 | `client.readChanges(address, cursor)` | Drains **one page** of events from `cursor` and returns a `ChangeFeedPage` carrying `events`, `nextCursor`, `hasMore`, and `terminal` flags. |

@@ -267,7 +267,7 @@ final class DynamoChangeFeedReader {
                     MulticloudDbErrorCategory.CURSOR_EXPIRED,
                     "Malformed DynamoDB cursor partition id: " + pos.partitionId(),
                     providerId, "readChanges", false,
-                    Map.of("reason", "MALFORMED")));
+                    Map.of(CursorTokenCodec.DETAIL_REASON, CursorTokenCodec.REASON_MALFORMED)));
         }
         String streamArn = pos.partitionId().substring(0, sep);
         String shardId = pos.partitionId().substring(sep + 2);
@@ -304,7 +304,8 @@ final class DynamoChangeFeedReader {
                     "DynamoDB Streams returned TrimmedDataAccessException; "
                             + "the cursor's records are older than the 24h stream retention",
                     providerId, "readChanges", false,
-                    Map.of("reason", "PROVIDER_TRIMMED")), e);
+                    Map.of(CursorTokenCodec.DETAIL_REASON,
+                            CursorTokenCodec.REASON_PROVIDER_TRIMMED)), e);
         } catch (DynamoDbException e) {
             throw maybeExpiredIterator(e, "readChanges");
         }
@@ -371,7 +372,8 @@ final class DynamoChangeFeedReader {
                     MulticloudDbErrorCategory.CURSOR_EXPIRED,
                     "DynamoDB Streams returned TrimmedDataAccessException during GetRecords",
                     providerId, "readChanges", false,
-                    Map.of("reason", "PROVIDER_TRIMMED")), e);
+                    Map.of(CursorTokenCodec.DETAIL_REASON,
+                            CursorTokenCodec.REASON_PROVIDER_TRIMMED)), e);
         } catch (DynamoDbException e) {
             throw maybeExpiredIterator(e, "readChanges");
         }
@@ -402,7 +404,8 @@ final class DynamoChangeFeedReader {
                     "DynamoDB Streams returned TrimmedDataAccessException; the cursor's "
                             + "records are older than the 24h stream retention",
                     providerId, operation, false,
-                    Map.of("reason", "PROVIDER_TRIMMED")), e);
+                    Map.of(CursorTokenCodec.DETAIL_REASON,
+                            CursorTokenCodec.REASON_PROVIDER_TRIMMED)), e);
         }
         return mapStreamsException(e, operation);
     }
@@ -557,8 +560,8 @@ final class DynamoChangeFeedReader {
 
         Map<String, AttributeValue> keys = rec.dynamodb() != null
                 ? rec.dynamodb().keys() : Map.of();
-        String pk = attrToString(keys.get("partitionKey"));
-        String sk = attrToString(keys.get("sortKey"));
+        String pk = attrToString(keys.get(DynamoConstants.ATTR_PARTITION_KEY));
+        String sk = attrToString(keys.get(DynamoConstants.ATTR_SORT_KEY));
         MulticloudDbKey key = sk != null && !sk.isEmpty()
                 ? MulticloudDbKey.of(pk, sk)
                 : MulticloudDbKey.of(pk);

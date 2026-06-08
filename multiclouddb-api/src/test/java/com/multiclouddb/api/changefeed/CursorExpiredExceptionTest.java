@@ -45,6 +45,6 @@ class CursorExpiredExceptionTest {
     @Test
     @DisplayName("constructor rejects null error")
     void constructorRejectsNullError() {
-        assertThrows(Exception.class, () -> new CursorExpiredException(null));
+        assertThrows(IllegalArgumentException.class, () -> new CursorExpiredException(null));
     }
 }

@@ -18,7 +18,7 @@ class ChangeEventTest {
     private static final ObjectMapper M = new ObjectMapper();
 
     @Test
-    @DisplayName("constructor copies and preserves all fields")
+    @DisplayName("constructor retains all fields by reference")
     void constructorPreservesFields() {
         MulticloudDbKey key = MulticloudDbKey.of("user-1");
         Instant ts = Instant.parse("2025-01-01T00:00:00Z");

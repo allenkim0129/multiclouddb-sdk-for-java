@@ -107,16 +107,19 @@ final class CosmosChangeFeedReader {
      * {@link #CONT_FROM_NOW} sentinel.
      * <p>
      * The {@code issuedAtEpochMillis} stamped on each minted {@link CursorToken}
-     * is captured <em>after</em> the warmup query returns, so it matches the
-     * instant the continuation bookmark is effective rather than the moment the
-     * SDK began warming up. On the PIT fallback path the two values are
-     * identical by construction (the same {@code nowMs} is embedded in the
-     * {@code @@PIT:<nowMs>} suffix and used as {@code issuedAtEpochMillis}). A
-     * fresh {@code nowMs} is captured per range so each cursor's
-     * {@code issuedAt} independently reflects its own bookmark moment instead
-     * of a single pre-loop timestamp shared across the whole list. This matches
-     * the semantics already used by {@link #readChanges} (which captures
-     * {@code System.currentTimeMillis()} after each page is read).
+     * is captured <em>after</em> the warmup query returns (warmup-success path)
+     * or <em>at the moment the PIT fallback decision is made</em>, i.e. after
+     * the warmup attempt fails (PIT fallback path) — never before the warmup
+     * started. This preserves the public contract that {@code readChanges()}
+     * must not surface events that occurred before {@code listCursors()}
+     * returns: a PIT timestamp captured pre-warmup would re-anchor at that
+     * earlier instant and re-surface any events written during the warmup call
+     * itself. On the PIT fallback path the encoded anchor and stamped
+     * {@code issuedAt} agree by construction (the same {@code nowMs} is
+     * embedded in the {@code @@PIT:<nowMs>} suffix and used as
+     * {@code issuedAtEpochMillis}). This matches the semantics already used by
+     * {@link #readChanges} (which captures {@code System.currentTimeMillis()}
+     * after each page is read).
      */
     List<ChangeFeedCursor> listCursors(CosmosContainer container, ResourceAddress address) {
         try {
@@ -126,8 +129,7 @@ final class CosmosChangeFeedReader {
             }
             List<ChangeFeedCursor> cursors = new ArrayList<>(ranges.size());
             for (FeedRange range : ranges) {
-                long beforeWarmup = System.currentTimeMillis();
-                WarmupResult w = warmupContinuation(container, range, beforeWarmup);
+                WarmupResult w = warmupContinuation(container, range);
                 PartitionPosition pos = new PartitionPosition(encodeRange(range), w.continuation());
                 CursorToken token = new CursorToken(
                         providerId, address, w.effectiveAtMs(), CursorAnchor.NOW, List.of(pos));
@@ -163,11 +165,15 @@ final class CosmosChangeFeedReader {
      * and the wall-clock instant at which that bookmark is effective. On the
      * warmup-success path {@code effectiveAtMs} is captured immediately after
      * {@link FeedResponse#getContinuationToken()} returns. On the PIT fallback
-     * path {@code effectiveAtMs == nowMs} by construction so the value embedded
-     * in {@code @@PIT:<nowMs>} matches the {@code issuedAtEpochMillis} the
-     * caller stamps on the cursor.
+     * path {@code effectiveAtMs} is captured <em>at the fallback decision
+     * point</em> (i.e. after the warmup attempt has completed or failed) — not
+     * before warmup started — so any event written during the warmup itself is
+     * <em>strictly older</em> than the encoded PIT anchor and stays out of the
+     * first page. The same value is embedded in {@code @@PIT:<nowMs>} so the
+     * encoded anchor and the {@code issuedAtEpochMillis} stamped on the cursor
+     * agree by construction.
      */
-    private WarmupResult warmupContinuation(CosmosContainer container, FeedRange range, long nowMs) {
+    private WarmupResult warmupContinuation(CosmosContainer container, FeedRange range) {
         try {
             CosmosChangeFeedRequestOptions warmup =
                     CosmosChangeFeedRequestOptions.createForProcessingFromNow(range);
@@ -188,8 +194,11 @@ final class CosmosChangeFeedReader {
         } catch (RuntimeException e) {
             // Fall through to the timestamp anchor below.
         }
-        // PIT fallback: the continuation itself encodes nowMs, so issuedAt = nowMs.
-        return new WarmupResult(CONT_PIT_PREFIX + nowMs, nowMs);
+        // PIT fallback: capture the timestamp *at this point* — after the warmup
+        // attempt completed or failed — so any event written during the warmup is
+        // strictly older than the encoded anchor and stays out of the first page.
+        long fallbackAt = System.currentTimeMillis();
+        return new WarmupResult(CONT_PIT_PREFIX + fallbackAt, fallbackAt);
     }
 
     /**

@@ -43,8 +43,10 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   one page of change events from a cursor and returns a fresh `nextCursor`.
 - `MulticloudDbErrorCategory.CURSOR_EXPIRED` — new well-known category for
   trimmed / aged-out / mismatched cursors. Provider details key `reason`
-  carries one of `TOKEN_AGED_OUT`, `PROVIDER_TRIMMED`, `MALFORMED`,
-  `VERSION_UNSUPPORTED`, `PROVIDER_MISMATCH`, `RESOURCE_MISMATCH`.
+  carries one of `TOKEN_AGED_OUT`, `PROVIDER_TRIMMED`, `ITERATOR_EXPIRED`,
+  `MALFORMED`, `VERSION_UNSUPPORTED`, `PROVIDER_MISMATCH`,
+  `RESOURCE_MISMATCH` (matching the canonical set documented in the
+  preceding "Changed" entry).
 - SPI: `MulticloudDbProviderClient.listCursors` / `readChanges` default to
   throwing `UNSUPPORTED_CAPABILITY` so existing adapters compile unchanged.
 - `DefaultMulticloudDbClient` enforces capability-gating, validates the

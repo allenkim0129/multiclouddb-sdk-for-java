@@ -94,7 +94,7 @@ The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 | `TRANSIENT_FAILURE`  | HTTP 449, 500, 502, 503  | HTTP 500–5xx  | UNAVAILABLE  |
 | `PERMANENT_FAILURE`  | -  | ItemCollectionSizeLimitExceededException  | -  |
 | `UNSUPPORTED_CAPABILITY`  | -  | -  | UNIMPLEMENTED  |
-| `CURSOR_EXPIRED` (change-feed) | HTTP 410 GONE  | `TrimmedDataAccessException`  | `INVALID_ARGUMENT` / `OUT_OF_RANGE` (partition outside retention)  |
+| `CURSOR_EXPIRED` (change-feed) | HTTP 410 GONE  | `TrimmedDataAccessException`  | `INVALID_ARGUMENT` / `OUT_OF_RANGE` / `NOT_FOUND` (partition outside retention)  |
 | `PROVIDER_ERROR`  | Other  | Other  | INTERNAL, Other  |
 
 > ¹ DynamoDB uses `ConditionalCheckFailedException` for both the 409 (duplicate-key on `create`) and 412

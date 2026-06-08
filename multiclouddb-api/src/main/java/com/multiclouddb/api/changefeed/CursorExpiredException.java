@@ -60,19 +60,18 @@ import com.multiclouddb.api.MulticloudDbException;
 public class CursorExpiredException extends MulticloudDbException {
 
     public CursorExpiredException(MulticloudDbError error) {
-        super(error);
-        requireCategory(error);
+        super(requireCategory(error));
     }
 
     public CursorExpiredException(MulticloudDbError error, Throwable cause) {
-        super(error, cause);
-        requireCategory(error);
+        super(requireCategory(error), cause);
     }
 
-    private static void requireCategory(MulticloudDbError error) {
+    private static MulticloudDbError requireCategory(MulticloudDbError error) {
         if (error == null || !MulticloudDbErrorCategory.CURSOR_EXPIRED.equals(error.category())) {
             throw new IllegalArgumentException(
                     "CursorExpiredException must carry MulticloudDbErrorCategory.CURSOR_EXPIRED");
         }
+        return error;
     }
 }
