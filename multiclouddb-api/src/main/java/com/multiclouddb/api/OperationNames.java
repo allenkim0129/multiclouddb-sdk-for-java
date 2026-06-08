@@ -44,5 +44,8 @@ public final class OperationNames {
 
     /** Ensure a container or table exists, creating it if absent. */
     public static final String ENSURE_CONTAINER = "ensureContainer";
+
+    /** Provision a schema (one or more databases each with one or more containers). */
+    public static final String PROVISION_SCHEMA = "provisionSchema";
 }
 

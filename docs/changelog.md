@@ -11,6 +11,31 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
+**Added:**
+
+- `MulticloudDbErrorCategory.CLIENT_CLOSED` — portable post-close error
+  category. Every provider now surfaces this typed envelope when a CRUD,
+  query, or provisioning call is made after `MulticloudDbClient.close()`.
+  Previously the post-close behaviour was provider-specific: callers
+  received a raw `IllegalStateException` from azure-cosmos / aws-sdk, an
+  `IllegalStateException` from Spanner, or `null` / undefined behaviour
+  depending on the provider. Telemetry, retry-policy, and circuit-breaker
+  layers can now branch on the typed envelope; `CLIENT_CLOSED` is declared
+  non-retryable because closing is a terminal lifecycle state.
+- `OperationNames.PROVISION_SCHEMA` — operation-name constant. The
+  `provisionSchema()` entry point now reports its operation name through
+  the typed `MulticloudDbError.operation()` field for diagnostics
+  attribution, matching every other entry point.
+- `DefaultMulticloudDbClient` facade post-close guard. The facade
+  short-circuits every public entry point with `CLIENT_CLOSED` *before*
+  any per-request validation (document size, query parsing, etc.) runs.
+  This guarantees that a closed client never reports `REQUEST_TOO_LARGE`
+  or other category errors that would mask the underlying lifecycle bug.
+  **`MulticloudDbClient.close()` itself is now idempotent**: a second
+  `close()` is a synchronized no-op, and the underlying
+  `providerClient.close()` is invoked exactly once even under concurrent
+  callers.
+
 **Documentation:**
 
 - `MulticloudDbClient.delete(...)` is documented as idempotent — silent on
@@ -62,6 +87,15 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Added:**
 
+- Typed `CLIENT_CLOSED` envelope on post-close entry points. Every CRUD,
+  query, and provisioning method on `CosmosProviderClient` now consults a
+  lifecycle guard before delegating to `azure-cosmos`. Calling any entry
+  point after `close()` raises `MulticloudDbException` with category
+  `CLIENT_CLOSED` (non-retryable) attributed to the caller's operation,
+  instead of leaking the raw `IllegalStateException` from azure-cosmos's
+  internal client. `close()` itself is now idempotent under concurrent
+  callers (double-checked-locking `volatile` flag); the underlying
+  `cosmosClient.close()` is invoked exactly once.
 - `consistencyLevel` connection config key for opt-in client-level read
   consistency override (applied uniformly to every read from a given client
   instance). Valid values
@@ -134,6 +168,18 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
+**Added:**
+
+- Typed `CLIENT_CLOSED` envelope on post-close entry points. Every CRUD,
+  query, and provisioning method on `DynamoProviderClient` now consults a
+  lifecycle guard before delegating to the AWS SDK. Calling any entry
+  point after `close()` raises `MulticloudDbException` with category
+  `CLIENT_CLOSED` (non-retryable) attributed to the caller's operation,
+  instead of leaking the raw `IllegalStateException` from the AWS SDK
+  client. `close()` itself is now idempotent under concurrent callers
+  (double-checked-locking `volatile` flag); the underlying
+  `dynamoClient.close()` is invoked exactly once.
+
 **Changed:**
 
 - `BETWEEN` translation now wraps in parentheses (`(field BETWEEN ? AND ?)`).
@@ -174,14 +220,110 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
+**Breaking changes:**
+
+- `update()` now uses a read-modify-write transaction to preserve previously
+  written fields (Spanner provider only). Earlier `Unreleased` builds
+  overwrote the internal `FIELD_DATA` metadata column with only the fields
+  named in the current call, silently hiding every other previously-written
+  column on the next `read()`. The fix merges the existing field set with
+  the new one inside a single `databaseClient.readWriteTransaction()`,
+  adding one read per `update` (acceptable for correctness). **Known
+  cross-provider asymmetry:** Spanner `update()` is now a partial update
+  that preserves unrelated fields; Cosmos and DynamoDB `update()` are
+  full-document replace. Callers that relied on the bug to "forget" fields
+  should issue a full document `upsert()` instead.
+- Document field named `data` is now rejected with
+  `MulticloudDbException(category = INVALID_REQUEST)`. The Spanner provider
+  reserves the `data` column for internal `FIELD_DATA` metadata; previously
+  a user document containing a field named `data` was silently dropped on
+  `create()` / `update()` / `upsert()`, producing silent cross-provider data
+  loss. Rename the offending field in your document.
+- `upsert()` semantics changed from `INSERT_OR_UPDATE` to `REPLACE`.
+  Columns absent from the upserted document become NULL on read, matching
+  the Cosmos / DynamoDB upsert contract (full document replace). Callers
+  that want partial modification must call `update()`.
+- Customer-managed tables now require a `data STRING(MAX)` column. Tables
+  created by `ensureContainer()` already include this column; tables
+  provisioned outside the SDK must be migrated:
+  `ALTER TABLE <my-table> ADD COLUMN data STRING(MAX);`
+- `ensureDatabase(name)` now throws `MulticloudDbException` with category
+  `INVALID_REQUEST` if `name` does not match the configured `databaseId`.
+- Lifecycle errors are now typed. `checkOpen()` and the `ensureDatabase`
+  name-mismatch validation throw `MulticloudDbException` with categories
+  `CLIENT_CLOSED` and `INVALID_REQUEST` respectively, replacing the prior
+  raw `IllegalStateException` / `IllegalArgumentException`.
+- `SpannerRowMapper.toMap()` now preserves explicitly written `null`
+  values. `QueryPage` now uses a null-tolerant defensive copy. Callers
+  iterating `page.items().get(i)` must tolerate `null` values.
+- `ensureDatabase()` and `ensureContainer()` no longer leak raw
+  `RuntimeException`. `InterruptedException` is surfaced as
+  `MulticloudDbException(TRANSIENT_FAILURE, retryable=true)`; a non-Spanner
+  cause inside the admin `ExecutionException` is surfaced as
+  `MulticloudDbException(PROVIDER_ERROR)` preserving the original cause.
+- Post-close errors now attribute the failing operation. The
+  `MulticloudDbError.operation()` value on a post-close exception used to
+  be the literal `"checkOpen"`; it is now the caller's operation name.
+
 **Changed:**
 
+- Spanner instance creation in `ensureDatabase` is gated to emulator mode.
+  In production (no `emulatorHost` configured), the instance is expected
+  to pre-exist; only the database is created.
+- Complex container values (`Map`, `Collection`) round-trip through STRING
+  columns using an unambiguous prefix marker (`U+0001` + `mcdb:json:`).
+  `SpannerRowMapper` only parses values that carry the marker.
 - `BETWEEN` translation now wraps in parentheses
-  (`(field BETWEEN @lo AND @hi)`). Mirrors the parenthesised form emitted by
-  sibling translators so cross-provider query stitching is uniform.
-  GoogleSQL parses both forms correctly, so this is not a correctness fix on
-  Spanner — purely a consistency improvement. The output of
+  (`(field BETWEEN @lo AND @hi)`). Mirrors the parenthesised form emitted
+  by sibling translators so cross-provider query stitching is uniform.
+  GoogleSQL parses both forms correctly, so this is not a correctness fix
+  on Spanner — purely a consistency improvement. The output of
   `TranslatedQuery.whereClause()` is now parenthesised.
+
+**Fixed:**
+
+- Silent data loss on `update()` after partial writes (see *Breaking
+  changes* above for the read-modify-write transactional fix).
+- Default `ORDER BY` no longer fires for aggregate queries. The default
+  is now suppressed when the SQL contains an aggregate function or
+  `GROUP BY`; caller-supplied `ORDER BY` on aggregate queries is still
+  honored verbatim.
+- `ORDER BY` detection ignores string literals. `WHERE comment = 'please
+  ORDER BY date'` no longer false-positives as "caller already provides
+  ordering"; the literal is stripped before the regex match. SQL-escaped
+  quotes (`''`) inside literals are handled correctly.
+- Race / NPE hazard in `close()`. The `Spanner` field is now `final` and
+  `close()` is idempotent via a `volatile boolean closed` flag.
+- Default ORDER BY no longer duplicates primary-key columns when the
+  caller already sorts by `partitionKey` and/or `sortKey`. If the
+  caller-supplied SQL already contains its own `ORDER BY` clause, no
+  default or tiebreaker `ORDER BY` is appended at all.
+- `setMutationValue` no longer fails on common Java types (e.g.
+  `java.time.Instant`). JSON serialisation is restricted to
+  `Map`/`Collection`; every other type falls back to `value.toString()`.
+- Legacy / pre-`FIELD_DATA` rows preserve null columns on read. When
+  `FIELD_DATA` is absent or malformed, `SpannerRowMapper` now applies the
+  historical "no metadata => no filtering" rule including null columns.
+- Legacy / pre-`FIELD_DATA` rows preserve every non-null column on
+  `update()`. The fix tracks whether pre-existing `FIELD_DATA` was
+  successfully parsed; if the row has no trustworthy metadata, `update()`
+  deliberately leaves `FIELD_DATA` alone so the reader's "no metadata =>
+  project every column" fallback continues to project all legacy columns.
+- Reserved-field validation is now case-insensitive. A user document
+  containing `Data` / `DATA` / `dAtA` previously slipped past the
+  lowercase-only `data` reserved field check; `validateNoReservedFields`
+  now rejects any case-variant of `data` with `INVALID_REQUEST`, echoing
+  the actual offending field name in the error message.
+
+**Known limitations:**
+
+- `setMutationValue` / `bindParameter` write `(String) null` for null
+  values regardless of the target column type. Writing `null` into a
+  Spanner `INT64`, `BOOL`, or `FLOAT64` column is rejected by Spanner
+  with `INVALID_ARGUMENT` until schema introspection lands. Workaround:
+  pass a typed zero (e.g., `0L`, `false`) instead of `null` for
+  non-STRING columns, or wrap the column in a STRING. A
+  schema-introspection fix is tracked for a follow-up release.
 
 **Documentation:**
 

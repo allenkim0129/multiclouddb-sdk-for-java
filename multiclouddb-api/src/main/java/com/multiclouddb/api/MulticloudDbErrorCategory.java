@@ -124,6 +124,18 @@ public final class MulticloudDbErrorCategory {
     public static final MulticloudDbErrorCategory UNSUPPORTED_CAPABILITY =
             fromString("UNSUPPORTED_CAPABILITY");
 
+    /**
+     * The provider client has been closed and can no longer service
+     * operations. Callers must construct a new client.
+     * <p>
+     * This category is used in place of {@link IllegalStateException} so
+     * that error handling stays uniform across the SDK: agentic / AI
+     * consumers can branch on {@code e.error().category()} without string-
+     * matching exception messages.
+     */
+    public static final MulticloudDbErrorCategory CLIENT_CLOSED =
+            fromString("CLIENT_CLOSED");
+
 
     // ── Factory ──────────────────────────────────────────────────────────────
 
