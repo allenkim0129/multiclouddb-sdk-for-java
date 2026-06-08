@@ -59,6 +59,20 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   been read against any resource has no provider-side position to expire
   against and is now correctly accepted as a "start from the live tip
   *now*" instruction.
+- `CursorTokenCodec.validateProviderMatch` and
+  `CursorTokenCodec.validateResourceMatch` now build their
+  `CursorExpiredException` with the runtime `ProviderId` and
+  `operation="readChanges"` attached, instead of `provider=null`. These
+  validators run at `DefaultMulticloudDbClient.readChanges(...)` entry
+  (before the enrichment `try/catch`), so the runtime provider is known
+  and should be on the error for diagnostics.
+- The decode-error helper in `CursorTokenCodec` is now scoped to the
+  decode path only (called from `ChangeFeedCursor.fromToken(...)`) and
+  reports `operation="fromToken"` so client-side decode failures
+  (`MALFORMED`, `VERSION_UNSUPPORTED`, `TOKEN_AGED_OUT`) are no longer
+  mis-attributed to a runtime read.
+- **API change (internal):** `CursorTokenCodec.validateResourceMatch`
+  now takes an additional `ProviderId runtimeProvider` parameter.
 
 ## [0.1.0-beta.1] — 2026-04-23
 

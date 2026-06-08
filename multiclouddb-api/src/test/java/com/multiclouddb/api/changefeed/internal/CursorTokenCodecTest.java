@@ -134,6 +134,9 @@ class CursorTokenCodecTest {
                 () -> CursorTokenCodec.validateProviderMatch(minted, COSMOS));
         assertEquals(CursorTokenCodec.REASON_PROVIDER_MISMATCH,
                 ex.error().providerDetails().get("reason"));
+        // Error now carries runtime provider + operation for diagnostics.
+        assertEquals(COSMOS, ex.error().provider());
+        assertEquals("readChanges", ex.error().operation());
     }
 
     @Test
@@ -150,9 +153,12 @@ class CursorTokenCodecTest {
         CursorToken minted = token(COSMOS, ADDR, System.currentTimeMillis(),
                 CursorAnchor.CONTINUING, List.of(new PartitionPosition("p0", null)));
         CursorExpiredException ex = assertThrows(CursorExpiredException.class,
-                () -> CursorTokenCodec.validateResourceMatch(minted, OTHER_ADDR));
+                () -> CursorTokenCodec.validateResourceMatch(minted, OTHER_ADDR, COSMOS));
         assertEquals(CursorTokenCodec.REASON_RESOURCE_MISMATCH,
                 ex.error().providerDetails().get("reason"));
+        // Error now carries runtime provider + operation for diagnostics.
+        assertEquals(COSMOS, ex.error().provider());
+        assertEquals("readChanges", ex.error().operation());
     }
 
     @Test
@@ -160,8 +166,8 @@ class CursorTokenCodecTest {
     void resourceMatchSentinel() {
         CursorToken sentinel = token(ProviderId.fromId("multicloud"), null,
                 System.currentTimeMillis(), CursorAnchor.NOW, List.of());
-        assertDoesNotThrow(() -> CursorTokenCodec.validateResourceMatch(sentinel, ADDR));
-        assertDoesNotThrow(() -> CursorTokenCodec.validateResourceMatch(sentinel, OTHER_ADDR));
+        assertDoesNotThrow(() -> CursorTokenCodec.validateResourceMatch(sentinel, ADDR, COSMOS));
+        assertDoesNotThrow(() -> CursorTokenCodec.validateResourceMatch(sentinel, OTHER_ADDR, COSMOS));
     }
 
     @Test

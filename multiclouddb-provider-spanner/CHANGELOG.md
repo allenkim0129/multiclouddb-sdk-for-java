@@ -49,6 +49,17 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- `SpannerChangeFeedReader.readDataChange` (and its companion `extractKey`,
+  `extractValues`, `extractChildPartitionTokens`, `extractHeartbeatTimestamp`,
+  `parseSequence`) now read every `Struct` field through new
+  case-canonical `getStringOrNull` / `getTimestampOrNull` /
+  `getStructListOrEmpty` helpers backed by `canonicalField(...)`, matching
+  the case-canonical pattern already applied to `unwrap` / `unwrapOrNull` /
+  `hasNonNullField`. Spanner's TVF column casing varies across client
+  versions; the previous direct accessors (e.g. `getTimestamp("commit_timestamp")`)
+  would throw `IllegalArgumentException` whenever Spanner returned a
+  differently-cased identifier. The unused `table` local in `readDataChange`
+  is also dropped.
 - `SpannerChangeFeedReader.unwrapOrNull` now resolves the canonical
   (case-sensitive) struct-field name before calling `row.getStruct(...)`,
   matching the case-canonical fix already applied to `hasNonNullField`.

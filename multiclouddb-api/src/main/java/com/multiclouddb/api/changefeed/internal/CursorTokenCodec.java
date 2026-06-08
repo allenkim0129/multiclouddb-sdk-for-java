@@ -255,13 +255,21 @@ public final class CursorTokenCodec {
     /**
      * Validate that the token's provider matches {@code runtimeProvider}, throwing
      * {@link CursorExpiredException} with reason {@code PROVIDER_MISMATCH} otherwise.
+     * The thrown error carries {@code runtimeProvider} and
+     * {@code operation="readChanges"} for diagnostics — this check is performed at
+     * client {@code readChanges(...)} entry, before any provider call, so the
+     * runtime provider is always known here.
      */
     public static void validateProviderMatch(CursorToken token, ProviderId runtimeProvider) {
         if (!token.providerId().equals(runtimeProvider)) {
-            throw expired(REASON_PROVIDER_MISMATCH,
+            throw new CursorExpiredException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.CURSOR_EXPIRED,
                     "token was minted by provider " + token.providerId().id()
                             + " but the active client uses " + runtimeProvider.id(),
-                    null);
+                    runtimeProvider,
+                    "readChanges",
+                    false,
+                    Map.of(DETAIL_REASON, REASON_PROVIDER_MISMATCH)));
         }
     }
 
@@ -269,15 +277,21 @@ public final class CursorTokenCodec {
      * Validate that the token's resource binding (if any) matches the supplied
      * {@code addr}, throwing {@link CursorExpiredException} with reason
      * {@code RESOURCE_MISMATCH} on mismatch. Unhydrated sentinel tokens
-     * ({@code resource() == null}) are always accepted.
+     * ({@code resource() == null}) are always accepted. The thrown error carries
+     * {@code runtimeProvider} and {@code operation="readChanges"} for diagnostics.
      */
-    public static void validateResourceMatch(CursorToken token, ResourceAddress addr) {
+    public static void validateResourceMatch(CursorToken token, ResourceAddress addr,
+                                             ProviderId runtimeProvider) {
         if (token.resource() == null) return; // unhydrated sentinel — bind on first use
         if (!token.resource().equals(addr)) {
-            throw expired(REASON_RESOURCE_MISMATCH,
+            throw new CursorExpiredException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.CURSOR_EXPIRED,
                     "token was minted for resource " + token.resource()
                             + " but the call targets " + addr,
-                    null);
+                    runtimeProvider,
+                    "readChanges",
+                    false,
+                    Map.of(DETAIL_REASON, REASON_RESOURCE_MISMATCH)));
         }
     }
 
@@ -289,12 +303,22 @@ public final class CursorTokenCodec {
         return n.asText();
     }
 
+    /**
+     * Build a {@link CursorExpiredException} for a token-decode failure. After
+     * the provider/resource-match validators were moved to dedicated
+     * constructors that receive the runtime provider, this helper is scoped to
+     * the decode path only — {@link #decode(String, long)} is invoked from
+     * {@code ChangeFeedCursor.fromToken(...)}, never inside a provider call —
+     * so {@code operation} is hard-coded to {@code "fromToken"} and
+     * {@code provider} is left {@code null}: token decoding has no notion of
+     * a runtime provider until {@code validateProviderMatch(...)} runs.
+     */
     private static CursorExpiredException expired(String reason, String message, Throwable cause) {
         MulticloudDbError err = new MulticloudDbError(
                 MulticloudDbErrorCategory.CURSOR_EXPIRED,
                 message,
                 null,
-                "readChanges",
+                "fromToken",
                 false,
                 Map.of(DETAIL_REASON, reason));
         return cause != null ? new CursorExpiredException(err, cause) : new CursorExpiredException(err);

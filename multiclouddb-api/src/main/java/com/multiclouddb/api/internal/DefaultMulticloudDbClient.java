@@ -319,7 +319,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         CursorToken token = cursor.token();
         if (!cursor.isUnhydratedSentinel()) {
             CursorTokenCodec.validateProviderMatch(token, config.provider());
-            CursorTokenCodec.validateResourceMatch(token, address);
+            CursorTokenCodec.validateResourceMatch(token, address, config.provider());
         }
 
         Instant start = Instant.now();

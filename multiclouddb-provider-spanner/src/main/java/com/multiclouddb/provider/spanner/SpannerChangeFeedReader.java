@@ -335,32 +335,40 @@ final class SpannerChangeFeedReader {
     }
 
     private DataChangeBatch readDataChange(Struct row, ResourceAddress address) {
+        // address is reserved for future use (table_name fallback). All Struct
+        // field accesses below go through canonicalField(...) helpers so we
+        // tolerate Spanner returning TVF column names with different casing
+        // across client versions.
         Struct rec = unwrap(row, "data_change_record");
-        Timestamp commitTs = rec.getTimestamp("commit_timestamp");
+        Timestamp commitTs = getTimestampOrNull(rec, "commit_timestamp");
         long recordSeq = parseSequence(rec, "record_sequence");
-        String txnId = rec.isNull("server_transaction_id") ? "" : rec.getString("server_transaction_id");
-        String table = rec.isNull("table_name") ? address.collection() : rec.getString("table_name");
-        String modType = rec.isNull("mod_type") ? "UPDATE" : rec.getString("mod_type");
+        String txnIdRaw = getStringOrNull(rec, "server_transaction_id");
+        String txnId = txnIdRaw != null ? txnIdRaw : "";
+        String modTypeRaw = getStringOrNull(rec, "mod_type");
+        String modType = modTypeRaw != null ? modTypeRaw : "UPDATE";
         ChangeType type = mapModType(modType);
 
-        List<Struct> mods = rec.getStructList("mods");
+        List<Struct> mods = getStructListOrEmpty(rec, "mods");
         List<ChangeEvent> out = new ArrayList<>(mods.size());
         int idx = 0;
         for (Struct mod : mods) {
-            String eventId = txnId + ":" + commitTs.toString() + ":" + recordSeq + ":" + idx;
+            String eventId = txnId + ":" + (commitTs != null ? commitTs.toString() : "") + ":"
+                    + recordSeq + ":" + idx;
             MulticloudDbKey key = extractKey(mod);
             JsonNode data = extractValues(mod, type);
-            out.add(new ChangeEvent(key, type, Instant.ofEpochSecond(
-                    commitTs.getSeconds(), commitTs.getNanos()), data, eventId));
+            Instant eventInstant = commitTs != null
+                    ? Instant.ofEpochSecond(commitTs.getSeconds(), commitTs.getNanos())
+                    : Instant.EPOCH;
+            out.add(new ChangeEvent(key, type, eventInstant, data, eventId));
             idx++;
         }
-        return new DataChangeBatch(out, commitTs, recordSeq);
+        return new DataChangeBatch(out, commitTs != null ? commitTs : Timestamp.now(), recordSeq);
     }
 
     private MulticloudDbKey extractKey(Struct mod) {
         // mods.keys is a JSON STRING ({ "partitionKey": "...", "sortKey": "..." }).
-        if (mod.isNull("keys")) return MulticloudDbKey.of("");
-        String keysJson = mod.getString("keys");
+        String keysJson = getStringOrNull(mod, "keys");
+        if (keysJson == null) return MulticloudDbKey.of("");
         try {
             JsonNode node = MAPPER.readTree(keysJson);
             String pk = node.has("partitionKey") ? node.get("partitionKey").asText() : "";
@@ -384,7 +392,8 @@ final class SpannerChangeFeedReader {
         } else {
             return MAPPER.createObjectNode();
         }
-        String json = mod.getString(field);
+        String json = getStringOrNull(mod, field);
+        if (json == null) return MAPPER.createObjectNode();
         try {
             return MAPPER.readTree(json);
         } catch (Exception e) {
@@ -410,9 +419,10 @@ final class SpannerChangeFeedReader {
         Struct rec = unwrapOrNull(row, "child_partitions_record");
         if (rec == null) return List.of();
         List<String> tokens = new ArrayList<>();
-        List<Struct> children = rec.getStructList("child_partitions");
+        List<Struct> children = getStructListOrEmpty(rec, "child_partitions");
         for (Struct c : children) {
-            if (!c.isNull("token")) tokens.add(c.getString("token"));
+            String tk = getStringOrNull(c, "token");
+            if (tk != null) tokens.add(tk);
         }
         return tokens;
     }
@@ -420,7 +430,7 @@ final class SpannerChangeFeedReader {
     private Timestamp extractHeartbeatTimestamp(Struct row) {
         Struct rec = unwrapOrNull(row, "heartbeat_record");
         if (rec == null) return null;
-        return rec.isNull("timestamp") ? null : rec.getTimestamp("timestamp");
+        return getTimestampOrNull(rec, "timestamp");
     }
 
     // ── Unwrap helpers (tolerate ChangeRecord wrapper) ──────────────────────
@@ -509,17 +519,36 @@ final class SpannerChangeFeedReader {
     }
 
     private static long parseSequence(Struct rec, String field) {
-        if (!hasNonNullField(rec, field)) return 0L;
+        String cf = canonicalField(rec, field);
+        if (cf == null || rec.isNull(cf)) return 0L;
         try {
             // record_sequence is typically STRING in Spanner change streams.
-            return Long.parseLong(rec.getString(field));
+            return Long.parseLong(rec.getString(cf));
         } catch (Exception e) {
             try {
-                return rec.getLong(field);
+                return rec.getLong(cf);
             } catch (Exception e2) {
                 return 0L;
             }
         }
+    }
+
+    /** Safe string accessor that honours canonical (case-insensitive) field lookup. */
+    private static String getStringOrNull(Struct s, String field) {
+        String cf = canonicalField(s, field);
+        return (cf != null && !s.isNull(cf)) ? s.getString(cf) : null;
+    }
+
+    /** Safe timestamp accessor that honours canonical (case-insensitive) field lookup. */
+    private static Timestamp getTimestampOrNull(Struct s, String field) {
+        String cf = canonicalField(s, field);
+        return (cf != null && !s.isNull(cf)) ? s.getTimestamp(cf) : null;
+    }
+
+    /** Safe struct-list accessor that honours canonical (case-insensitive) field lookup. */
+    private static List<Struct> getStructListOrEmpty(Struct s, String field) {
+        String cf = canonicalField(s, field);
+        return (cf != null && !s.isNull(cf)) ? s.getStructList(cf) : List.of();
     }
 
     private static Timestamp addMillis(Timestamp t, long millis) {
