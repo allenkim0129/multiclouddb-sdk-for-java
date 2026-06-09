@@ -25,8 +25,12 @@ import java.util.Objects;
  *       the partition id itself.</li>
  * </ul>
  *
- * Both fields are validated non-blank for {@code partitionId}; {@code continuation}
- * may be {@code null} or empty. Instances are immutable.
+ * {@code partitionId} is validated non-blank. {@code continuation} may be
+ * passed as {@code null} or empty; the empty string is normalised to
+ * {@code null} on construction (an empty continuation conveys the same
+ * "no position yet" semantic as a null one, and round-tripping the two
+ * separately would surface as a spurious {@link #equals} difference in
+ * cursor-token codecs and persistence layers). Instances are immutable.
  */
 public final class PartitionPosition {
 

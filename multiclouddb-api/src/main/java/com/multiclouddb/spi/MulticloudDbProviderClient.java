@@ -3,12 +3,14 @@
 
 package com.multiclouddb.spi;
 
+import com.multiclouddb.api.Capability;
 import com.multiclouddb.api.CapabilitySet;
 import com.multiclouddb.api.DocumentResult;
 import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.MulticloudDbKey;
+import com.multiclouddb.api.OperationNames;
 import com.multiclouddb.api.OperationOptions;
 import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.QueryPage;
@@ -255,9 +257,9 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
                 MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
                 "Change feed is not supported by provider " + providerId().id(),
                 providerId(),
-                "listCursors",
+                OperationNames.LIST_CURSORS,
                 false,
-                java.util.Map.of("capability", "change_feed")));
+                java.util.Map.of("capability", Capability.CHANGE_FEED)));
     }
 
     /**
@@ -273,8 +275,8 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
                 MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
                 "Change feed is not supported by provider " + providerId().id(),
                 providerId(),
-                "readChanges",
+                OperationNames.READ_CHANGES,
                 false,
-                java.util.Map.of("capability", "change_feed")));
+                java.util.Map.of("capability", Capability.CHANGE_FEED)));
     }
 }
