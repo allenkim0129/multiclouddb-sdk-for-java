@@ -180,9 +180,9 @@ Plus two cursor factories: `ChangeFeedCursor.now()` (live-tip sentinel) and `Cha
 
 | Provider | Native API | Notes |
 |---|---|---|
-| Cosmos | `CosmosContainer.queryChangeFeed(CosmosChangeFeedRequestOptions, JsonNode.class)` + `getFeedRanges()` | Always reads in All-Versions-and-Deletes (AVAD) mode and unwraps the AVAD envelope (`{current, previous, metadata}`) so `ChangeEvent.type()` and `ChangeEvent.data()` match the Dynamo / Spanner contract. The Cosmos container the caller targets must be provisioned with an AVAD change-feed policy (`ChangeFeedPolicy.createAllVersionsAndDeletesPolicy`); a non-AVAD container surfaces a Cosmos 400 BadRequest through the SDK's normalised error envelope on the first read. 410 GONE → `CursorExpiredException(PROVIDER_TRIMMED)`. |
+| Cosmos | `CosmosContainer.queryChangeFeed(CosmosChangeFeedRequestOptions, JsonNode.class)` + `getFeedRanges()` | Always reads in All-Versions-and-Deletes (AVAD) mode and unwraps the AVAD envelope (`{current, previous, metadata}`) so `ChangeEvent.type()` and `ChangeEvent.data()` match the Dynamo / Spanner contract. The Cosmos container the caller targets must be provisioned with an AVAD change-feed policy (`ChangeFeedPolicy.createAllVersionsAndDeletesPolicy`); a non-AVAD container surfaces a Cosmos 400 BadRequest through the SDK's normalised error envelope on the first read. 410 GONE → `CursorExpiredException(PROVIDER_TRIMMED)`. Under the opt-in path (`ChangeFeedConfig.extendedRetention`), `ensureContainer(...)` drives provisioning end-to-end — creating the container with the AVAD `ChangeFeedPolicy` carrying the requested retention — and the Continuous-Backup-required failure is re-mapped into `UNSUPPORTED_CAPABILITY(continuous_backup_required)`. |
 | Dynamo | `DynamoDbStreams.getRecords(GetRecordsRequest)` with `ShardIteratorType=AT_SEQUENCE_NUMBER`/`LATEST` | Requires the table to have a stream enabled (`StreamSpecification` with `NEW_AND_OLD_IMAGES`). `TrimmedDataAccessException` → `CursorExpiredException(PROVIDER_TRIMMED)`. |
-| Spanner | `READ_<stream>(start_timestamp, end_timestamp, partition_token, heartbeat_milliseconds)` TVF in single-use read-only TX | Each `data_change_record.mod` → one `ChangeEvent`. `child_partitions_record` rows rotate the partition set in place (no cursor re-bootstrap required). `OUT_OF_RANGE` → `CursorExpiredException(PROVIDER_TRIMMED)`. Requires `CREATE CHANGE STREAM <name> FOR <collection> OPTIONS (value_capture_type='NEW_ROW')` provisioned out-of-band; the SDK does not create change streams. |
+| Spanner | `READ_<stream>(start_timestamp, end_timestamp, partition_token, heartbeat_milliseconds)` TVF in single-use read-only TX | Each `data_change_record.mod` → one `ChangeEvent`. `child_partitions_record` rows rotate the partition set in place (no cursor re-bootstrap required). `OUT_OF_RANGE` → `CursorExpiredException(PROVIDER_TRIMMED)`. Requires `CREATE CHANGE STREAM <name> FOR <collection> OPTIONS (value_capture_type='NEW_ROW')` provisioned out-of-band by default; under the opt-in path (`ChangeFeedConfig.extendedRetention`), `ensureContainer(...)` drives the SDK to emit the DDL itself, including the requested `OPTIONS (retention_period = '…')` clause, and the stream name honours the `changeStream.<collection>` connection-key override so the producer and reader resolve the same stream. |
 
 ### Conformance coverage
 
@@ -204,6 +204,53 @@ Plus two cursor factories: `ChangeFeedCursor.now()` (live-tip sentinel) and `Cha
 - **Multi-thread change-feed e2e demonstrator** (tracked as T173): a worker-pool fixture in `multiclouddb-e2e/` that fan-outs `listCursors(addr)` to N workers and drains them in parallel against the live emulator, asserting (a) no duplicate `eventID` across workers and (b) `nextCursor`s remain individually resumable. The conformance suite covers single-cursor semantics; this fixture covers the recommended deployment pattern documented in `docs/guide.md`.
 - **OperationOptions.timeout() enforcement on the change-feed path** (tracked as T174): v1 emits a one-shot `WARN` when a caller supplies `options.timeout()` because no built-in provider honours it (Cosmos / Dynamo / Spanner each have their own page-fetch budgets). A future release should bound the wall-clock of `readChanges` per-call so callers can compose timeouts uniformly with CRUD ops.
 
+
+### Change Feed (US14) — Planning Addendum (2026-11): extended retention opt-in
+
+**Scope delta vs the 2026-06 addendum**: the extended-retention capability
+shipped with PR #84 reverses the earlier "SDK does not provision change
+substrates" policy along a narrow, opt-in path:
+
+- New API surface: `Capability.EXTENDED_CHANGE_FEED_HISTORY` (declared
+  `_CAP` on Cosmos and Spanner, `_UNSUPPORTED` on Dynamo) and the
+  `ChangeFeedConfig` value class with builder validation enforcing
+  `extendedRetention > 24h`.
+- Build-time gate: `MulticloudDbClientFactory.create(...)` rejects
+  `(opt-in) + (provider missing capability)` with
+  `UNSUPPORTED_CAPABILITY(extended_retention_unavailable)` before any
+  change-feed-substrate I/O. The provider client paid for by
+  `adapter.createClient(...)` is `close()`-d on gate-throw to avoid
+  leaking control-plane channels. A defence-in-depth mirror gate fires in
+  the Dynamo SPI constructor so direct-instantiation paths cannot bypass
+  the factory.
+- Cosmos: `CosmosProviderClient.ensureContainer(...)` provisions the
+  container with `ChangeFeedPolicy.createAllVersionsAndDeletesPolicy(d)`;
+  Continuous-Backup-required errors are re-mapped to
+  `UNSUPPORTED_CAPABILITY(continuous_backup_required)` — but only when
+  the caller opted in, preserving the bit-for-bit v1 default-path
+  behaviour.
+- Spanner: `SpannerProviderClient.ensureContainer(...)` emits
+  `CREATE CHANGE STREAM <name> FOR <collection> OPTIONS (...,
+  retention_period = '…')` using a `Duration → 'Nd' / 'Nh' / 'Nm' / 'Ns'`
+  formatter that rounds sub-second residue *up* so 24h+1ms never
+  silently collapses to the 24h baseline.
+
+**Deferred work tracked here (new)**:
+
+- **Behavioural conformance for extended retention**: the
+  `CosmosChangeFeedExtendedRetentionConformanceTest /
+  SpannerChangeFeedExtendedRetentionConformanceTest` shape is deferred
+  because (a) the Cosmos emulator caps AVAD retention at 10 minutes and
+  rejects the [1d, 30d] domain the spec requires, and (b) the Spanner
+  emulator silently ignores `OPTIONS (retention_period = …)` on the
+  `CREATE CHANGE STREAM` DDL. The build-time gate is covered by an
+  abstract API-module test (`MulticloudDbClientFactoryExtendedRetentionGateTest`)
+  that exercises the routing via a fake SPI adapter, and the per-provider
+  capability declaration is covered by the bumped `CapabilitiesConformanceTest`
+  + per-provider `isSupported(EXTENDED_CHANGE_FEED_HISTORY)` assertions in
+  `Cosmos/Dynamo/SpannerCapabilitiesTest`. The end-to-end "set 7d,
+  observe events older than 24h are still readable" assertion is owed to a
+  live-cloud nightly fixture, not the emulator suite.
 ### Spanner upsert flip — rationale
 
 Earlier `Unreleased` builds executed `upsert()` as `Mutation.newReplaceBuilder(...)` to match Cosmos / Dynamo full-document-replace semantics on read. With the change-feed reader in place, that flip became a portability bug: Spanner change streams under `value_capture_type='NEW_ROW'` surfaced an `INSERT` record for every `upsert()` call, regardless of whether the row pre-existed — Cosmos AVAD and Dynamo `NEW_AND_OLD_IMAGES` correctly distinguish CREATE from UPDATE on the same upsert call. The v1 fix flips the mutation back to `Mutation.newInsertOrUpdateBuilder(...)` and keeps the existing `FIELD_DATA` field-set tracking so the read-path full-document-replace contract is preserved without using a destructive replace. The Spanner change-feed reader applies the same `FIELD_DATA` filter to its payload so `ChangeEvent.data()` does not leak stale columns from earlier writes. See `docs/changelog.md` Spanner `[Unreleased]` → *Fixed* for the user-facing note.

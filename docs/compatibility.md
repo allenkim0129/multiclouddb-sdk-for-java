@@ -102,6 +102,28 @@ The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 > The portable API does not yet expose ETag-based conditional updates; when it does, the 412-equivalent
 > path will be split into a dedicated `PRECONDITION_FAILED` category (tracked in issue #29).
 
+## Change-Feed History Retention
+
+The portable change-feed read path guarantees a **24-hour** history floor on
+every provider out of the box — a cursor token minted by `ChangeFeedCursor#toToken()`
+can be replayed for 24 hours regardless of which provider produced it.
+
+To request a longer server-side retention window, opt in via
+`ChangeFeedConfig.builder().extendedRetention(Duration)` on
+`MulticloudDbClientConfig`. The SDK fails fast at client-build time with
+`UNSUPPORTED_CAPABILITY` (`reason=extended_retention_unavailable`) if the
+target provider does not declare the `EXTENDED_CHANGE_FEED_HISTORY` capability.
+
+| Provider | Declares `EXTENDED_CHANGE_FEED_HISTORY` | How it is honoured | Practical ceiling |
+|---|---|---|---|
+| Cosmos DB | ✅ | `ensureContainer()` provisions an AVAD `ChangeFeedPolicy` carrying the requested retention. The account must have Continuous Backup enabled; the SDK normalises the "continuous backup required" failure to `UNSUPPORTED_CAPABILITY` (`reason=continuous_backup_required`). | Up to **30 days** on a Continuous Backup 30-day tier; 7 days is the most common ceiling. |
+| Spanner | ✅ | `ensureContainer()` emits `CREATE CHANGE STREAM <table>_changes FOR <table> OPTIONS (retention_period = '<value>')` after the table-create. Requests beyond the database's native maximum are normalised to `UNSUPPORTED_CAPABILITY` (`reason=retention_exceeds_native_max`). | **7 days** natively; up to **1 year** only on a database explicitly configured for extended retention. |
+| DynamoDB | ❌ | DynamoDB Streams is fixed at 24 h server-side. Calling `client(...).provisionSchema(...)` (or any container-create call) with an `extendedRetention` opt-in fails fast at client-build time. | Use Kinesis Data Streams natively (outside the SDK) for >24 h today. |
+
+**Cost is provider-shaped** — extending the change-feed history window changes
+your bill differently on each provider; the windows are not interchangeable.
+See `docs/guide.md` → *"Extending change-feed history beyond 24 hours"* for the
+per-provider price-driver detail before opting in.
 ## Default Sort-Key Ordering
 
 All Cosmos DB and DynamoDB query paths return results sorted by the document's

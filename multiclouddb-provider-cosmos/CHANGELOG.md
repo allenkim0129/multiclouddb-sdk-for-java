@@ -7,6 +7,37 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added — Extended Change-Feed Retention
+
+- **`CosmosCapabilities`** now declares `EXTENDED_CHANGE_FEED_HISTORY_CAP`
+  (notes: "Up to 30 days via Continuous Backup 30d tier; 7d minimum (AVAD
+  requires Continuous Backup)"). The registry size for the Cosmos adapter
+  grows from 16 to 17.
+- **`CosmosProviderClient.ensureContainer(address)`** now provisions an AVAD
+  `ChangeFeedPolicy` carrying the duration from
+  `ChangeFeedConfig.extendedRetention(...)` when the user opted in. When the
+  caller did not opt in (the default), `ensureContainer` behaves bit-for-bit
+  identical to v1.
+- New error normalisation: a 400 BadRequest whose message fingerprint
+  indicates the Cosmos account does not have Continuous Backup enabled is
+  re-mapped to `UNSUPPORTED_CAPABILITY` with
+  `providerDetails.reason="continuous_backup_required"`. Without this
+  re-mapping callers would see a generic `INVALID_REQUEST` and have to
+  substring-match the message to disambiguate provisioning failures from
+  genuine input validation. The continuous-backup fingerprint set is
+  centralised in `CosmosConstants.CONTINUOUS_BACKUP_FINGERPRINTS`.
+- **`CosmosProviderClient.ensureContainer(address)`** under the opt-in path
+  now reads back the container's active `ChangeFeedPolicy` after
+  `createContainerIfNotExists(...)` and throws
+  `UNSUPPORTED_CAPABILITY(reason="extended_retention_not_enacted")` (with
+  `requestedRetention` and `activeRetention` in `providerDetails`) when the
+  pre-existing container's retention does not match the request. Cosmos has
+  no public SDK API to update an existing container's `ChangeFeedPolicy`
+  in place — silent acceptance would leave the caller paying for an opt-in
+  the SDK never enacted. The operator must drop-and-recreate the container
+  or revert to the active retention to clear the error.
+
+
 ### Changed
 
 - `CosmosChangeFeedReader.readChanges()` now rotates the cursor's partition

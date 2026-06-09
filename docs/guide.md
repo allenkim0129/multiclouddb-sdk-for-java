@@ -1431,17 +1431,19 @@ worker continues without re-listing.
 
 | Concern | Cosmos DB | DynamoDB | Spanner |
 |---|---|---|---|
-| Maximum history horizon | Account retention configured on the AVAD change-feed policy | **24 h fixed** | Stream retention (1–7 d, configured at `CREATE CHANGE STREAM`) |
+| Maximum history horizon | 24 h baseline; up to 30 d via opt-in (`ChangeFeedConfig.extendedRetention`) provisioning an AVAD `ChangeFeedPolicy` (Continuous Backup tier–capped) | **24 h fixed** (DynamoDB Streams is service-bounded) | 24 h baseline; up to 7 d via opt-in (`ChangeFeedConfig.extendedRetention`) emitted as `CREATE CHANGE STREAM ... OPTIONS(retention_period)` |
 | `commitTimestamp` source | AVAD `metadata.crts`, falling back to `_ts` (second resolution) | `ApproximateCreationDateTime` (sub-second, approximate) | True commit timestamp (microsecond) |
 | Emits `DELETE`? | Yes (AVAD policy required) | Yes (with `NEW_AND_OLD_IMAGES`) | Yes |
 | CREATE vs UPDATE distinguishable? | Yes (via AVAD `metadata.operationType`) | Yes (via `OperationType`) | Yes (via `mod_type`) |
 | Partition discovery cost | Cheap — `getFeedRanges()` is a metadata call | One `DescribeStream` per call | One bootstrap TVF call |
 
 For applications that need history older than 24 h with cross-provider
-portability, plan around the lowest common denominator (DynamoDB Streams)
-or restrict portability claims to the two providers that support longer
-retention. The compatibility matrix in [compatibility.md](compatibility.md)
-calls this out.
+portability, the default 24-hour baseline is the lowest common denominator
+(DynamoDB Streams is service-bounded). To extend the floor on Cosmos and
+Spanner — at the cost of losing parity with the Dynamo adapter — see
+[Extending change-feed history beyond 24 hours](#extending-change-feed-history-beyond-24-hours)
+below. The compatibility matrix in [compatibility.md](compatibility.md)
+calls out the per-provider ceilings.
 
 `commitTimestamp` is documented as "the provider's authoritative ordering
 timestamp," not necessarily a true commit time. Use it for ordering and
@@ -1449,6 +1451,81 @@ checkpointing, not as a precise clock reading.
 
 ---
 
+## Extending change-feed history beyond 24 hours
+
+The portable change-feed read path ships with a 24-hour history floor on
+every provider. To request a longer server-side retention window, opt in via
+`ChangeFeedConfig.builder().extendedRetention(Duration)` on
+`MulticloudDbClientConfig`:
+
+```java
+MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
+        .provider(ProviderId.COSMOS)
+        .connection("endpoint", "...")
+        .changeFeed(ChangeFeedConfig.builder()
+                .extendedRetention(Duration.ofDays(7))
+                .build())
+        .build();
+
+try (MulticloudDbClient client = MulticloudDbClientFactory.create(config)) {
+    client.ensureContainer(ResourceAddress.of("orders", "events"));
+    // ...
+}
+```
+
+### Fail-fast capability gate
+
+At client-build time the SDK reads the provider's `CapabilitySet` and refuses
+to construct the client when the requested provider does not declare
+`Capability.EXTENDED_CHANGE_FEED_HISTORY`:
+
+| Provider | `EXTENDED_CHANGE_FEED_HISTORY` |
+|---|---|
+| Cosmos DB | ✅ supported |
+| Spanner | ✅ supported |
+| DynamoDB | ❌ not supported (server-side stream retention is fixed at 24 h) |
+
+When the capability is absent the SDK throws
+`MulticloudDbException` with category `UNSUPPORTED_CAPABILITY` and
+`providerDetails.reason="extended_retention_unavailable"` — the gate throws
+before any change-feed-substrate I/O is issued, and the underlying provider
+client (already constructed by `adapter.createClient(...)`) is `close()`-d on
+the same path so no control-plane channels leak.
+
+### How the opt-in is honoured
+
+| Provider | `ensureContainer()` behaviour | Failure → portable mapping |
+|---|---|---|
+| Cosmos DB | Sets an AVAD `ChangeFeedPolicy` on the container properties carrying the requested retention. | If the account lacks Continuous Backup, returns `UNSUPPORTED_CAPABILITY` (`reason=continuous_backup_required`). |
+| Spanner | Emits `CREATE CHANGE STREAM <table>_changes FOR <table> OPTIONS (retention_period = '<value>')` after the table-create. The stream name matches the reader's default convention so `listCursors()` / `readChanges()` transparently pick it up. | If the requested retention exceeds the database's native maximum, returns `UNSUPPORTED_CAPABILITY` (`reason=retention_exceeds_native_max`). |
+
+`ChangeFeedConfig` defaults (`ChangeFeedConfig.defaults()`) leave behaviour
+**bit-for-bit identical to v1** — the opt-in surface is purely additive.
+
+### Cost callout — read before opting in
+
+Extending the change-feed history window changes the bill differently on each
+provider; the windows are **not interchangeable**. Plan the request against
+the price driver that actually moves on your provider:
+
+- **Cosmos DB** — extended retention requires Continuous Backup. The
+  Continuous-Backup tiers (7-day and 30-day) are billed monthly per
+  *provisioned-storage GB* — flat-rate by tier, not by change-volume.
+  Verify your account is on the tier that covers the requested window before
+  opting in.
+- **Spanner** — change-stream retention beyond the default 7 days requires a
+  database explicitly configured for extended retention. Cost scales with
+  **change-data volume × retention** (writes that hit columns covered by the
+  stream are billed for the full retention window). Wide tables with
+  high-cardinality updates can produce a much larger bill at 30-day retention
+  than at 1-day retention.
+- **DynamoDB** — not applicable; server-side stream retention is fixed at
+  24 h. For >24 h history with Dynamo today, drain the stream into Kinesis
+  Data Streams natively (outside the SDK).
+
+The portable 24-hour baseline incurs no extra cost on any provider.
+
+---
 ## Document TTL (Time-to-Live)
 
 Set a per-document expiry at write time using `OperationOptions.ttlSeconds()`. Supported on `create()`, `upsert()`, and `update()`.

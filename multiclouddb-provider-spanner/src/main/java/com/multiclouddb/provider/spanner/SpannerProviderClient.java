@@ -33,6 +33,9 @@ import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerException;
+
+import java.time.Duration;
+import java.util.Map;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.api.gax.rpc.FixedHeaderProvider;
@@ -998,14 +1001,21 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     public void ensureContainer(ResourceAddress address) {
         checkOpen(OperationNames.ENSURE_CONTAINER);
         String tableName = address.collection();
+        boolean tableExists = false;
         try {
             // Check if table already exists by attempting a trivial query
             Statement checkStmt = Statement.of(
                     String.format(SpannerConstants.QUERY_TABLE_EXISTS_PROBE, tableName));
             try (ResultSet rs = databaseClient.singleUse().executeQuery(checkStmt)) {
-                // If we get here, table exists
+                // If we get here, table exists. Do NOT early-return — fall
+                // through so the change-stream provisioning block below also
+                // runs for callers that flipped on
+                // ChangeFeedConfig.extendedRetention(...) AFTER the table was
+                // first created (the most common upgrade path). The DDL block
+                // is idempotent (swallows "Duplicate name in schema") so the
+                // re-run is safe and cheap when no opt-in is set.
                 LOG.info("Spanner table already exists: {}", tableName);
-                return;
+                tableExists = true;
             }
         } catch (SpannerException e) {
             if (e.getErrorCode() != ErrorCode.NOT_FOUND
@@ -1015,40 +1025,129 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             // Table doesn't exist — create it
         }
 
-        try {
-            DatabaseAdminClient adminClient = spanner.getDatabaseAdminClient();
-            String ddl = String.format(SpannerConstants.DDL_CREATE_TABLE, tableName);
-            adminClient.updateDatabaseDdl(
-                    instanceId, databaseId, List.of(ddl), null).get();
-            LOG.info("Created Spanner table: {}", tableName);
-        } catch (InterruptedException e) {
-            // Preserve the interrupt flag and surface as TRANSIENT_FAILURE so
-            // callers don't have to catch a raw RuntimeException for interruption.
-            Thread.currentThread().interrupt();
-            throw new MulticloudDbException(new MulticloudDbError(
-                    MulticloudDbErrorCategory.TRANSIENT_FAILURE,
-                    "Interrupted while creating Spanner table: " + tableName,
-                    ProviderId.SPANNER, OperationNames.ENSURE_CONTAINER, true, null), e);
-        } catch (Exception e) {
-            if (e.getMessage() != null && e.getMessage().contains(SpannerConstants.DDL_ERR_DUPLICATE_NAME)) {
-                LOG.debug("Spanner table already exists (race): {}", tableName);
-            } else if (e instanceof SpannerException se) {
-                throw SpannerErrorMapper.map(se, OperationNames.ENSURE_CONTAINER);
-            } else if (e instanceof java.util.concurrent.ExecutionException ee
-                    && ee.getCause() instanceof SpannerException se) {
-                throw SpannerErrorMapper.map(se, OperationNames.ENSURE_CONTAINER);
-            } else {
-                // Non-Spanner cause from the DDL future — surface through the
-                // SDK's typed envelope (PROVIDER_ERROR) rather than leaking a
-                // raw RuntimeException to callers.
-                Throwable cause = e instanceof java.util.concurrent.ExecutionException ee ? ee.getCause() : e;
+        if (!tableExists) {
+            try {
+                DatabaseAdminClient adminClient = spanner.getDatabaseAdminClient();
+                String ddl = String.format(SpannerConstants.DDL_CREATE_TABLE, tableName);
+                adminClient.updateDatabaseDdl(
+                        instanceId, databaseId, List.of(ddl), null).get();
+                LOG.info("Created Spanner table: {}", tableName);
+            } catch (InterruptedException e) {
+                // Preserve the interrupt flag and surface as TRANSIENT_FAILURE so
+                // callers don't have to catch a raw RuntimeException for interruption.
+                Thread.currentThread().interrupt();
                 throw new MulticloudDbException(new MulticloudDbError(
-                        MulticloudDbErrorCategory.PROVIDER_ERROR,
-                        "Failed to create Spanner table: " + tableName,
-                        ProviderId.SPANNER, OperationNames.ENSURE_CONTAINER, false, null),
-                        cause);
+                        MulticloudDbErrorCategory.TRANSIENT_FAILURE,
+                        "Interrupted while creating Spanner table: " + tableName,
+                        ProviderId.SPANNER, OperationNames.ENSURE_CONTAINER, true, null), e);
+            } catch (Exception e) {
+                if (e.getMessage() != null && e.getMessage().contains(SpannerConstants.DDL_ERR_DUPLICATE_NAME)) {
+                    LOG.debug("Spanner table already exists (race): {}", tableName);
+                } else if (e instanceof SpannerException se) {
+                    throw SpannerErrorMapper.map(se, OperationNames.ENSURE_CONTAINER);
+                } else if (e instanceof java.util.concurrent.ExecutionException ee
+                        && ee.getCause() instanceof SpannerException se) {
+                    throw SpannerErrorMapper.map(se, OperationNames.ENSURE_CONTAINER);
+                } else {
+                    // Non-Spanner cause from the DDL future — surface through the
+                    // SDK's typed envelope (PROVIDER_ERROR) rather than leaking a
+                    // raw RuntimeException to callers.
+                    Throwable cause = e instanceof java.util.concurrent.ExecutionException ee ? ee.getCause() : e;
+                    throw new MulticloudDbException(new MulticloudDbError(
+                            MulticloudDbErrorCategory.PROVIDER_ERROR,
+                            "Failed to create Spanner table: " + tableName,
+                            ProviderId.SPANNER, OperationNames.ENSURE_CONTAINER, false, null),
+                            cause);
+                }
             }
         }
+
+        // If the user opted in to extended change-feed retention, ensure the
+        // companion Spanner CHANGE STREAM exists with the requested
+        // retention_period option. This is idempotent: if the stream already
+        // exists we swallow "Duplicate name in schema". The change-stream
+        // name follows the convention used by SpannerChangeFeedReader
+        // (default: <table>_changes) so the reader transparently picks it up.
+        if (config.changeFeed().hasExtendedRetention()) {
+            Duration retention = config.changeFeed().extendedRetention().orElseThrow();
+            // Resolve the stream name the same way SpannerChangeFeedReader does
+            // so the connection-override key `changeStream.<collection>` does
+            // not cause a producer/consumer mismatch: a user with the override
+            // set and the opt-in set would otherwise provision an orphan
+            // <table>_changes stream (still accruing change-data-volume cost)
+            // and read from the un-extended override stream.
+            String streamName = config.connection().getOrDefault(
+                    "changeStream." + tableName, tableName + "_changes");
+            String streamDdl = "CREATE CHANGE STREAM " + streamName + " FOR " + tableName
+                    + " OPTIONS (retention_period = '" + formatRetentionPeriod(retention) + "')";
+            try {
+                DatabaseAdminClient adminClient = spanner.getDatabaseAdminClient();
+                adminClient.updateDatabaseDdl(instanceId, databaseId, List.of(streamDdl), null).get();
+                LOG.info("Created Spanner change stream '{}' on table '{}' with retention {}",
+                        streamName, tableName, retention);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new MulticloudDbException(new MulticloudDbError(
+                        MulticloudDbErrorCategory.TRANSIENT_FAILURE,
+                        "Interrupted while creating Spanner change stream: " + streamName,
+                        ProviderId.SPANNER, OperationNames.ENSURE_CONTAINER, true, null), e);
+            } catch (Exception e) {
+                Throwable cause = e instanceof java.util.concurrent.ExecutionException ee ? ee.getCause() : e;
+                String causeMsg = cause != null && cause.getMessage() != null ? cause.getMessage() : "";
+                if (causeMsg.contains(SpannerConstants.DDL_ERR_DUPLICATE_NAME)) {
+                    LOG.debug("Spanner change stream already exists (race): {}", streamName);
+                } else if (cause instanceof SpannerException se
+                        && se.getErrorCode() == ErrorCode.INVALID_ARGUMENT
+                        && causeMsg.toLowerCase(java.util.Locale.ROOT).contains("retention_period")) {
+                    // Spanner rejects retention_period values outside its native bounds
+                    // (default max 7d, up to 1y with extended retention enabled).
+                    // Surface this as a portable UNSUPPORTED_CAPABILITY tagged
+                    // retention_exceeds_native_max so callers don't have to substring-
+                    // match the message to disambiguate from generic INVALID_ARGUMENT.
+                    throw new MulticloudDbException(new MulticloudDbError(
+                            MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                            "Spanner change stream retention_period " + retention
+                                    + " exceeds the database's native maximum. "
+                                    + "Default max is 7 days; up to 1 year is available only "
+                                    + "when the database is configured for extended retention. "
+                                    + "Reduce ChangeFeedConfig.extendedRetention(...) or "
+                                    + "enable extended-retention support on the Spanner database. "
+                                    + "Underlying message: " + causeMsg,
+                            ProviderId.SPANNER, OperationNames.ENSURE_CONTAINER, false,
+                            Map.of("reason", "retention_exceeds_native_max",
+                                    "requestedRetention", retention.toString())), cause);
+                } else if (cause instanceof SpannerException se) {
+                    throw SpannerErrorMapper.map(se, OperationNames.ENSURE_CONTAINER);
+                } else {
+                    throw new MulticloudDbException(new MulticloudDbError(
+                            MulticloudDbErrorCategory.PROVIDER_ERROR,
+                            "Failed to create Spanner change stream: " + streamName,
+                            ProviderId.SPANNER, OperationNames.ENSURE_CONTAINER, false, null),
+                            cause);
+                }
+            }
+        }
+    }
+
+    /**
+     * Formats a JDK {@link Duration} as a Spanner {@code retention_period}
+     * options string. Spanner accepts the suffixes {@code s} (seconds),
+     * {@code m} (minutes), {@code h} (hours), {@code d} (days). We pick the
+     * coarsest suffix that exactly represents the value to keep DDL diffs
+     * stable (so the same {@code Duration} always emits the same string).
+     */
+    static String formatRetentionPeriod(Duration retention) {
+        // Round up when there is sub-second residue so a Duration like
+        // 24h + 1ms (the smallest builder-accepted opt-in above the portable
+        // baseline) never silently truncates to 24h — that would revert the
+        // opt-in to the portable baseline and break the
+        // ChangeFeedConfig.extendedRetention("strictly greater than 24h")
+        // contract.
+        long seconds = retention.getSeconds() + (retention.getNano() > 0 ? 1 : 0);
+        if (seconds % 86_400L == 0) return (seconds / 86_400L) + "d";
+        if (seconds % 3_600L == 0)  return (seconds / 3_600L)  + "h";
+        if (seconds % 60L == 0)     return (seconds / 60L)     + "m";
+        return seconds + "s";
     }
 
     // ---- Internal helpers ----

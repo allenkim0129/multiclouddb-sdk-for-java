@@ -47,6 +47,7 @@ contract.
 | `ChangeEvent` | A single change with `key`, `type`, `commitTimestamp`, `data`, and `providerEventId`. |
 | `ChangeType` | Enum: `CREATE`, `UPDATE`, `DELETE`. |
 | `CursorExpiredException` | Thrown when a cursor cannot be honoured (trimmed, aged-out, mismatched). `error().providerDetails().get("reason")` carries the cause. |
+| `ChangeFeedConfig` | Immutable opt-in configuration for change-feed retention. `builder().extendedRetention(Duration)` requests server-side history > 24 h (provider-gated; see `Capability.EXTENDED_CHANGE_FEED_HISTORY`). `defaults()` is the cached no-op singleton; bit-for-bit identical v1 behaviour when not set. |
 
 See [guide.md - Change Feeds](guide.md#change-feeds) for the full workflow,
 provisioning prerequisites, and multi-thread pattern.

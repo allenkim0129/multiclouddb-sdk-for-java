@@ -117,6 +117,28 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      * @param config client configuration carrying connection, auth, and options
      */
     public DynamoProviderClient(MulticloudDbClientConfig config) {
+        // SPI-level defence-in-depth: even when an integrator bypasses
+        // MulticloudDbClientFactory and constructs DynamoProviderClient
+        // directly (via ServiceLoader<MulticloudDbProviderAdapter>), the
+        // extended-retention opt-in must still fail fast. DynamoDB Streams is
+        // fixed at 24h server-side — silently dropping the opt-in would leak
+        // a misconfigured client into production.
+        if (config.changeFeed().hasExtendedRetention()) {
+            java.time.Duration requested = config.changeFeed().extendedRetention().orElseThrow();
+            throw new MulticloudDbException(new com.multiclouddb.api.MulticloudDbError(
+                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    "DynamoDB Streams is fixed at 24h server-side; "
+                            + "ChangeFeedConfig.extendedRetention(" + requested + ") is not honoured. "
+                            + "Use Kinesis Data Streams natively for >24h history. "
+                            + "See docs/guide.md → 'Extending change-feed history beyond 24h'.",
+                    ProviderId.DYNAMO,
+                    "create",
+                    false,
+                    java.util.Map.of(
+                            "reason", "extended_retention_unavailable",
+                            "capability", com.multiclouddb.api.Capability.EXTENDED_CHANGE_FEED_HISTORY,
+                            "requestedRetention", requested.toString())));
+        }
         this.config = config;
         String region   = config.connection().getOrDefault(DynamoConstants.CONFIG_REGION, DynamoConstants.REGION_DEFAULT);
         String endpoint = config.connection().get(DynamoConstants.CONFIG_ENDPOINT);

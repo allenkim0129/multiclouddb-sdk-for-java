@@ -11,6 +11,24 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
+**Added — Extended Change-Feed Retention (opt-in):**
+
+- `com.multiclouddb.api.changefeed.ChangeFeedConfig` — new immutable value
+  class with a fluent builder that carries the opt-in request for change-feed
+  history beyond the portable 24-hour baseline. `extendedRetention(Duration)`
+  validates eagerly (must be > 24 h); `defaults()` returns the cached no-op
+  singleton so callers that never touch this class are bit-for-bit identical
+  to v1.
+- `MulticloudDbClientConfig.changeFeed(ChangeFeedConfig)` — new builder
+  setter wiring `ChangeFeedConfig` into the client.
+- `Capability.EXTENDED_CHANGE_FEED_HISTORY` — new well-known capability with
+  `EXTENDED_CHANGE_FEED_HISTORY_CAP` / `EXTENDED_CHANGE_FEED_HISTORY_UNSUPPORTED`
+  singletons. Registry size grows from 16 → 17.
+- Build-time capability gate in `MulticloudDbClientFactory.create(...)`
+  refuses to build a client when the opt-in is set but the provider does not
+  declare the new capability — surfaces as `UNSUPPORTED_CAPABILITY` with
+  `providerDetails.reason="extended_retention_unavailable"` before any change-feed-substrate I/O is issued.
+
 **Changed:**
 
 - `CursorExpiredException`'s `providerDetails.reason` set is now documented as
@@ -129,6 +147,25 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
+**Added — Extended Change-Feed Retention:**
+
+- `CosmosCapabilities` now declares `EXTENDED_CHANGE_FEED_HISTORY_CAP`.
+- `CosmosProviderClient.ensureContainer(address)` now provisions an AVAD
+  `ChangeFeedPolicy` with the duration from
+  `ChangeFeedConfig.extendedRetention(...)` when the opt-in is set; behaves
+  identically to v1 otherwise.
+- New error normalisation: a 400 BadRequest with a "continuous backup"
+  fingerprint is re-mapped to `UNSUPPORTED_CAPABILITY`
+  (`reason="continuous_backup_required"`). Fingerprints centralised in
+  `CosmosConstants.CONTINUOUS_BACKUP_FINGERPRINTS`.
+- Under the opt-in path, `ensureContainer(...)` reads back the container's
+  active `ChangeFeedPolicy` after `createContainerIfNotExists(...)` and
+  throws `UNSUPPORTED_CAPABILITY(reason="extended_retention_not_enacted")`
+  (with `requestedRetention` and `activeRetention` details) when the
+  pre-existing container's retention does not match the request — Cosmos has
+  no in-place ChangeFeedPolicy update so silent acceptance would leave the
+  caller paying for an opt-in the SDK never enacted.
+
 **Added — Change-Feed support:**
 
 - Pull-mode change-feed reader backed by
@@ -231,6 +268,15 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
+**Added — Extended Change-Feed Retention:**
+
+- `DynamoCapabilities` now explicitly declares
+  `EXTENDED_CHANGE_FEED_HISTORY_UNSUPPORTED` — DynamoDB Streams is fixed at
+  24 h server-side. Callers that opt in to
+  `ChangeFeedConfig.extendedRetention(...)` against a Dynamo client now fail
+  fast at client-build time via the API module's gate. No `ensureContainer`
+  change required.
+
 **Added — Change-Feed support:**
 
 - Change-feed reader backed by DynamoDB Streams (`DescribeStream`,
@@ -302,6 +348,26 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## multiclouddb-provider-spanner
 
 ### [Unreleased]
+
+**Added — Extended Change-Feed Retention:**
+
+- `SpannerCapabilities` now declares `EXTENDED_CHANGE_FEED_HISTORY_CAP`.
+- `SpannerProviderClient.ensureContainer(address)` now emits an idempotent
+  `CREATE CHANGE STREAM <name> FOR <table> OPTIONS (retention_period =
+  '<value>')` *both* when a fresh table is created and when the table already
+  exists, when the opt-in is set. The pre-existing-table path no longer
+  early-returns before the change-stream block, so the most common upgrade
+  scenario (v1 deployment with existing tables flips on
+  `extendedRetention(7d)`) correctly provisions the change stream. The stream
+  name honours the `changeStream.<collection>` connection-key override (and
+  otherwise defaults to `<table>_changes`) so producer and reader resolve the
+  same stream.
+- New `formatRetentionPeriod(Duration)` helper picks the coarsest stable
+  GoogleSQL suffix (`d`/`h`/`m`/`s`) so equal durations always emit identical
+  DDL.
+- New error normalisation: `INVALID_ARGUMENT` from
+  `updateDatabaseDdl(...)` whose message references retention is re-mapped to
+  `UNSUPPORTED_CAPABILITY` (`reason="retention_exceeds_native_max"`).
 
 **Added — Change-Feed support:**
 

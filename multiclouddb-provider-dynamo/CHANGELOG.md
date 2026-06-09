@@ -7,6 +7,22 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added — Extended Change-Feed Retention
+
+- **`DynamoCapabilities`** now explicitly declares
+  `EXTENDED_CHANGE_FEED_HISTORY_UNSUPPORTED` (notes: "DynamoDB Streams is
+  fixed at 24h server-side. SDK-managed archive-on-read (drain Streams into Kinesis Data Streams / S3) is on the v1.x roadmap; for now use Kinesis Data Streams native escape outside the SDK for >24h."). The registry size for the Dynamo adapter grows
+  from 16 to 17.
+- Callers that opt in to `ChangeFeedConfig.extendedRetention(...)` against a
+  Dynamo client now fail fast at client-build time. The primary gate lives in
+  the API module's `MulticloudDbClientFactory`; `DynamoProviderClient`'s
+  constructor also carries a defence-in-depth mirror gate so SPI-direct
+  integrators (`ServiceLoader<MulticloudDbProviderAdapter>` consumers that
+  bypass the factory) cannot silently drop the opt-in. Both surface
+  `UNSUPPORTED_CAPABILITY` with `providerDetails.reason="extended_retention_unavailable"`
+  before any change-feed-substrate I/O is issued.
+
+
 ### Changed
 
 - `DynamoChangeFeedReader.readChanges()` now rotates the cursor's partition

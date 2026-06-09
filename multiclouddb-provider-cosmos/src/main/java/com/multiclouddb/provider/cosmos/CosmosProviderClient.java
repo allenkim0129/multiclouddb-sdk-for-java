@@ -19,6 +19,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.regex.Pattern;
@@ -613,12 +614,113 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             CosmosDatabase db = cosmosClient.getDatabase(address.database());
             CosmosContainerProperties props = new CosmosContainerProperties(
                     address.collection(), CosmosConstants.PARTITION_KEY_PATH);
+            // If the user opted in to extended change-feed retention via
+            // MulticloudDbClientConfig.builder().changeFeed(ChangeFeedConfig
+            // .builder().extendedRetention(...).build()), provision the
+            // container with an AVAD ChangeFeedPolicy carrying that retention.
+            // The build-time capability gate in MulticloudDbClientFactory
+            // guarantees we only get here if the provider declared
+            // EXTENDED_CHANGE_FEED_HISTORY_CAP, so the policy is always safe
+            // to set when hasExtendedRetention() is true.
+            boolean optIn = config.changeFeed().hasExtendedRetention();
+            Duration requestedRetention = optIn
+                    ? config.changeFeed().extendedRetention().orElseThrow()
+                    : null;
+            if (optIn) {
+                props.setChangeFeedPolicy(
+                        ChangeFeedPolicy.createAllVersionsAndDeletesPolicy(requestedRetention));
+                LOG.info("ensureContainer: provisioning Cosmos container '{}/{}' with "
+                                + "AVAD ChangeFeedPolicy retention={}",
+                        address.database(), address.collection(), requestedRetention);
+            }
             db.createContainerIfNotExists(props);
             LOG.info("ensureContainer: created or verified Cosmos container '{}/{}'",
                     address.database(), address.collection());
+
+            // Cosmos's createContainerIfNotExists is a no-op when the container
+            // already exists — props (including the new ChangeFeedPolicy) is
+            // silently discarded. Under the opt-in path we must read back the
+            // container's active policy and refuse silently honouring an
+            // already-existing non-AVAD or weaker-retention container. Cosmos
+            // has no public SDK API to update an existing container's
+            // ChangeFeedPolicy in place, so the correct behaviour is to throw
+            // UNSUPPORTED_CAPABILITY(reason=extended_retention_not_enacted)
+            // with both requested and active retention values so the operator
+            // can drop-and-recreate or roll back the opt-in.
+            if (optIn) {
+                CosmosContainer existing = db.getContainer(address.collection());
+                CosmosContainerProperties active = existing.read().getProperties();
+                ChangeFeedPolicy activePolicy = active.getChangeFeedPolicy();
+                Duration activeRetention = activePolicy == null
+                        ? Duration.ZERO
+                        : activePolicy.getRetentionDurationForAllVersionsAndDeletesPolicy();
+                if (!requestedRetention.equals(activeRetention)) {
+                    throw new MulticloudDbException(new MulticloudDbError(
+                            MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                            "Cosmos container '" + address.database() + "/" + address.collection()
+                                    + "' already exists with ChangeFeedPolicy retention="
+                                    + activeRetention + " (or no ChangeFeedPolicy at all). "
+                                    + "Cosmos cannot update an existing container's ChangeFeedPolicy "
+                                    + "in place — ensureContainer cannot enact the requested "
+                                    + "extendedRetention(" + requestedRetention + ") without "
+                                    + "dropping and recreating the container. Drop the container "
+                                    + "(losing data!) and re-run ensureContainer, or revert to "
+                                    + "ChangeFeedConfig.extendedRetention(" + activeRetention + ").",
+                            ProviderId.COSMOS, OperationNames.ENSURE_CONTAINER, false,
+                            Map.of("reason", "extended_retention_not_enacted",
+                                    "requestedRetention", requestedRetention.toString(),
+                                    "activeRetention", activeRetention.toString())));
+                }
+            }
         } catch (CosmosException e) {
+            // Only consult the continuous-backup fingerprint when the caller
+            // actually opted in to extended retention. Without this gate, v1
+            // callers can see UNSUPPORTED_CAPABILITY where they used to see
+            // INVALID_REQUEST for unrelated 400s that mention PITR / continuous
+            // backup — breaking the "bit-for-bit identical to v1" guarantee
+            // documented for callers that never touch ChangeFeedConfig.
+            if (config.changeFeed().hasExtendedRetention()) {
+                MulticloudDbException normalized =
+                        maybeContinuousBackupRequired(e, OperationNames.ENSURE_CONTAINER);
+                if (normalized != null) throw normalized;
+            }
             throw CosmosErrorMapper.map(e, OperationNames.ENSURE_CONTAINER);
         }
+    }
+
+    /**
+     * Re-maps a Cosmos 400 BadRequest whose message fingerprint indicates the
+     * account does not have Continuous Backup enabled (a prerequisite for AVAD
+     * change-feed policies with >7d retention) into a portable
+     * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY UNSUPPORTED_CAPABILITY}
+     * envelope tagged {@code reason=continuous_backup_required}.
+     * <p>
+     * Without this re-mapping a callers would see a generic INVALID_REQUEST
+     * and have to substring-match the message to disambiguate provisioning
+     * failures from genuine input validation. Returns {@code null} if the
+     * exception does not match the fingerprint, so the caller falls through
+     * to the generic mapper.
+     */
+    private MulticloudDbException maybeContinuousBackupRequired(CosmosException e, String operation) {
+        if (e.getStatusCode() != 400) return null;
+        String msg = e.getMessage();
+        if (msg == null) return null;
+        String lower = msg.toLowerCase(Locale.ROOT);
+        boolean fingerprint = false;
+        for (String needle : CosmosConstants.CONTINUOUS_BACKUP_FINGERPRINTS) {
+            if (lower.contains(needle)) { fingerprint = true; break; }
+        }
+        if (!fingerprint) return null;
+        return new MulticloudDbException(new MulticloudDbError(
+                MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                "Cosmos account does not have Continuous Backup enabled, which is required "
+                        + "for AVAD ChangeFeedPolicy (the basis for portable change-feed history "
+                        + "beyond the 24h baseline). Enable Continuous Backup (7d or 30d tier) on "
+                        + "the account; the tier ceiling caps the maximum value you can pass to "
+                        + "ChangeFeedConfig.extendedRetention(...). Underlying message: " + msg,
+                ProviderId.COSMOS, operation, false,
+                Map.of("reason", "continuous_backup_required",
+                        "statusCode", String.valueOf(e.getStatusCode()))), e);
     }
 
     /**

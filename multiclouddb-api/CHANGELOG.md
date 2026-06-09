@@ -7,6 +7,43 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added — Extended Change-Feed Retention (opt-in)
+
+- **`com.multiclouddb.api.changefeed.ChangeFeedConfig`** — new immutable value
+  class with a fluent builder that carries the opt-in request for change-feed
+  history beyond the portable 24-hour baseline. `extendedRetention(Duration)`
+  validates eagerly (must be strictly greater than 24 h; null clears the
+  request). `defaults()` returns the cached no-op singleton so callers that
+  never touch this class are bit-for-bit identical to v1.
+- **`MulticloudDbClientConfig.changeFeed(ChangeFeedConfig)`** — new builder
+  setter + accessor wiring `ChangeFeedConfig` into the client. Default is
+  `ChangeFeedConfig.defaults()`; passing `null` is normalised to defaults.
+- **`Capability.EXTENDED_CHANGE_FEED_HISTORY`** — new well-known capability
+  name + `EXTENDED_CHANGE_FEED_HISTORY_CAP` / `EXTENDED_CHANGE_FEED_HISTORY_UNSUPPORTED`
+  singletons. The registry size grows from 16 to 17.
+- **Build-time capability gate** — `MulticloudDbClientFactory.create(...)`
+  now refuses to build a client when `ChangeFeedConfig.hasExtendedRetention()`
+  is true but the provider does not declare
+  `EXTENDED_CHANGE_FEED_HISTORY`. Surfaces as
+  `MulticloudDbException` with category `UNSUPPORTED_CAPABILITY` and
+  `providerDetails.reason="extended_retention_unavailable"` before any change-feed-substrate I/O is issued.
+- See `docs/guide.md` → *"Extending change-feed history beyond 24 hours"* for
+  the cost-model callout (per-provider price drivers; the windows are **not**
+  interchangeable).
+- **Test coverage note**: the build-time gate is verified by an abstract
+  test in this module (`MulticloudDbClientFactoryExtendedRetentionGateTest`,
+  driven through a fake adapter registered via `META-INF/services`), and the
+  per-provider declaration is verified by
+  `CapabilitiesConformanceTest` + the per-provider `isSupported(EXTENDED_CHANGE_FEED_HISTORY)`
+  assertions in `Cosmos/Dynamo/SpannerCapabilitiesTest`. The end-to-end
+  *behavioural* conformance — "set 7d, observe events older than 24h are
+  still readable" — is deferred to a live-cloud nightly fixture because the
+  Cosmos emulator caps AVAD retention at 10 minutes and the Spanner emulator
+  silently ignores `OPTIONS (retention_period = …)` on
+  `CREATE CHANGE STREAM`. See `specs/001-clouddb-sdk/plan.md`
+  Planning Addendum (2026-11) for the deferral rationale.
+
+
 ### Added — Change-Feed API (3-primitive cursor model)
 
 - **`com.multiclouddb.api.changefeed` package** — new portable change-feed surface

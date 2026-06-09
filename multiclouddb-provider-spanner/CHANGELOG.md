@@ -7,6 +7,44 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added — Extended Change-Feed Retention
+
+- **`SpannerCapabilities`** now declares `EXTENDED_CHANGE_FEED_HISTORY_CAP`
+  (notes: "Default 24h; configurable up to 7d natively via
+  `CREATE CHANGE STREAM ... OPTIONS(retention_period=...)`. Cost scales with
+  change-data volume × retention."). The registry size for the Spanner
+  adapter grows from 16 to 17.
+- **`SpannerProviderClient.ensureContainer(address)`** now emits an idempotent
+  `CREATE CHANGE STREAM <name> FOR <table> OPTIONS (retention_period =
+  '<value>')` *both* when a fresh table is created and when the table already
+  exists, but **only** when the user opted in via
+  `ChangeFeedConfig.extendedRetention(...)`. The pre-existing-table path no
+  longer early-returns before the change-stream block — the most common
+  upgrade scenario (v1 deployment with existing tables flips on
+  `extendedRetention(7d)`) now correctly provisions the change stream. The
+  block is idempotent (swallows "Duplicate name in schema") so the re-run
+  is cheap on every subsequent call. When the caller did not opt in (the
+  default), `ensureContainer` behaves bit-for-bit identical to v1. The
+  stream name honours the `changeStream.<collection>` connection-key
+  override (and otherwise defaults to `<table>_changes`) so producer and
+  reader resolve the same stream.
+- New `formatRetentionPeriod(Duration)` helper picks the coarsest stable
+  GoogleSQL retention_period suffix (`d` / `h` / `m` / `s`) so equal
+  `Duration`s always emit the same DDL string. DDL re-runs do not appear to
+  "change" the change-stream definition.
+- New error normalisation: an `INVALID_ARGUMENT` from
+  `updateDatabaseDdl(...)` whose message contains the `retention_period`
+  token is re-mapped to `UNSUPPORTED_CAPABILITY` with
+  `providerDetails.reason="retention_exceeds_native_max"` and a
+  `requestedRetention` detail. Callers no longer have to substring-match the
+  message to disambiguate from generic `INVALID_ARGUMENT`. (The fingerprint
+  was tightened from a generic "retention" substring to the specific
+  `retention_period` token to eliminate false positives on unrelated
+  Spanner error messages.)
+- "Duplicate name in schema" failures are swallowed so repeated
+  `ensureContainer` calls remain idempotent.
+
+
 ### Fixed
 
 - `upsert(address, key, document)` now uses a Spanner `INSERT_OR_UPDATE`
