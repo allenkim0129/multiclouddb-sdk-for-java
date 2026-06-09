@@ -351,6 +351,15 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         return readChanges(address, cursor, OperationOptions.defaults());
     }
 
+    /**
+     * One-shot guard so the per-call WARN about an unenforced
+     * {@link OperationOptions#timeout()} on the change-feed path fires once
+     * per JVM, not on every call. See the {@code readChanges} body below for
+     * the rationale.
+     */
+    private static final java.util.concurrent.atomic.AtomicBoolean
+            READ_CHANGES_TIMEOUT_WARNED = new java.util.concurrent.atomic.AtomicBoolean(false);
+
     @Override
     public ChangeFeedPage readChanges(ResourceAddress address, ChangeFeedCursor cursor,
                                       OperationOptions options) {
@@ -367,6 +376,23 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         if (!cursor.isUnhydratedSentinel()) {
             CursorTokenCodec.validateProviderMatch(token, config.provider());
             CursorTokenCodec.validateResourceMatch(token, address, config.provider());
+        }
+
+        // v1 contract: no built-in provider honours OperationOptions on the
+        // change-feed path. Surface a single WARN the first time a non-default
+        // timeout is passed so a caller who expects readChanges to be bounded
+        // by options.timeout() is told once, loudly, that the field is being
+        // ignored. We deliberately do NOT throw — callers commonly share an
+        // OperationOptions value across CRUD + change-feed and we must not
+        // break that pattern. Tracked as T174 in specs/001-clouddb-sdk/tasks.md
+        // for a future PR that honours the timeout per-call.
+        if (options.timeout() != null
+                && READ_CHANGES_TIMEOUT_WARNED.compareAndSet(false, true)) {
+            LOG.warn("readChanges: OperationOptions.timeout() is set ({}) but is not "
+                    + "enforced by any v1 change-feed provider. Wall-clock of each call "
+                    + "is bounded by the provider's own page-fetch behaviour (Cosmos: "
+                    + "per-request; Dynamo: ~5s GetRecords; Spanner: 5s TVF window). "
+                    + "This warning is logged once per JVM.", options.timeout());
         }
 
         Instant start = Instant.now();

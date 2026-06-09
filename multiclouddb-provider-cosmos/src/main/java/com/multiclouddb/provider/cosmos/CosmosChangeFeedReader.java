@@ -44,27 +44,32 @@ import java.util.Map;
  *   <li>{@link CosmosContainer#getFeedRanges()} → one cursor per feed range from
  *       {@link #listCursors}.</li>
  *   <li>{@link CosmosContainer#queryChangeFeed(CosmosChangeFeedRequestOptions, Class)}
- *       drives every {@link #readChanges} call.</li>
+ *       drives every {@link #readChanges} call, always in
+ *       <b>All-Versions-and-Deletes (AVAD)</b> mode via
+ *       {@link CosmosChangeFeedRequestOptions#allVersionsAndDeletes()}.</li>
  *   <li>Continuation tokens flow back into the next cursor; if a request returns
  *       {@code 410 GONE} the cursor is treated as expired.</li>
  * </ul>
- *
- * <h3>CREATE / UPDATE / DELETE distinction</h3>
- * The Cosmos pull-mode change feed in its default <em>LatestVersion</em> mode does
- * not surface deletes or distinguish creates from updates — every event is the
- * latest version of a document. In this mode the reader surfaces all events as
- * {@link ChangeType#UPDATE}; DELETE events are silently absent.
  * <p>
- * To get faithful CREATE / UPDATE / DELETE semantics, the container must be
- * provisioned for All-Versions-and-Deletes (AVAD) change-feed mode and the SDK
- * caller must opt in via the {@code changeFeed.mode=allVersionsAndDeletes}
- * client connection key. This reader honours that flag if present.
+ * AVAD mode is the only mode supported by this reader, so
+ * {@link ChangeEvent#type()} faithfully distinguishes
+ * {@link ChangeType#CREATE}, {@link ChangeType#UPDATE}, and
+ * {@link ChangeType#DELETE} for every event — matching the contract
+ * surfaced by the Dynamo and Spanner readers. The Cosmos container the
+ * caller targets must therefore be provisioned with a Cosmos AVAD change-feed
+ * policy on an account that supports it (see
+ * {@code ChangeFeedPolicy.createAllVersionsAndDeletesPolicy(Duration)}); a
+ * container without AVAD provisioning will surface a Cosmos {@code 400}
+ * BadRequest the first time {@code listCursors} or {@code readChanges}
+ * is called, which this reader normalises to
+ * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} with
+ * {@code providerDetails.reason="avad_not_enabled"} — portable with the
+ * Dynamo and Spanner {@code reason="stream_not_enabled"} normalisations
+ * for the same operational mistake.
  */
 final class CosmosChangeFeedReader {
 
     private static final Logger LOG = LoggerFactory.getLogger(CosmosChangeFeedReader.class);
-    private static final String CONFIG_MODE = "changeFeed.mode";
-    private static final String MODE_AVAD = "allVersionsAndDeletes";
     private static final int DEFAULT_PAGE_SIZE = 100;
 
     /**
@@ -85,11 +90,9 @@ final class CosmosChangeFeedReader {
     private static final String CONT_PIT_PREFIX = "@@PIT:";
 
     private final ProviderId providerId;
-    private final String avadMode;
 
-    CosmosChangeFeedReader(ProviderId providerId, Map<String, String> connection) {
+    CosmosChangeFeedReader(ProviderId providerId) {
         this.providerId = providerId;
-        this.avadMode = connection.getOrDefault(CONFIG_MODE, "");
     }
 
     /**
@@ -137,8 +140,47 @@ final class CosmosChangeFeedReader {
             }
             return cursors;
         } catch (CosmosException e) {
+            MulticloudDbException unsupported = maybeAvadNotEnabled(e, "listCursors");
+            if (unsupported != null) throw unsupported;
             throw CosmosErrorMapper.map(e, "listCursors");
         }
+    }
+
+    /**
+     * Detect the Cosmos 400-BadRequest fingerprint of "container is not
+     * provisioned for All-Versions-and-Deletes" and re-map it to the portable
+     * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} so callers get
+     * the same actionable signal the Dynamo and Spanner readers surface for
+     * the same operational mistake (stream / change-stream not enabled).
+     * <p>
+     * Without this re-mapping a non-AVAD container would surface
+     * {@code INVALID_REQUEST} via the generic {@link CosmosErrorMapper},
+     * forcing portable consumers to substring-match the message on Cosmos to
+     * disambiguate provisioning failures from genuine malformed-input errors.
+     * Returns {@code null} if the exception is not the AVAD-not-enabled
+     * fingerprint, so the caller falls through to the generic mapper.
+     */
+    private MulticloudDbException maybeAvadNotEnabled(CosmosException e, String operation) {
+        if (e.getStatusCode() != 400) return null;
+        String msg = e.getMessage();
+        if (msg == null) return null;
+        String lower = msg.toLowerCase(java.util.Locale.ROOT);
+        // Cosmos surfaces this with phrasing that includes either the policy
+        // class name or the "change feed mode" wording depending on the
+        // service-side message version. Match defensively on both.
+        boolean fingerprint = lower.contains("allversionsanddeletes")
+                || lower.contains("all versions and deletes")
+                || lower.contains("change feed mode")
+                || lower.contains("changefeedpolicy");
+        if (!fingerprint) return null;
+        return new MulticloudDbException(new MulticloudDbError(
+                MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                "Cosmos container is not provisioned for All-Versions-and-Deletes (AVAD). "
+                        + "Recreate the container with ChangeFeedPolicy.createAllVersionsAndDeletesPolicy(...) "
+                        + "on an account that supports continuous backup. Underlying message: " + msg,
+                providerId, operation, false,
+                Map.of("reason", "avad_not_enabled",
+                        "statusCode", String.valueOf(e.getStatusCode()))), e);
     }
 
     /**
@@ -176,10 +218,8 @@ final class CosmosChangeFeedReader {
     private WarmupResult warmupContinuation(CosmosContainer container, FeedRange range) {
         try {
             CosmosChangeFeedRequestOptions warmup =
-                    CosmosChangeFeedRequestOptions.createForProcessingFromNow(range);
-            if (MODE_AVAD.equalsIgnoreCase(avadMode)) {
-                warmup = warmup.allVersionsAndDeletes();
-            }
+                    CosmosChangeFeedRequestOptions.createForProcessingFromNow(range)
+                            .allVersionsAndDeletes();
             warmup.setMaxItemCount(1);
             Iterator<FeedResponse<JsonNode>> it =
                     container.queryChangeFeed(warmup, JsonNode.class).iterableByPage().iterator();
@@ -227,13 +267,13 @@ final class CosmosChangeFeedReader {
         }
 
         // Round-robin across partitions: read one page from the head partition
-        // per call. The partition list order is the active-partition state — see
-        // the rotation at the bottom of the try block (and inside the catch for
-        // CURSOR_EXPIRED on 410 GONE, which we deliberately do NOT rotate so the
-        // caller's recovery path sees the same partition that triggered the
-        // expiry). Without rotation, multi-partition cursors (e.g., the now()
-        // sentinel hydrate that merges all feed ranges) would starve every
-        // partition after index 0.
+        // per call. The partition list order is the active-partition state —
+        // see the rotation at the bottom of the try block. The 410 GONE catch
+        // throws CursorExpiredException, so no cursor is returned and rotation
+        // is moot on that path — recovery is a fresh listCursors() call.
+        // Without rotation, multi-partition cursors (e.g., the now() sentinel
+        // hydrate that merges all feed ranges) would starve every partition
+        // after index 0.
         List<PartitionPosition> partitions = new ArrayList<>(token.partitions());
         PartitionPosition pos = partitions.get(0);
         FeedRange range = decodeRange(pos.partitionId());
@@ -262,9 +302,7 @@ final class CosmosChangeFeedReader {
         } else {
             opts = CosmosChangeFeedRequestOptions.createForProcessingFromContinuation(cont);
         }
-        if (MODE_AVAD.equalsIgnoreCase(avadMode)) {
-            opts = opts.allVersionsAndDeletes();
-        }
+        opts = opts.allVersionsAndDeletes();
         opts.setMaxItemCount(DEFAULT_PAGE_SIZE);
 
         try {
@@ -310,52 +348,87 @@ final class CosmosChangeFeedReader {
                         Map.of("reason", "PROVIDER_TRIMMED",
                                 "statusCode", String.valueOf(e.getStatusCode()))), e);
             }
+            // 400 BadRequest with the AVAD-not-enabled fingerprint maps to the
+            // portable UNSUPPORTED_CAPABILITY category so callers get the same
+            // actionable signal the Dynamo / Spanner readers surface for the
+            // same operational condition (change-feed not provisioned).
+            MulticloudDbException unsupported = maybeAvadNotEnabled(e, "readChanges");
+            if (unsupported != null) throw unsupported;
             throw CosmosErrorMapper.map(e, "readChanges");
         }
     }
 
-    private ChangeEvent mapEvent(JsonNode item) {
-        // Document identity: id + (partitionKey or pk)
-        String id = textOrEmpty(item.get("id"));
-        String pk = textOrEmpty(firstPresent(item, "partitionKey", "pk", "_pk"));
-        if (pk.isBlank()) pk = id; // fall back to id if pk not present in the projection
+    /**
+     * Map one Cosmos AVAD envelope into a portable {@link ChangeEvent}.
+     * <p>
+     * The Cosmos AVAD pull-mode response is an outer JSON object of shape:
+     * <pre>{@code
+     * {
+     *   "current":  { ...document fields..., "id": "...", "_ts": ..., "_etag": "..." },
+     *   "metadata": { "operationType": "create"|"replace"|"delete", "crts": <seconds> },
+     *   "previous": { ...document fields... }   // present on replace and delete
+     * }
+     * }</pre>
+     * For DELETE events {@code current} is absent and {@code previous} carries
+     * the just-deleted document body; for CREATE / UPDATE the body is taken
+     * from {@code current}. The {@link ChangeEvent#data()} surfaced to the
+     * caller is the unwrapped body (never the envelope), so the public
+     * contract is identical to Dynamo and Spanner: a portable consumer sees
+     * the document fields directly, not the provider's transport shape.
+     * <p>
+     * If a payload arrives without the expected AVAD envelope (for example,
+     * if some future Cosmos behaviour surfaces a bare document), {@code type}
+     * falls back to {@link ChangeType#UPDATE} and the whole payload is
+     * surfaced as the body so the caller still receives something usable
+     * instead of a hard failure.
+     */
+    private ChangeEvent mapEvent(JsonNode envelope) {
+        JsonNode metadata = envelope.path("metadata");
+        String op = metadata.path("operationType").asText("").toLowerCase(java.util.Locale.ROOT);
+
+        ChangeType type;
+        switch (op) {
+            case "create": type = ChangeType.CREATE; break;
+            case "delete": type = ChangeType.DELETE; break;
+            case "replace":
+            case "update":
+            default:       type = ChangeType.UPDATE; break;
+        }
+
+        // Pick the most informative body:
+        //   - DELETE  → previous (the document that was just deleted)
+        //   - others  → current
+        //   - if both absent (malformed / unexpected envelope) → the whole
+        //     envelope, so the caller still gets something usable.
+        JsonNode body = type == ChangeType.DELETE
+                ? envelope.path("previous")
+                : envelope.path("current");
+        if (body.isMissingNode() || body.isNull()) {
+            JsonNode alt = type == ChangeType.DELETE
+                    ? envelope.path("current")
+                    : envelope.path("previous");
+            body = (alt.isMissingNode() || alt.isNull()) ? envelope : alt;
+        }
+
+        String id = textOrEmpty(body.get("id"));
+        String pk = textOrEmpty(firstPresent(body, "partitionKey", "pk", "_pk"));
+        if (pk.isBlank()) pk = id;
         MulticloudDbKey key = MulticloudDbKey.of(pk, id);
 
-        // _ts is seconds since epoch in Cosmos
-        long tsSeconds = item.path("_ts").asLong(0L);
+        // Prefer the AVAD metadata's conflict-resolution timestamp (`crts`)
+        // which is the authoritative ordering instant for the change record;
+        // fall back to `_ts` (second-resolution wall clock) on the body.
+        long tsSeconds = metadata.path("crts").asLong(body.path("_ts").asLong(0L));
         Instant commitTs = tsSeconds > 0
                 ? Instant.ofEpochSecond(tsSeconds)
                 : Instant.now();
 
-        // _etag is a stable per-version identifier
-        String eventId = textOrEmpty(item.get("_etag"));
+        // _etag is a stable per-version identifier; pair with id+ts as a
+        // last-resort eventId when the SDK strips it.
+        String eventId = textOrEmpty(body.get("_etag"));
         if (eventId.isBlank()) eventId = id + "@" + tsSeconds;
 
-        // In AVAD mode Cosmos surfaces an outer envelope with metadata.operationType.
-        // In LatestVersion mode the items are bare documents and all events are UPDATE.
-        ChangeType type = inferChangeType(item);
-
-        return new ChangeEvent(key, type, commitTs, item, eventId);
-    }
-
-    /**
-     * Infer the change type. AVAD-mode events carry a {@code metadata.operationType}
-     * field; LatestVersion-mode events do not, in which case we surface them as
-     * UPDATE (the most-portable safe default).
-     */
-    private ChangeType inferChangeType(JsonNode item) {
-        JsonNode metadata = item.path("metadata");
-        if (metadata.isObject()) {
-            String op = metadata.path("operationType").asText("");
-            switch (op.toLowerCase(java.util.Locale.ROOT)) {
-                case "create": return ChangeType.CREATE;
-                case "delete": return ChangeType.DELETE;
-                case "replace":
-                case "update":
-                default: return ChangeType.UPDATE;
-            }
-        }
-        return ChangeType.UPDATE;
+        return new ChangeEvent(key, type, commitTs, body, eventId);
     }
 
     private static String textOrEmpty(JsonNode node) {

@@ -125,7 +125,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         builder.userAgentSuffix(SdkUserAgent.userAgent(config));
 
         this.cosmosClient = builder.buildClient();
-        this.changeFeedReader = new CosmosChangeFeedReader(ProviderId.COSMOS, config.connection());
+        this.changeFeedReader = new CosmosChangeFeedReader(ProviderId.COSMOS);
         LOG.info("Cosmos client created for endpoint: {}", endpoint);
         LOG.info("Cosmos read consistency: {}", readConsistencyOverride != null ? readConsistencyOverride : "account default");
     }

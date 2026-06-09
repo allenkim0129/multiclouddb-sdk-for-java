@@ -110,20 +110,6 @@ public final class CursorToken {
                 CursorAnchor.CONTINUING, newPartitions);
     }
 
-    /**
-     * Return a copy of this token bound to {@code addr}, with anchor set to
-     * {@link CursorAnchor#CONTINUING} and the supplied partitions /
-     * {@code issuedAtEpochMillis}. Used to hydrate a {@code now()} sentinel
-     * the first time it is read against a concrete address.
-     */
-    public CursorToken hydratedAt(ResourceAddress addr,
-                                  List<PartitionPosition> newPartitions,
-                                  long newIssuedAt) {
-        Objects.requireNonNull(addr, "addr");
-        return new CursorToken(providerId, addr, newIssuedAt,
-                CursorAnchor.CONTINUING, newPartitions);
-    }
-
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;

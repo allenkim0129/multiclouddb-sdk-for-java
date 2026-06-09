@@ -99,6 +99,17 @@ final class SpannerChangeFeedReader {
     private static final long WINDOW_MS = 5_000L;
     /** Default heartbeat (1 second). */
     private static final long HEARTBEAT_MS = 1_000L;
+    /**
+     * Soft event-count cap used to signal {@code hasMore=true} on a
+     * single-partition page that returned a backlog. Spanner's TVF is
+     * time-bounded (a {@link #WINDOW_MS} window), not size-bounded, so this
+     * is a proxy for Cosmos / Dynamo's "page hit cap" symbol. Matches
+     * {@code DEFAULT_PAGE_SIZE} on the other two readers so the portable
+     * contract — {@code hasMore=true} means more events are immediately
+     * available, keep reading without sleeping — fires under the same
+     * backlog conditions on all three providers.
+     */
+    private static final int DEFAULT_PAGE_SIZE = 100;
     /** Connection config key prefix: {@code changeStream.<collection>} overrides default. */
     private static final String CONFIG_STREAM_PREFIX = "changeStream.";
 
@@ -246,8 +257,13 @@ final class SpannerChangeFeedReader {
         }
 
         if (token.partitions().isEmpty()) {
+            // A hydrated cursor whose partition list has drained (e.g., the
+            // sole partition was merged out of existence on the last
+            // readChanges call) is terminal — there is nothing left to read
+            // and the caller should re-bootstrap via listCursors() to gain a
+            // fresh partition assignment after the merge.
             CursorToken refreshed = token.withIssuedAt(System.currentTimeMillis());
-            return new ChangeFeedPage(List.of(), new ChangeFeedCursor(refreshed), false, false);
+            return new ChangeFeedPage(List.of(), new ChangeFeedCursor(refreshed), false, true);
         }
 
         List<PartitionPosition> partitions = new ArrayList<>(token.partitions());
@@ -348,18 +364,55 @@ final class SpannerChangeFeedReader {
                 }
             }
         } catch (SpannerException e) {
-            if (e.getErrorCode() == ErrorCode.INVALID_ARGUMENT
-                    || e.getErrorCode() == ErrorCode.NOT_FOUND
-                    || e.getErrorCode() == ErrorCode.OUT_OF_RANGE) {
+            // OUT_OF_RANGE is Spanner change-stream's idiomatic "partition
+            // token has aged past the change-stream retention window" error —
+            // map it to the portable CURSOR_EXPIRED(PROVIDER_TRIMMED).
+            if (e.getErrorCode() == ErrorCode.OUT_OF_RANGE) {
                 throw new CursorExpiredException(new MulticloudDbError(
                         MulticloudDbErrorCategory.CURSOR_EXPIRED,
-                        "Spanner change stream rejected the cursor (likely partition token expired or outside retention): "
+                        "Spanner change stream rejected the cursor — partition token outside the change-stream retention window: "
                                 + e.getMessage(),
                         providerId, "readChanges", false,
                         Map.of("reason", "PROVIDER_TRIMMED",
                                 "errorCode", e.getErrorCode().name())), e);
             }
+            // NOT_FOUND on READ_<stream> with a "change stream" message is the
+            // operator forgot to provision the change stream — symmetric with
+            // Dynamo's UNSUPPORTED_CAPABILITY(stream_not_enabled) for the same
+            // condition. Mapping this to CURSOR_EXPIRED would send the docs'
+            // recovery path ("re-bootstrap with listCursors()") into an
+            // infinite loop, because listCursors() would hit the same
+            // NOT_FOUND.
+            if (e.getErrorCode() == ErrorCode.NOT_FOUND
+                    && e.getMessage() != null
+                    && e.getMessage().toLowerCase().contains("change stream")) {
+                throw new MulticloudDbException(new MulticloudDbError(
+                        MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                        "Spanner change stream '" + streamName + "' does not exist. "
+                                + "Run: CREATE CHANGE STREAM " + streamName
+                                + " FOR <collection> OPTIONS (value_capture_type='NEW_ROW'); ",
+                        providerId, "readChanges", false,
+                        Map.of("reason", "stream_not_enabled")), e);
+            }
+            // Other INVALID_ARGUMENT / NOT_FOUND / failures: route through the
+            // shared mapper rather than blanket-mapping to CURSOR_EXPIRED.
+            // INVALID_ARGUMENT in particular covers malformed SQL, type-bind
+            // errors, and bad parameter values — bugs in this reader would
+            // otherwise masquerade as cursor expiry.
             throw mapSpannerException(e, "readChanges");
+        } catch (MalformedContinuation mc) {
+            // Thrown from parseSequence(...) when record_sequence is present
+            // but unparseable on a row read from the TVF result (mid-stream,
+            // not at parseContinuation() time). The same MALFORMED contract
+            // applies — silently substituting 0L would allow reordering
+            // across crash/resume because the continuation
+            // "commitTs|0|anchorMs" re-reads from the start of that commit
+            // timestamp.
+            throw new CursorExpiredException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.CURSOR_EXPIRED,
+                    mc.getMessage(),
+                    providerId, "readChanges", false,
+                    Map.of("reason", "MALFORMED")), mc);
         }
 
         // Update partition state.
@@ -383,13 +436,32 @@ final class SpannerChangeFeedReader {
             if (partitions.size() > 1) Collections.rotate(partitions, -1);
         }
 
-        // hasMore: per-partition signal (events present or this partition was
-        // closed and we appended its children). Already eager for any events,
-        // so the caller naturally rotates through remaining partitions before
-        // sleeping in a multi-partition cursor.
-        boolean hasMore = !events.isEmpty() || partitionClosed;
+        // terminal: this cursor has been fully merged out of existence — the
+        // sole partition closed with no children to take its place. Without
+        // surfacing this, the caller would loop forever on empty pages with
+        // hasMore=false. ChangeFeedPage's Javadoc cites Spanner as the
+        // canonical case for isTerminal().
+        boolean terminal = partitionClosed && partitions.isEmpty();
+        // hasMore: caller should re-call without sleeping. Symmetric with
+        // Cosmos and Dynamo readers, which set hasMore=true whenever a page
+        // returns events.size() >= DEFAULT_PAGE_SIZE (the page hit the cap).
+        // Spanner's TVF is time-bounded (a WINDOW_MS slice), not size-bounded,
+        // so we use the event count as a backlog-proxy: a well-populated
+        // window means the live tip is producing faster than this call drained
+        // and the caller should keep reading without a back-off. Cases:
+        //   - partitionClosed: multi-partition with children to drain;
+        //   - partitions.size() > 1 with events: other partitions in the
+        //     cursor may have events at the live tip;
+        //   - events.size() >= DEFAULT_PAGE_SIZE: backlog on the head
+        //     partition (Cosmos / Dynamo parity).
+        // partitionClosed is always followed by either children to drain
+        // (multi-partition) or terminal=true (handled above).
+        boolean hasMore = !terminal
+                && (partitionClosed
+                        || (partitions.size() > 1 && !events.isEmpty())
+                        || events.size() >= DEFAULT_PAGE_SIZE);
         CursorToken next = token.withPartitions(partitions, System.currentTimeMillis());
-        return new ChangeFeedPage(events, new ChangeFeedCursor(next), hasMore, false);
+        return new ChangeFeedPage(events, new ChangeFeedCursor(next), hasMore, terminal);
     }
 
     // ── Record dispatch ────────────────────────────────────────────────────
@@ -513,7 +585,8 @@ final class SpannerChangeFeedReader {
         String json = getStringOrNull(mod, field);
         if (json == null) return MAPPER.createObjectNode();
         try {
-            return MAPPER.readTree(json);
+            JsonNode raw = MAPPER.readTree(json);
+            return filterByFieldData(raw);
         } catch (Exception e) {
             ObjectNode wrap = MAPPER.createObjectNode();
             wrap.put("raw", json);
@@ -521,9 +594,80 @@ final class SpannerChangeFeedReader {
         }
     }
 
+    /**
+     * Apply the SDK's {@link SpannerConstants#FIELD_DATA} metadata filter to a
+     * raw change-stream {@code new_values}/{@code old_values} JSON object.
+     * <p>
+     * Background: the SDK writes every document field individually plus a
+     * {@code FIELD_DATA} JSON-array column listing which fields were written by
+     * the latest call. {@link SpannerRowMapper} consumes that metadata when
+     * reads return rows, so {@code client.read()} surfaces only the keys the
+     * caller most recently wrote — preserving full-document-replacement
+     * semantics for {@code upsert(...)} even though the underlying mutation is
+     * now {@code INSERT_OR_UPDATE} (was {@code REPLACE} prior to the
+     * change-feed parity flip).
+     * <p>
+     * The same filter must be applied on the change-stream path: Spanner change
+     * streams under {@code value_capture_type='NEW_ROW'} emit the entire
+     * current row (including columns left behind by prior writes), so without
+     * this filter {@link ChangeEvent#data()} on Spanner would leak stale
+     * columns that Cosmos AVAD and Dynamo {@code NEW_AND_OLD_IMAGES} do not.
+     * <p>
+     * If the input is not an object, or carries no {@code FIELD_DATA} key, or
+     * the metadata fails to parse, the input is returned unchanged (only the
+     * {@code FIELD_DATA} key itself is stripped if present). This mirrors
+     * {@link SpannerRowMapper#parseFieldMetadata}'s "no/invalid metadata =
+     * project every column" fallback — a legacy row that pre-dates the
+     * {@code FIELD_DATA} regime continues to surface every column.
+     */
+    private static JsonNode filterByFieldData(JsonNode raw) {
+        if (!(raw instanceof ObjectNode obj)) return raw;
+        JsonNode fdNode = obj.get(SpannerConstants.FIELD_DATA);
+        if (fdNode == null) return obj;
+        // Always strip FIELD_DATA itself — it is an SDK-internal metadata column
+        // and must never surface in ChangeEvent.data().
+        obj.remove(SpannerConstants.FIELD_DATA);
+        if (!fdNode.isTextual()) return obj;
+        String fdValue = fdNode.asText();
+        if (fdValue == null || !fdValue.startsWith("[")) return obj;
+        java.util.Set<String> allowed;
+        try {
+            allowed = new java.util.HashSet<>(MAPPER.readValue(fdValue,
+                    new com.fasterxml.jackson.core.type.TypeReference<java.util.List<String>>() {}));
+        } catch (Exception e) {
+            // Malformed metadata — match SpannerRowMapper's "treat as legacy row".
+            return obj;
+        }
+        java.util.Iterator<String> it = obj.fieldNames();
+        java.util.List<String> drop = new java.util.ArrayList<>();
+        while (it.hasNext()) {
+            String name = it.next();
+            // Always whitelist the primary-key columns: SpannerRowMapper does the
+            // same on the read path (SpannerRowMapper.java:90-96), and the
+            // portable contract on ChangeEvent.data() is that the post-image
+            // includes the document's PK/SK fields — matching Cosmos AVAD
+            // (which carries id+partitionKey) and Dynamo NEW_AND_OLD_IMAGES
+            // (which carries pk+sk attrs). Without this whitelist, a portable
+            // consumer reading event.data().get("partitionKey") would see the
+            // value on Cosmos/Dynamo but null on Spanner.
+            if (allowed.contains(name)
+                    || SpannerConstants.FIELD_PARTITION_KEY.equals(name)
+                    || SpannerConstants.FIELD_SORT_KEY.equals(name)) {
+                continue;
+            }
+            drop.add(name);
+        }
+        for (String name : drop) obj.remove(name);
+        return obj;
+    }
+
     private ChangeType mapModType(String modType) {
         if (modType == null) return ChangeType.UPDATE;
-        switch (modType.toUpperCase()) {
+        // Locale.ROOT — guards against the Turkish-locale trap where the
+        // platform-default upper-case of "insert" turns into a non-ASCII
+        // form and falls through to UPDATE. Matches the
+        // CosmosChangeFeedReader.mapEvent toLowerCase(Locale.ROOT) idiom.
+        switch (modType.toUpperCase(java.util.Locale.ROOT)) {
             case "INSERT": return ChangeType.CREATE;
             case "DELETE": return ChangeType.DELETE;
             case "UPDATE":
@@ -658,15 +802,25 @@ final class SpannerChangeFeedReader {
 
     private static long parseSequence(Struct rec, String field) {
         String cf = canonicalField(rec, field);
+        // Absent / null → 0L is fine (legacy continuations also use 0).
         if (cf == null || rec.isNull(cf)) return 0L;
+        // record_sequence is typically STRING in Spanner change streams; the
+        // emulator returns it as INT64 in some versions. Distinguish
+        // "field absent" (handled above) from "field present but unparseable"
+        // (e.g., a Spanner schema migration changed the column type or a row
+        // is corrupted): the latter must surface as MalformedContinuation so
+        // it is mapped to CursorExpired(MALFORMED) by readChanges — silently
+        // substituting 0L would allow reordering across crash/resume, since
+        // a continuation "commitTs|0|anchorMs" re-reads from the start of
+        // that commit timestamp.
         try {
-            // record_sequence is typically STRING in Spanner change streams.
             return Long.parseLong(rec.getString(cf));
-        } catch (Exception e) {
+        } catch (Exception e1) {
             try {
                 return rec.getLong(cf);
             } catch (Exception e2) {
-                return 0L;
+                throw new MalformedContinuation(
+                        "spanner change-stream record_sequence is present but unparseable", e2);
             }
         }
     }

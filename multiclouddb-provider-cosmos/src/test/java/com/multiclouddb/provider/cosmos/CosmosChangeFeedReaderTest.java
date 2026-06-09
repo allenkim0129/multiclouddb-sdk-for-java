@@ -62,7 +62,7 @@ class CosmosChangeFeedReaderTest {
     private static final ResourceAddress ADDR = new ResourceAddress("test-db", "test-collection");
 
     private CosmosChangeFeedReader newReader() {
-        return new CosmosChangeFeedReader(ProviderId.COSMOS, Map.of());
+        return new CosmosChangeFeedReader(ProviderId.COSMOS);
     }
 
     private static FeedRange mockRange(String label) {

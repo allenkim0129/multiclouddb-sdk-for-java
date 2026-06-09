@@ -410,7 +410,7 @@ final class DynamoChangeFeedReader {
         return mapStreamsException(e, operation);
     }
 
-    private static com.multiclouddb.api.MulticloudDbException mapStreamsException(
+    private com.multiclouddb.api.MulticloudDbException mapStreamsException(
             DynamoDbException e, String operation) {
         Map<String, String> details = new HashMap<>();
         if (e.awsErrorDetails() != null) {
@@ -421,7 +421,7 @@ final class DynamoChangeFeedReader {
         boolean retryable = e.statusCode() >= 500 || e.statusCode() == 429;
         return new com.multiclouddb.api.MulticloudDbException(new MulticloudDbError(
                 MulticloudDbErrorCategory.PROVIDER_ERROR, e.getMessage(),
-                ProviderId.DYNAMO, operation, retryable, e.statusCode(), details), e);
+                providerId, operation, retryable, e.statusCode(), details), e);
     }
 
     private CursorToken hydrateSentinel(DynamoDbClient ddb, ResourceAddress address, String tableName) {
@@ -476,8 +476,20 @@ final class DynamoChangeFeedReader {
             }
         }
         boolean terminal = updated.isEmpty();
+        // On the terminal branch we must replace the now-closed shard with an
+        // empty partitions list so a resumed terminal cursor surfaces as
+        // immediately-empty caught-up (the readChanges short-circuit at the
+        // top: when token.partitions() is empty, return an empty caught-up
+        // page). If we instead kept the original positions (still holding
+        // the just-closed shard), a caller that persisted the terminal cursor
+        // and later resumed it would re-enter resolveShardIterator on the
+        // closed shard, get an iterator, GetRecords returns nextShardIterator
+        // == null, re-enter absorbClosedShard, find no children → produce
+        // another terminal page, forever. The ChangeFeedPage javadoc tells
+        // callers to drop terminal cursors and re-listCursors, but nothing
+        // in the wire format prevents persistence + resume.
         CursorToken next = terminal
-                ? token.withIssuedAt(System.currentTimeMillis())
+                ? token.withPartitions(List.of(), System.currentTimeMillis())
                 : token.withPartitions(updated, System.currentTimeMillis());
         // hasMore must be true whenever child shards exist (regardless of whether we
         // drained events on this call) so callers immediately keep reading from them.
@@ -562,7 +574,21 @@ final class DynamoChangeFeedReader {
                 ? rec.dynamodb().keys() : Map.of();
         String pk = attrToString(keys.get(DynamoConstants.ATTR_PARTITION_KEY));
         String sk = attrToString(keys.get(DynamoConstants.ATTR_SORT_KEY));
-        MulticloudDbKey key = sk != null && !sk.isEmpty()
+        if (pk == null || pk.isEmpty()) {
+            // Defend against a misconfigured table whose stream record is
+            // missing the SDK's partition-key attribute. Without this guard
+            // we would silently mint MulticloudDbKey.of("") for every event,
+            // making downstream consumer logic unable to distinguish records.
+            throw new com.multiclouddb.api.MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.PROVIDER_ERROR,
+                    "DynamoDB change-stream record is missing the partition-key attribute '"
+                            + DynamoConstants.ATTR_PARTITION_KEY + "'; the table's stream "
+                            + "may not be carrying the SDK's expected key shape.",
+                    providerId, "readChanges", false,
+                    Map.of("eventID", eventId == null ? "" : eventId,
+                            "reason", "missing_partition_key")));
+        }
+        MulticloudDbKey key = (sk != null && !sk.isEmpty())
                 ? MulticloudDbKey.of(pk, sk)
                 : MulticloudDbKey.of(pk);
 
@@ -577,10 +603,16 @@ final class DynamoChangeFeedReader {
     }
 
     private static String attrToString(AttributeValue v) {
-        if (v == null) return "";
+        // Return null (not "") for missing / unknown-type values so callers can
+        // distinguish "attribute not present" from "attribute present with
+        // empty string". The previous "" return value made the sk != null
+        // half of sk != null && !sk.isEmpty() dead, and worse, hid the
+        // diagnostic that a record arriving without its partition-key
+        // attribute would silently mint MulticloudDbKey.of("").
+        if (v == null) return null;
         if (v.s() != null) return v.s();
         if (v.n() != null) return v.n();
-        return "";
+        return null;
     }
 
     private static boolean isTrimmed(DynamoDbException e) {

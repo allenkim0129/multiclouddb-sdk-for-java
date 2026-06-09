@@ -198,6 +198,7 @@ multiclouddb.connection.consistencyLevel=EVENTUAL
 | `multiclouddb.connection.instanceId` | Spanner instance ID |
 | `multiclouddb.connection.databaseId` | Spanner database ID |
 | `multiclouddb.connection.emulatorHost` | Emulator host:port (omit for GCP) |
+| `multiclouddb.connection.changeStream.<collection>` | Per-collection change-stream name override (optional). Defaults to `<collection>_changes`. The change stream must be provisioned out of band with `CREATE CHANGE STREAM <name> FOR <collection> OPTIONS (value_capture_type='NEW_ROW')` — the SDK does not create change streams. |
 
 ---
 

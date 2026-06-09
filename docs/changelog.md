@@ -135,12 +135,16 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   `CosmosContainer.queryChangeFeed(CosmosChangeFeedRequestOptions, JsonNode.class)`
   and `CosmosContainer.getFeedRanges()`. `listCursors` mints one cursor per
   feed range at the live tip; `readChanges` drains one page at a time and
-  refreshes the per-range continuation token.
-- AVAD opt-in via the `changeFeed.mode=allVersionsAndDeletes` connection key.
-  In AVAD mode the reader maps `metadata.operationType` to
-  `CREATE`/`UPDATE`/`DELETE`; in the default LatestVersion mode every event
-  is surfaced as `UPDATE` and deletes are silently absent (Cosmos limitation —
-  documented in [guide.md - Change Feeds](guide.md#change-feeds)).
+  refreshes the per-range continuation token. The reader always uses
+  All-Versions-and-Deletes mode and unwraps the AVAD envelope so
+  `ChangeEvent.type()` faithfully distinguishes
+  `CREATE`/`UPDATE`/`DELETE`, and `ChangeEvent.data()` carries the
+  document body (not the AVAD transport envelope). The Cosmos container
+  the caller targets must therefore be provisioned with an AVAD
+  change-feed policy (`ChangeFeedPolicy.createAllVersionsAndDeletesPolicy`)
+  on an account that supports it; a non-AVAD container surfaces a Cosmos
+  400 BadRequest through the SDK's normalised error envelope on the
+  first read.
 - HTTP 410 GONE on `queryChangeFeed` is mapped to
   `CursorExpiredException` with `reason=PROVIDER_TRIMMED`.
 
@@ -337,10 +341,6 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   a user document containing a field named `data` was silently dropped on
   `create()` / `update()` / `upsert()`, producing silent cross-provider data
   loss. Rename the offending field in your document.
-- `upsert()` semantics changed from `INSERT_OR_UPDATE` to `REPLACE`.
-  Columns absent from the upserted document become NULL on read, matching
-  the Cosmos / DynamoDB upsert contract (full document replace). Callers
-  that want partial modification must call `update()`.
 - Customer-managed tables now require a `data STRING(MAX)` column. Tables
   created by `ensureContainer()` already include this column; tables
   provisioned outside the SDK must be migrated:
@@ -380,6 +380,19 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Fixed:**
 
+- Spanner `upsert()` is now executed as `Mutation.newInsertOrUpdateBuilder(...)`
+  (was `Mutation.newReplaceBuilder(...)` in an earlier `Unreleased` build).
+  The `REPLACE` flip introduced cross-provider change-feed divergence: it
+  surfaced an `INSERT` change-stream record for every `upsert()` regardless
+  of whether the row existed, whereas the Cosmos AVAD and Dynamo
+  `NEW_AND_OLD_IMAGES` change feeds correctly distinguish CREATE from
+  UPDATE. Full-document-replacement semantics are preserved by the existing
+  `FIELD_DATA` field-set tracking: only the keys named in the latest
+  `upsert()` call are surfaced on the next `read()` even though stale
+  columns physically remain in the row. The Spanner change-feed reader
+  applies the same `FIELD_DATA` filter to change-stream payloads so
+  `ChangeEvent.data()` does not leak stale columns either (parity with
+  Cosmos AVAD and Dynamo).
 - Silent data loss on `update()` after partial writes (see *Breaking
   changes* above for the read-modify-write transactional fix).
 - Default `ORDER BY` no longer fires for aggregate queries. The default

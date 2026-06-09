@@ -156,3 +156,54 @@ multiclouddb-conformance/src/test/java/com/multiclouddb/conformance/
 ## Complexity Tracking
 
 No constitution violations to justify. The design adds ~15 new types to `multiclouddb-api`, which is consistent with the thin wrapper principle (lightweight data types and a single parser, not a re-implementation of database query processing). The provisioning API (`ensureDatabase`/`ensureContainer`/`provisionSchema`) adds 3 methods to the public client and SPI with default implementations (no-op for ensureDatabase/ensureContainer, parallel executor for provisionSchema), maintaining the thin wrapper principle by delegating directly to each provider's native idempotent creation calls. The Cosmos provider has additional complexity for `DefaultAzureCredential` support and ARM management SDK integration for RBAC-mode provisioning, but this is provider-internal and does not affect the portable surface.
+
+
+
+---
+
+
+## Change Feed (US14) — Planning Addendum (2026-06)
+
+**Scope**: deliver a portable pull-mode change feed across Cosmos / Dynamo / Spanner as a thin wrapper over each provider's native incremental-read API. FR-065, FR-067, FR-068 (basic capability), FR-070 are shipped in full. FR-066 partials and FR-068 sub-capabilities are deferred — see spec.md *Implementation status* notes.
+
+### Surface
+
+Three primitives on `MulticloudDbClient`:
+
+1. `List<ChangeFeedCursor> listCursors(ResourceAddress addr)` — returns one cursor per provider-internal partition, anchored at the live tip.
+2. `ChangeFeedPage readChanges(ResourceAddress addr, ChangeFeedCursor cursor)` — drains one bounded page (events + a refreshed cursor + `hasMore` + `isTerminal`).
+3. `readChanges(ResourceAddress addr, ChangeFeedCursor cursor, OperationOptions opts)` — accepts `OperationOptions` for forward-compatibility; **v1 providers do not honour any option field**.
+
+Plus two cursor factories: `ChangeFeedCursor.now()` (live-tip sentinel) and `ChangeFeedCursor.fromToken(String)` (resume from a previously persisted token). Tokens are opaque Base64URL JSON carrying provider id, resource binding, anchor, partition list, and an `issuedAt` epoch-ms with a 24h portable age cap (CursorTokenCodec.MAX_TOKEN_AGE_MILLIS).
+
+### Per-provider mapping
+
+| Provider | Native API | Notes |
+|---|---|---|
+| Cosmos | `CosmosContainer.queryChangeFeed(CosmosChangeFeedRequestOptions, JsonNode.class)` + `getFeedRanges()` | Always reads in All-Versions-and-Deletes (AVAD) mode and unwraps the AVAD envelope (`{current, previous, metadata}`) so `ChangeEvent.type()` and `ChangeEvent.data()` match the Dynamo / Spanner contract. The Cosmos container the caller targets must be provisioned with an AVAD change-feed policy (`ChangeFeedPolicy.createAllVersionsAndDeletesPolicy`); a non-AVAD container surfaces a Cosmos 400 BadRequest through the SDK's normalised error envelope on the first read. 410 GONE → `CursorExpiredException(PROVIDER_TRIMMED)`. |
+| Dynamo | `DynamoDbStreams.getRecords(GetRecordsRequest)` with `ShardIteratorType=AT_SEQUENCE_NUMBER`/`LATEST` | Requires the table to have a stream enabled (`StreamSpecification` with `NEW_AND_OLD_IMAGES`). `TrimmedDataAccessException` → `CursorExpiredException(PROVIDER_TRIMMED)`. |
+| Spanner | `READ_<stream>(start_timestamp, end_timestamp, partition_token, heartbeat_milliseconds)` TVF in single-use read-only TX | Each `data_change_record.mod` → one `ChangeEvent`. `child_partitions_record` rows rotate the partition set in place (no cursor re-bootstrap required). `OUT_OF_RANGE` → `CursorExpiredException(PROVIDER_TRIMMED)`. Requires `CREATE CHANGE STREAM <name> FOR <collection> OPTIONS (value_capture_type='NEW_ROW')` provisioned out-of-band; the SDK does not create change streams. |
+
+### Conformance coverage
+
+`multiclouddb-conformance/.../us14/ChangeFeedConformanceTest.java` (and provider-specific `Cosmos|Dynamo|SpannerChangeFeedConformanceTest`) cover FR-cf-001 … FR-cf-014:
+
+- live-tip semantics (`now()` ignores prior events)
+- ordering within a partition
+- DELETE event surface (Cosmos AVAD + Dynamo + Spanner; Cosmos LatestVersion is *waived* — see FR-068 deferral)
+- continuation resume across re-bootstrap (`toToken()` → persist → `fromToken()`)
+- expired-token diagnostics (`CursorExpiredException` with `reason=PROVIDER_TRIMMED` from a 24h-old token, plus the codec-side `TOKEN_AGED_OUT` aged-token path)
+- per-partition cursor mint (`listCursors` returns ≥1 cursor)
+- error normalization (capability missing, provider trimmed, unsupported resource)
+
+### Deferred work tracked here
+
+- **FR-066(a) / FR-066(b)**: `FROM_BEGINNING` and `AT_TIMESTAMP` cursor anchors. Cursor codec is already forward-compatible (the anchor field is a string-encoded enum); add two enum constants + provider-side mapping + capability flag.
+- **FR-068 sub-capabilities**: `CHANGE_FEED_FROM_BEGINNING`, `CHANGE_FEED_FROM_TIMESTAMP`, `CHANGE_FEED_NEW_IMAGE`. Adding these requires declaring per-provider support in all three `*Capabilities` classes plus matching conformance assertions. Delete-detection is universally supported in v1 (Cosmos AVAD is mandatory, Dynamo and Spanner emit deletes natively), so no separate `CHANGE_FEED_DELETE_DETECTION` flag is planned.
+- **FR-069 logical partition scope**: add `listCursors(addr, partitionKeyValue)`; back it with `CosmosChangeFeedRequestOptions.createForProcessingFromContinuation(...)` constrained to the matching feed range on Cosmos, server-side filter on Dynamo, and `WHERE partition_key_token = ?` on Spanner. Track as `Capability.CHANGE_FEED_LOGICAL_PARTITION_SCOPE`.
+- **Multi-thread change-feed e2e demonstrator** (tracked as T173): a worker-pool fixture in `multiclouddb-e2e/` that fan-outs `listCursors(addr)` to N workers and drains them in parallel against the live emulator, asserting (a) no duplicate `eventID` across workers and (b) `nextCursor`s remain individually resumable. The conformance suite covers single-cursor semantics; this fixture covers the recommended deployment pattern documented in `docs/guide.md`.
+- **OperationOptions.timeout() enforcement on the change-feed path** (tracked as T174): v1 emits a one-shot `WARN` when a caller supplies `options.timeout()` because no built-in provider honours it (Cosmos / Dynamo / Spanner each have their own page-fetch budgets). A future release should bound the wall-clock of `readChanges` per-call so callers can compose timeouts uniformly with CRUD ops.
+
+### Spanner upsert flip — rationale
+
+Earlier `Unreleased` builds executed `upsert()` as `Mutation.newReplaceBuilder(...)` to match Cosmos / Dynamo full-document-replace semantics on read. With the change-feed reader in place, that flip became a portability bug: Spanner change streams under `value_capture_type='NEW_ROW'` surfaced an `INSERT` record for every `upsert()` call, regardless of whether the row pre-existed — Cosmos AVAD and Dynamo `NEW_AND_OLD_IMAGES` correctly distinguish CREATE from UPDATE on the same upsert call. The v1 fix flips the mutation back to `Mutation.newInsertOrUpdateBuilder(...)` and keeps the existing `FIELD_DATA` field-set tracking so the read-path full-document-replace contract is preserved without using a destructive replace. The Spanner change-feed reader applies the same `FIELD_DATA` filter to its payload so `ChangeEvent.data()` does not leak stale columns from earlier writes. See `docs/changelog.md` Spanner `[Unreleased]` → *Fixed* for the user-facing note.

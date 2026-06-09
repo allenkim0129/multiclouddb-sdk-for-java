@@ -310,6 +310,80 @@ class DynamoChangeFeedReaderTest {
                 "after N readChanges() calls on an N-shard cursor, partition order should be restored");
     }
 
+    // ── Terminal-shard handling (Finding #17): closed-shard with no children
+    //    must produce an empty partitions list so a resumed terminal cursor
+    //    surfaces as immediately-empty caught-up rather than re-entering the
+    //    absorb-loop forever.
+
+    @Test
+    @DisplayName("Closed shard with no children → terminal page; nextCursor.partitions() is empty")
+    void closedShardNoChildren_terminalPageHasEmptyPartitions() {
+        DynamoDbStreamsClient streams = mock(DynamoDbStreamsClient.class);
+        // Single-shard cursor pre-resolved iterator (no GetShardIterator call needed).
+        List<PartitionPosition> partitions = new ArrayList<>();
+        partitions.add(new PartitionPosition(STREAM_ARN + "::shard-X", "@@ITER:iter-X"));
+        CursorToken seed = new CursorToken(ProviderId.DYNAMO, ADDR, System.currentTimeMillis(),
+                CursorAnchor.NOW, partitions);
+        ChangeFeedCursor cursor = new ChangeFeedCursor(seed);
+
+        // GetRecords returns no records AND nextShardIterator == null → the shard
+        // is closed at this read; the reader will route into absorbClosedShard.
+        when(streams.getRecords(any(GetRecordsRequest.class)))
+                .thenReturn(GetRecordsResponse.builder()
+                        .records(List.of())
+                        .nextShardIterator(null)
+                        .build());
+        // DescribeStream returns a stream description with no shards that name
+        // the closed shard as parent → absorbClosedShard finds no children →
+        // updated.isEmpty() == true → terminal branch fires.
+        when(streams.describeStream(any(DescribeStreamRequest.class)))
+                .thenReturn(DescribeStreamResponse.builder()
+                        .streamDescription(StreamDescription.builder().shards(List.of()).build())
+                        .build());
+
+        DynamoChangeFeedReader reader = new DynamoChangeFeedReader(ProviderId.DYNAMO, streams);
+        DynamoDbClient ddb = mockDdbWithStream(STREAM_ARN);
+
+        ChangeFeedPage page = reader.readChanges(ddb, ADDR, TABLE, cursor, OperationOptions.defaults());
+
+        assertTrue(page.isTerminal(),
+                "closed shard with no children must produce isTerminal()==true so the "
+                        + "caller knows to drop this cursor and re-listCursors()");
+        assertFalse(page.hasMore(),
+                "terminal pages MUST have hasMore=false (ChangeFeedPage ctor enforces this)");
+        assertEquals(0, page.nextCursor().token().partitions().size(),
+                "Finding #17: terminal nextCursor must carry an EMPTY partitions list. "
+                        + "The previous behaviour (withIssuedAt only) kept the now-closed "
+                        + "shard in positions, causing a persisted-and-resumed terminal "
+                        + "cursor to re-enter absorbClosedShard forever — the resume loop.");
+    }
+
+    @Test
+    @DisplayName("Resumed terminal cursor (empty partitions) → immediately empty caught-up page")
+    void resumedTerminalCursor_immediatelyEmptyCaughtUp() {
+        DynamoDbStreamsClient streams = mock(DynamoDbStreamsClient.class);
+        DynamoDbClient ddb = mockDdbWithStream(STREAM_ARN);
+        // Build a terminal cursor by hand: empty partitions list. This is the
+        // shape that absorbClosedShard's terminal branch now produces, and the
+        // shape a caller would persist + later resume from cursor.toToken().
+        CursorToken terminalSeed = new CursorToken(ProviderId.DYNAMO, ADDR,
+                System.currentTimeMillis(), CursorAnchor.NOW, List.of());
+        ChangeFeedCursor terminalCursor = new ChangeFeedCursor(terminalSeed);
+
+        DynamoChangeFeedReader reader = new DynamoChangeFeedReader(ProviderId.DYNAMO, streams);
+
+        ChangeFeedPage page = reader.readChanges(ddb, ADDR, TABLE, terminalCursor,
+                OperationOptions.defaults());
+
+        assertTrue(page.events().isEmpty(),
+                "resumed terminal cursor must return an immediately-empty page");
+        assertFalse(page.hasMore(),
+                "resumed terminal cursor must NOT signal hasMore");
+        // The reader must NOT have called getRecords/describeStream/getShardIterator
+        // on the terminal cursor — that is the very loop Finding #17 closes.
+        org.mockito.Mockito.verifyNoInteractions(streams);
+    }
+
     // ── ExpiredIteratorException maps to portable ITERATOR_EXPIRED reason ───
 
     @Test

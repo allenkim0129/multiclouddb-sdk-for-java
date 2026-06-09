@@ -138,9 +138,18 @@ public final class ChangeFeedCursor {
      * {@code true} if this is a {@link #now()} sentinel that has not yet been
      * hydrated by a {@code readChanges} call. Provider implementations use this
      * to bootstrap from the live tip of the supplied address.
+     * <p>
+     * Detection is purely structural <em>plus</em> a {@link #SENTINEL_PROVIDER}
+     * provider-id check, so a hand-crafted token that happens to match the
+     * sentinel shape but carries a real provider id (e.g., {@code dynamo})
+     * does not bypass {@code DefaultMulticloudDbClient}'s
+     * {@code validateProviderMatch} / {@code validateResourceMatch} checks.
+     * Without the provider-id gate, a token forged with a foreign provider id
+     * would be silently accepted by any runtime client.
      */
     public boolean isUnhydratedSentinel() {
-        return token.anchor() == CursorAnchor.NOW
+        return token.providerId().equals(SENTINEL_PROVIDER)
+                && token.anchor() == CursorAnchor.NOW
                 && token.resource() == null
                 && token.partitions().isEmpty();
     }

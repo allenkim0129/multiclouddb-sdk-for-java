@@ -40,12 +40,16 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `CosmosContainer.queryChangeFeed(CosmosChangeFeedRequestOptions, JsonNode.class)`
   and `CosmosContainer.getFeedRanges()`. `listCursors` mints one cursor per
   feed range at the live tip; `readChanges` drains one page at a time and
-  refreshes the per-range continuation token.
-- AVAD opt-in via the `changeFeed.mode=allVersionsAndDeletes` connection key.
-  In AVAD mode the reader maps `metadata.operationType` to
-  `CREATE`/`UPDATE`/`DELETE`; in the default LatestVersion mode every event
-  is surfaced as `UPDATE` and deletes are silently absent (Cosmos limitation —
-  documented in [guide.md - Change Feeds](../docs/guide.md#change-feeds)).
+  refreshes the per-range continuation token. The reader always uses
+  All-Versions-and-Deletes mode and unwraps the AVAD envelope so
+  `ChangeEvent.type()` faithfully distinguishes
+  `CREATE`/`UPDATE`/`DELETE`, and `ChangeEvent.data()` carries the
+  document body (not the AVAD transport envelope). The Cosmos container
+  the caller targets must therefore be provisioned with an AVAD
+  change-feed policy (`ChangeFeedPolicy.createAllVersionsAndDeletesPolicy`)
+  on an account that supports it; a non-AVAD container surfaces a Cosmos
+  400 BadRequest through the SDK's normalised error envelope on the
+  first read.
 - HTTP 410 GONE on `queryChangeFeed` is mapped to
   `CursorExpiredException` with `reason=PROVIDER_TRIMMED`.
 - The new change-feed entry points (`listCursors`, `readChanges`) honour the

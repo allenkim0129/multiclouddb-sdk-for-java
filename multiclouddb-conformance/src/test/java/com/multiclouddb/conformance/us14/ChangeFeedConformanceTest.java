@@ -61,12 +61,15 @@ public abstract class ChangeFeedConformanceTest {
      * Whether the provider configuration under test surfaces the full
      * CREATE / UPDATE / DELETE distinction.
      * <p>
-     * Some provider configurations (notably Cosmos in the default LatestVersion
-     * change-feed mode, without AVAD) emit every write as {@link ChangeType#UPDATE}
-     * and do not surface delete events at all. Subclasses targeting such a
-     * configuration override this to {@code false}; tests that depend on the
-     * distinction ({@code FR-cf-003} CREATE and {@code FR-cf-005} DELETE) skip
-     * via {@link Assumptions#assumeTrue(boolean, String)}.
+     * All three v1 provider configurations (Cosmos AVAD, Dynamo
+     * {@code NEW_AND_OLD_IMAGES}, Spanner {@code NEW_ROW}) do, so this
+     * defaults to {@code true} and v1 subclasses should not override.
+     * The hook is kept on the abstract suite as forward-compat for a
+     * future provider whose change-feed mode genuinely cannot distinguish
+     * the three event types — that provider's subclass would override to
+     * {@code false}, and tests {@code FR-cf-003} (CREATE) and
+     * {@code FR-cf-005} (DELETE) would skip via
+     * {@link Assumptions#assumeTrue(boolean, String)}.
      */
     protected boolean supportsCreateUpdateDeleteDistinction() {
         return true;
@@ -206,10 +209,19 @@ public abstract class ChangeFeedConformanceTest {
         MulticloudDbKey newKey = ConformanceHarness.uniqueKey("cf-after-now");
         try {
             client.upsert(getAddress(), newKey, Map.of("v", 1));
-            ChangeEvent ev = waitForEventByKey(new ChangeFeedCursor[]{liveTip}, newKey, propagationTimeout());
-            assertNotNull(ev, "expected the post-now() key to surface");
-            assertNotEquals(noiseKey, ev.key(),
-                    "now() must not surface keys written before the call");
+            // Collect every event seen between mint and the matching newKey
+            // event so the noiseKey assertion below has real material to check.
+            // The earlier `assertNotEquals(noiseKey, ev.key())` could never
+            // fail because waitForEventByKey only ever returns events
+            // matching `newKey` — making FR-cf-006 unenforced.
+            List<ChangeEvent> seen = new java.util.ArrayList<>();
+            ChangeEvent target = waitForEventByKeyCollecting(
+                    new ChangeFeedCursor[]{liveTip}, newKey, propagationTimeout(), seen);
+            assertNotNull(target, "expected the post-now() key to surface");
+            assertTrue(seen.stream().noneMatch(e -> e.key().equals(noiseKey)),
+                    "now() must not surface keys written before the call; saw events for: "
+                            + seen.stream().map(e -> e.key().toString())
+                                    .collect(java.util.stream.Collectors.toList()));
         } finally {
             ConformanceHarness.safeDelete(client, getAddress(), noiseKey);
             ConformanceHarness.safeDelete(client, getAddress(), newKey);
@@ -398,6 +410,41 @@ public abstract class ChangeFeedConformanceTest {
         }
         return null;
     }
+
+    /**
+     * Round-robin across {@code cursors}, draining pages until one event
+     * matching {@code key} surfaces or {@code timeout} elapses. Every event
+     * inspected along the way is appended to {@code sink} so the caller can
+     * assert that no other keys (e.g., a "noise" key written before the
+     * cursor was minted) accompanied the target.
+     * <p>
+     * Returns the matching event, or {@code null} on timeout. {@code sink}
+     * carries every event observed during the wait (including the matching
+     * event itself, in its position relative to others).
+     */
+    protected ChangeEvent waitForEventByKeyCollecting(ChangeFeedCursor[] cursors, MulticloudDbKey key,
+                                                      Duration timeout, java.util.List<ChangeEvent> sink)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeout.toMillis();
+        ChangeFeedCursor[] live = cursors.clone();
+        ChangeEvent target = null;
+        while (System.currentTimeMillis() < deadline) {
+            boolean progressed = false;
+            for (int i = 0; i < live.length; i++) {
+                ChangeFeedPage page = client.readChanges(getAddress(), live[i]);
+                live[i] = page.nextCursor();
+                for (ChangeEvent ev : page.events()) {
+                    sink.add(ev);
+                    if (target == null && ev.key().equals(key)) target = ev;
+                }
+                if (!page.events().isEmpty() || page.hasMore()) progressed = true;
+            }
+            if (target != null) return target;
+            if (!progressed) Thread.sleep(pollInterval().toMillis());
+        }
+        return target;
+    }
+
 
     /**
      * Drain all cursors until each one reports {@code hasMore=false} on a fresh read.

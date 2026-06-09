@@ -20,15 +20,26 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   per provider partition at the live tip.
 - **`MulticloudDbClient.readChanges(ResourceAddress, ChangeFeedCursor)`** and
   the `OperationOptions` overload — drains one page of change events from a
-  cursor and returns a fresh `nextCursor`.
+  cursor and returns a fresh `nextCursor`. In v1, `OperationOptions.timeout()`
+  is **not** enforced on the change-feed path — wall-clock of each call is
+  bounded by the provider's own page-fetch behaviour (Cosmos: per-request;
+  Dynamo: ~5s `GetRecords`; Spanner: 5s TVF window). The facade emits a
+  one-shot `WARN` the first time a non-default timeout is observed.
+- **`OperationNames.LIST_CURSORS` / `READ_CHANGES`** — operation-name
+  constants surfaced through `MulticloudDbError.operation()` and
+  `OperationDiagnostics`, matching the every-other-entry-point pattern.
 - **`MulticloudDbErrorCategory.CURSOR_EXPIRED`** — new well-known category for
   trimmed / aged-out / mismatched cursors. Provider details key `reason`
   carries one of `TOKEN_AGED_OUT`, `PROVIDER_TRIMMED`, `ITERATOR_EXPIRED`,
   `MALFORMED`, `VERSION_UNSUPPORTED`, `PROVIDER_MISMATCH`,
-  `RESOURCE_MISMATCH`. All seven values are public constants on
-  `com.multiclouddb.api.changefeed.internal.CursorTokenCodec`
-  (`REASON_*`) so providers and callers share a single source of truth
-  for the wire-format-stable strings.
+  `RESOURCE_MISMATCH`. All seven values are exported as public string
+  constants on `com.multiclouddb.api.changefeed.internal.CursorTokenCodec`
+  (`REASON_TOKEN_AGED_OUT` … `REASON_RESOURCE_MISMATCH`); provider
+  adapters reference those constants instead of bare string literals, so
+  the wire-format-stable values have a single source of truth. The
+  `.internal` subpackage is still considered an SPI surface — callers
+  who only consume the values via `e.error().providerDetails().get("reason")`
+  do not import the codec class.
 - **SPI**: `MulticloudDbProviderClient.listCursors` / `readChanges` default to
   throwing `UNSUPPORTED_CAPABILITY` so existing adapters compile unchanged.
 - **`DefaultMulticloudDbClient`** enforces capability-gating, validates the
@@ -40,6 +51,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - 30 new unit tests in `com.multiclouddb.api.changefeed` covering the cursor
   primitives, page semantics, exception details, and the round-trip /
   expiry / mismatch / tampering paths of the token codec.
+
 ### Added
 
 - **`MulticloudDbErrorCategory.CLIENT_CLOSED` — portable post-close error

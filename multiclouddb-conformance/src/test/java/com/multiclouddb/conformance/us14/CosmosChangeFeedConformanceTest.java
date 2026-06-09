@@ -6,6 +6,7 @@ package com.multiclouddb.conformance.us14;
 import com.azure.cosmos.CosmosClient;
 import com.azure.cosmos.CosmosClientBuilder;
 import com.azure.cosmos.GatewayConnectionConfig;
+import com.azure.cosmos.models.ChangeFeedPolicy;
 import com.azure.cosmos.models.CosmosContainerProperties;
 import com.multiclouddb.api.MulticloudDbClient;
 import com.multiclouddb.api.MulticloudDbClientConfig;
@@ -15,23 +16,25 @@ import com.multiclouddb.api.ResourceAddress;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 
+import java.time.Duration;
+
 /**
- * Cosmos DB change-feed conformance, running against the Cosmos DB Emulator.
+ * Cosmos DB change-feed conformance, running against a Cosmos DB endpoint
+ * (emulator or real account) that supports the
+ * <b>All-Versions-and-Deletes (AVAD)</b> change-feed policy.
  * <p>
- * <b>Provisioning</b>: a plain container ({@code todoapp}/{@code todos-cf} by
- * default) is created on first use via {@link #ensureContainer()}. The
- * emulator does not support the All-Versions-and-Deletes (AVAD) change-feed
- * mode, so the default LatestVersion mode is used. In LatestVersion mode the
- * Cosmos provider surfaces all writes as {@link com.multiclouddb.api.changefeed.ChangeType#UPDATE}
- * and does not surface delete events at all — this subclass therefore opts out
- * of FR-cf-003 (CREATE distinction) and FR-cf-005 (DELETE) via
- * {@link #supportsCreateUpdateDeleteDistinction()}.
+ * <b>Provisioning</b>: a dedicated container ({@code todoapp}/{@code todos-cf}
+ * by default) is created on first use via {@link #ensureContainer()} with an
+ * AVAD change-feed policy attached. The Cosmos provider always reads the
+ * change feed in AVAD mode, so the container <em>must</em> be configured
+ * for AVAD — without it the first call to {@code readChanges} would fail
+ * with a Cosmos {@code 400 BadRequest}.
  * <p>
- * To run the full distinction suite, point at an AVAD-enabled container on a
- * real account:
- * {@code -Dcosmos.endpoint=... -Dcosmos.key=... -Dcosmos.changefeed.container=<avad-container>}
- * and override {@code supportsCreateUpdateDeleteDistinction()} in a subclass
- * that targets that environment.
+ * If your Cosmos environment does not support AVAD (older emulators, or
+ * accounts without the required backup configuration), this entire test
+ * class will fail at the {@code @BeforeAll} provisioning step — that is
+ * intentional: portable change-feed semantics require AVAD on Cosmos, and
+ * the SDK does not silently downgrade to a less-capable mode.
  */
 @Tag("cosmos")
 @Tag("emulator")
@@ -65,6 +68,12 @@ class CosmosChangeFeedConformanceTest extends ChangeFeedConformanceTest {
             bootstrap.createDatabaseIfNotExists(DATABASE);
             CosmosContainerProperties props =
                     new CosmosContainerProperties(CONTAINER, "/partitionKey");
+            // AVAD retention window — long enough to absorb test latency
+            // (writes → propagation → read), short enough to keep storage
+            // bounded. The Cosmos provider always reads the change feed in
+            // AVAD mode, so this policy is a hard prerequisite.
+            props.setChangeFeedPolicy(
+                    ChangeFeedPolicy.createAllVersionsAndDeletesPolicy(Duration.ofMinutes(60)));
             bootstrap.getDatabase(DATABASE).createContainerIfNotExists(props);
         }
     }
@@ -85,13 +94,4 @@ class CosmosChangeFeedConformanceTest extends ChangeFeedConformanceTest {
         return new ResourceAddress(DATABASE, CONTAINER);
     }
 
-    /**
-     * Cosmos emulator runs in LatestVersion mode (AVAD is not supported on the
-     * emulator). In that mode all writes surface as UPDATE and deletes never
-     * surface, so the CREATE/UPDATE/DELETE-distinction tests would always fail.
-     */
-    @Override
-    protected boolean supportsCreateUpdateDeleteDistinction() {
-        return false;
-    }
 }

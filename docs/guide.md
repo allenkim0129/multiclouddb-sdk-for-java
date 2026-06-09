@@ -1262,7 +1262,7 @@ point-in-time read of a whole collection, use `query()`.
 |---|---|
 | `ChangeFeedCursor` | An opaque, immutable position in the stream. Persist via `cursor.toToken()` / `ChangeFeedCursor.fromToken(String)`; the token wire format is intentionally opaque and may evolve across SDK versions. |
 | `ChangeFeedCursor.now()` | A provider-agnostic sentinel meaning "the live tip at the time of the next read". The first `readChanges` call hydrates it. |
-| `client.listCursors(address)` | Discovers the current set of provider-side partitions and returns one cursor per partition, each positioned at the live tip. Use this to seed a multi-threaded reader. |
+| `client.listCursors(address)` | Discovers the current set of provider-side partitions and returns one cursor per partition, each positioned at the live tip. Use this to seed a multi-threaded reader. On Cosmos this issues an `EPK Range` query and costs ~1 RU per partition; cache the cursors for the lifetime of your reader rather than calling `listCursors` per page. |
 | `client.readChanges(address, cursor)` | Drains **one page** of events from `cursor` and returns a `ChangeFeedPage` carrying `events`, `nextCursor`, `hasMore`, and `terminal` flags. |
 | `CursorExpiredException` | Thrown when the SDK detects that a cursor can no longer be honoured (provider trimmed events, client-side 24h age cap, malformed/wrong-provider/wrong-resource token). |
 
@@ -1289,13 +1289,25 @@ CREATE / UPDATE / DELETE distinctions are preserved.
 
 | Provider | What you must provision | How |
 |---|---|---|
-| **Azure Cosmos DB** | Container created with **All-Versions-and-Deletes (AVAD)** change-feed mode, on an account with **continuous backup** enabled. | Configure container settings in Azure Portal / ARM / Bicep; in SDK, set the connection key `changeFeed.mode=allVersionsAndDeletes`. |
+| **Azure Cosmos DB** | Container created with an **All-Versions-and-Deletes (AVAD)** change-feed policy, on an account that supports it. | Configure container settings in Azure Portal / ARM / Bicep; with the Java SDK, attach `ChangeFeedPolicy.createAllVersionsAndDeletesPolicy(Duration)` to the `CosmosContainerProperties` you pass to `createContainerIfNotExists`. |
 | **Amazon DynamoDB** | Table stream enabled with `StreamSpecification(NEW_AND_OLD_IMAGES)`. | Enable via `UpdateTable` API or table console. The 24-hour retention is fixed by the service. |
 | **Google Cloud Spanner** | `CREATE CHANGE STREAM <name> FOR <table> OPTIONS (value_capture_type = 'NEW_ROW')` DDL applied to the database. | Run as part of your schema migration. The default stream name resolved by the SDK is `<collection>_changes`; override per collection with the `changeStream.<collection>` connection key. |
 
-Without these, the SDK will either fail with `UNSUPPORTED_CAPABILITY` (Dynamo
-stream not enabled) or silently downgrade event types (Cosmos in LatestVersion
-mode emits everything as `UPDATE` and never surfaces deletes).
+Without these, the first `listCursors` or `readChanges` call surfaces a
+portable `UNSUPPORTED_CAPABILITY` (or `PROVIDER_ERROR` on unhandled
+shapes) carrying a provider-specific `reason` discriminator:
+
+| Provider | Error class | `providerDetails.reason` |
+|---|---|---|
+| Cosmos | `MulticloudDbException(UNSUPPORTED_CAPABILITY)` mapped from a Cosmos 400 BadRequest whose message mentions AVAD / `ChangeFeedPolicy`. | `avad_not_enabled` |
+| DynamoDB | `MulticloudDbException(UNSUPPORTED_CAPABILITY)` (table stream not enabled, or `StreamSpecification` not `NEW_AND_OLD_IMAGES`). | `stream_not_enabled` |
+| Spanner | `MulticloudDbException(UNSUPPORTED_CAPABILITY)` (referenced change stream missing or pointed at the wrong table). | `stream_not_enabled` |
+
+All three normalise to the same portable category, so a single
+`catch (MulticloudDbException e)` branch on
+`e.error().category() == UNSUPPORTED_CAPABILITY` works across providers;
+inspect `e.error().providerDetails().get("reason")` only if the call
+site needs to surface the specific provisioning hint.
 
 ### Reading a change feed (single-thread)
 
@@ -1419,10 +1431,10 @@ worker continues without re-listing.
 
 | Concern | Cosmos DB | DynamoDB | Spanner |
 |---|---|---|---|
-| Maximum history horizon | Account retention (7 d default for AVAD with continuous backup) | **24 h fixed** | Stream retention (1–7 d, configured at `CREATE CHANGE STREAM`) |
-| `commitTimestamp` source | `_ts` (second resolution) | `ApproximateCreationDateTime` (sub-second, approximate) | True commit timestamp (microsecond) |
-| Default mode emits `DELETE`? | **No** — only AVAD mode emits deletes | Yes (with `NEW_AND_OLD_IMAGES`) | Yes |
-| CREATE vs UPDATE distinguishable? | Only in AVAD mode | Yes (via `OperationType`) | Yes (via `mod_type`) |
+| Maximum history horizon | Account retention configured on the AVAD change-feed policy | **24 h fixed** | Stream retention (1–7 d, configured at `CREATE CHANGE STREAM`) |
+| `commitTimestamp` source | AVAD `metadata.crts`, falling back to `_ts` (second resolution) | `ApproximateCreationDateTime` (sub-second, approximate) | True commit timestamp (microsecond) |
+| Emits `DELETE`? | Yes (AVAD policy required) | Yes (with `NEW_AND_OLD_IMAGES`) | Yes |
+| CREATE vs UPDATE distinguishable? | Yes (via AVAD `metadata.operationType`) | Yes (via `OperationType`) | Yes (via `mod_type`) |
 | Partition discovery cost | Cheap — `getFeedRanges()` is a metadata call | One `DescribeStream` per call | One bootstrap TVF call |
 
 For applications that need history older than 24 h with cross-provider

@@ -284,9 +284,14 @@ public interface MulticloudDbClient extends AutoCloseable {
     /**
      * Read one page of change events using the supplied operation options.
      * <p>
-     * Provider implementations may honour {@link OperationOptions#timeout()}
-     * as a per-page upper bound; other fields are typically ignored by the
-     * change-feed path.
+     * <b>v1 note:</b> no built-in provider currently honours any field of
+     * {@code options} on the change-feed path — {@link OperationOptions#timeout()}
+     * in particular is <em>not</em> enforced. The parameter exists for forward
+     * compatibility (so providers can opt into per-page timeouts or other
+     * controls without an SPI change), and so callers can mint a single
+     * {@link OperationOptions} value reused across the CRUD and change-feed
+     * surfaces. Pass {@link OperationOptions#defaults()} if you have no
+     * specific request to make.
      */
     ChangeFeedPage readChanges(ResourceAddress address, ChangeFeedCursor cursor,
                                OperationOptions options);
