@@ -365,16 +365,25 @@ final class CosmosChangeFeedReader {
      * <pre>{@code
      * {
      *   "current":  { ...document fields..., "id": "...", "_ts": ..., "_etag": "..." },
-     *   "metadata": { "operationType": "create"|"replace"|"delete", "crts": <seconds> },
-     *   "previous": { ...document fields... }   // present on replace and delete
+     *   "metadata": { "operationType": "create"|"replace"|"delete", "crts": <seconds>,
+     *                 // for DELETE the metadata block additionally carries:
+     *                 "id": "...", "partitionKey": { "<pkPathSegment>": "<value>" } },
+     *   "previous": { ...document fields... }   // present on replace and (when
+     *                                           // still within retention) delete
      * }
      * }</pre>
-     * For DELETE events {@code current} is absent and {@code previous} carries
-     * the just-deleted document body; for CREATE / UPDATE the body is taken
-     * from {@code current}. The {@link ChangeEvent#data()} surfaced to the
-     * caller is the unwrapped body (never the envelope), so the public
-     * contract is identical to Dynamo and Spanner: a portable consumer sees
-     * the document fields directly, not the provider's transport shape.
+     * For CREATE / UPDATE the body is taken from {@code current}. For DELETE
+     * the body is taken from {@code previous} when present (carries the
+     * just-deleted document); if {@code previous} is absent or empty (e.g.,
+     * the document was deleted before the change-feed retention had a chance
+     * to capture it, or the Cosmos emulator omits {@code previous} for
+     * fresh deletes), the key/id pair is recovered from the {@code metadata}
+     * block — which always carries them for DELETE in AVAD mode — and the
+     * surfaced body is an empty JSON object (Cosmos has no document left
+     * to ship). The {@link ChangeEvent#data()} surfaced to the caller is
+     * the unwrapped body (never the envelope), so the public contract is
+     * identical to Dynamo and Spanner: a portable consumer sees the
+     * document fields directly, not the provider's transport shape.
      * <p>
      * If a payload arrives without the expected AVAD envelope (for example,
      * if some future Cosmos behaviour surfaces a bare document), {@code type}
@@ -398,21 +407,61 @@ final class CosmosChangeFeedReader {
         // Pick the most informative body:
         //   - DELETE  → previous (the document that was just deleted)
         //   - others  → current
-        //   - if both absent (malformed / unexpected envelope) → the whole
-        //     envelope, so the caller still gets something usable.
+        // For DELETE the Cosmos emulator (and short-retention production
+        // accounts) may omit `previous` entirely and emit `current` as an
+        // empty object; in that case the surfaced body is empty but the
+        // metadata block still carries id + partitionKey, which we recover
+        // below.
         JsonNode body = type == ChangeType.DELETE
                 ? envelope.path("previous")
                 : envelope.path("current");
-        if (body.isMissingNode() || body.isNull()) {
+        if (isEmptyOrMissing(body)) {
             JsonNode alt = type == ChangeType.DELETE
                     ? envelope.path("current")
                     : envelope.path("previous");
-            body = (alt.isMissingNode() || alt.isNull()) ? envelope : alt;
+            if (!isEmptyOrMissing(alt)) {
+                body = alt;
+            } else if (body.isMissingNode() || body.isNull()) {
+                // Neither side present → fall back to the envelope itself so
+                // _ts / _etag lookups below remain safe (will simply return
+                // empty / 0, and the metadata-driven fallbacks take over).
+                body = alt.isMissingNode() || alt.isNull() ? envelope : alt;
+            }
+            // else: body is a present-but-empty JSON object (the AVAD
+            // DELETE-tombstone case). Keep it as-is — an empty {} is a
+            // valid, portable payload for a tombstone — and let the
+            // metadata block supply id/pk.
         }
 
+        // ── Identity ─────────────────────────────────────────────────────
+        // 1) Prefer fields on the document body (CREATE/UPDATE always; DELETE
+        //    when `previous` was carried).
+        // 2) Fall back to the AVAD metadata block, which always carries id
+        //    and partitionKey for DELETE (`partitionKey` is shipped as a
+        //    nested object keyed by the partition-key path segment, e.g.
+        //    `{"partitionKey":"<value>"}` for a container with `/partitionKey`,
+        //    so we extract the first leaf text value).
         String id = textOrEmpty(body.get("id"));
+        if (id.isBlank()) id = textOrEmpty(metadata.get("id"));
+
         String pk = textOrEmpty(firstPresent(body, "partitionKey", "pk", "_pk"));
+        if (pk.isBlank()) pk = extractMetadataPartitionKey(metadata);
         if (pk.isBlank()) pk = id;
+
+        if (pk.isBlank() || id.isBlank()) {
+            // Truly key-less envelope (neither body nor metadata carried an
+            // identity). Surface as PROVIDER_ERROR so the operator sees a
+            // structured failure instead of an opaque IllegalArgumentException
+            // from MulticloudDbKey.of(...).
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.PROVIDER_ERROR,
+                    "Cosmos change-feed envelope carries no recoverable id/partitionKey",
+                    providerId,
+                    "readChanges",
+                    false,
+                    Map.of("reason", "ENVELOPE_MISSING_KEY",
+                            "operationType", op)));
+        }
         MulticloudDbKey key = MulticloudDbKey.of(pk, id);
 
         // Prefer the AVAD metadata's conflict-resolution timestamp (`crts`)
@@ -429,6 +478,33 @@ final class CosmosChangeFeedReader {
         if (eventId.isBlank()) eventId = id + "@" + tsSeconds;
 
         return new ChangeEvent(key, type, commitTs, body, eventId);
+    }
+
+    private static boolean isEmptyOrMissing(JsonNode node) {
+        return node == null || node.isMissingNode() || node.isNull()
+                || (node.isObject() && node.size() == 0);
+    }
+
+    /**
+     * Extract the partition-key value from an AVAD metadata block.
+     * For DELETE events Cosmos wraps the value in a single-entry object whose
+     * field name is the partition-key path segment (e.g.
+     * {@code {"partitionKey":"abc"}} for a container with path
+     * {@code /partitionKey}); this helper unwraps that and also tolerates the
+     * less common shape where the value is shipped as a bare string.
+     */
+    private static String extractMetadataPartitionKey(JsonNode metadata) {
+        JsonNode pk = metadata.get("partitionKey");
+        if (pk == null || pk.isNull()) return "";
+        if (pk.isValueNode()) return pk.asText("");
+        if (pk.isObject() && pk.size() >= 1) {
+            JsonNode first = pk.fields().next().getValue();
+            if (first != null && first.isValueNode()) return first.asText("");
+        }
+        if (pk.isArray() && pk.size() >= 1 && pk.get(0).isValueNode()) {
+            return pk.get(0).asText("");
+        }
+        return "";
     }
 
     private static String textOrEmpty(JsonNode node) {

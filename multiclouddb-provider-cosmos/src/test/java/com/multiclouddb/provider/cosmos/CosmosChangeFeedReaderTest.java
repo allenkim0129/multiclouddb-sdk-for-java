@@ -9,6 +9,11 @@ import com.azure.cosmos.models.FeedRange;
 import com.azure.cosmos.models.FeedResponse;
 import com.azure.cosmos.util.CosmosPagedIterable;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.multiclouddb.api.MulticloudDbException;
+import com.multiclouddb.api.MulticloudDbKey;
+import com.multiclouddb.api.changefeed.ChangeEvent;
+import com.multiclouddb.api.changefeed.ChangeType;
 import com.multiclouddb.api.OperationOptions;
 import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.ResourceAddress;
@@ -32,6 +37,7 @@ import java.util.stream.Collectors;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -288,5 +294,191 @@ class CosmosChangeFeedReaderTest {
                         + "(starvation guard); visited heads were " + headPartitionIds);
         assertEquals(rangeA, cursor.token().partitions().get(0).partitionId(),
                 "after N readChanges() calls on an N-range cursor, partition order should be restored");
+    }
+// ── AVAD DELETE-tombstone envelope (empty `current`, no `previous`,
+    //    id/partitionKey only in `metadata`) ───────────────────────────────
+    //
+    // Regression for the bug where mapEvent threw
+    // `MulticloudDbKey partitionKey must be non-empty` because the document
+    // body was the empty `current` object and the metadata extraction wasn't
+    // wired up. The Cosmos emulator emits this shape verbatim for fresh
+    // deletes, and short-retention production accounts can too.
+    @Test
+    @DisplayName("readChanges(): AVAD DELETE-tombstone (empty current, keys in metadata) maps cleanly")
+    @SuppressWarnings("unchecked")
+    void readChanges_avadDeleteTombstone_recoversKeysFromMetadata() throws Exception {
+        CosmosContainer container = mock(CosmosContainer.class);
+
+        ObjectMapper om = new ObjectMapper();
+        JsonNode envelope = om.readTree(
+                "{\"current\":{},"
+                        + "\"metadata\":{\"lsn\":50,\"crts\":1700000000,"
+                        + "\"operationType\":\"delete\",\"previousImageLSN\":49,"
+                        + "\"id\":\"cf-delete-abc\","
+                        + "\"partitionKey\":{\"partitionKey\":\"cf-delete-abc\"}}}");
+
+        String rangeA = FeedRange.forLogicalPartition(
+                new com.azure.cosmos.models.PartitionKey("cf-delete-abc")).toString();
+        CursorToken seed = new CursorToken(ProviderId.COSMOS, ADDR, System.currentTimeMillis(),
+                CursorAnchor.NOW,
+                List.of(new PartitionPosition(rangeA, "@@FROM_NOW")));
+        ChangeFeedCursor cursor = new ChangeFeedCursor(seed);
+
+        CosmosPagedIterable<JsonNode> paged = mock(CosmosPagedIterable.class);
+        Iterable<FeedResponse<JsonNode>> pages = mock(Iterable.class);
+        Iterator<FeedResponse<JsonNode>> it = mock(Iterator.class);
+        FeedResponse<JsonNode> resp = mock(FeedResponse.class);
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+                .thenReturn(paged);
+        when(paged.iterableByPage()).thenReturn(pages);
+        when(pages.iterator()).thenReturn(it);
+        when(it.hasNext()).thenReturn(true);
+        when(it.next()).thenReturn(resp);
+        when(resp.getResults()).thenReturn(List.of(envelope));
+        when(resp.getContinuationToken()).thenReturn("next-continuation");
+
+        ChangeFeedPage page = newReader().readChanges(
+                container, ADDR, cursor, OperationOptions.defaults());
+
+        assertEquals(1, page.events().size(),
+                "the single DELETE envelope must produce exactly one ChangeEvent");
+        ChangeEvent ev = page.events().get(0);
+        assertEquals(ChangeType.DELETE, ev.type(),
+                "operationType=delete must surface as DELETE");
+        assertEquals(MulticloudDbKey.of("cf-delete-abc", "cf-delete-abc"), ev.key(),
+                "key (pk+sk) must be recovered from metadata.id and metadata.partitionKey");
+        assertNotNull(ev.data(), "data must never be null even for tombstones");
+    }
+
+    @Test
+    @DisplayName("readChanges(): AVAD DELETE with metadata.partitionKey as bare string is also recovered")
+    @SuppressWarnings("unchecked")
+    void readChanges_avadDelete_metadataPkAsBareString_recovers() throws Exception {
+        CosmosContainer container = mock(CosmosContainer.class);
+
+        ObjectMapper om = new ObjectMapper();
+        // Defensive: tolerate a future / alternative shape where the value
+        // arrives as a bare string instead of a nested {path:value} object.
+        JsonNode envelope = om.readTree(
+                "{\"current\":{},"
+                        + "\"metadata\":{\"lsn\":51,\"crts\":1700000001,"
+                        + "\"operationType\":\"delete\",\"previousImageLSN\":50,"
+                        + "\"id\":\"cf-delete-xyz\","
+                        + "\"partitionKey\":\"cf-delete-xyz\"}}");
+
+        String rangeA = FeedRange.forLogicalPartition(
+                new com.azure.cosmos.models.PartitionKey("cf-delete-xyz")).toString();
+        CursorToken seed = new CursorToken(ProviderId.COSMOS, ADDR, System.currentTimeMillis(),
+                CursorAnchor.NOW,
+                List.of(new PartitionPosition(rangeA, "@@FROM_NOW")));
+        ChangeFeedCursor cursor = new ChangeFeedCursor(seed);
+
+        CosmosPagedIterable<JsonNode> paged = mock(CosmosPagedIterable.class);
+        Iterable<FeedResponse<JsonNode>> pages = mock(Iterable.class);
+        Iterator<FeedResponse<JsonNode>> it = mock(Iterator.class);
+        FeedResponse<JsonNode> resp = mock(FeedResponse.class);
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+                .thenReturn(paged);
+        when(paged.iterableByPage()).thenReturn(pages);
+        when(pages.iterator()).thenReturn(it);
+        when(it.hasNext()).thenReturn(true);
+        when(it.next()).thenReturn(resp);
+        when(resp.getResults()).thenReturn(List.of(envelope));
+        when(resp.getContinuationToken()).thenReturn("next-continuation");
+
+        ChangeFeedPage page = newReader().readChanges(
+                container, ADDR, cursor, OperationOptions.defaults());
+
+        assertEquals(MulticloudDbKey.of("cf-delete-xyz", "cf-delete-xyz"),
+                page.events().get(0).key());
+    }
+
+    @Test
+    @DisplayName("readChanges(): AVAD DELETE with `previous` present uses the document body for keys")
+    @SuppressWarnings("unchecked")
+    void readChanges_avadDelete_previousPresent_usesBodyForKeys() throws Exception {
+        CosmosContainer container = mock(CosmosContainer.class);
+
+        ObjectMapper om = new ObjectMapper();
+        JsonNode envelope = om.readTree(
+                "{\"current\":{},"
+                        + "\"previous\":{\"id\":\"cf-delete-prev\",\"partitionKey\":\"cf-delete-prev\",\"v\":1,"
+                        + "\"_ts\":1700000002,\"_etag\":\"\\\"etag-prev\\\"\"},"
+                        + "\"metadata\":{\"lsn\":52,\"crts\":1700000002,"
+                        + "\"operationType\":\"delete\",\"previousImageLSN\":51,"
+                        + "\"id\":\"cf-delete-prev\","
+                        + "\"partitionKey\":{\"partitionKey\":\"cf-delete-prev\"}}}");
+
+        String rangeA = FeedRange.forLogicalPartition(
+                new com.azure.cosmos.models.PartitionKey("cf-delete-prev")).toString();
+        CursorToken seed = new CursorToken(ProviderId.COSMOS, ADDR, System.currentTimeMillis(),
+                CursorAnchor.NOW,
+                List.of(new PartitionPosition(rangeA, "@@FROM_NOW")));
+        ChangeFeedCursor cursor = new ChangeFeedCursor(seed);
+
+        CosmosPagedIterable<JsonNode> paged = mock(CosmosPagedIterable.class);
+        Iterable<FeedResponse<JsonNode>> pages = mock(Iterable.class);
+        Iterator<FeedResponse<JsonNode>> it = mock(Iterator.class);
+        FeedResponse<JsonNode> resp = mock(FeedResponse.class);
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+                .thenReturn(paged);
+        when(paged.iterableByPage()).thenReturn(pages);
+        when(pages.iterator()).thenReturn(it);
+        when(it.hasNext()).thenReturn(true);
+        when(it.next()).thenReturn(resp);
+        when(resp.getResults()).thenReturn(List.of(envelope));
+        when(resp.getContinuationToken()).thenReturn("next-continuation");
+
+        ChangeFeedPage page = newReader().readChanges(
+                container, ADDR, cursor, OperationOptions.defaults());
+
+        ChangeEvent ev = page.events().get(0);
+        assertEquals(ChangeType.DELETE, ev.type());
+        assertEquals(MulticloudDbKey.of("cf-delete-prev", "cf-delete-prev"), ev.key());
+        // When `previous` is present its `_etag` should win over the
+        // synthesised id@ts fallback.
+        assertEquals("\"etag-prev\"", ev.providerEventId(),
+                "providerEventId must come from the `previous` body's _etag when available");
+    }
+
+    @Test
+    @DisplayName("readChanges(): envelope with neither body keys nor metadata keys → PROVIDER_ERROR")
+    @SuppressWarnings("unchecked")
+    void readChanges_envelopeMissingAllKeys_throwsProviderError() throws Exception {
+        CosmosContainer container = mock(CosmosContainer.class);
+
+        ObjectMapper om = new ObjectMapper();
+        // Pathological: a DELETE envelope where the metadata block has no
+        // id/partitionKey at all and the bodies are empty. The reader must
+        // surface a structured PROVIDER_ERROR instead of an opaque IAE.
+        JsonNode envelope = om.readTree(
+                "{\"current\":{},"
+                        + "\"metadata\":{\"lsn\":99,\"crts\":1700000099,"
+                        + "\"operationType\":\"delete\"}}");
+
+        String rangeA = FeedRange.forLogicalPartition(
+                new com.azure.cosmos.models.PartitionKey("orphan")).toString();
+        CursorToken seed = new CursorToken(ProviderId.COSMOS, ADDR, System.currentTimeMillis(),
+                CursorAnchor.NOW,
+                List.of(new PartitionPosition(rangeA, "@@FROM_NOW")));
+        ChangeFeedCursor cursor = new ChangeFeedCursor(seed);
+
+        CosmosPagedIterable<JsonNode> paged = mock(CosmosPagedIterable.class);
+        Iterable<FeedResponse<JsonNode>> pages = mock(Iterable.class);
+        Iterator<FeedResponse<JsonNode>> it = mock(Iterator.class);
+        FeedResponse<JsonNode> resp = mock(FeedResponse.class);
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+                .thenReturn(paged);
+        when(paged.iterableByPage()).thenReturn(pages);
+        when(pages.iterator()).thenReturn(it);
+        when(it.hasNext()).thenReturn(true);
+        when(it.next()).thenReturn(resp);
+        when(resp.getResults()).thenReturn(List.of(envelope));
+        when(resp.getContinuationToken()).thenReturn("next-continuation");
+
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> newReader().readChanges(container, ADDR, cursor, OperationOptions.defaults()));
+        assertEquals("ENVELOPE_MISSING_KEY", ex.error().providerDetails().get("reason"),
+                "structured failure must carry reason=ENVELOPE_MISSING_KEY for telemetry");
     }
 }

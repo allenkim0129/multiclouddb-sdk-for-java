@@ -72,8 +72,15 @@ class CosmosChangeFeedConformanceTest extends ChangeFeedConformanceTest {
             // (writes → propagation → read), short enough to keep storage
             // bounded. The Cosmos provider always reads the change feed in
             // AVAD mode, so this policy is a hard prerequisite.
+            //
+            // 10 minutes is the maximum the Cosmos DB emulator accepts
+            // (the emulator rejects retentions outside [0,10] minutes with
+            // a 400 BadRequest "Invalid operation log retention duration").
+            // Real Cosmos DB accepts 1 minute to 7 days, so this value is
+            // safely within both ranges and is sufficient for any single
+            // conformance test run.
             props.setChangeFeedPolicy(
-                    ChangeFeedPolicy.createAllVersionsAndDeletesPolicy(Duration.ofMinutes(60)));
+                    ChangeFeedPolicy.createAllVersionsAndDeletesPolicy(Duration.ofMinutes(10)));
             bootstrap.getDatabase(DATABASE).createContainerIfNotExists(props);
         }
     }
