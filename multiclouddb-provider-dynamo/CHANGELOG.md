@@ -11,7 +11,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - **`DynamoCapabilities`** now explicitly declares
   `EXTENDED_CHANGE_FEED_HISTORY_UNSUPPORTED` (notes: "DynamoDB Streams is
-  fixed at 24h server-side. SDK-managed archive-on-read (drain Streams into Kinesis Data Streams / S3) is on the v1.x roadmap; for now use Kinesis Data Streams native escape outside the SDK for >24h."). The registry size for the Dynamo adapter grows
+  fixed at 24h server-side. SDK-managed archive-on-read via Kafka (customer-provisioned brokers) is on the v1.x roadmap; for now drain Streams into a customer-provisioned Kafka cluster outside the SDK for >24h."). The registry size for the Dynamo adapter grows
   from 16 to 17.
 - Callers that opt in to `ChangeFeedConfig.extendedRetention(...)` against a
   Dynamo client now fail fast at client-build time. The primary gate lives in

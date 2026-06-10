@@ -1524,10 +1524,19 @@ the price driver that actually moves on your provider:
   high-cardinality updates can produce a much larger bill at 30-day retention
   than at 1-day retention.
 - **DynamoDB** — not applicable; server-side stream retention is fixed at
-  24 h. For >24 h history with Dynamo today, drain the stream into Kinesis
-  Data Streams natively (outside the SDK).
+  24 h. For >24 h history with Dynamo today, drain the stream into a
+  customer-provisioned Kafka cluster (outside the SDK).
 
 The portable 24-hour baseline incurs no extra cost on any provider.
+
+> **Roadmap — DynamoDB Kafka path:** A v1.x item will close the Dynamo
+> capability gap by archiving DynamoDB Streams into a customer-provisioned
+> Kafka cluster. Once shipped, callers will opt in to
+> `ChangeFeedConfig.extendedRetention(...)` against Dynamo by additionally
+> wiring Kafka broker configuration on `MulticloudDbClientConfig` — the
+> consumer-facing `listCursors()` / `readChanges()` surface stays unchanged,
+> so the only adapter-specific delta is the broker config at client-build
+> time.
 
 ---
 ## Document TTL (Time-to-Live)

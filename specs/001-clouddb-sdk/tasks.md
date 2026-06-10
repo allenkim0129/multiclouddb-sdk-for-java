@@ -792,7 +792,7 @@ RBAC-mode database creation. Simplifies `ResourceProvisioner` sample to use sing
   `docs/guide.md` → *Extending change-feed history beyond 24 hours* section
   (with per-provider cost-driver callout — Cosmos Continuous-Backup tier
   storage-GB billing, Spanner change-data-volume × retention, Dynamo
-  not-applicable / Kinesis Data Streams native escape); new
+  not-applicable / customer-provisioned Kafka escape); new
   `docs/compatibility.md` → *Change-Feed History Retention* subsection;
   `[Unreleased]` extended-retention entries in `docs/changelog.md` and all
   four per-module `CHANGELOG.md` files; FR-068 implementation-status note in

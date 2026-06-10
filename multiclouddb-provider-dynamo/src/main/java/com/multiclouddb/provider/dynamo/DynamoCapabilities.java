@@ -26,8 +26,8 @@ public final class DynamoCapabilities {
             Capability.CHANGE_FEED_CAP.withNotes("DynamoDB Streams for change data capture"),
             Capability.EXTENDED_CHANGE_FEED_HISTORY_UNSUPPORTED.withNotes(
                     "DynamoDB Streams is fixed at 24h server-side. SDK-managed archive-on-read "
-                    + "(drain Streams into Kinesis Data Streams / S3) is on the v1.x roadmap; for now use "
-                    + "Kinesis Data Streams native escape outside the SDK for >24h."),
+                    + "via Kafka (customer-provisioned brokers) is on the v1.x roadmap; for now drain "
+                    + "Streams into a customer-provisioned Kafka cluster outside the SDK for >24h."),
             // Query DSL capabilities
             Capability.PORTABLE_QUERY_EXPRESSION_CAP.withNotes("Portable expression translation to DynamoDB PartiQL"),
             Capability.LIKE_OPERATOR_UNSUPPORTED.withNotes("LIKE not natively supported in PartiQL on DynamoDB"),

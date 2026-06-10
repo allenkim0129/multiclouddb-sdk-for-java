@@ -129,7 +129,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
                     MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
                     "DynamoDB Streams is fixed at 24h server-side; "
                             + "ChangeFeedConfig.extendedRetention(" + requested + ") is not honoured. "
-                            + "Use Kinesis Data Streams natively for >24h history. "
+                            + "Drain Streams into a customer-provisioned Kafka cluster for >24h history. "
                             + "See docs/guide.md → 'Extending change-feed history beyond 24h'.",
                     ProviderId.DYNAMO,
                     "create",
