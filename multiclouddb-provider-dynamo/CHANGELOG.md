@@ -7,153 +7,22 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-### Added — Extended Change-Feed Retention
+### Added
 
-- **`DynamoCapabilities`** now explicitly declares
-  `EXTENDED_CHANGE_FEED_HISTORY_UNSUPPORTED` (notes: "DynamoDB Streams is
-  fixed at 24h server-side. SDK-managed archive-on-read via Kafka (customer-provisioned brokers) is on the v1.x roadmap; for now drain Streams into a customer-provisioned Kafka cluster outside the SDK for >24h."). The registry size for the Dynamo adapter grows
-  from 16 to 17.
-- Callers that opt in to `ChangeFeedConfig.extendedRetention(...)` against a
-  Dynamo client now fail fast at client-build time. The primary gate lives in
-  the API module's `MulticloudDbClientFactory`; `DynamoProviderClient`'s
-  constructor also carries a defence-in-depth mirror gate so SPI-direct
-  integrators (`ServiceLoader<MulticloudDbProviderAdapter>` consumers that
-  bypass the factory) cannot silently drop the opt-in. Both surface
-  `UNSUPPORTED_CAPABILITY` with `providerDetails.reason="extended_retention_unavailable"`
-  before any change-feed-substrate I/O is issued.
-
+- Change-feed reader backed by DynamoDB Streams (`DescribeStream`, `GetShardIterator`, `GetRecords`). `listCursors` returns one cursor per open shard at the live tip with a pre-resolved `LATEST` iterator (`@@ITER:<iterator>` continuation), avoiding the silent event loss that an `ANCHOR_NOW` sentinel produces between mint and first read. `readChanges` drains one shard''s page per call, rotates the partition list across shards so multi-shard cursors are not starved, transitions to an `AFTER_SEQUENCE_NUMBER` continuation on the first observed record (good for the full 24-hour stream retention), and absorbs shard splits/closes by re-describing the stream and emitting child shards on the next cursor. `TrimmedDataAccessException` is mapped to `CursorExpiredException(reason=PROVIDER_TRIMMED)`; `ExpiredIteratorException` (~5-minute iterator idle timeout) is mapped to `reason=ITERATOR_EXPIRED`. Change-event payloads preserve the full DynamoDB type system (`M`/`L`/`SS`/`NS`/nested) via the shared `DynamoItemMapper`. The target table must have `StreamSpecification(NEW_AND_OLD_IMAGES)` enabled; otherwise the reader fails fast with `UNSUPPORTED_CAPABILITY(reason="stream_not_enabled")`.
+- `DynamoCapabilities` explicitly declares `EXTENDED_CHANGE_FEED_HISTORY_UNSUPPORTED` (DynamoDB Streams is fixed at 24h server-side; an SDK-managed archive-on-read path via customer-provisioned Kafka brokers is on the v1.x roadmap). Callers that opt in to `ChangeFeedConfig.extendedRetention(...)` fail fast at client-build time via the API-module factory gate; `DynamoProviderClient`''s constructor carries a defence-in-depth mirror gate so SPI-direct integrators (`ServiceLoader` consumers bypassing the factory) cannot silently drop the opt-in.
+- Default sort-key ordering: scan paths (`executeScan`, `executeScanWithFilter`, `queryWithTranslation`) sort items per-page by sort key ascending, matching DynamoDB''s native `Query` API and the Cosmos provider''s global default. Per-page only — multi-page scans retain DynamoDB''s token-based traversal order across pages.
+- Typed `CLIENT_CLOSED` envelope on every post-close CRUD / query / provisioning / change-feed entry point. `close()` is idempotent and also disposes the embedded `DynamoDbStreamsClient`.
 
 ### Changed
 
-- `DynamoChangeFeedReader.readChanges()` now rotates the cursor's partition
-  list so multi-shard cursors (e.g., a cursor that has absorbed child shards
-  via split/close into its partition list) visit each shard in true
-  round-robin order. Previously such cursors would only ever advance the
-  first shard and silently starve every shard after index 0. `hasMore` is
-  signalled eagerly when a multi-shard cursor returned any events (not only
-  on a full page) so the caller drains the remaining shards before sleeping.
-  The cursor wire format is unchanged; the partition list order now encodes
-  the active-shard state.
-- `DynamoChangeFeedReader` now standardises the `ExpiredIteratorException`
-  mapping on the portable `ITERATOR_EXPIRED` reason
-  (`CursorTokenCodec.REASON_ITERATOR_EXPIRED`), and uses the shared
-  `CursorTokenCodec.DETAIL_REASON` key. No behavioural change — the
-  on-the-wire string is unchanged; this just removes the string-literal
-  duplication and aligns the provider with the canonical reason set.
-- `DynamoChangeFeedReader.listCursors()` now stamps each minted `CursorToken`'s
-  `issuedAtEpochMillis` per shard with the wall-clock instant captured
-  immediately after `GetShardIterator.shardIterator()` returns (previously a
-  single pre-loop timestamp was reused for every cursor). On the
-  `DynamoDbException` fallback path the timestamp is captured at the moment of
-  the fallback decision. The no-shards placeholder branch captures its
-  timestamp at the moment of the placeholder mint. Composite tokens built by
-  `readChanges` (placeholder rehydration and sentinel hydration) use the
-  `max` of per-shard `effectiveAtMs` values as the token's single `issuedAt`,
-  so the timestamp is `>=` every constituent bookmark's effective instant.
-  This aligns token age with the actual bookmark effective time and matches
-  the semantics already used by `readChanges()` itself. The on-the-wire
-  continuation format is unchanged, and callers that do not inspect
-  `issuedAtEpochMillis` see no behavioural change.
-
-### Added — Change-Feed support
-
-- Change-feed reader backed by DynamoDB Streams (`DescribeStream`,
-  `GetShardIterator`, `GetRecords`). `listCursors` returns one cursor per
-  open shard at the live tip; `readChanges` drains one shard's next page per
-  call and absorbs shard splits/closes by re-describing the stream and
-  emitting child shards in the next cursor.
-- Continuation sentinels (`@@TRIM_HORIZON`, `@@LATEST`) preserve the correct
-  `ShardIteratorType` on resume after an empty page.
-- `TrimmedDataAccessException` (records older than the fixed 24-hour Streams
-  retention) is mapped to `CursorExpiredException` with
-  `reason=PROVIDER_TRIMMED`.
-- Provisioning requirement: table must have
-  `StreamSpecification(NEW_AND_OLD_IMAGES)` enabled — `listCursors` returns
-  `UNSUPPORTED_CAPABILITY` with `reason=stream_not_enabled` otherwise. The
-  24-hour Streams retention naturally matches the portable client-side
-  baseline.
-- AWS SDK v2 (2.34.x) ships the Streams client classes inside the main
-  `dynamodb` artifact at `software.amazon.awssdk.services.dynamodb.streams.*`;
-  no separate `dynamodbstreams` dependency is required.
-- The new change-feed entry points (`listCursors`, `readChanges`) honour the
-  lifecycle guard described in **Added** below — calls after `close()` raise
-  `MulticloudDbException(CLIENT_CLOSED)` attributed to
-  `listCursors`/`readChanges`. `close()` now also disposes the embedded
-  DynamoDB Streams client owned by `DynamoChangeFeedReader`.
-
-### Added
-
-- **Typed `CLIENT_CLOSED` envelope on post-close entry points.** Every CRUD,
-  query, and provisioning method on `DynamoProviderClient` now consults a
-  lifecycle guard before delegating to the AWS SDK. Calling any entry
-  point after `close()` raises `MulticloudDbException` with category
-  `CLIENT_CLOSED` (non-retryable) attributed to the caller's operation,
-  instead of leaking the raw `IllegalStateException` from the AWS SDK
-  client. `close()` itself is now idempotent under concurrent callers
-  (double-checked-locking `volatile` flag); the underlying
-  `dynamoClient.close()` is invoked exactly once.
+- `SORT_KEY_ASC` comparator handles numeric sort keys with type-aware comparison (`Long`/`Integer` use their native compare; mixed numerics fall back to `BigDecimal`) so integers beyond `2^53` are no longer truncated through `Double.compare`.
+- `BETWEEN` translation wraps in parentheses (`(field BETWEEN ? AND ?)`) for cross-provider consistency.
 
 ### Documentation
 
-- **`delete()` of a missing key remains a silent no-op (idempotent).** The
-  Dynamo provider issues an unconditional `DeleteItem`, so a delete of a
-  key that does not exist is silently ignored — matching the LCD behaviour
-  of Cosmos (404 swallowed) and Spanner (`Mutation.delete` is idempotent
-  natively). No `attribute_exists` guard is added, so deletes do not pay
-  the conditional-write WCU surcharge. Documented in the API Javadoc on
-  `MulticloudDbClient.delete(...)` and in `docs/guide.md`. Callers needing to detect a
-  missing key should use `read()`, which returns `null` on every provider
-  when the key does not exist.
-
-### Changed
-
-- **`BETWEEN` translation now wraps in parentheses** (`(field BETWEEN ? AND ?)`).
-  Mirrors the parenthesised form emitted by sibling translators so cross-provider
-  query stitching is uniform. PartiQL parses both forms correctly, so this is
-  not a correctness fix on Dynamo — purely a consistency improvement. The
-  output of `TranslatedQuery.whereClause()` is now parenthesised.
-
-### Fixed
-
-- `now()` cursors no longer silently lose events between mint and first
-  read, or between successive reads. Previously, `listCursors()` /
-  `ChangeFeedCursor.now()` carried an `ANCHOR_NOW` sentinel; the iterator
-  was only resolved (`GetShardIterator(LATEST)`) at the first `readChanges()`
-  call, so any events written in the window between mint and first read were
-  silently skipped. Likewise, a `readChanges()` that returned zero records
-  kept the `ANCHOR_NOW` sentinel — the next call re-resolved LATEST and
-  advanced past any events that arrived in the meantime. The reader now:
-  - Eagerly resolves a LATEST iterator at `listCursors()` / `now()`-hydrate
-    time and persists it in a new `@@ITER:<iterator>` continuation.
-  - When a subsequent `readChanges()` returns zero records, persists the
-    `nextShardIterator` returned by `GetRecords` in the same `@@ITER:`
-    continuation so the next call resumes from exactly where this one left off.
-  - When the first record is observed, transitions to a sequence-number
-    (`AFTER_SEQUENCE_NUMBER`) continuation, which is good for the full
-    24-hour stream-retention window.
-
-  DynamoDB Streams iterators expire after ~5 minutes of inactivity; if no
-  records have arrived and the iterator has expired by the next read, the
-  call surfaces `CursorExpiredException` with `reason=ITERATOR_EXPIRED`
-  and the caller must re-bootstrap via `listCursors()`. This caveat only
-  applies to cursors that have not yet observed their first record.
-- `absorbClosedShard()` now reports `hasMore=true` whenever child shards
-  exist, regardless of whether the call drained events. Previously the flag
-  was tied to "drained at least one event AND has children", so callers that
-  observed only the child-shard transition would stop draining instead of
-  picking up the children's events.
-- Javadoc on `DynamoChangeFeedReader` now correctly states that `now()`
-  hydrates with `LATEST` (it previously said `TRIM_HORIZON`).
-- `readChanges(now())` against a table without DynamoDB Streams enabled now
-  fails fast with `UNSUPPORTED_CAPABILITY` (`reason=stream_not_enabled`)
-  instead of silently hydrating to an empty partition set and returning
-  empty pages indefinitely. Matches the existing `listCursors` behaviour.
-- Change-event payloads now preserve the full DynamoDB type system
-  (`M`/`L`/`SS`/`NS`/nested attributes) by delegating to the shared
-  `DynamoItemMapper.attributeMapToJsonNode(...)` mapper. The previous
-  per-reader mapper fell back to `AttributeValue.toString()` for any value
-  outside `S`/`N`/`BOOL`/`NUL`, which corrupted maps, lists, and number/string
-  sets.
+- `delete()` of a missing key is documented as a silent no-op (idempotent); the Dynamo provider issues an unconditional `DeleteItem` and does not pay the conditional-write WCU surcharge.
+- AWS SDK v2 (2.34.x) bundles the DynamoDB Streams client classes inside the main `software.amazon.awssdk:dynamodb` artifact at `software.amazon.awssdk.services.dynamodb.streams.*` (verified against the published `dynamodb-2.34.0.jar`); no separate `dynamodbstreams` dependency is required. If `aws-sdk.version` is bumped, re-verify that the Streams classes remain bundled.
 
 ## [0.1.0-beta.1] — 2026-04-23
 

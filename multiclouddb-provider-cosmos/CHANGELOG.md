@@ -7,210 +7,25 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-### Fixed — Cursor token age cap honours `extendedRetention(...)`
+### Added
 
-- **`CosmosChangeFeedReader`** — both mint sites (`listCursors` and the
-  unhydrated-sentinel hydration path in `readChanges`) now stamp the
-  opted-in retention window onto every minted `CursorToken` via the new
-  `effectiveRetentionMillis` field. `CosmosProviderClient` resolves the
-  effective value from `ChangeFeedConfig.extendedRetention()` at
-  construction (defaulting to the 24h baseline when not set), so a cursor
-  persisted by an opted-in caller can be resumed beyond 24h up to the
-  configured window. Wire-format compatible — see the `multiclouddb-api`
-  changelog for the optional `"e"` field.
-
-### Added — Extended Change-Feed Retention
-
-- **`CosmosCapabilities`** now declares `EXTENDED_CHANGE_FEED_HISTORY_CAP`
-  (notes: "Up to 30 days via Continuous Backup 30d tier; 7d minimum (AVAD
-  requires Continuous Backup)"). The registry size for the Cosmos adapter
-  grows from 16 to 17.
-- **`CosmosProviderClient.ensureContainer(address)`** now provisions an AVAD
-  `ChangeFeedPolicy` carrying the duration from
-  `ChangeFeedConfig.extendedRetention(...)` when the user opted in. When the
-  caller did not opt in (the default), `ensureContainer` behaves bit-for-bit
-  identical to v1.
-- New error normalisation: a 400 BadRequest whose message fingerprint
-  indicates the Cosmos account does not have Continuous Backup enabled is
-  re-mapped to `UNSUPPORTED_CAPABILITY` with
-  `providerDetails.reason="continuous_backup_required"`. Without this
-  re-mapping callers would see a generic `INVALID_REQUEST` and have to
-  substring-match the message to disambiguate provisioning failures from
-  genuine input validation. The continuous-backup fingerprint set is
-  centralised in `CosmosConstants.CONTINUOUS_BACKUP_FINGERPRINTS`.
-- **`CosmosProviderClient.ensureContainer(address)`** under the opt-in path
-  now reads back the container's active `ChangeFeedPolicy` after
-  `createContainerIfNotExists(...)` and throws
-  `UNSUPPORTED_CAPABILITY(reason="extended_retention_not_enacted")` (with
-  `requestedRetention` and `activeRetention` in `providerDetails`) when the
-  pre-existing container's retention does not match the request. Cosmos has
-  no public SDK API to update an existing container's `ChangeFeedPolicy`
-  in place — silent acceptance would leave the caller paying for an opt-in
-  the SDK never enacted. The operator must drop-and-recreate the container
-  or revert to the active retention to clear the error. The `providerDetails`
-  envelope additionally carries `"capability": Capability.EXTENDED_CHANGE_FEED_HISTORY`
-  for portable observability grouping (matches the build-time factory gate
-  and the Dynamo SPI defence-in-depth gate). The read-back path is null-safe
-  on every axis: containers carrying a non-AVAD (LATEST_VERSION)
-  `ChangeFeedPolicy` — the historical pre-AVAD default — no longer leak
-  `NullPointerException` from `getRetentionDurationForAllVersionsAndDeletesPolicy()`
-  returning `null`; the throw path uses `String.valueOf(...)` so
-  `Map.of(...)` never sees null, and the error message describes the
-  active state precisely ("no ChangeFeedPolicy at all" / "a non-AVAD
-  ChangeFeedPolicy (LATEST_VERSION — the historical default)" / "an AVAD
-  ChangeFeedPolicy with retention=…").
-
-
-
-### Fixed — Round-6 portability findings
-
-- **Provider symmetry / error envelope** —
-  `CosmosProviderClient.ensureContainer` read-back path no longer leaks
-  `NullPointerException` when an existing container carries a non-AVAD
-  `ChangeFeedPolicy` (the historical pre-AVAD default, where
-  `getRetentionDurationForAllVersionsAndDeletesPolicy()` returns `null`).
-  The throw path now coalesces both null axes (no `ChangeFeedPolicy` at all
-  vs. non-AVAD policy present) and uses `String.valueOf(...)` so
-  `Map.of(...)` never rejects null values. The portable
-  `UNSUPPORTED_CAPABILITY(reason="extended_retention_not_enacted")` envelope
-  is now reachable from every existing-container path.
-- **Provider symmetry / wire-format constants** —
-  `CosmosChangeFeedReader` now references `CursorTokenCodec.REASON_*` /
-  `DETAIL_REASON` constants instead of bare `"MALFORMED"` /
-  `"PROVIDER_TRIMMED"` string literals (matching the Dynamo adapter).
-  Wire format is unchanged; a future rename of the constants will now fail
-  at compile time across all three adapters rather than silently diverging.
+- Change-feed reader backed by `CosmosContainer.queryChangeFeed(...)` and `getFeedRanges()`. `listCursors` mints one cursor per feed range at the live tip via a one-item warmup query that captures a real continuation token (with a `@@PIT:<epoch-millis>` fallback for older SDKs). `readChanges` drains one page per call, rotates the partition list across ranges so multi-range cursors are not starved, and uses All-Versions-and-Deletes (AVAD) mode so `ChangeEvent.type()` distinguishes `CREATE` / `UPDATE` / `DELETE`. The target container must be provisioned with an AVAD `ChangeFeedPolicy`; non-AVAD containers surface the Cosmos 400 BadRequest through the normalised envelope on the first read. HTTP 410 GONE on `queryChangeFeed` is mapped to `CursorExpiredException(reason=PROVIDER_TRIMMED)`.
+- Extended-retention provisioning: `CosmosProviderClient.ensureContainer(address)` provisions an AVAD `ChangeFeedPolicy` carrying the duration from `ChangeFeedConfig.extendedRetention(...)` when the user opted in, and reads back the active policy after `createContainerIfNotExists(...)` — throwing `UNSUPPORTED_CAPABILITY(reason="extended_retention_not_enacted")` (with `requestedRetention` and `activeRetention` in `providerDetails`) when a pre-existing container''s retention does not match the request. A 400 BadRequest whose message fingerprint indicates the Cosmos account lacks Continuous Backup is re-mapped to `UNSUPPORTED_CAPABILITY(reason="continuous_backup_required")` so callers do not have to substring-match raw messages. `CosmosCapabilities` declares `EXTENDED_CHANGE_FEED_HISTORY_CAP` (up to 30 days via Continuous Backup; 7d minimum).
+- `consistencyLevel` connection config key for opt-in client-level read consistency override. Valid case-insensitive values: `STRONG`, `BOUNDED_STALENESS`, `SESSION`, `CONSISTENT_PREFIX`, `EVENTUAL`. When absent, reads inherit the Cosmos DB account''s configured default. See `docs/configuration.md` — *Consistency Level*.
+- Typed `CLIENT_CLOSED` envelope on every post-close CRUD / query / provisioning / change-feed entry point, replacing leaked `IllegalStateException`s from azure-cosmos. `close()` is idempotent under concurrent callers; the underlying `cosmosClient.close()` is invoked exactly once.
 
 ### Changed
 
-- `CosmosChangeFeedReader.readChanges()` now rotates the cursor's partition
-  list so multi-range cursors (e.g., the `now()` sentinel hydrate that merges
-  every feed range) visit each range in true round-robin order. Previously a
-  multi-range cursor would only ever advance the first range and silently
-  starve every range after index 0. `hasMore` is signalled eagerly when a
-  multi-range cursor returned any events (not only on a full page), so the
-  caller drains the remaining ranges before sleeping. The cursor wire format
-  is unchanged; the partition list order now encodes the active-partition
-  state. Same fix is applied to `DynamoChangeFeedReader` and
-  `SpannerChangeFeedReader` for cross-provider parity.
-- `CosmosChangeFeedReader.listCursors()` now stamps each minted `CursorToken`'s
-  `issuedAtEpochMillis` with the wall-clock instant captured immediately after
-  the warmup continuation is obtained (previously a single pre-loop timestamp
-  was reused for every cursor). This aligns token age with the actual bookmark
-  effective time and matches the semantics already used by `readChanges()`. On
-  the PIT fallback path the stamped `issuedAt` equals the numeric suffix of the
-  `@@PIT:<nowMs>` continuation by construction. The on-the-wire continuation
-  format is unchanged, and callers that do not inspect `issuedAtEpochMillis`
-  see no behavioural change. The
-  `com.multiclouddb.api.changefeed.internal.CursorToken` Javadoc for
-  `issuedAtEpochMillis` is tightened in the same change to spell out the new
-  invariant. The Dynamo and Spanner providers receive the same alignment in
-  this release (see their respective changelogs); the cross-provider invariant
-  is now uniform.
-
-### Added — Change-Feed support
-
-- Pull-mode change-feed reader backed by
-  `CosmosContainer.queryChangeFeed(CosmosChangeFeedRequestOptions, JsonNode.class)`
-  and `CosmosContainer.getFeedRanges()`. `listCursors` mints one cursor per
-  feed range at the live tip; `readChanges` drains one page at a time and
-  refreshes the per-range continuation token. The reader always uses
-  All-Versions-and-Deletes mode and unwraps the AVAD envelope so
-  `ChangeEvent.type()` faithfully distinguishes
-  `CREATE`/`UPDATE`/`DELETE`, and `ChangeEvent.data()` carries the
-  document body (not the AVAD transport envelope). The Cosmos container
-  the caller targets must therefore be provisioned with an AVAD
-  change-feed policy (`ChangeFeedPolicy.createAllVersionsAndDeletesPolicy`)
-  on an account that supports it; a non-AVAD container surfaces a Cosmos
-  400 BadRequest through the SDK's normalised error envelope on the
-  first read.
-- HTTP 410 GONE on `queryChangeFeed` is mapped to
-  `CursorExpiredException` with `reason=PROVIDER_TRIMMED`.
-- The new change-feed entry points (`listCursors`, `readChanges`) honour the
-  lifecycle guard described in **Added** below — calls after `close()` raise
-  `MulticloudDbException(CLIENT_CLOSED)` attributed to
-  `listCursors`/`readChanges`.
-
-### Added
-
-- **Typed `CLIENT_CLOSED` envelope on post-close entry points.** Every CRUD,
-  query, and provisioning method on `CosmosProviderClient` now consults a
-  lifecycle guard before delegating to `azure-cosmos`. Calling any entry
-  point after `close()` raises `MulticloudDbException` with category
-  `CLIENT_CLOSED` (non-retryable) attributed to the caller's operation,
-  instead of leaking the raw `IllegalStateException` from azure-cosmos's
-  internal client. `close()` itself is now idempotent under concurrent
-  callers (double-checked-locking `volatile` flag); the underlying
-  `cosmosClient.close()` is invoked exactly once.
-
-### Documentation
-
-- **`delete()` of a missing key remains a silent no-op (idempotent).** The
-  Cosmos provider continues to swallow the native 404 from
-  `deleteItem(...)`, matching the LCD behaviour of DynamoDB
-  (`DeleteItem` is idempotent natively) and Spanner (`Mutation.delete` is
-  idempotent natively). Documented in the API Javadoc on
-  `MulticloudDbClient.delete(...)` and in `docs/guide.md`. No caller-visible
-  behaviour change. Callers needing to detect a missing key should use `read()`, which
-  returns `null` on every provider when the key does not exist.
-
-### Added
-
-- `consistencyLevel` connection config key for opt-in client-level read consistency
-  override (applied uniformly to every read from a given client instance). Valid values (case-insensitive): `STRONG`, `BOUNDED_STALENESS`, `SESSION`,
-  `CONSISTENT_PREFIX`, `EVENTUAL`. When absent, read requests inherit the Cosmos DB
-  account's configured default. See `docs/configuration.md` — *Consistency Level*.
-
-### Changed
-
-- Removed the hardcoded `ConsistencyLevel.SESSION` override from `CosmosClientBuilder`.
-  Previously all reads were forced to `SESSION` regardless of the account's configured
-  default. **Migration note:** accounts with a default of `STRONG` or `BOUNDED_STALENESS`
-  will now serve reads at their configured level (higher latency / higher RU cost than
-  before). Accounts configured to `SESSION` are unaffected. To restore the previous
-  behaviour explicitly, set `multiclouddb.connection.consistencyLevel=SESSION`.
+- Removed the hardcoded `ConsistencyLevel.SESSION` override from `CosmosClientBuilder`. Accounts with a default of `STRONG` or `BOUNDED_STALENESS` will now serve reads at their configured level (higher latency / RU cost than before). Accounts configured to `SESSION` are unaffected. To restore the previous behaviour explicitly, set `multiclouddb.connection.consistencyLevel=SESSION`.
+- `BETWEEN` translation now wraps in parentheses (`(c.field BETWEEN @lo AND @hi)`). Without this, Cosmos NoSQL''s parser binds the inner `AND` together with any trailing logical `AND`, producing a `BadRequest` for predicates like `age BETWEEN @lo AND @hi AND marker = @m`. The output of `TranslatedQuery.whereClause()` is now parenthesised.
 
 ### Removed
 
-- `CosmosConstants.CONSISTENCY_LEVEL_DEFAULT` (`public static final ConsistencyLevel`,
-  previously `ConsistencyLevel.SESSION`) — removed without a deprecation cycle; the project
-  is pre-release. Callers referencing this constant should use `ConsistencyLevel.SESSION`
-  directly.
+- `CosmosConstants.CONSISTENCY_LEVEL_DEFAULT` (`public static final ConsistencyLevel`, previously `ConsistencyLevel.SESSION`) — removed without a deprecation cycle; the project is pre-release. Callers referencing this constant should use `ConsistencyLevel.SESSION` directly.
 
-### Fixed
+### Documentation
 
-- Cosmos `@@PIT:<epoch-millis>` continuation strings with a non-numeric
-  suffix (tampered / corrupted tokens) now surface as
-  `CursorExpiredException` with `reason=MALFORMED` and provider context,
-  instead of bubbling an unchecked `NumberFormatException` out of
-  `readChanges`.
-- **`BETWEEN` translation now wraps in parentheses** (`(c.field BETWEEN @lo AND @hi)`).
-  Without the wrapping parens, Cosmos NoSQL's parser greedily binds the
-  `BETWEEN`'s inner `AND` together with any trailing logical `AND`, producing
-  a *"Syntax error, incorrect syntax near 'AND'"* `BadRequest` for predicates
-  like `age BETWEEN @lo AND @hi AND marker = @m`. The output of
-  `TranslatedQuery.whereClause()` is now parenthesised — backward-compatible
-  at the query-execution level, but consumers that string-match the where
-  clause should update their expectations.
-
-### Fixed
-
-- `now()` cursors no longer silently lose events written between cursor mint
-  and first read. Previously, `listCursors()` and `now()`-hydrate carried a
-  `CONT_FROM_NOW` sentinel; the first `readChanges()` call resolved
-  `createForProcessingFromNow(range)` at *that* moment, so any events written
-  between cursor mint and first read were skipped. `listCursors()` now eagerly
-  executes a one-shot `createForProcessingFromNow(range)` "warmup" query per
-  feed range to obtain a real Cosmos continuation token at mint time, and
-  persists that token in the cursor. Subsequent reads use
-  `createForProcessingFromContinuation(token)` against the captured bookmark.
-  If the warmup query cannot produce a continuation, the reader falls back to
-  a `@@PIT:<epoch-millis>` timestamp anchor (resolved via
-  `createForProcessingFromPointInTime`); if that path is also unavailable
-  (e.g., older SDK), the legacy `@@FROM_NOW` sentinel still works as before.
-- `CursorExpiredException` thrown from `decodeRange()` (malformed cursor
-  partitionId) now carries the active `providerId` instead of `null`, matching
-  the surrounding `CursorExpiredException` paths.
+- `delete()` of a missing key is documented as a silent no-op (idempotent); the Cosmos provider continues to swallow the native 404.
 
 ## [0.1.0-beta.1] — 2026-04-23
 
