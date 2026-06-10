@@ -75,7 +75,7 @@ public final class MulticloudDbClientFactory {
                                     + " does not support Capability.EXTENDED_CHANGE_FEED_HISTORY — "
                                     + "extended change-feed retention (requested " + requested
                                     + ") is unavailable on this provider. "
-                                    + "See docs/guide.md → 'Extending change-feed history beyond 24h' "
+                                    + "See docs/guide.md → 'Extending change-feed history beyond 24 hours' "
                                     + "for the per-provider capability matrix and supported escape hatches."
                                     + (providerNote != null ? " Provider note: " + providerNote : "");
                             throw new MulticloudDbException(new MulticloudDbError(

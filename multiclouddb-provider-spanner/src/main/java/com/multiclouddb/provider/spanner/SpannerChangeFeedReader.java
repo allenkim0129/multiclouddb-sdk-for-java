@@ -30,6 +30,8 @@ import com.multiclouddb.api.changefeed.ChangeType;
 import com.multiclouddb.api.changefeed.CursorExpiredException;
 import com.multiclouddb.api.changefeed.internal.CursorAnchor;
 import com.multiclouddb.api.changefeed.internal.CursorToken;
+import com.multiclouddb.api.changefeed.internal.CursorTokenCodec;
+import com.multiclouddb.api.OperationNames;
 import com.multiclouddb.api.changefeed.internal.PartitionPosition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -292,7 +294,7 @@ final class SpannerChangeFeedReader {
                     MulticloudDbErrorCategory.CURSOR_EXPIRED,
                     mc.getMessage(),
                     providerId, "readChanges", false,
-                    Map.of("reason", "MALFORMED")), mc);
+                    Map.of(CursorTokenCodec.DETAIL_REASON, CursorTokenCodec.REASON_MALFORMED)), mc);
         }
         Timestamp end = addMillis(state.startTs, WINDOW_MS);
 
@@ -373,7 +375,7 @@ final class SpannerChangeFeedReader {
                         "Spanner change stream rejected the cursor — partition token outside the change-stream retention window: "
                                 + e.getMessage(),
                         providerId, "readChanges", false,
-                        Map.of("reason", "PROVIDER_TRIMMED",
+                        Map.of(CursorTokenCodec.DETAIL_REASON, CursorTokenCodec.REASON_PROVIDER_TRIMMED,
                                 "errorCode", e.getErrorCode().name())), e);
             }
             // NOT_FOUND on READ_<stream> with a "change stream" message is the
@@ -412,7 +414,7 @@ final class SpannerChangeFeedReader {
                     MulticloudDbErrorCategory.CURSOR_EXPIRED,
                     mc.getMessage(),
                     providerId, "readChanges", false,
-                    Map.of("reason", "MALFORMED")), mc);
+                    Map.of(CursorTokenCodec.DETAIL_REASON, CursorTokenCodec.REASON_MALFORMED)), mc);
         }
 
         // Update partition state.
@@ -557,17 +559,52 @@ final class SpannerChangeFeedReader {
 
     private MulticloudDbKey extractKey(Struct mod) {
         // mods.keys is a JSON STRING ({ "partitionKey": "...", "sortKey": "..." }).
+        //
+        // PROVIDER SYMMETRY:
+        // Cosmos (CosmosChangeFeedReader#extractKey) and Dynamo
+        // (DynamoChangeFeedReader#extractKey) both THROW
+        // MulticloudDbException(PROVIDER_ERROR, reason=missing_partition_key)
+        // when the envelope is missing a partition key, instead of silently
+        // minting MulticloudDbKey.of("") or a raw-blob key. Silently emitting
+        // an empty / blob key would attribute every malformed record to a
+        // phantom partition, corrupting downstream CursorState dedupe and per-
+        // key checkpointing — and the divergence is NOT gated by
+        // CapabilitySet, so callers have no portable way to detect it.
+        //
+        // The wire-format reason token MUST match Dynamo's exactly
+        // ("missing_partition_key" / "malformed_envelope") so application-
+        // level retry / dead-letter logic that branches on
+        // providerDetails.reason stays portable across providers.
         String keysJson = getStringOrNull(mod, "keys");
-        if (keysJson == null) return MulticloudDbKey.of("");
-        try {
-            JsonNode node = MAPPER.readTree(keysJson);
-            String pk = node.has("partitionKey") ? node.get("partitionKey").asText() : "";
-            JsonNode skNode = node.get("sortKey");
-            if (skNode != null && !skNode.isNull()) return MulticloudDbKey.of(pk, skNode.asText());
-            return MulticloudDbKey.of(pk);
-        } catch (Exception e) {
-            return MulticloudDbKey.of(keysJson);
+        if (keysJson == null) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.PROVIDER_ERROR,
+                    "Spanner change-stream record is missing the 'keys' field; "
+                            + "cannot derive partition key.",
+                    providerId, OperationNames.READ_CHANGES, false,
+                    Map.of("reason", "missing_partition_key")));
         }
+        JsonNode node;
+        try {
+            node = MAPPER.readTree(keysJson);
+        } catch (Exception e) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.PROVIDER_ERROR,
+                    "Spanner change-stream record's 'keys' field is not valid JSON: " + keysJson,
+                    providerId, OperationNames.READ_CHANGES, false,
+                    Map.of("reason", "malformed_envelope")), e);
+        }
+        if (!node.has("partitionKey") || node.get("partitionKey").isNull()) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.PROVIDER_ERROR,
+                    "Spanner change-stream record's 'keys' JSON has no 'partitionKey' field: " + keysJson,
+                    providerId, OperationNames.READ_CHANGES, false,
+                    Map.of("reason", "missing_partition_key")));
+        }
+        String pk = node.get("partitionKey").asText();
+        JsonNode skNode = node.get("sortKey");
+        if (skNode != null && !skNode.isNull()) return MulticloudDbKey.of(pk, skNode.asText());
+        return MulticloudDbKey.of(pk);
     }
 
     private JsonNode extractValues(Struct mod, ChangeType type) {

@@ -35,8 +35,39 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   no public SDK API to update an existing container's `ChangeFeedPolicy`
   in place — silent acceptance would leave the caller paying for an opt-in
   the SDK never enacted. The operator must drop-and-recreate the container
-  or revert to the active retention to clear the error.
+  or revert to the active retention to clear the error. The `providerDetails`
+  envelope additionally carries `"capability": Capability.EXTENDED_CHANGE_FEED_HISTORY`
+  for portable observability grouping (matches the build-time factory gate
+  and the Dynamo SPI defence-in-depth gate). The read-back path is null-safe
+  on every axis: containers carrying a non-AVAD (LATEST_VERSION)
+  `ChangeFeedPolicy` — the historical pre-AVAD default — no longer leak
+  `NullPointerException` from `getRetentionDurationForAllVersionsAndDeletesPolicy()`
+  returning `null`; the throw path uses `String.valueOf(...)` so
+  `Map.of(...)` never sees null, and the error message describes the
+  active state precisely ("no ChangeFeedPolicy at all" / "a non-AVAD
+  ChangeFeedPolicy (LATEST_VERSION — the historical default)" / "an AVAD
+  ChangeFeedPolicy with retention=…").
 
+
+
+### Fixed — Round-6 portability findings
+
+- **Provider symmetry / error envelope** —
+  `CosmosProviderClient.ensureContainer` read-back path no longer leaks
+  `NullPointerException` when an existing container carries a non-AVAD
+  `ChangeFeedPolicy` (the historical pre-AVAD default, where
+  `getRetentionDurationForAllVersionsAndDeletesPolicy()` returns `null`).
+  The throw path now coalesces both null axes (no `ChangeFeedPolicy` at all
+  vs. non-AVAD policy present) and uses `String.valueOf(...)` so
+  `Map.of(...)` never rejects null values. The portable
+  `UNSUPPORTED_CAPABILITY(reason="extended_retention_not_enacted")` envelope
+  is now reachable from every existing-container path.
+- **Provider symmetry / wire-format constants** —
+  `CosmosChangeFeedReader` now references `CursorTokenCodec.REASON_*` /
+  `DETAIL_REASON` constants instead of bare `"MALFORMED"` /
+  `"PROVIDER_TRIMMED"` string literals (matching the Dynamo adapter).
+  Wire format is unchanged; a future rename of the constants will now fail
+  at compile time across all three adapters rather than silently diverging.
 
 ### Changed
 

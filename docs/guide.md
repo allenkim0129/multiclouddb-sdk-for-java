@@ -60,6 +60,10 @@ portable API surface and error mapping reference, see
   - [Recovering from an expired cursor](#recovering-from-an-expired-cursor)
   - [Multi-threaded pattern (one worker per cursor)](#multi-threaded-pattern-one-worker-per-cursor)
   - [Provider semantics & caveats](#provider-semantics--caveats)
+- [Extending change-feed history beyond 24 hours](#extending-change-feed-history-beyond-24-hours)
+  - [Fail-fast capability gate](#fail-fast-capability-gate)
+  - [How the opt-in is honoured](#how-the-opt-in-is-honoured)
+  - [Cost callout — read before opting in](#cost-callout--read-before-opting-in)
 - [Document TTL (Time-to-Live)](#document-ttl-time-to-live)
   - [Prerequisite: Enable Container-Level TTL](#prerequisite-enable-container-level-ttl)
   - [Writing with TTL](#writing-with-ttl)
@@ -1497,7 +1501,7 @@ the same path so no control-plane channels leak.
 | Provider | `ensureContainer()` behaviour | Failure → portable mapping |
 |---|---|---|
 | Cosmos DB | Sets an AVAD `ChangeFeedPolicy` on the container properties carrying the requested retention. | If the account lacks Continuous Backup, returns `UNSUPPORTED_CAPABILITY` (`reason=continuous_backup_required`). |
-| Spanner | Emits `CREATE CHANGE STREAM <table>_changes FOR <table> OPTIONS (retention_period = '<value>')` after the table-create. The stream name matches the reader's default convention so `listCursors()` / `readChanges()` transparently pick it up. | If the requested retention exceeds the database's native maximum, returns `UNSUPPORTED_CAPABILITY` (`reason=retention_exceeds_native_max`). |
+| Spanner | Emits `CREATE CHANGE STREAM <table>_changes FOR <table> OPTIONS (value_capture_type = 'NEW_ROW', retention_period = '<value>')` after the table-create (the `NEW_ROW` capture type matches what the SDK's change-feed reader requires for full-row payloads). If a stream of the same name already exists with a different retention, `ensureContainer()` reads back the active retention via `INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS` and refuses to silently honour the mismatch — it throws `UNSUPPORTED_CAPABILITY` (`reason=extended_retention_not_enacted`, with both `requestedRetention` and `activeRetention` in `providerDetails`) so the divergence is loud rather than a silent retention drop. The stream name matches the reader's default convention so `listCursors()` / `readChanges()` transparently pick it up. | If the requested retention exceeds the database's native maximum, returns `UNSUPPORTED_CAPABILITY` (`reason=retention_exceeds_native_max`). |
 
 `ChangeFeedConfig` defaults (`ChangeFeedConfig.defaults()`) leave behaviour
 **bit-for-bit identical to v1** — the opt-in surface is purely additive.

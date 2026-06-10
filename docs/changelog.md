@@ -351,10 +351,28 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Added — Extended Change-Feed Retention:**
 
+- **Round-6 portability fixes** — the SDK-emitted Spanner DDL now includes
+  `OPTIONS (value_capture_type = 'NEW_ROW', retention_period = '…')` so
+  SDK-provisioned streams match the payload shape the reader requires (full
+  current row, not just modified columns). The duplicate-name catch reads
+  the active retention back from
+  `INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS` and throws
+  `UNSUPPORTED_CAPABILITY(reason="extended_retention_not_enacted")` on
+  mismatch (matching Cosmos's read-back-and-reject behaviour). The Cosmos
+  read-back error envelope is null-safe on every axis (no longer NPEs on
+  non-AVAD existing containers) and now carries the
+  `"capability"` providerDetails key. All three change-feed readers
+  reference `CursorTokenCodec.REASON_*` constants instead of bare string
+  literals. `DefaultMulticloudDbClient.checkCapability` plumbs the real
+  operation name through to `MulticloudDbError.operation()` (was hard-coded
+  `"query"`). `SpannerChangeFeedReader.extractKey` throws
+  `MulticloudDbException(PROVIDER_ERROR, reason="missing_partition_key")`
+  on malformed envelopes instead of silently minting an empty key.
+
 - `SpannerCapabilities` now declares `EXTENDED_CHANGE_FEED_HISTORY_CAP`.
 - `SpannerProviderClient.ensureContainer(address)` now emits an idempotent
-  `CREATE CHANGE STREAM <name> FOR <table> OPTIONS (retention_period =
-  '<value>')` *both* when a fresh table is created and when the table already
+  `CREATE CHANGE STREAM <name> FOR <table> OPTIONS (value_capture_type = 'NEW_ROW',
+  retention_period = '<value>')` *both* when a fresh table is created and when the table already
   exists, when the opt-in is set. The pre-existing-table path no longer
   early-returns before the change-stream block, so the most common upgrade
   scenario (v1 deployment with existing tables flips on

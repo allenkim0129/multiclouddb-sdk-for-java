@@ -44,6 +44,20 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   Planning Addendum (2026-11) for the deferral rationale.
 
 
+
+### Fixed — Round-6 diagnostic accuracy
+
+- **`DefaultMulticloudDbClient.checkCapability`** now accepts an explicit
+  `operation` parameter and plumbs it into
+  `MulticloudDbError.operation()`. The earlier signature hard-coded
+  `"query"` for every call site, so a change-feed entry point
+  (`listCursors` / `readChanges`) that hit the capability gate surfaced
+  `error().operation() == "query"` — mis-attributing the failure for any
+  diagnostics consumer that branched on the operation name. Call sites now
+  pass `OperationNames.LIST_CURSORS` / `READ_CHANGES` / `QUERY`
+  respectively. Wire format of `providerDetails` is unchanged (still
+  carries `"capability"`).
+
 ### Added — Change-Feed API (3-primitive cursor model)
 
 - **`com.multiclouddb.api.changefeed` package** — new portable change-feed surface

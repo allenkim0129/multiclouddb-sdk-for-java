@@ -15,8 +15,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   change-data volume × retention."). The registry size for the Spanner
   adapter grows from 16 to 17.
 - **`SpannerProviderClient.ensureContainer(address)`** now emits an idempotent
-  `CREATE CHANGE STREAM <name> FOR <table> OPTIONS (retention_period =
-  '<value>')` *both* when a fresh table is created and when the table already
+  `CREATE CHANGE STREAM <name> FOR <table> OPTIONS (value_capture_type = 'NEW_ROW',
+  retention_period = '<value>')` *both* when a fresh table is created and when the table already
   exists, but **only** when the user opted in via
   `ChangeFeedConfig.extendedRetention(...)`. The pre-existing-table path no
   longer early-returns before the change-stream block — the most common
@@ -41,9 +41,51 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   was tightened from a generic "retention" substring to the specific
   `retention_period` token to eliminate false positives on unrelated
   Spanner error messages.)
-- "Duplicate name in schema" failures are swallowed so repeated
-  `ensureContainer` calls remain idempotent.
+- On the duplicate-name path (`CREATE CHANGE STREAM` rejected because a
+  stream of the same name already exists), `ensureContainer` now reads back
+  the active `retention_period` from
+  `INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS` and throws
+  `UNSUPPORTED_CAPABILITY` with
+  `providerDetails.reason="extended_retention_not_enacted"` and both
+  `requestedRetention` and `activeRetention` keys when the on-disk
+  retention does not match the request. Matching retentions are still
+  treated as a successful no-op. This mirrors the Cosmos read-back-and-reject
+  behaviour so a flip from `extendedRetention(3d)` to `extendedRetention(7d)`
+  is no longer silently swallowed — application code that branches on
+  `providerDetails.reason` stays portable across Cosmos and Spanner. The
+  read-back uses the existing `databaseClient` (no separate admin RPC) and
+  returns `null` on missing rows or parse failures, falling through to the
+  prior log-and-continue behaviour rather than mis-typing a different
+  retention.
 
+
+
+### Fixed — Round-6 portability findings
+
+- **Provider symmetry / correctness** — `SpannerProviderClient.ensureContainer`
+  now emits `OPTIONS (value_capture_type = 'NEW_ROW', retention_period = '…')`
+  on `CREATE CHANGE STREAM`. The earlier DDL omitted `value_capture_type`,
+  which left Spanner's default (`OLD_AND_NEW_VALUES`) in force — under that
+  mode `mods.new_values` carries only the columns mutated by each write,
+  so SDK-provisioned streams emitted UPDATE events whose payload silently
+  dropped unchanged columns. Operator-provisioned streams (documented DDL
+  uses `NEW_ROW`) and SDK-provisioned streams now match.
+- **Provider symmetry / wire-format constants** —
+  `SpannerChangeFeedReader` now references `CursorTokenCodec.REASON_*` /
+  `DETAIL_REASON` constants instead of bare `"MALFORMED"` /
+  `"PROVIDER_TRIMMED"` string literals. Wire format is unchanged; a future
+  rename of the constants will now fail at compile time across all three
+  adapters rather than silently diverging.
+- **Provider symmetry / envelope** —
+  `SpannerChangeFeedReader.extractKey` now throws
+  `MulticloudDbException(PROVIDER_ERROR, reason="missing_partition_key" / "malformed_envelope")`
+  when the change-stream envelope is missing the `keys` field, missing
+  `partitionKey`, or carries unparseable JSON — matching Cosmos and
+  Dynamo's existing throw-on-malformed behaviour. The earlier code
+  silently minted `MulticloudDbKey.of("")` (or the raw JSON blob), which
+  attributed phantom-key records to downstream dedupe / per-key
+  checkpointing and produced opposite cross-provider outcomes on a
+  contract not gated by `CapabilitySet`.
 
 ### Fixed
 

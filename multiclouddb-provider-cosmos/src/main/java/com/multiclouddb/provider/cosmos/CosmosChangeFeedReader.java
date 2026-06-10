@@ -24,6 +24,7 @@ import com.multiclouddb.api.changefeed.ChangeType;
 import com.multiclouddb.api.changefeed.CursorExpiredException;
 import com.multiclouddb.api.changefeed.internal.CursorAnchor;
 import com.multiclouddb.api.changefeed.internal.CursorToken;
+import com.multiclouddb.api.changefeed.internal.CursorTokenCodec;
 import com.multiclouddb.api.changefeed.internal.PartitionPosition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -293,7 +294,7 @@ final class CosmosChangeFeedReader {
                         MulticloudDbErrorCategory.CURSOR_EXPIRED,
                         "Cosmos cursor has a malformed @@PIT continuation: " + cont,
                         providerId, "readChanges", false,
-                        Map.of("reason", "MALFORMED")), nfe);
+                        Map.of(CursorTokenCodec.DETAIL_REASON, CursorTokenCodec.REASON_MALFORMED)), nfe);
             }
             opts = CosmosChangeFeedRequestOptions.createForProcessingFromPointInTime(
                     java.time.Instant.ofEpochMilli(pitMs), range);
@@ -345,7 +346,7 @@ final class CosmosChangeFeedReader {
                         providerId,
                         "readChanges",
                         false,
-                        Map.of("reason", "PROVIDER_TRIMMED",
+                        Map.of(CursorTokenCodec.DETAIL_REASON, CursorTokenCodec.REASON_PROVIDER_TRIMMED,
                                 "statusCode", String.valueOf(e.getStatusCode()))), e);
             }
             // 400 BadRequest with the AVAD-not-enabled fingerprint maps to the
@@ -537,7 +538,7 @@ final class CosmosChangeFeedReader {
                     providerId,
                     "readChanges",
                     false,
-                    Map.of("reason", "MALFORMED")), e);
+                    Map.of(CursorTokenCodec.DETAIL_REASON, CursorTokenCodec.REASON_MALFORMED)), e);
         }
     }
 }

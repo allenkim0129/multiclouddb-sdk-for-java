@@ -10,6 +10,7 @@ import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * Unit tests for {@link SpannerProviderClient#formatRetentionPeriod(Duration)}.
@@ -84,5 +85,50 @@ class SpannerRetentionPeriodFormatTest {
         assertEquals(SpannerProviderClient.formatRetentionPeriod(a),
                 SpannerProviderClient.formatRetentionPeriod(b),
                 "equal Durations expressed differently must yield identical retention strings");
+    }
+
+    @Test
+    @DisplayName("parseRetentionPeriod is the inverse of formatRetentionPeriod for the common suffixes")
+    void parseRetentionPeriodInvertsFormat() {
+        Duration[] cases = {
+                Duration.ofSeconds(45),
+                Duration.ofMinutes(90),
+                Duration.ofHours(36),
+                Duration.ofDays(7),
+                Duration.ofDays(30),
+                Duration.ofDays(365),
+        };
+        for (Duration d : cases) {
+            String formatted = SpannerProviderClient.formatRetentionPeriod(d);
+            Duration roundTrip = SpannerProviderClient.parseRetentionPeriod(formatted);
+            assertEquals(d, roundTrip,
+                    "parseRetentionPeriod must be the inverse of formatRetentionPeriod for "
+                            + d + " (formatted as " + formatted + ")");
+        }
+    }
+
+    @Test
+    @DisplayName("parseRetentionPeriod accepts SQL-string-literal quotes around the value")
+    void parseRetentionPeriodAcceptsQuotes() {
+        // INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS.OPTION_VALUE returns the option
+        // value as the SQL string literal as authored — including surrounding
+        // single quotes. The parser must tolerate that wrapping.
+        assertEquals(Duration.ofDays(7), SpannerProviderClient.parseRetentionPeriod("'7d'"));
+        assertEquals(Duration.ofHours(36), SpannerProviderClient.parseRetentionPeriod("'36h'"));
+    }
+
+    @Test
+    @DisplayName("parseRetentionPeriod returns null on garbage so the caller falls through to log-and-continue")
+    void parseRetentionPeriodReturnsNullOnGarbage() {
+        // The duplicate-name catch in ensureContainer uses the null return value
+        // to mean "could not verify, fall through to the prior log-and-continue
+        // path" rather than mis-typing a different retention.
+        assertNull(SpannerProviderClient.parseRetentionPeriod(null));
+        assertNull(SpannerProviderClient.parseRetentionPeriod(""));
+        assertNull(SpannerProviderClient.parseRetentionPeriod("''"));
+        assertNull(SpannerProviderClient.parseRetentionPeriod("notADuration"));
+        assertNull(SpannerProviderClient.parseRetentionPeriod("7x"),
+                "unknown suffix 'x' is rejected, not silently mis-coerced to a Duration");
+        assertNull(SpannerProviderClient.parseRetentionPeriod("abcd"));
     }
 }

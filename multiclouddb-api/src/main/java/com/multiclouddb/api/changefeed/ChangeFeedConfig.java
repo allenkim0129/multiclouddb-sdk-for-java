@@ -31,7 +31,7 @@ import java.util.Optional;
  * <h3>Cost model — important</h3>
  * Extended retention has <em>different bill shapes per provider</em>; they
  * are not interchangeable. Read the "Extending change-feed history beyond
- * 24h" section of {@code docs/guide.md} (or
+ * 24 hours" section of {@code docs/guide.md} (or
  * <a href="https://github.com/microsoft/multiclouddb-sdk-for-java/blob/main/docs/guide.md">on GitHub</a>)
  * for the per-provider price drivers.
  *

@@ -1078,8 +1078,22 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             // and read from the un-extended override stream.
             String streamName = config.connection().getOrDefault(
                     "changeStream." + tableName, tableName + "_changes");
+            // value_capture_type='NEW_ROW' is REQUIRED — the reader's extractValues
+            // pipeline assumes the entire current row arrives in mods.new_values
+            // (so per-field FIELD_DATA filtering produces the documented full-
+            // document payload on UPDATE). Spanner's default value_capture_type is
+            // OLD_AND_NEW_VALUES, under which mods.new_values carries ONLY the
+            // columns mutated by each write — silently dropping unchanged columns
+            // on every UPDATE event. Omitting this option would make
+            // SDK-provisioned streams emit a different payload shape than operator-
+            // provisioned streams (the documented out-of-band DDL also specifies
+            // NEW_ROW), introducing silent cross-provider divergence within Spanner
+            // itself depending on whose CREATE ran.
             String streamDdl = "CREATE CHANGE STREAM " + streamName + " FOR " + tableName
-                    + " OPTIONS (retention_period = '" + formatRetentionPeriod(retention) + "')";
+                    + " OPTIONS ("
+                    + "value_capture_type = 'NEW_ROW', "
+                    + "retention_period = '" + formatRetentionPeriod(retention) + "'"
+                    + ")";
             try {
                 DatabaseAdminClient adminClient = spanner.getDatabaseAdminClient();
                 adminClient.updateDatabaseDdl(instanceId, databaseId, List.of(streamDdl), null).get();
@@ -1095,7 +1109,33 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                 Throwable cause = e instanceof java.util.concurrent.ExecutionException ee ? ee.getCause() : e;
                 String causeMsg = cause != null && cause.getMessage() != null ? cause.getMessage() : "";
                 if (causeMsg.contains(SpannerConstants.DDL_ERR_DUPLICATE_NAME)) {
-                    LOG.debug("Spanner change stream already exists (race): {}", streamName);
+                    // The change stream already exists. Read back its active
+                    // retention_period and refuse to silently honour a mismatch:
+                    // a caller flipping from extendedRetention(3d) to (7d) would
+                    // otherwise see the call succeed while the on-disk stream
+                    // stays at 3d, and only discover the gap days later when
+                    // PROVIDER_TRIMMED arrives far from the offending call.
+                    // Cosmos throws UNSUPPORTED_CAPABILITY(extended_retention_not_enacted)
+                    // on the same scenario (CosmosProviderClient#ensureContainer);
+                    // Spanner must mirror that to keep providerDetails portable.
+                    Duration activeRetention = readChangeStreamRetention(streamName);
+                    if (activeRetention != null && !activeRetention.equals(retention)) {
+                        throw new MulticloudDbException(new MulticloudDbError(
+                                MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                                "Spanner change stream '" + streamName
+                                        + "' already exists with retention_period=" + activeRetention
+                                        + ", but the caller requested extendedRetention(" + retention + "). "
+                                        + "Spanner cannot self-heal an in-place CREATE — run ALTER CHANGE STREAM "
+                                        + streamName + " SET OPTIONS (retention_period = '"
+                                        + formatRetentionPeriod(retention) + "') out of band, "
+                                        + "or revert the opt-in to extendedRetention(" + activeRetention + ").",
+                                ProviderId.SPANNER, OperationNames.ENSURE_CONTAINER, false,
+                                Map.of("reason", "extended_retention_not_enacted",
+                                        "capability", com.multiclouddb.api.Capability.EXTENDED_CHANGE_FEED_HISTORY,
+                                        "requestedRetention", retention.toString(),
+                                        "activeRetention", activeRetention.toString())), cause);
+                    }
+                    LOG.debug("Spanner change stream already exists with matching retention: {}", streamName);
                 } else if (cause instanceof SpannerException se
                         && se.getErrorCode() == ErrorCode.INVALID_ARGUMENT
                         && causeMsg.toLowerCase(java.util.Locale.ROOT).contains("retention_period")) {
@@ -1126,6 +1166,74 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                             cause);
                 }
             }
+        }
+    }
+
+    /**
+     * Reads back the active {@code retention_period} option of an existing
+     * Spanner change stream via
+     * {@code INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS}. Returns {@code null}
+     * if the option is absent, the stream row is missing, or the value fails
+     * to parse — callers (currently the duplicate-name catch in
+     * {@link #ensureContainer(ResourceAddress)}) treat {@code null} as
+     * "cannot verify, fall through to the prior log-and-continue behaviour"
+     * so a transient INFORMATION_SCHEMA hiccup does not crash an otherwise
+     * successful provisioning re-run.
+     * <p>
+     * Package-private and instance-scoped so the duplicate-name catch can
+     * reuse the live {@code databaseClient} (no separate admin RPC required).
+     */
+    Duration readChangeStreamRetention(String streamName) {
+        try {
+            Statement stmt = Statement.newBuilder(
+                    "SELECT OPTION_VALUE FROM INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS "
+                            + "WHERE CHANGE_STREAM_NAME = @name AND OPTION_NAME = 'retention_period'")
+                    .bind("name").to(streamName)
+                    .build();
+            try (ResultSet rs = databaseClient.singleUse().executeQuery(stmt)) {
+                if (!rs.next()) return null;
+                String raw = rs.getString(0);
+                if (raw == null || raw.isEmpty()) return null;
+                return parseRetentionPeriod(raw);
+            }
+        } catch (Exception e) {
+            LOG.debug("Could not read back Spanner change stream '{}' retention_period: {}",
+                    streamName, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Inverse of {@link #formatRetentionPeriod(Duration)}: parses Spanner's
+     * {@code retention_period} option-value back into a {@link Duration}.
+     * Spanner stores the option value as the same {@code Ns}/{@code Nm}/
+     * {@code Nh}/{@code Nd} string the SDK emits, optionally surrounded by
+     * single quotes (the value is wire-formatted as a SQL string literal).
+     * Returns {@code null} on any parse failure so the caller can fall
+     * through to the existing log-and-continue path rather than mis-typing
+     * a different retention.
+     */
+    static Duration parseRetentionPeriod(String raw) {
+        if (raw == null) return null;
+        String trimmed = raw.trim();
+        if (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length() >= 2) {
+            trimmed = trimmed.substring(1, trimmed.length() - 1);
+        }
+        if (trimmed.isEmpty()) return null;
+        char suffix = trimmed.charAt(trimmed.length() - 1);
+        String numPart = trimmed.substring(0, trimmed.length() - 1);
+        long n;
+        try {
+            n = Long.parseLong(numPart);
+        } catch (NumberFormatException nfe) {
+            return null;
+        }
+        switch (suffix) {
+            case 's': return Duration.ofSeconds(n);
+            case 'm': return Duration.ofMinutes(n);
+            case 'h': return Duration.ofHours(n);
+            case 'd': return Duration.ofDays(n);
+            default:  return null;
         }
     }
 

@@ -651,25 +651,53 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
                 CosmosContainer existing = db.getContainer(address.collection());
                 CosmosContainerProperties active = existing.read().getProperties();
                 ChangeFeedPolicy activePolicy = active.getChangeFeedPolicy();
-                Duration activeRetention = activePolicy == null
-                        ? Duration.ZERO
+                // Coalesce BOTH null axes:
+                //   (a) activePolicy == null  →  no ChangeFeedPolicy at all
+                //   (b) activePolicy != null  →  AVAD-retention getter returns
+                //       null when the policy is LATEST_VERSION (the Cosmos
+                //       Java SDK's convention for "this getter is not
+                //       applicable to this policy mode")
+                // Without (b), a container created with the historical pre-
+                // AVAD default policy throws NullPointerException on
+                // activeAvadRetention.toString() / Map.of(...) below, leaking
+                // a provider-specific exception type through the portable
+                // surface instead of the documented UNSUPPORTED_CAPABILITY
+                // envelope.
+                Duration activeAvadRetention = activePolicy == null
+                        ? null
                         : activePolicy.getRetentionDurationForAllVersionsAndDeletesPolicy();
-                if (!requestedRetention.equals(activeRetention)) {
+                if (!requestedRetention.equals(activeAvadRetention)) {
+                    String activeDescription;
+                    if (activePolicy == null) {
+                        activeDescription = "no ChangeFeedPolicy at all";
+                    } else if (activeAvadRetention == null) {
+                        activeDescription = "a non-AVAD ChangeFeedPolicy "
+                                + "(LATEST_VERSION — the historical default)";
+                    } else {
+                        activeDescription = "an AVAD ChangeFeedPolicy with retention="
+                                + activeAvadRetention;
+                    }
                     throw new MulticloudDbException(new MulticloudDbError(
                             MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
                             "Cosmos container '" + address.database() + "/" + address.collection()
-                                    + "' already exists with ChangeFeedPolicy retention="
-                                    + activeRetention + " (or no ChangeFeedPolicy at all). "
+                                    + "' already exists with " + activeDescription + ". "
                                     + "Cosmos cannot update an existing container's ChangeFeedPolicy "
                                     + "in place — ensureContainer cannot enact the requested "
                                     + "extendedRetention(" + requestedRetention + ") without "
                                     + "dropping and recreating the container. Drop the container "
                                     + "(losing data!) and re-run ensureContainer, or revert to "
-                                    + "ChangeFeedConfig.extendedRetention(" + activeRetention + ").",
+                                    + (activeAvadRetention != null
+                                            ? "ChangeFeedConfig.extendedRetention(" + activeAvadRetention + ")."
+                                            : "the default ChangeFeedConfig (no extended retention)."),
                             ProviderId.COSMOS, OperationNames.ENSURE_CONTAINER, false,
+                            // String.valueOf is null-safe so Map.of never sees null.
+                            // "capability" mirrors the factory and Dynamo gates so
+                            // observability consumers grouping by providerDetails.capability
+                            // never see null on this failure path.
                             Map.of("reason", "extended_retention_not_enacted",
+                                    "capability", Capability.EXTENDED_CHANGE_FEED_HISTORY,
                                     "requestedRetention", requestedRetention.toString(),
-                                    "activeRetention", activeRetention.toString())));
+                                    "activeRetention", String.valueOf(activeAvadRetention))));
                 }
             }
         } catch (CosmosException e) {

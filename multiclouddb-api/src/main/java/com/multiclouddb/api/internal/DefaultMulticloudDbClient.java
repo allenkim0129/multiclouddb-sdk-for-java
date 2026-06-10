@@ -178,6 +178,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
                     && !isLegacyExpression(query.expression())) {
                 // Fail-fast: check portable query capability (T080)
                 checkCapability(Capability.PORTABLE_QUERY_EXPRESSION,
+                        OperationNames.QUERY,
                         "Portable query expressions are not supported by provider " + config.provider().id());
 
                 Expression ast = ExpressionParser.parse(query.expression());
@@ -332,6 +333,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         checkOpen(OperationNames.LIST_CURSORS);
         Objects.requireNonNull(address, "address");
         checkCapability(Capability.CHANGE_FEED,
+                OperationNames.LIST_CURSORS,
                 "Change feed is not supported by provider " + config.provider().id());
         Instant start = Instant.now();
         try {
@@ -368,6 +370,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         Objects.requireNonNull(cursor, "cursor");
         Objects.requireNonNull(options, "options");
         checkCapability(Capability.CHANGE_FEED,
+                OperationNames.READ_CHANGES,
                 "Change feed is not supported by provider " + config.provider().id());
 
         // Validate cursor binding before touching the provider. An unhydrated
@@ -438,8 +441,17 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
 
     /**
      * Fail-fast: throw if a required capability is not supported (T080).
+     *
+     * <p>{@code operation} carries the caller's portable operation name from
+     * {@link OperationNames} (e.g. {@link OperationNames#LIST_CURSORS}). The
+     * earlier signature hard-coded {@code "query"} for every call site, so
+     * change-feed entry points that surfaced a capability gate failure
+     * reported {@code error().operation() == "query"} instead of
+     * {@code "listCursors"} / {@code "readChanges"}. Diagnostics consumers
+     * that branch on {@code error().operation()} would silently mis-attribute
+     * the failure; passing the real operation closes that gap.</p>
      */
-    private void checkCapability(String capabilityName, String message) {
+    private void checkCapability(String capabilityName, String operation, String message) {
         CapabilitySet caps = providerClient.capabilities();
         if (!caps.isSupported(capabilityName)) {
             throw new MulticloudDbException(
@@ -447,7 +459,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
                             MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
                             message,
                             config.provider(),
-                            "query",
+                            operation,
                             false,
                             Map.of("capability", capabilityName)));
         }

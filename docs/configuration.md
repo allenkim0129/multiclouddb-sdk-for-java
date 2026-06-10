@@ -198,7 +198,7 @@ multiclouddb.connection.consistencyLevel=EVENTUAL
 | `multiclouddb.connection.instanceId` | Spanner instance ID |
 | `multiclouddb.connection.databaseId` | Spanner database ID |
 | `multiclouddb.connection.emulatorHost` | Emulator host:port (omit for GCP) |
-| `multiclouddb.connection.changeStream.<collection>` | Per-collection change-stream name override (optional). Defaults to `<collection>_changes`. **By default** the change stream must be provisioned out of band with `CREATE CHANGE STREAM <name> FOR <collection> OPTIONS (value_capture_type='NEW_ROW')` — the SDK does not create change streams. **Exception:** when the caller opts in via `MulticloudDbClientConfig.changeFeed(ChangeFeedConfig.builder().extendedRetention(d).build())`, `ensureContainer(...)` emits the DDL itself (including `OPTIONS (retention_period = '…')`) and resolves the stream name through this override so producer and reader stay in sync. See `docs/guide.md` → *"Extending change-feed history beyond 24 hours"*. |
+| `multiclouddb.connection.changeStream.<collection>` | Per-collection change-stream name override (optional). Defaults to `<collection>_changes`. **By default** the change stream must be provisioned out of band with `CREATE CHANGE STREAM <name> FOR <collection> OPTIONS (value_capture_type='NEW_ROW')` — the SDK does not create change streams. **Exception:** when the caller opts in via `MulticloudDbClientConfig.changeFeed(ChangeFeedConfig.builder().extendedRetention(d).build())`, `ensureContainer(...)` emits the DDL itself (including `OPTIONS (value_capture_type = 'NEW_ROW', retention_period = '…')`) and resolves the stream name through this override so producer and reader stay in sync. See `docs/guide.md` → *"Extending change-feed history beyond 24 hours"*. |
 
 ---
 
