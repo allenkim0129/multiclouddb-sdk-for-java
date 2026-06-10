@@ -7,6 +7,19 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Fixed — Cursor token age cap honours `extendedRetention(...)`
+
+- **`SpannerChangeFeedReader`** — all three mint sites (`listCursors`
+  child-partition mints, the empty-result placeholder, and the
+  unhydrated-sentinel rehydration path in `readChanges`) now stamp the
+  opted-in retention window onto every minted `CursorToken`. The new
+  `SpannerChangeFeedReader.create(...)` factory resolves the effective
+  value from `ChangeFeedConfig.extendedRetention()` (defaulting to the
+  24h baseline when not set), so a cursor persisted by an opted-in caller
+  can be resumed beyond 24h up to the configured `retention_period`.
+  Wire-format compatible — see the `multiclouddb-api` changelog for the
+  optional `"e"` field.
+
 ### Added — Extended Change-Feed Retention
 
 - **`SpannerCapabilities`** now declares `EXTENDED_CHANGE_FEED_HISTORY_CAP`

@@ -7,6 +7,23 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Fixed — Cursor token age cap honours `extendedRetention(...)`
+
+- **`CursorTokenCodec` / `CursorToken`** — the client-side age cap is no
+  longer the static 24h baseline for tokens minted under
+  `ChangeFeedConfig.extendedRetention(...)`. Provider readers (Cosmos,
+  Spanner) now stamp the opted-in window onto every minted token via a new
+  optional `"e"` field in the JSON wire format; the decoder applies
+  `max(24h baseline, encoded)` as the age cap, so a persisted cursor under
+  a 7-day opt-in can be resumed beyond 24h without `TOKEN_AGED_OUT`.
+  Backwards-compatible: tokens without `"e"` (and tokens minted at the
+  baseline) keep the 24h floor unchanged, so the wire form for the common
+  case is bit-for-bit identical to v1. The codec rejects non-numeric,
+  zero, or negative `"e"` as `MALFORMED`, and the `CursorToken`
+  constructor clamps any too-small value up to the 24h floor so a buggy
+  producer cannot silently shorten the portable guarantee. Dynamo is
+  unaffected because the opt-in is gated at build time.
+
 ### Added — Extended Change-Feed Retention (opt-in)
 
 - **`com.multiclouddb.api.changefeed.ChangeFeedConfig`** — new immutable value

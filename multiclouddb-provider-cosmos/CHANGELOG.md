@@ -7,6 +7,18 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Fixed — Cursor token age cap honours `extendedRetention(...)`
+
+- **`CosmosChangeFeedReader`** — both mint sites (`listCursors` and the
+  unhydrated-sentinel hydration path in `readChanges`) now stamp the
+  opted-in retention window onto every minted `CursorToken` via the new
+  `effectiveRetentionMillis` field. `CosmosProviderClient` resolves the
+  effective value from `ChangeFeedConfig.extendedRetention()` at
+  construction (defaulting to the 24h baseline when not set), so a cursor
+  persisted by an opted-in caller can be resumed beyond 24h up to the
+  configured window. Wire-format compatible — see the `multiclouddb-api`
+  changelog for the optional `"e"` field.
+
 ### Added — Extended Change-Feed Retention
 
 - **`CosmosCapabilities`** now declares `EXTENDED_CHANGE_FEED_HISTORY_CAP`

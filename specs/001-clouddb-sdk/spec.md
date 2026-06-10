@@ -489,7 +489,10 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
     provider client on throw). On supported providers, `ensureContainer(...)`
     auto-provisions the substrate (Cosmos: AVAD `ChangeFeedPolicy` carrying
     the requested retention; Spanner: `CREATE CHANGE STREAM
-    <table>_changes FOR <table> OPTIONS (retention_period = '<value>')`).
+    <table>_changes FOR <table> OPTIONS (value_capture_type = 'NEW_ROW',
+    retention_period = '<value>')` — `NEW_ROW` is required so UPDATE events
+    carry the full post-update row, matching Cosmos AVAD and Dynamo
+    `NEW_AND_OLD_IMAGES`).
     The portable 24-hour history floor (`ChangeFeedConfig.BASELINE_RETENTION`)
     is unchanged and is what every provider honours when the opt-in is not
     set. Cost is provider-shaped (price drivers and ceilings differ across

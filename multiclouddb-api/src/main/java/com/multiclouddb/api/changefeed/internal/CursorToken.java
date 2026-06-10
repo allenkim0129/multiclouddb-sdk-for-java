@@ -34,11 +34,20 @@ import java.util.Objects;
  *       same instant encoded in the continuation suffix); for tokens returned
  *       by {@code readChanges()} this is captured immediately after the page
  *       is read. Refreshed on every {@code readChanges} → {@code nextCursor()}.
- *       Tokens older than {@link CursorTokenCodec#MAX_TOKEN_AGE_MILLIS} fail
+ *       Tokens older than {@link #effectiveRetentionMillis()} fail
  *       client-side as expired.</li>
  *   <li>{@code anchor} — see {@link CursorAnchor}.</li>
  *   <li>{@code partitions} — list of {@link PartitionPosition}; empty for a
  *       {@code now()} sentinel that has not yet been read.</li>
+ *   <li>{@code effectiveRetentionMillis} — client-side age cap that decode
+ *       applies to this token. Defaults to
+ *       {@link CursorTokenCodec#MAX_TOKEN_AGE_MILLIS} (the 24-hour portable
+ *       baseline). Provider readers minting a cursor against a client that
+ *       opted in to {@code ChangeFeedConfig.extendedRetention(...)} stamp the
+ *       opted-in retention here so a persisted token can outlive the 24-hour
+ *       baseline up to the server-side retention window. The codec never
+ *       accepts a value below the baseline; missing in older tokens is
+ *       interpreted as the baseline.</li>
  * </ul>
  *
  * Instances are immutable; {@code partitions} is defensively copied.
@@ -53,12 +62,28 @@ public final class CursorToken {
     private final long issuedAtEpochMillis;
     private final CursorAnchor anchor;
     private final List<PartitionPosition> partitions;
+    private final long effectiveRetentionMillis;
 
+    /**
+     * Construct a token using the portable 24-hour baseline as the
+     * effective retention. Equivalent to passing
+     * {@link CursorTokenCodec#MAX_TOKEN_AGE_MILLIS} to the 6-arg constructor.
+     */
     public CursorToken(ProviderId providerId,
                        ResourceAddress resource,
                        long issuedAtEpochMillis,
                        CursorAnchor anchor,
                        List<PartitionPosition> partitions) {
+        this(providerId, resource, issuedAtEpochMillis, anchor, partitions,
+                CursorTokenCodec.MAX_TOKEN_AGE_MILLIS);
+    }
+
+    public CursorToken(ProviderId providerId,
+                       ResourceAddress resource,
+                       long issuedAtEpochMillis,
+                       CursorAnchor anchor,
+                       List<PartitionPosition> partitions,
+                       long effectiveRetentionMillis) {
         this.providerId = Objects.requireNonNull(providerId, "providerId");
         this.resource = resource; // nullable for unhydrated sentinel
         this.issuedAtEpochMillis = issuedAtEpochMillis;
@@ -66,6 +91,10 @@ public final class CursorToken {
         this.partitions = partitions == null
                 ? Collections.emptyList()
                 : List.copyOf(partitions);
+        // Clamp at the baseline so a buggy mint site cannot accidentally
+        // shorten the portable floor.
+        this.effectiveRetentionMillis = Math.max(
+                CursorTokenCodec.MAX_TOKEN_AGE_MILLIS, effectiveRetentionMillis);
     }
 
     public ProviderId providerId() {
@@ -91,12 +120,23 @@ public final class CursorToken {
     }
 
     /**
+     * Client-side age cap applied by {@link CursorTokenCodec#decode(String)}.
+     * Always {@code >=} {@link CursorTokenCodec#MAX_TOKEN_AGE_MILLIS}; equals
+     * the baseline unless this token was minted against a client that opted
+     * in to {@code ChangeFeedConfig.extendedRetention(...)}.
+     */
+    public long effectiveRetentionMillis() {
+        return effectiveRetentionMillis;
+    }
+
+    /**
      * Return a copy of this token with {@code issuedAtEpochMillis} refreshed
      * to {@code newIssuedAt}, preserving all other fields. Used by providers
      * when minting the {@code nextCursor()} after a successful read.
      */
     public CursorToken withIssuedAt(long newIssuedAt) {
-        return new CursorToken(providerId, resource, newIssuedAt, anchor, partitions);
+        return new CursorToken(providerId, resource, newIssuedAt, anchor, partitions,
+                effectiveRetentionMillis);
     }
 
     /**
@@ -107,7 +147,7 @@ public final class CursorToken {
      */
     public CursorToken withPartitions(List<PartitionPosition> newPartitions, long newIssuedAt) {
         return new CursorToken(providerId, resource, newIssuedAt,
-                CursorAnchor.CONTINUING, newPartitions);
+                CursorAnchor.CONTINUING, newPartitions, effectiveRetentionMillis);
     }
 
     @Override
@@ -115,6 +155,7 @@ public final class CursorToken {
         if (this == o) return true;
         if (!(o instanceof CursorToken that)) return false;
         return issuedAtEpochMillis == that.issuedAtEpochMillis
+                && effectiveRetentionMillis == that.effectiveRetentionMillis
                 && providerId.equals(that.providerId)
                 && Objects.equals(resource, that.resource)
                 && anchor == that.anchor
@@ -123,7 +164,8 @@ public final class CursorToken {
 
     @Override
     public int hashCode() {
-        return Objects.hash(providerId, resource, issuedAtEpochMillis, anchor, partitions);
+        return Objects.hash(providerId, resource, issuedAtEpochMillis, anchor, partitions,
+                effectiveRetentionMillis);
     }
 
     @Override
@@ -134,6 +176,7 @@ public final class CursorToken {
                 + ", i=" + issuedAtEpochMillis
                 + ", anchor=" + anchor
                 + ", positions=" + partitions.size()
+                + ", effectiveRetentionMs=" + effectiveRetentionMillis
                 + '}';
     }
 }

@@ -126,7 +126,15 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         builder.userAgentSuffix(SdkUserAgent.userAgent(config));
 
         this.cosmosClient = builder.buildClient();
-        this.changeFeedReader = new CosmosChangeFeedReader(ProviderId.COSMOS);
+        // Stamp the configured extendedRetention onto every minted cursor so a
+        // persisted token can outlive the 24h portable baseline up to the
+        // server-side AVAD retention window. Defaults to the baseline when
+        // the opt-in is not set, keeping the wire form unchanged for the
+        // common case.
+        long effectiveRetentionMillis = config.changeFeed().extendedRetention()
+                .map(java.time.Duration::toMillis)
+                .orElse(com.multiclouddb.api.changefeed.internal.CursorTokenCodec.MAX_TOKEN_AGE_MILLIS);
+        this.changeFeedReader = new CosmosChangeFeedReader(ProviderId.COSMOS, effectiveRetentionMillis);
         LOG.info("Cosmos client created for endpoint: {}", endpoint);
         LOG.info("Cosmos read consistency: {}", readConsistencyOverride != null ? readConsistencyOverride : "account default");
     }

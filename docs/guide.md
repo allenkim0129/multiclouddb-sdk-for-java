@@ -1266,7 +1266,7 @@ point-in-time read of a whole collection, use `query()`.
 |---|---|
 | `ChangeFeedCursor` | An opaque, immutable position in the stream. Persist via `cursor.toToken()` / `ChangeFeedCursor.fromToken(String)`; the token wire format is intentionally opaque and may evolve across SDK versions. |
 | `ChangeFeedCursor.now()` | A provider-agnostic sentinel meaning "the live tip at the time of the next read". The first `readChanges` call hydrates it. |
-| `client.listCursors(address)` | Discovers the current set of provider-side partitions and returns one cursor per partition, each positioned at the live tip. Use this to seed a multi-threaded reader. On Cosmos this issues an `EPK Range` query and costs ~1 RU per partition; cache the cursors for the lifetime of your reader rather than calling `listCursors` per page. |
+| `client.listCursors(address)` | Discovers the current set of provider-side partitions and returns one cursor per partition, each positioned at the live tip. Use this to seed a multi-threaded reader. On Cosmos this fetches the feed ranges and runs a one-item warmup query per range to capture a live-tip continuation, so the RU cost scales with the partition count; cache the cursors for the lifetime of your reader rather than calling `listCursors` per page. |
 | `client.readChanges(address, cursor)` | Drains **one page** of events from `cursor` and returns a `ChangeFeedPage` carrying `events`, `nextCursor`, `hasMore`, and `terminal` flags. |
 | `CursorExpiredException` | Thrown when the SDK detects that a cursor can no longer be honoured (provider trimmed events, client-side 24h age cap, malformed/wrong-provider/wrong-resource token). |
 

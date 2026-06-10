@@ -762,9 +762,11 @@ RBAC-mode database creation. Simplifies `ResourceProvisioner` sample to use sing
   when the opt-in is unset.
   File: `multiclouddb-provider-cosmos/src/main/java/com/multiclouddb/provider/cosmos/CosmosProviderClient.java`
 - [x] T178 [US14] Spanner `ensureContainer()` extension: emit idempotent
-  `CREATE CHANGE STREAM <table>_changes FOR <table> OPTIONS (retention_period
-  = '<value>')` after the table-create when the opt-in is set. Stream name
-  matches `SpannerChangeFeedReader` default convention. Normalise
+  `CREATE CHANGE STREAM <table>_changes FOR <table> OPTIONS
+  (value_capture_type = 'NEW_ROW', retention_period = '<value>')` after the
+  table-create when the opt-in is set (`NEW_ROW` is required so UPDATE
+  events carry the full post-update row). Stream name matches
+  `SpannerChangeFeedReader` default convention. Normalise
   `INVALID_ARGUMENT` whose message references retention to
   `UNSUPPORTED_CAPABILITY` with
   `providerDetails.reason="retention_exceeds_native_max"`. Swallow

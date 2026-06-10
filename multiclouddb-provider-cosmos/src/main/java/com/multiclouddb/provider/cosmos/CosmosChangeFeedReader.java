@@ -91,9 +91,22 @@ final class CosmosChangeFeedReader {
     private static final String CONT_PIT_PREFIX = "@@PIT:";
 
     private final ProviderId providerId;
+    /**
+     * Effective client-side age cap stamped onto every minted {@link CursorToken}.
+     * Resolved from {@code MulticloudDbClientConfig.changeFeed().extendedRetention()}:
+     * the opt-in window when present, else the portable 24h baseline. Persisted
+     * tokens carry this so an opted-in caller can resume a cursor older than 24h
+     * (up to the server-side retention) without {@code TOKEN_AGED_OUT}.
+     */
+    private final long effectiveRetentionMillis;
 
     CosmosChangeFeedReader(ProviderId providerId) {
+        this(providerId, CursorTokenCodec.MAX_TOKEN_AGE_MILLIS);
+    }
+
+    CosmosChangeFeedReader(ProviderId providerId, long effectiveRetentionMillis) {
         this.providerId = providerId;
+        this.effectiveRetentionMillis = effectiveRetentionMillis;
     }
 
     /**
@@ -136,7 +149,8 @@ final class CosmosChangeFeedReader {
                 WarmupResult w = warmupContinuation(container, range);
                 PartitionPosition pos = new PartitionPosition(encodeRange(range), w.continuation());
                 CursorToken token = new CursorToken(
-                        providerId, address, w.effectiveAtMs(), CursorAnchor.NOW, List.of(pos));
+                        providerId, address, w.effectiveAtMs(), CursorAnchor.NOW, List.of(pos),
+                        effectiveRetentionMillis);
                 cursors.add(new ChangeFeedCursor(token));
             }
             return cursors;
@@ -256,7 +270,8 @@ final class CosmosChangeFeedReader {
             List<PartitionPosition> positions = new ArrayList<>(all.size());
             for (ChangeFeedCursor c : all) positions.addAll(c.token().partitions());
             token = new CursorToken(providerId, address,
-                    System.currentTimeMillis(), CursorAnchor.NOW, positions);
+                    System.currentTimeMillis(), CursorAnchor.NOW, positions,
+                    effectiveRetentionMillis);
         } else {
             token = cursor.token();
         }

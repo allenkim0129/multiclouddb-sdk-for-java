@@ -1135,7 +1135,21 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                                         "requestedRetention", retention.toString(),
                                         "activeRetention", activeRetention.toString())), cause);
                     }
-                    LOG.debug("Spanner change stream already exists with matching retention: {}", streamName);
+                    if (activeRetention == null) {
+                        // INFORMATION_SCHEMA read-back returned no row, or its
+                        // value did not parse to a Duration. We cannot prove
+                        // the live stream matches the requested retention, so
+                        // we do not claim it does — log loudly enough for an
+                        // operator chasing retention drift to find this path.
+                        LOG.warn("Spanner change stream '{}' already exists, but active retention_period "
+                                + "could not be read back from INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS — "
+                                + "skipping drift check. Requested extendedRetention({}) may or may not "
+                                + "be enacted; verify with: SELECT option_value FROM "
+                                + "INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS WHERE change_stream_name = '{}' "
+                                + "AND option_name = 'retention_period'", streamName, retention, streamName);
+                    } else {
+                        LOG.debug("Spanner change stream already exists with matching retention: {}", streamName);
+                    }
                 } else if (cause instanceof SpannerException se
                         && se.getErrorCode() == ErrorCode.INVALID_ARGUMENT
                         && causeMsg.toLowerCase(java.util.Locale.ROOT).contains("retention_period")) {

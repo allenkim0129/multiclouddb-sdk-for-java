@@ -196,4 +196,148 @@ class CursorTokenCodecTest {
         assertEquals(CursorTokenCodec.REASON_MALFORMED,
                 ex.error().providerDetails().get("reason"));
     }
+
+    // ---------------------------------------------------------------------
+    // extendedRetention ("e") field wire-format tests
+    //
+    // Background: the codec's static MAX_TOKEN_AGE_MILLIS (24h) is the
+    // portable baseline. ChangeFeedConfig.extendedRetention(...) lets a
+    // caller opt into a longer client-side cap (up to the server-side
+    // change-stream retention window). Provider readers stamp that opt-in
+    // value onto every minted token via the optional "e" JSON field; the
+    // decoder then uses max(24h, encoded) as the age cap. Backwards-
+    // compatible: tokens without "e" still get the 24h baseline.
+    // ---------------------------------------------------------------------
+
+    @Test
+    @DisplayName("round-trip: extendedRetention > 24h is preserved through encode/decode")
+    void roundTripExtendedRetention() {
+        long sevenDaysMs = 7L * 24L * 60L * 60L * 1000L;
+        CursorToken original = new CursorToken(COSMOS, ADDR, 1_700_000_000_000L,
+                CursorAnchor.CONTINUING,
+                List.of(new PartitionPosition("p0", "c")),
+                sevenDaysMs);
+        String wire = CursorTokenCodec.encode(original);
+        CursorToken decoded = CursorTokenCodec.decode(wire, 1_700_000_000_000L);
+        assertEquals(sevenDaysMs, decoded.effectiveRetentionMillis(),
+                "decoder must thread the extendedRetention field back through");
+        assertEquals(original, decoded);
+    }
+
+    @Test
+    @DisplayName("decode: token aged 5d with e=7d succeeds (would have failed under baseline cap)")
+    void decodeWithinExtendedRetentionSucceeds() {
+        long sevenDaysMs = 7L * 24L * 60L * 60L * 1000L;
+        long fiveDaysMs = 5L * 24L * 60L * 60L * 1000L;
+        long issuedAt = 1_000_000_000_000L;
+        long now = issuedAt + fiveDaysMs;
+        CursorToken minted = new CursorToken(COSMOS, ADDR, issuedAt,
+                CursorAnchor.CONTINUING,
+                List.of(new PartitionPosition("p0", "c")),
+                sevenDaysMs);
+        String wire = CursorTokenCodec.encode(minted);
+        // 5d > 24h baseline but < 7d configured window — must NOT throw.
+        assertDoesNotThrow(() -> CursorTokenCodec.decode(wire, now),
+                "token within the encoded retention window must decode");
+    }
+
+    @Test
+    @DisplayName("decode: token aged past extendedRetention still raises TOKEN_AGED_OUT")
+    void decodeBeyondExtendedRetentionExpires() {
+        long sevenDaysMs = 7L * 24L * 60L * 60L * 1000L;
+        long eightDaysMs = 8L * 24L * 60L * 60L * 1000L;
+        long issuedAt = 1_000_000_000_000L;
+        long now = issuedAt + eightDaysMs;
+        CursorToken minted = new CursorToken(COSMOS, ADDR, issuedAt,
+                CursorAnchor.CONTINUING,
+                List.of(new PartitionPosition("p0", "c")),
+                sevenDaysMs);
+        String wire = CursorTokenCodec.encode(minted);
+        CursorExpiredException ex = assertThrows(CursorExpiredException.class,
+                () -> CursorTokenCodec.decode(wire, now));
+        assertEquals(CursorTokenCodec.REASON_TOKEN_AGED_OUT,
+                ex.error().providerDetails().get("reason"));
+    }
+
+    @Test
+    @DisplayName("decode: legacy v1 token without 'e' still capped at 24h baseline")
+    void decodeLegacyTokenAppliesBaselineCap() {
+        long issuedAt = 1_000_000_000_000L;
+        long now = issuedAt + CursorTokenCodec.MAX_TOKEN_AGE_MILLIS + 1;
+        // Hand-craft a payload without the "e" field — the wire shape older
+        // versions of the codec produced.
+        String json = "{\"v\":1,\"p\":\"cosmos\",\"r\":\"todoapp/todos\","
+                + "\"i\":" + issuedAt + ",\"a\":\"CONTINUING\","
+                + "\"s\":[{\"id\":\"p0\",\"c\":\"c\"}]}";
+        String wire = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(json.getBytes(StandardCharsets.UTF_8));
+        CursorExpiredException ex = assertThrows(CursorExpiredException.class,
+                () -> CursorTokenCodec.decode(wire, now));
+        assertEquals(CursorTokenCodec.REASON_TOKEN_AGED_OUT,
+                ex.error().providerDetails().get("reason"));
+    }
+
+    @Test
+    @DisplayName("decode: 'e' shorter than baseline is silently clamped up to the 24h floor")
+    void decodeShortExtendedRetentionClampedToBaseline() {
+        long oneHourMs = 60L * 60L * 1000L;
+        long issuedAt = 1_000_000_000_000L;
+        // Aged 12h: well under the 24h baseline floor, but past the bogus 1h
+        // value in "e". A correct decoder must NOT expire this — the floor
+        // protects the portable 24h contract even if a buggy mint site
+        // shortens the field.
+        long now = issuedAt + 12L * 60L * 60L * 1000L;
+        String json = "{\"v\":1,\"p\":\"cosmos\",\"r\":\"todoapp/todos\","
+                + "\"i\":" + issuedAt + ",\"a\":\"CONTINUING\","
+                + "\"e\":" + oneHourMs + ",\"s\":[{\"id\":\"p0\",\"c\":\"c\"}]}";
+        String wire = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(json.getBytes(StandardCharsets.UTF_8));
+        assertDoesNotThrow(() -> CursorTokenCodec.decode(wire, now),
+                "a too-small 'e' must clamp up to the 24h portable floor");
+    }
+
+    @Test
+    @DisplayName("decode: non-numeric 'e' raises MALFORMED")
+    void decodeMalformedExtendedRetentionString() {
+        String json = "{\"v\":1,\"p\":\"cosmos\",\"r\":\"todoapp/todos\","
+                + "\"i\":1700000000000,\"a\":\"CONTINUING\","
+                + "\"e\":\"not-a-number\",\"s\":[]}";
+        String wire = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(json.getBytes(StandardCharsets.UTF_8));
+        CursorExpiredException ex = assertThrows(CursorExpiredException.class,
+                () -> CursorTokenCodec.decode(wire, 1_700_000_000_000L));
+        assertEquals(CursorTokenCodec.REASON_MALFORMED,
+                ex.error().providerDetails().get("reason"));
+    }
+
+    @Test
+    @DisplayName("decode: negative 'e' raises MALFORMED")
+    void decodeMalformedExtendedRetentionNegative() {
+        String json = "{\"v\":1,\"p\":\"cosmos\",\"r\":\"todoapp/todos\","
+                + "\"i\":1700000000000,\"a\":\"CONTINUING\","
+                + "\"e\":-1,\"s\":[]}";
+        String wire = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(json.getBytes(StandardCharsets.UTF_8));
+        CursorExpiredException ex = assertThrows(CursorExpiredException.class,
+                () -> CursorTokenCodec.decode(wire, 1_700_000_000_000L));
+        assertEquals(CursorTokenCodec.REASON_MALFORMED,
+                ex.error().providerDetails().get("reason"));
+    }
+
+    @Test
+    @DisplayName("encode: baseline-retention tokens omit 'e' for wire compatibility")
+    void encodeBaselineOmitsExtendedRetentionField() {
+        // A token built with the 5-arg constructor (no opt-in) must encode
+        // to a JSON payload that does NOT contain the "e" key, so older
+        // decoders that do not understand the field continue to read it
+        // identically.
+        CursorToken baseline = new CursorToken(COSMOS, ADDR, 1_700_000_000_000L,
+                CursorAnchor.CONTINUING,
+                List.of(new PartitionPosition("p0", "c")));
+        String wire = CursorTokenCodec.encode(baseline);
+        String json = new String(Base64.getUrlDecoder().decode(wire),
+                StandardCharsets.UTF_8);
+        assertFalse(json.contains("\"e\""),
+                "baseline-retention tokens must not include the 'e' field: " + json);
+    }
 }

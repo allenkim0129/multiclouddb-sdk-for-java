@@ -118,17 +118,36 @@ final class SpannerChangeFeedReader {
     private final ProviderId providerId;
     private final DatabaseClient databaseClient;
     private final Map<String, String> connection;
+    /**
+     * Effective client-side age cap stamped onto every minted {@link CursorToken}.
+     * Resolved from {@code MulticloudDbClientConfig.changeFeed().extendedRetention()}:
+     * the opt-in window when present, else the portable 24h baseline. Persisted
+     * tokens carry this so an opted-in caller can resume a cursor older than 24h
+     * (up to the Spanner change-stream {@code retention_period}) without
+     * {@code TOKEN_AGED_OUT}.
+     */
+    private final long effectiveRetentionMillis;
 
     SpannerChangeFeedReader(ProviderId providerId, DatabaseClient databaseClient,
                             Map<String, String> connection) {
+        this(providerId, databaseClient, connection, CursorTokenCodec.MAX_TOKEN_AGE_MILLIS);
+    }
+
+    SpannerChangeFeedReader(ProviderId providerId, DatabaseClient databaseClient,
+                            Map<String, String> connection, long effectiveRetentionMillis) {
         this.providerId = providerId;
         this.databaseClient = databaseClient;
         this.connection = connection;
+        this.effectiveRetentionMillis = effectiveRetentionMillis;
     }
 
     static SpannerChangeFeedReader create(ProviderId providerId, DatabaseClient databaseClient,
                                           MulticloudDbClientConfig config) {
-        return new SpannerChangeFeedReader(providerId, databaseClient, config.connection());
+        long effectiveRetentionMillis = config.changeFeed().extendedRetention()
+                .map(java.time.Duration::toMillis)
+                .orElse(CursorTokenCodec.MAX_TOKEN_AGE_MILLIS);
+        return new SpannerChangeFeedReader(providerId, databaseClient, config.connection(),
+                effectiveRetentionMillis);
     }
 
     String streamNameFor(String collection) {
@@ -215,7 +234,8 @@ final class SpannerChangeFeedReader {
                         PartitionPosition pos = new PartitionPosition(token,
                                 continuation(bookmark, 0L, anchorMs));
                         CursorToken tok = new CursorToken(
-                                providerId, address, effectiveAtMs, CursorAnchor.NOW, List.of(pos));
+                                providerId, address, effectiveAtMs, CursorAnchor.NOW, List.of(pos),
+                                effectiveRetentionMillis);
                         cursors.add(new ChangeFeedCursor(tok));
                     }
                 }
@@ -234,7 +254,8 @@ final class SpannerChangeFeedReader {
             PartitionPosition placeholder = new PartitionPosition(
                     "__bootstrap__", continuation(now, 0L, timestampToEpochMillis(now)));
             CursorToken tok = new CursorToken(
-                    providerId, address, placeholderAt, CursorAnchor.NOW, List.of(placeholder));
+                    providerId, address, placeholderAt, CursorAnchor.NOW, List.of(placeholder),
+                    effectiveRetentionMillis);
             cursors.add(new ChangeFeedCursor(tok));
         }
 
@@ -253,7 +274,8 @@ final class SpannerChangeFeedReader {
             List<PartitionPosition> merged = new ArrayList<>();
             for (ChangeFeedCursor c : all) merged.addAll(c.token().partitions());
             token = new CursorToken(providerId, address,
-                    System.currentTimeMillis(), CursorAnchor.NOW, merged);
+                    System.currentTimeMillis(), CursorAnchor.NOW, merged,
+                    effectiveRetentionMillis);
         } else {
             token = cursor.token();
         }

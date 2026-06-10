@@ -34,6 +34,10 @@ import java.util.Map;
  *   "r": "database/collection",   // resource binding; omitted for unhydrated now() sentinel
  *   "i": 1735000000000,           // issued-at, millis since epoch (refreshed on every nextCursor)
  *   "a": "CONTINUING",            // anchor: NOW | BEGINNING_OF_RANGE | CONTINUING
+ *   "e": 604800000,               // OPTIONAL: effective age cap in millis;
+ *                                 //          omitted (or <= 24h) for the baseline.
+ *                                 //          Stamped by producers under
+ *                                 //          ChangeFeedConfig.extendedRetention(Duration).
  *   "s": [
  *     { "id": "<provider-opaque>", "c": "<continuation-or-null>" },
  *     ...
@@ -130,6 +134,19 @@ public final class CursorTokenCodec {
         }
         node.put("i", token.issuedAtEpochMillis());
         node.put("a", token.anchor().name());
+
+        // Encode the effective age cap ONLY when it exceeds the baseline. A
+        // token minted at the 24h baseline omits "e" so the wire form stays
+        // bit-for-bit identical to v1 for the common case (no extended
+        // retention); an older decoder that does not know "e" falls back to
+        // the same baseline. A newer decoder reading an older token (no "e")
+        // also lands on the baseline. Producers that opt in to
+        // ChangeFeedConfig.extendedRetention(Duration) stamp the opted-in
+        // window here so a persisted token can outlive 24h client-side up to
+        // the server-side retention.
+        if (token.effectiveRetentionMillis() > MAX_TOKEN_AGE_MILLIS) {
+            node.put("e", token.effectiveRetentionMillis());
+        }
 
         ArrayNode arr = MAPPER.createArrayNode();
         for (PartitionPosition pos : token.partitions()) {
@@ -229,6 +246,28 @@ public final class CursorTokenCodec {
             }
         }
 
+        // Read the per-token effective age cap. Defaults to the baseline when
+        // absent so v1 tokens (and tokens minted by callers without the
+        // extended-retention opt-in) keep the 24h portable floor. Producers
+        // that opted in to ChangeFeedConfig.extendedRetention(Duration) stamp
+        // their window here; the CursorToken constructor clamps to the
+        // baseline floor so a malformed/tiny value cannot silently shorten
+        // the portable guarantee.
+        long effectiveRetentionMillis = MAX_TOKEN_AGE_MILLIS;
+        if (root.has("e") && !root.get("e").isNull()) {
+            JsonNode eNode = root.get("e");
+            if (!eNode.isNumber() || !eNode.canConvertToLong()) {
+                throw expired(REASON_MALFORMED,
+                        "token effective-retention 'e' is not a long: " + eNode, null);
+            }
+            long encoded = eNode.asLong();
+            if (encoded <= 0) {
+                throw expired(REASON_MALFORMED,
+                        "token effective-retention 'e' must be > 0; was " + encoded, null);
+            }
+            effectiveRetentionMillis = Math.max(MAX_TOKEN_AGE_MILLIS, encoded);
+        }
+
         List<PartitionPosition> partitions = new ArrayList<>();
         JsonNode arr = root.path("s");
         if (!arr.isArray()) {
@@ -260,9 +299,12 @@ public final class CursorTokenCodec {
                 && partitions.isEmpty();
         if (!unhydratedSentinel) {
             long ageMillis = nowEpochMillis - issuedAt;
-            if (ageMillis > MAX_TOKEN_AGE_MILLIS) {
+            if (ageMillis > effectiveRetentionMillis) {
+                String budgetLabel = effectiveRetentionMillis == MAX_TOKEN_AGE_MILLIS
+                        ? "24h portable baseline"
+                        : "configured extended-retention window of " + effectiveRetentionMillis + "ms";
                 throw expired(REASON_TOKEN_AGED_OUT,
-                        "token is older than the 24h portable baseline (age=" + ageMillis + "ms)",
+                        "token is older than the " + budgetLabel + " (age=" + ageMillis + "ms)",
                         null);
             }
         }
@@ -274,7 +316,7 @@ public final class CursorTokenCodec {
             throw expired(REASON_MALFORMED, "token provider id is invalid: " + providerId, null);
         }
 
-        return new CursorToken(pid, resource, issuedAt, anchor, partitions);
+        return new CursorToken(pid, resource, issuedAt, anchor, partitions, effectiveRetentionMillis);
     }
 
     /**
