@@ -9,40 +9,15 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
-- **`MulticloudDbErrorCategory.CLIENT_CLOSED` — portable post-close error
-  category.** A new typed category that every provider now surfaces when a
-  CRUD, query, or provisioning call is made after `MulticloudDbClient.close()`.
-  Previously the post-close behaviour was provider-specific: callers
-  received a raw `IllegalStateException` from azure-cosmos / aws-sdk, an
-  `IllegalStateException` from Spanner, or `null` / undefined behaviour
-  depending on the provider. Telemetry, retry-policy, and circuit-breaker
-  layers can now branch on the typed envelope; `CLIENT_CLOSED` is
-  declared non-retryable because closing is a terminal lifecycle state.
-- **`OperationNames.PROVISION_SCHEMA` — operation-name constant.** The
-  `provisionSchema()` entry point now reports its operation name through
-  the typed `MulticloudDbError.operation()` field for diagnostics
-  attribution, matching every other entry point.
-- **`DefaultMulticloudDbClient` facade post-close guard.** The facade now
-  short-circuits every public entry point with `CLIENT_CLOSED` *before*
-  any per-request validation (document size, query parsing, etc.) runs.
-  This guarantees that a closed client never reports `REQUEST_TOO_LARGE`
-  or other category errors that would mask the underlying lifecycle bug.
-  **`MulticloudDbClient.close()` itself is now idempotent**: a second
-  `close()` is a synchronized no-op, and the underlying
-  `providerClient.close()` is invoked exactly once even under concurrent
-  callers.
+- Portable change-feed API in `com.multiclouddb.api.changefeed`: `ChangeFeedCursor` (opaque, persistable via `toToken()` / `fromToken(...)` with a `now()` live-tip sentinel), `ChangeFeedPage` (events + `nextCursor` + `hasMore`/`terminal`), `ChangeEvent` (with stable `providerEventId` for dedup), `ChangeType`, and `CursorExpiredException`. Two new entry points on `MulticloudDbClient`: `listCursors(ResourceAddress)` and `readChanges(ResourceAddress, ChangeFeedCursor[, OperationOptions])`. Provider SPI methods default to `UNSUPPORTED_CAPABILITY` so existing adapters compile unchanged. The cursor wire format is opaque, version-tagged Base64URL JSON; the 24-hour portable baseline is enforced client-side on the token''s last-issued timestamp. `OperationOptions.timeout()` is not enforced on the change-feed path in this release (wall-clock follows each provider''s page-fetch budget).
+- New error category `MulticloudDbErrorCategory.CURSOR_EXPIRED` carrying a canonical `providerDetails.reason` set (`TOKEN_AGED_OUT`, `PROVIDER_TRIMMED`, `ITERATOR_EXPIRED`, `MALFORMED`, `VERSION_UNSUPPORTED`, `PROVIDER_MISMATCH`, `RESOURCE_MISMATCH`), exported as public `CursorTokenCodec.REASON_*` constants so providers share a single source of truth.
+- New error category `MulticloudDbErrorCategory.CLIENT_CLOSED` surfaced by a `DefaultMulticloudDbClient` post-close guard on every public entry point (replaces provider-specific `IllegalStateException` leaks). `MulticloudDbClient.close()` is now idempotent.
+- Extended change-feed retention opt-in: `ChangeFeedConfig.extendedRetention(Duration)` (validates `> 24h`), wired into `MulticloudDbClientConfig.changeFeed(...)`, plus the new well-known `Capability.EXTENDED_CHANGE_FEED_HISTORY`. The `MulticloudDbClientFactory.create(...)` build-time gate refuses to instantiate a client whose provider does not declare the capability, surfacing `UNSUPPORTED_CAPABILITY(reason="extended_retention_unavailable")` before any I/O. The cursor token wire format carries an optional `"e"` field stamping the opted-in retention so a persisted cursor under a 7-day opt-in can be resumed beyond 24h up to the configured window without `TOKEN_AGED_OUT`; older tokens (no `"e"`) keep the 24h floor.
+- `OperationNames.LIST_CURSORS`, `READ_CHANGES`, `PROVISION_SCHEMA` propagated through `MulticloudDbError.operation()` and `OperationDiagnostics`.
 
 ### Documentation
 
-- **`MulticloudDbClient.delete(...)` is documented as idempotent — silent on
-  missing key.** The Javadoc now declares that deleting a key that does not
-  exist is a silent no-op on every provider, which is the true LCD across
-  Cosmos (404 swallowed), DynamoDB (`DeleteItem` is idempotent natively) and
-  Spanner (`Mutation.delete` is idempotent natively). Callers that need to detect a missing key should use
-  `MulticloudDbClient.read(...)`, which returns `null` on every provider
-  when the key does not exist (non-mutating). `update()` also throws
-  `NOT_FOUND` on a missing key, but it requires a document body and
-  **overwrites on hit**, so it is not a safe pure existence probe.
+- `MulticloudDbClient.delete(...)` is documented as idempotent on every provider — a missing key is a silent no-op (LCD of Cosmos 404 swallow, DynamoDB native idempotence, and Spanner `Mutation.delete`). Callers needing to detect a missing key should use `read(...)`, which returns `null` when the key is missing.
 
 ## [0.1.0-beta.1] — 2026-04-23
 

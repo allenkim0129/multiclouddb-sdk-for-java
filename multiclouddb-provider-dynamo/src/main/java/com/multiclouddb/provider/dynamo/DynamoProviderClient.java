@@ -87,6 +87,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
 
     private final MulticloudDbClientConfig config;
     private final DynamoDbClient dynamoClient;
+    private final DynamoChangeFeedReader changeFeedReader;
     /**
      * Lifecycle flag flipped by {@link #close()}. Public CRUD/query/provisioning
      * entry points consult {@link #checkOpen(String)} first so a post-close call
@@ -116,6 +117,28 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      * @param config client configuration carrying connection, auth, and options
      */
     public DynamoProviderClient(MulticloudDbClientConfig config) {
+        // SPI-level defence-in-depth: even when an integrator bypasses
+        // MulticloudDbClientFactory and constructs DynamoProviderClient
+        // directly (via ServiceLoader<MulticloudDbProviderAdapter>), the
+        // extended-retention opt-in must still fail fast. DynamoDB Streams is
+        // fixed at 24h server-side — silently dropping the opt-in would leak
+        // a misconfigured client into production.
+        if (config.changeFeed().hasExtendedRetention()) {
+            java.time.Duration requested = config.changeFeed().extendedRetention().orElseThrow();
+            throw new MulticloudDbException(new com.multiclouddb.api.MulticloudDbError(
+                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    "DynamoDB Streams is fixed at 24h server-side; "
+                            + "ChangeFeedConfig.extendedRetention(" + requested + ") is not honoured. "
+                            + "Drain Streams into a customer-provisioned Kafka cluster for >24h history. "
+                            + "See docs/guide.md → 'Extending change-feed history beyond 24h'.",
+                    ProviderId.DYNAMO,
+                    "create",
+                    false,
+                    java.util.Map.of(
+                            "reason", "extended_retention_unavailable",
+                            "capability", com.multiclouddb.api.Capability.EXTENDED_CHANGE_FEED_HISTORY,
+                            "requestedRetention", requested.toString())));
+        }
         this.config = config;
         String region   = config.connection().getOrDefault(DynamoConstants.CONFIG_REGION, DynamoConstants.REGION_DEFAULT);
         String endpoint = config.connection().get(DynamoConstants.CONFIG_ENDPOINT);
@@ -148,6 +171,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         }
 
         this.dynamoClient = builder.build();
+        this.changeFeedReader = DynamoChangeFeedReader.create(ProviderId.DYNAMO, config);
         LOG.info("DynamoDB client created for region: {}, endpoint: {}", region,
                 endpoint != null ? endpoint : "default");
     }
@@ -155,6 +179,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     /** Package-private constructor for testing — injects a pre-configured {@link DynamoDbClient}. */
     DynamoProviderClient(DynamoDbClient dynamoClient) {
         this.dynamoClient = dynamoClient;
+        this.changeFeedReader = null;
         this.config = MulticloudDbClientConfig.builder()
                 .provider(com.multiclouddb.api.ProviderId.DYNAMO)
                 .build();
@@ -936,6 +961,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
             if (closed) return;
             closed = true;
             dynamoClient.close();
+            if (changeFeedReader != null) changeFeedReader.close();
         }
     }
 
@@ -957,6 +983,36 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
                     "DynamoProviderClient has been closed",
                     ProviderId.DYNAMO, operation, false, Map.of()));
         }
+    }
+
+    // ── Change Feed ─────────────────────────────────────────────────────────
+
+    @Override
+    public java.util.List<com.multiclouddb.api.changefeed.ChangeFeedCursor> listCursors(
+            ResourceAddress address) {
+        checkOpen(OperationNames.LIST_CURSORS);
+        if (changeFeedReader == null) {
+            throw new com.multiclouddb.api.MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    "Change feed reader not initialized (test-only constructor)",
+                    ProviderId.DYNAMO, OperationNames.LIST_CURSORS, false, java.util.Map.of()));
+        }
+        return changeFeedReader.listCursors(dynamoClient, address, resolveTableName(address));
+    }
+
+    @Override
+    public com.multiclouddb.api.changefeed.ChangeFeedPage readChanges(
+            ResourceAddress address,
+            com.multiclouddb.api.changefeed.ChangeFeedCursor cursor,
+            OperationOptions options) {
+        checkOpen(OperationNames.READ_CHANGES);
+        if (changeFeedReader == null) {
+            throw new com.multiclouddb.api.MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    "Change feed reader not initialized (test-only constructor)",
+                    ProviderId.DYNAMO, OperationNames.READ_CHANGES, false, java.util.Map.of()));
+        }
+        return changeFeedReader.readChanges(dynamoClient, address, resolveTableName(address), cursor, options);
     }
 
     // ── Provisioning ────────────────────────────────────────────────────────

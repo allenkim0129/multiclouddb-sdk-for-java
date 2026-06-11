@@ -9,60 +9,23 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
-- **Typed `CLIENT_CLOSED` envelope on post-close entry points.** Every CRUD,
-  query, and provisioning method on `CosmosProviderClient` now consults a
-  lifecycle guard before delegating to `azure-cosmos`. Calling any entry
-  point after `close()` raises `MulticloudDbException` with category
-  `CLIENT_CLOSED` (non-retryable) attributed to the caller's operation,
-  instead of leaking the raw `IllegalStateException` from azure-cosmos's
-  internal client. `close()` itself is now idempotent under concurrent
-  callers (double-checked-locking `volatile` flag); the underlying
-  `cosmosClient.close()` is invoked exactly once.
-
-### Documentation
-
-- **`delete()` of a missing key remains a silent no-op (idempotent).** The
-  Cosmos provider continues to swallow the native 404 from
-  `deleteItem(...)`, matching the LCD behaviour of DynamoDB
-  (`DeleteItem` is idempotent natively) and Spanner (`Mutation.delete` is
-  idempotent natively). Documented in the API Javadoc on
-  `MulticloudDbClient.delete(...)` and in `docs/guide.md`. No caller-visible
-  behaviour change. Callers needing to detect a missing key should use `read()`, which
-  returns `null` on every provider when the key does not exist.
-
-### Added
-
-- `consistencyLevel` connection config key for opt-in client-level read consistency
-  override (applied uniformly to every read from a given client instance). Valid values (case-insensitive): `STRONG`, `BOUNDED_STALENESS`, `SESSION`,
-  `CONSISTENT_PREFIX`, `EVENTUAL`. When absent, read requests inherit the Cosmos DB
-  account's configured default. See `docs/configuration.md` — *Consistency Level*.
+- Change-feed reader backed by `CosmosContainer.queryChangeFeed(...)` and `getFeedRanges()`. `listCursors` mints one cursor per feed range at the live tip via a one-item warmup query that captures a real continuation token (with a `@@PIT:<epoch-millis>` fallback for older SDKs). `readChanges` drains one page per call, rotates the partition list across ranges so multi-range cursors are not starved, and uses All-Versions-and-Deletes (AVAD) mode so `ChangeEvent.type()` distinguishes `CREATE` / `UPDATE` / `DELETE`. The target container must be provisioned with an AVAD `ChangeFeedPolicy`; non-AVAD containers surface the Cosmos 400 BadRequest through the normalised envelope on the first read. HTTP 410 GONE on `queryChangeFeed` is mapped to `CursorExpiredException(reason=PROVIDER_TRIMMED)`.
+- Extended-retention provisioning: `CosmosProviderClient.ensureContainer(address)` provisions an AVAD `ChangeFeedPolicy` carrying the duration from `ChangeFeedConfig.extendedRetention(...)` when the user opted in, and reads back the active policy after `createContainerIfNotExists(...)` — throwing `UNSUPPORTED_CAPABILITY(reason="extended_retention_not_enacted")` (with `requestedRetention` and `activeRetention` in `providerDetails`) when a pre-existing container''s retention does not match the request. A 400 BadRequest whose message fingerprint indicates the Cosmos account lacks Continuous Backup is re-mapped to `UNSUPPORTED_CAPABILITY(reason="continuous_backup_required")` so callers do not have to substring-match raw messages. `CosmosCapabilities` declares `EXTENDED_CHANGE_FEED_HISTORY_CAP` (up to 30 days via Continuous Backup; 7d minimum).
+- `consistencyLevel` connection config key for opt-in client-level read consistency override. Valid case-insensitive values: `STRONG`, `BOUNDED_STALENESS`, `SESSION`, `CONSISTENT_PREFIX`, `EVENTUAL`. When absent, reads inherit the Cosmos DB account''s configured default. See `docs/configuration.md` — *Consistency Level*.
+- Typed `CLIENT_CLOSED` envelope on every post-close CRUD / query / provisioning / change-feed entry point, replacing leaked `IllegalStateException`s from azure-cosmos. `close()` is idempotent under concurrent callers; the underlying `cosmosClient.close()` is invoked exactly once.
 
 ### Changed
 
-- Removed the hardcoded `ConsistencyLevel.SESSION` override from `CosmosClientBuilder`.
-  Previously all reads were forced to `SESSION` regardless of the account's configured
-  default. **Migration note:** accounts with a default of `STRONG` or `BOUNDED_STALENESS`
-  will now serve reads at their configured level (higher latency / higher RU cost than
-  before). Accounts configured to `SESSION` are unaffected. To restore the previous
-  behaviour explicitly, set `multiclouddb.connection.consistencyLevel=SESSION`.
+- Removed the hardcoded `ConsistencyLevel.SESSION` override from `CosmosClientBuilder`. Accounts with a default of `STRONG` or `BOUNDED_STALENESS` will now serve reads at their configured level (higher latency / RU cost than before). Accounts configured to `SESSION` are unaffected. To restore the previous behaviour explicitly, set `multiclouddb.connection.consistencyLevel=SESSION`.
+- `BETWEEN` translation now wraps in parentheses (`(c.field BETWEEN @lo AND @hi)`). Without this, Cosmos NoSQL''s parser binds the inner `AND` together with any trailing logical `AND`, producing a `BadRequest` for predicates like `age BETWEEN @lo AND @hi AND marker = @m`. The output of `TranslatedQuery.whereClause()` is now parenthesised.
 
 ### Removed
 
-- `CosmosConstants.CONSISTENCY_LEVEL_DEFAULT` (`public static final ConsistencyLevel`,
-  previously `ConsistencyLevel.SESSION`) — removed without a deprecation cycle; the project
-  is pre-release. Callers referencing this constant should use `ConsistencyLevel.SESSION`
-  directly.
+- `CosmosConstants.CONSISTENCY_LEVEL_DEFAULT` (`public static final ConsistencyLevel`, previously `ConsistencyLevel.SESSION`) — removed without a deprecation cycle; the project is pre-release. Callers referencing this constant should use `ConsistencyLevel.SESSION` directly.
 
-### Fixed
+### Documentation
 
-- **`BETWEEN` translation now wraps in parentheses** (`(c.field BETWEEN @lo AND @hi)`).
-  Without the wrapping parens, Cosmos NoSQL's parser greedily binds the
-  `BETWEEN`'s inner `AND` together with any trailing logical `AND`, producing
-  a *"Syntax error, incorrect syntax near 'AND'"* `BadRequest` for predicates
-  like `age BETWEEN @lo AND @hi AND marker = @m`. The output of
-  `TranslatedQuery.whereClause()` is now parenthesised — backward-compatible
-  at the query-execution level, but consumers that string-match the where
-  clause should update their expectations.
+- `delete()` of a missing key is documented as a silent no-op (idempotent); the Cosmos provider continues to swallow the native 404.
 
 ## [0.1.0-beta.1] — 2026-04-23
 

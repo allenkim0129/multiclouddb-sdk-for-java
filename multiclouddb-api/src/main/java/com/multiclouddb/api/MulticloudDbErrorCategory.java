@@ -125,6 +125,28 @@ public final class MulticloudDbErrorCategory {
             fromString("UNSUPPORTED_CAPABILITY");
 
     /**
+     * A change-feed cursor cannot be resumed.
+     * <p>
+     * Raised by
+     * {@link com.multiclouddb.api.changefeed.ChangeFeedCursor#fromToken(String)}
+     * and by
+     * {@link com.multiclouddb.api.MulticloudDbClient#readChanges(ResourceAddress,
+     * com.multiclouddb.api.changefeed.ChangeFeedCursor)} when:
+     * <ul>
+     *   <li>the client-side 24-hour portable baseline has elapsed since the SDK
+     *       last issued the token,</li>
+     *   <li>the provider has trimmed the events the cursor pointed at,</li>
+     *   <li>the token was minted by a different provider or for a different
+     *       resource, or</li>
+     *   <li>the token is malformed or carries an unsupported codec version.</li>
+     * </ul>
+     * Carried by {@link com.multiclouddb.api.changefeed.CursorExpiredException}.
+     * Always non-retryable — recovery requires starting from a fresh cursor.
+     */
+    public static final MulticloudDbErrorCategory CURSOR_EXPIRED =
+            fromString("CURSOR_EXPIRED");
+
+    /**
      * The provider client has been closed and can no longer service
      * operations. Callers must construct a new client.
      * <p>
