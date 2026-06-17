@@ -52,7 +52,7 @@
 
         <!-- Publishable module versions (independent release cadence) -->
         <multiclouddb-api.version>0.1.0-beta.2</multiclouddb-api.version>
-        <multiclouddb-provider-cosmos.version>0.1.0-beta.1</multiclouddb-provider-cosmos.version>
+        <multiclouddb-provider-cosmos.version>0.1.0-beta.2</multiclouddb-provider-cosmos.version>
         <multiclouddb-provider-dynamo.version>0.1.0-beta.1</multiclouddb-provider-dynamo.version>
         <multiclouddb-provider-spanner.version>0.1.0-beta.1</multiclouddb-provider-spanner.version>
 
