@@ -311,7 +311,7 @@ As an application developer, I can consume a collection's change feed across mul
 
 ### User Story 15 - Change Feed History Retention (Priority: P0)
 
-As an application developer, I can consume change feed events older than 24 hours when my provider and configuration support it, so that my application can replay historical changes for recovery, auditing, or late-arriving event processing without external infrastructure (on providers that support it natively) or with SDK-managed infrastructure (on providers that don't).
+As an application developer, I can consume change feed events older than 24 hours when my provider and configuration support it, so that my application can replay historical changes for recovery, auditing, or late-arriving event processing without external infrastructure (on providers that support it natively) or by reading from a customer-managed external store (on providers that don't).
 
 **Why this priority**: The 24-hour window is the portable baseline where all three providers deliver equivalent behavior and performance natively. Beyond that, Cosmos DB and Spanner provide unbounded or configurable retention out of the box, but DynamoDB Streams expire after 24 hours. BlackRock requires multi-day replay for reconciliation workflows. The SDK must provide a uniform interface for extended history while being transparent about performance and infrastructure trade-offs.
 
@@ -323,7 +323,7 @@ As an application developer, I can consume change feed events older than 24 hour
 2. **Given** Cosmos DB or Spanner with extended history enabled via configuration, **When** the consumer requests changes from 48 hours ago, **Then** events are returned using the provider's native change feed mechanism with no additional infrastructure.
 3. **Given** DynamoDB with extended history enabled via configuration specifying an external event store, **When** the consumer requests changes from 48 hours ago, **Then** the SDK reads historical events from the configured external store transparently.
 4. **Given** extended history enabled on any provider, **When** delete tracking is configured, **Then** delete events are included in the historical stream (Cosmos DB "All Changes and Deletes" mode, DynamoDB REMOVE events, Spanner DELETE records).
-5. **Given** DynamoDB with extended history enabled, **When** new changes occur, **Then** the SDK's change feed infrastructure pushes current stream events to the configured external store for future historical access.
+5. **Given** DynamoDB with extended history enabled and a customer-maintained external store, **When** new changes occur, **Then** the customer's own source connector lands them in the external store and the SDK reads them from there for historical access — the SDK does not push events into the store.
 
 ---
 
@@ -416,20 +416,22 @@ As an application developer, I can configure the SDK to automatically retry a fa
 
 ---
 
-### User Story 21 - Change Feed Sink Abstraction (Priority: P2)
+### User Story 21 - Change Feed Consumption from an External Store (Read-Only) (Priority: P2)
 
-As an application developer, I can configure the SDK to forward change feed events to an external messaging system (e.g., Kafka, Event Hubs, Pub/Sub) so that downstream consumers can process database changes through existing event streaming infrastructure without custom integration code.
+As an application developer, I can point the SDK's change feed reader at an external store (e.g., a Kafka topic or Kinesis stream) that my own source connector already populates from the database, so that I can consume database changes through my existing event streaming infrastructure using the same portable change-event model, without the SDK taking on responsibility for landing data into that store.
 
-**Why this priority**: Enterprise architectures commonly route database change events through a central event bus (Kafka) for consumption by multiple downstream services. Today this requires custom CDC connectors per provider. A portable sink abstraction allows the SDK to push change events to configurable destinations with a uniform interface.
+**Why this priority**: Enterprise architectures commonly route database change events through a central event bus (Kafka) for consumption by multiple downstream services. Mature source connectors already exist to land database changes into these systems (e.g., Kafka Connect source connectors, the DynamoDB Streams → Kinesis integration, Debezium), so the SDK does not reimplement that ingestion path. Instead it offers a portable, read-only abstraction over the resulting stream, letting applications consume changes with a uniform interface regardless of the originating provider.
 
-**Independent Test**: A sample application configures a Kafka sink for change feed events. Changes written to the database appear on the configured Kafka topic within seconds. The same sink configuration interface works regardless of database provider.
+> **Non-goal.** The SDK does not push, forward, or archive change events *into* the external store. Populating the store is the customer's responsibility via their own source connector (see FR-144). This boundary is deliberate: it avoids the support burden of reimplementing provider-to-stream ingestion when the ecosystem already solves it.
+
+**Independent Test**: A customer's own connector lands database changes into a Kafka topic. A sample application configures the SDK's read abstraction against that topic and consumes the change events using the portable change-event model. The same consumer configuration works regardless of which database provider sourced the changes. The SDK is not involved in writing to the topic.
 
 **Acceptance Scenarios**:
 
-1. **Given** a configured change feed sink (e.g., Kafka topic), **When** items are created/updated/deleted in the database, **Then** corresponding change events appear on the configured sink within the configured delivery window.
-2. **Given** a sink that is temporarily unavailable, **When** change events are generated, **Then** events are buffered and delivered when the sink recovers (at-least-once delivery guarantee).
-3. **Given** multiple sink configurations, **When** change events are generated, **Then** events are fanned out to all configured sinks independently.
-4. **Given** a pluggable sink interface, **When** a custom sink implementation is provided, **Then** the SDK invokes the custom sink with the same event structure as built-in sinks.
+1. **Given** an external store (e.g., Kafka topic) that the customer's own connector already populates with database changes, **When** the application configures the SDK's read abstraction against it, **Then** change events are consumed using the same portable change-event model as the native change feed.
+2. **Given** a consumer reading from an external store, **When** the consumer stores a checkpoint and restarts, **Then** it resumes from the stored position with at-least-once delivery, consistent with native change feed semantics.
+3. **Given** an external store that is unavailable or whose contents do not match the expected change-event shape, **When** the application attempts to read, **Then** the SDK surfaces a clear, provider-neutral error.
+4. **Given** a request to have the SDK push or archive change events into an external store, **When** the application looks for such a capability, **Then** no such capability exists — the SDK documents that populating the store is the customer's responsibility via their own source connector.
 
 ---
 
@@ -734,8 +736,8 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 - **FR-117**: Each provider adapter MUST implement extended history using the provider's available mechanisms:
   - **Cosmos DB**: Use the native change feed in "All Changes and Deletes" mode (which provides full retention back to container creation or configured retention period).
   - **Spanner**: Use native change streams with configurable retention period.
-  - **DynamoDB**: Use a configured external event store (e.g., Kafka topic, Kinesis stream) where the SDK's change feed infrastructure archives stream events for later historical replay.
-- **FR-118**: When extended history is enabled on DynamoDB, the SDK MUST provide an archival mechanism that pushes current DynamoDB Streams events to the configured external store in real-time, ensuring future historical access beyond the 24-hour native stream retention.
+  - **DynamoDB**: Read historical events from a customer-configured external store (e.g., Kafka topic, Kinesis stream) that the customer's own source connector populates from DynamoDB Streams. The SDK reads from this store for historical replay; it does not archive or push events into it (see FR-118, FR-144).
+- **FR-118**: The SDK MUST NOT archive or push DynamoDB Streams events into the external store. Because DynamoDB Streams retain only 24 hours, extended history on DynamoDB depends on the customer maintaining the external store via their own source connector (e.g., DynamoDB Streams → Kinesis, Kafka Connect, Debezium). The SDK reads historical events from that customer-maintained store, and MUST document this customer responsibility clearly.
 - **FR-119**: When extended history is enabled and delete tracking is configured, delete events MUST be included in the historical stream on all providers. The SDK MUST use each provider's delete-capturing mode (Cosmos DB "All Changes and Deletes", DynamoDB REMOVE events, Spanner DELETE change records).
 - **FR-120**: Extended history MUST be capability-gated. The SDK MUST clearly document that DynamoDB extended history requires additional infrastructure configuration and may have different performance characteristics than native Cosmos DB/Spanner retention.
 
@@ -789,13 +791,15 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 - **FR-142**: Consistency downgrade retry MUST be disabled by default. Applications MUST explicitly opt in via configuration.
 - **FR-143**: When both the original STRONG read and the downgraded EVENTUAL retry fail, the SDK MUST return the original STRONG failure error to the caller (the downgrade attempt is transparent).
 
-#### Change Feed Sink Abstraction Requirements
+#### Change Feed External Store Integration (Read-Only) Requirements
 
-- **FR-144**: The SDK MUST define a pluggable sink interface for forwarding change feed events to external messaging systems. The interface MUST accept change events and deliver them to the configured destination.
-- **FR-145**: The SDK MUST provide at minimum one built-in sink implementation (e.g., Kafka producer) and support custom sink implementations via the pluggable interface.
-- **FR-146**: Sink delivery MUST provide at-least-once semantics. Events MUST be buffered and retried when the sink destination is temporarily unavailable.
-- **FR-147**: The SDK MUST support configuring multiple sinks simultaneously, with independent fan-out delivery to each configured destination.
-- **FR-148**: Change feed sink configuration MUST be provider-neutral. The same sink configuration (e.g., Kafka broker address, topic name) MUST work regardless of the database provider sourcing the change events.
+> **Scope amendment (2026-07):** The SDK does NOT provide an abstraction that pushes, forwards, or archives change events *into* an external store (Kafka, Kinesis, Event Hubs, Pub/Sub, etc.). Landing database changes into such a store is left to the customer's own source connector, for which mature, well-supported options already exist (e.g., Kafka Connect source connectors, the DynamoDB Streams → Kinesis integration, Debezium). The SDK provides only a portable abstraction to READ change events back out of that store. This boundary is deliberate: the SDK avoids the support burden of reimplementing provider-to-stream ingestion when the ecosystem already solves it.
+
+- **FR-144**: The SDK MUST NOT provide a mechanism that pushes, forwards, or archives change feed events into an external messaging or storage system. Populating an external store from the database's native change stream is the customer's responsibility, accomplished with their own source connector (e.g., Kafka Connect, a DynamoDB Streams → Kinesis pipeline, Debezium).
+- **FR-145**: The SDK MUST provide a portable, read-only abstraction for consuming change events from a customer-configured external store, exposing the same change-event model (FR-067) and checkpoint/resume semantics (FR-070, FR-156) as the native change feed.
+- **FR-146**: External-store read configuration MUST be provider-neutral. The same consumer configuration (e.g., external store type, connection details, topic/stream name) MUST work regardless of which database provider originally sourced the change events.
+- **FR-147**: The SDK MUST clearly document, for each provider, the expected external-store shape and the customer-side connector responsible for populating it, so applications can wire the read abstraction to a store their own pipeline maintains.
+- **FR-148**: When an external store is unavailable or its contents do not match the expected change-event shape, the read abstraction MUST surface a clear, provider-neutral error within the standard error model rather than failing silently.
 
 #### Telemetry / Observability Requirements
 
@@ -852,14 +856,14 @@ The following operators and functions form the portable query subset, available 
 | Composite partition keys | Cosmos DB (hierarchical PK), DynamoDB (concatenated), Spanner (multi-column PK) |
 | Efficient composite key prefix scoping | Cosmos DB (hierarchical PK), Spanner (multi-column PK); DynamoDB requires non-efficient fallback query/filtering or capability warning/error per FR-106/FR-107 |
 | Change feed parallel consumption | Cosmos DB, DynamoDB, Spanner |
-| Change feed extended history (>24h) | Cosmos DB (native), Spanner (native); DynamoDB requires external event store infrastructure |
-| Change feed delete tracking in extended history | Cosmos DB (All Changes and Deletes mode), DynamoDB (REMOVE events archived to external store), Spanner (DELETE change records) |
+| Change feed extended history (>24h) | Cosmos DB (native), Spanner (native); DynamoDB requires a customer-maintained external store (populated by the customer's own connector; SDK reads only) |
+| Change feed delete tracking in extended history | Cosmos DB (All Changes and Deletes mode), DynamoDB (REMOVE events read from a customer-maintained external store), Spanner (DELETE change records) |
 | Provider portability gate (2-of-3 enforcement) | CI/governance — applies to all features in portable contract |
 | Request cost metrics on responses | Cosmos DB (RU charge), DynamoDB (consumed capacity), Spanner (operation stats where available) |
 | `LOCAL_QUORUM` consistency level | Cosmos DB (Session/Bounded Staleness), DynamoDB (strongly consistent read), Spanner (strong read) |
 | Typed composite sort keys | Cosmos DB, DynamoDB (N/S types), Spanner (native typed columns) |
 | Retry with consistency downgrade | Cosmos DB, DynamoDB, Spanner (provider-neutral; config-driven) |
-| Change feed sink (external messaging) | Cosmos DB, DynamoDB, Spanner (provider-neutral sink interface) |
+| Change feed read from external store (read-only) | Cosmos DB, DynamoDB, Spanner (provider-neutral reader; SDK does not push events into the store) |
 | OpenTelemetry integration | Cosmos DB, DynamoDB, Spanner (provider-neutral; config-driven) |
 | Change feed delivery semantics (at-least-once + checkpoint) | Cosmos DB, DynamoDB, Spanner |
 
@@ -893,12 +897,12 @@ The following operators and functions form the portable query subset, available 
 - **Consumer Group**: A logical group of change feed consumer instances that collectively process all partitions of a collection's change feed. Partitions are distributed among group members, and rebalancing occurs when members join or leave.
 - **Change Feed Checkpoint**: A durable, opaque position token representing a consumer's progress through a partition's change feed. Stored in a configurable checkpoint store and used to resume consumption after restarts without reprocessing already-consumed events.
 - **Change Feed History Window**: The time range of change events accessible via the SDK. Default is 24 hours (portable across all providers). Extended history beyond 24 hours is capability-gated and requires provider-specific configuration or infrastructure.
-- **External Event Store**: A durable event streaming or storage system (e.g., Kafka, Kinesis, S3) configured for DynamoDB extended change feed history. The SDK archives DynamoDB Streams events to this store and reads from it when historical access beyond 24 hours is requested.
+- **External Event Store**: A durable event streaming or storage system (e.g., Kafka, Kinesis, S3) used for DynamoDB extended change feed history. The customer populates this store from DynamoDB Streams using their own source connector (e.g., DynamoDB Streams → Kinesis, Kafka Connect, Debezium); the SDK reads from it when historical access beyond 24 hours is requested. The SDK does not archive or push events into the store.
 - **Provider Target Set**: The set of providers an application declares it intends to target. Defaults to all three (Cosmos DB, DynamoDB, Spanner) if not explicitly declared. Used at compile time to validate that all features in use are supported on the declared providers, and at CI time to enforce the 2-of-3 portability gate for releases.
 - **Capability Manifest**: A machine-readable declaration of all SDK features and their provider support status. Used by CI automation to enforce the 2-of-3 portability gate and by runtime to surface capability queries.
 - **Request Cost Metric**: A numeric value on SDK response objects representing the provider-native cost of an operation (e.g., Cosmos DB Request Units, DynamoDB consumed capacity units). Used for cost attribution, budget alerting, and query optimization.
 - **Typed Sort Key**: A sort key with an explicit type declaration (STRING, NUMERIC, or TIMESTAMP) that determines ordering semantics for range queries. Ensures correct natural ordering (numeric value order, chronological order) rather than defaulting to lexicographic string comparison.
-- **Change Feed Sink**: A pluggable destination for forwarding change feed events to external messaging systems (Kafka, Event Hubs, Pub/Sub). Defined by a provider-neutral interface, supporting at-least-once delivery with buffering and retry.
+- **External Change Store Reader**: A portable, read-only abstraction for consuming change events from a customer-configured external store (Kafka, Kinesis, Event Hubs, Pub/Sub) that the customer's own source connector populates from the database. Exposes the same change-event model and checkpoint/resume semantics as the native change feed. Note: the SDK deliberately does not provide a *sink* that pushes events into such stores — landing data there is the customer's responsibility (see FR-144).
 - **Telemetry Span**: An OpenTelemetry span emitted for each SDK data-plane operation when telemetry is enabled. Contains standard attributes (operation type, provider, database, collection, duration, status) and participates in distributed tracing via W3C Trace Context propagation.
 
 ## Success Criteria *(mandatory)*
@@ -956,7 +960,7 @@ The following operators and functions form the portable query subset, available 
 - **SC-049**: A read operation with `LOCAL_QUORUM` consistency in a multi-region deployment returns data reflecting all writes acknowledged in the local region, on all supported providers.
 - **SC-050**: A collection with a NUMERIC sort key correctly orders range query results by numeric value (e.g., 2, 10, 100 — not "10", "100", "2") on all supported providers.
 - **SC-051**: When consistency downgrade retry is enabled and a STRONG read fails transiently, the SDK automatically retries at EVENTUAL and the response includes a diagnostic flag noting the downgrade.
-- **SC-052**: Change events written to the database appear on a configured Kafka sink within 5 seconds. The same sink configuration interface works regardless of database provider.
+- **SC-052**: A change feed consumer reads change events from a customer-configured external store (e.g., a Kafka topic populated by the customer's own source connector) using the portable change-event model, and the same consumer configuration works regardless of database provider. The SDK does not push events into the store.
 - **SC-053**: When OpenTelemetry is enabled, every SDK operation emits a span visible in a standard OTLP collector with operation type, provider, database, collection, duration, and status attributes.
 - **SC-054**: A change feed consumer that checkpoints its position and restarts receives only events after the last checkpoint, with no skipped events (at-least-once delivery) on all supported providers.
 
@@ -1009,7 +1013,7 @@ The following operators and functions form the portable query subset, available 
 - **Composite key and existing `MulticloudDbKey.of(...)` compatibility**: The existing `MulticloudDbKey.of(partitionKey, sortKey)` API remains supported and is equivalent to a single-component partition key. Applications not using composite keys are unaffected. The composite key feature is additive and backward-compatible.
 - **Composite key Cosmos DB mapping**: Cosmos DB hierarchical partition keys (available in SDK v4.25+) support up to 3 levels of sub-partitioning. When a Cosmos DB collection is provisioned with hierarchical partition keys, the SDK maps composite key components directly to hierarchy levels. When the collection uses a traditional single partition key, the SDK concatenates components. Applications should align their Cosmos DB collection configuration with their composite key cardinality.
 - **Change feed 24-hour portable baseline**: The 24-hour change feed history window is the portable baseline because it represents the ceiling at which all three providers (Cosmos DB, DynamoDB, Spanner) deliver equivalent behavior and performance using only native provider capabilities. DynamoDB Streams expire records after 24 hours; Cosmos DB and Spanner retain changes for configurable longer periods. The SDK defaults to 24 hours to guarantee uniform cross-provider behavior.
-- **Change feed extended history — DynamoDB infrastructure requirement**: Extended change feed history on DynamoDB requires customer-provisioned external infrastructure (e.g., Kafka topic, Kinesis Firehose, S3) to persist stream events beyond the native 24-hour retention. The SDK provides the archival integration (pushing current events to the store) and the historical read interface (reading from the store), but the customer is responsible for provisioning and maintaining the external infrastructure. Performance characteristics for DynamoDB historical reads may differ from native Cosmos DB/Spanner retention due to this indirection.
+- **Change feed extended history — DynamoDB infrastructure requirement**: Extended change feed history on DynamoDB requires customer-provisioned external infrastructure (e.g., Kafka topic, Kinesis Firehose, S3) to persist stream events beyond the native 24-hour retention. The customer is responsible for provisioning and maintaining that infrastructure *and* for landing DynamoDB Streams events into it using their own source connector (e.g., DynamoDB Streams → Kinesis, Kafka Connect, Debezium). The SDK provides only the historical read interface (reading from the store); it does not push or archive events into it. Performance characteristics for DynamoDB historical reads may differ from native Cosmos DB/Spanner retention due to this indirection.
 - **Change feed extended history — Cosmos DB mode**: Extended history on Cosmos DB uses the "All Changes and Deletes" change feed mode, which provides full retention and delete tracking. This mode must be enabled on the Cosmos DB container (a provisioning concern outside the SDK's portable contract).
 - **Change feed extended history — Spanner retention**: Spanner change streams support configurable retention (default 7 days, up to the data retention period). For history beyond Spanner's configured retention, applications must use BigQuery export or similar external mechanisms outside the SDK's scope.
 - **Change feed parallelism — partition assignment**: Dynamic partition assignment (automatic rebalancing) relies on provider-specific mechanisms: Cosmos DB lease documents, DynamoDB stream shard management, Spanner partition tokens. The SDK abstracts these behind a uniform consumer group interface. Applications that require deterministic partition-to-consumer mapping can use static assignment mode.
@@ -1023,7 +1027,7 @@ The following operators and functions form the portable query subset, available 
 - **Local quorum consistency — semantic approximation**: `LOCAL_QUORUM` is a semantic approximation. The exact guarantees differ by provider (Cosmos DB Session is session-scoped, DynamoDB strong reads are region-local by nature, Spanner strong reads are globally linearizable). The SDK documents the specific native mapping for each provider so applications understand the actual guarantees they receive.
 - **Typed sort keys — encoding**: For providers that store sort keys as strings (DynamoDB S type), the SDK uses type-specific encoding to preserve natural ordering: zero-padded fixed-width numeric encoding for NUMERIC, ISO-8601 encoding for TIMESTAMP. The encoding scheme is deterministic and documented but adds a small overhead to key operations.
 - **Retry with consistency downgrade — scope**: Consistency downgrade retry applies only to read operations (read-by-key and query). Write operations are never automatically retried at a different consistency level.
-- **Change feed sink — exactly-once delivery**: The change feed sink provides at-least-once delivery. Exactly-once semantics depend on the sink destination's deduplication capabilities (e.g., Kafka idempotent producer). The SDK does not guarantee exactly-once delivery at the sink interface level.
+- **Change feed external store read — delivery semantics**: The SDK's read-only external-store consumer provides at-least-once delivery from the store, consistent with native change feed semantics. Exactly-once end-to-end processing depends on idempotent consumers and on the deduplication guarantees of the customer's own connector and store (e.g., Kafka idempotent producer). The SDK does not push events into the store and therefore makes no delivery guarantee on the ingestion side.
 - **OpenTelemetry — optional dependency**: The OpenTelemetry SDK is an optional runtime dependency. When not present on the classpath, telemetry features are no-ops. Applications that do not need telemetry incur no dependency or performance cost.
 - **Change feed delivery semantics — checkpoint granularity**: Checkpoints are per-partition. In parallel consumption scenarios, each consumer instance maintains independent checkpoints for its assigned partitions. The checkpoint store must support concurrent writes from multiple consumer instances without corruption.
 
@@ -1207,9 +1211,9 @@ This checklist is used to accept the feature as “done” at the spec level.
 - [ ] Default configuration limits change feed access to 24 hours; requests beyond that produce a clear error.
 - [ ] On Cosmos DB with extended history enabled, changes older than 24 hours are accessible via the native "All Changes and Deletes" mode.
 - [ ] On Spanner with extended history enabled, changes older than 24 hours are accessible via native change stream retention.
-- [ ] On DynamoDB with extended history enabled, changes older than 24 hours are accessible via the configured external event store.
+- [ ] On DynamoDB with extended history enabled, changes older than 24 hours are accessible by reading from a customer-maintained external store (populated by the customer's own connector).
 - [ ] Delete events are included in extended history streams on all providers when delete tracking is configured.
-- [ ] The DynamoDB archival mechanism pushes current stream events to the external store in real-time for future historical access.
+- [ ] The SDK does NOT push or archive events into the DynamoDB external store; populating it is the customer's responsibility via their own source connector.
 - [ ] Extended history is capability-gated and documents DynamoDB's different performance characteristics clearly.
 - [ ] The same consumer code reads extended history across all three providers by changing configuration only.
 
@@ -1258,14 +1262,13 @@ This checklist is used to accept the feature as “done” at the spec level.
 - [ ] Consistency downgrade is disabled by default; explicit opt-in is required.
 - [ ] When both STRONG and EVENTUAL attempts fail, the original STRONG error is returned.
 
-### Change Feed Sink Abstraction
+### Change Feed Read from External Store (Read-Only)
 
-- [ ] A pluggable sink interface accepts change events and delivers them to external messaging systems.
-- [ ] At least one built-in sink implementation (e.g., Kafka) is provided.
-- [ ] Sink delivery provides at-least-once semantics with buffering during temporary sink unavailability.
-- [ ] Multiple sinks can be configured simultaneously with independent fan-out.
-- [ ] Custom sink implementations are supported via the pluggable interface.
-- [ ] The same sink configuration works regardless of database provider.
+- [ ] A read-only abstraction consumes change events from a customer-configured external store using the portable change-event model.
+- [ ] The SDK does NOT provide a sink that pushes, forwards, or archives change events into an external store (populating it is the customer's responsibility via their own source connector).
+- [ ] Reading from the external store provides at-least-once delivery with checkpoint/resume, consistent with native change feed semantics.
+- [ ] An unavailable external store, or contents that don't match the expected change-event shape, surfaces a clear provider-neutral error.
+- [ ] The same external-store read configuration works regardless of which database provider sourced the changes.
 
 ### Telemetry / Observability
 
