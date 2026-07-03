@@ -748,9 +748,9 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 - **FR-123**: The SDK MUST produce a compile-time error when an application uses a feature that is not supported on all providers in the declared (or default) target set. The error message MUST identify the unsupported feature and the provider(s) lacking support.
 - **FR-124**: Applications MUST be able to resolve the compile-time error by either: (a) removing usage of the unsupported feature, or (b) explicitly declaring a reduced provider target set that excludes the unsupported provider.
 - **FR-125**: Features explicitly declared as "provider-specific extensions" (not part of the portable contract) MUST be exempt from the target set validation and MUST only be accessible via the escape hatch mechanism.
-- **FR-126-A**: The SDK MUST maintain a machine-readable capability manifest that maps each feature to its provider support status, enabling both compile-time validation and CI gate enforcement.
-- **FR-126-B**: The CI portability gate MUST enforce that every feature in the portable contract has conformance test coverage passing on at least 2 of the 3 supported providers before release.
-- **FR-126-C**: When a previously-passing provider adapter regresses (conformance tests fail), the CI gate MUST block release and identify the specific features and providers affected.
+- **FR-160**: The SDK MUST maintain a machine-readable capability manifest that maps each feature to its provider support status, enabling both compile-time validation and CI gate enforcement.
+- **FR-161**: The CI portability gate MUST enforce that every feature in the portable contract has conformance test coverage passing on at least 2 of the 3 supported providers before release.
+- **FR-162**: When a previously-passing provider adapter regresses (conformance tests fail), the CI gate MUST block release and identify the specific features and providers affected.
 
 #### Request Cost Metrics Requirements
 
