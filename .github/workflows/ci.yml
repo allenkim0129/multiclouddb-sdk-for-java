@@ -6,6 +6,13 @@ on:
   push:
     branches: [main]
 
+# Least-privilege GITHUB_TOKEN for all jobs. This workflow only checks out the
+# repo, runs the Maven build, and uploads workflow artifacts (which does not need
+# a token scope) - it never writes back to the repository - so read-only access
+# to contents is sufficient.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build, Unit Tests & Artifacts
