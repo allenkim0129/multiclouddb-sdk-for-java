@@ -291,6 +291,186 @@ As an application developer, I can define and use composite partition keys (part
 
 ---
 
+### User Story 14 - Change Feed Parallelism (Priority: P0)
+
+As an application developer, I can consume a collection's change feed across multiple partitions concurrently so that my event-driven workloads (e.g., position updates, account reconciliation) can scale processing throughput linearly with partition count.
+
+**Why this priority**: BlackRock's event-driven architecture processes millions of position updates daily. Sequential single-partition change feed consumption creates a bottleneck that blocks real-time derived data computation. All three target providers support partitioned change feed consumption natively (Cosmos DB lease-based partition assignment, DynamoDB per-shard iterators, Spanner partition-based change streams), but the current SDK only exposes a single-stream serial consumer.
+
+**Independent Test**: A sample application consumes changes from a collection with 10+ logical partitions using 4 concurrent consumers. Throughput scales near-linearly compared to a single consumer. The same code works across all providers by configuration only.
+
+**Acceptance Scenarios**:
+
+1. **Given** a collection with multiple logical partitions and a configured consumer group, **When** the application starts N parallel change feed consumers, **Then** partitions are distributed across consumers and changes are processed concurrently.
+2. **Given** a running parallel consumer group, **When** a consumer instance fails or is removed, **Then** its assigned partitions are rebalanced to remaining consumers within a configurable timeout.
+3. **Given** a running parallel consumer group, **When** a new consumer instance is added, **Then** partitions are redistributed to include the new consumer without data loss or duplication.
+4. **Given** parallel consumers processing changes, **When** each consumer checkpoints its progress independently, **Then** restarting any consumer resumes from its last checkpoint without affecting others.
+5. **Given** a provider that does not support dynamic partition discovery, **When** the SDK is configured for parallel consumption, **Then** the SDK uses a static partition assignment strategy and documents the limitation.
+
+---
+
+### User Story 15 - Change Feed History Retention (Priority: P0)
+
+As an application developer, I can consume change feed events older than 24 hours when my provider and configuration support it, so that my application can replay historical changes for recovery, auditing, or late-arriving event processing without external infrastructure (on providers that support it natively) or by reading from a customer-managed external store (on providers that don't).
+
+**Why this priority**: The 24-hour window is the portable baseline where all three providers deliver equivalent behavior and performance natively. Beyond that, Cosmos DB and Spanner provide unbounded or configurable retention out of the box, but DynamoDB Streams expire after 24 hours. BlackRock requires multi-day replay for reconciliation workflows. The SDK must provide a uniform interface for extended history while being transparent about performance and infrastructure trade-offs.
+
+**Independent Test**: A sample application reads changes from 48 hours ago. On Cosmos DB and Spanner, this works with a config flag only. On DynamoDB, the application configures an external event store (e.g., Kafka topic) and the SDK reads historical events from that store seamlessly.
+
+**Acceptance Scenarios**:
+
+1. **Given** a change feed consumer with default configuration, **When** it requests changes older than 24 hours, **Then** the SDK rejects the request with a clear error indicating that extended history is not enabled.
+2. **Given** Cosmos DB or Spanner with extended history enabled via configuration, **When** the consumer requests changes from 48 hours ago, **Then** events are returned using the provider's native change feed mechanism with no additional infrastructure.
+3. **Given** DynamoDB with extended history enabled via configuration specifying an external event store, **When** the consumer requests changes from 48 hours ago, **Then** the SDK reads historical events from the configured external store transparently.
+4. **Given** extended history enabled on any provider, **When** delete tracking is configured, **Then** delete events are included in the historical stream (Cosmos DB "All Changes and Deletes" mode, DynamoDB REMOVE events, Spanner DELETE records).
+5. **Given** DynamoDB with extended history enabled and a customer-maintained external store, **When** new changes occur, **Then** the customer's own source connector lands them in the external store and the SDK reads them from there for historical access — the SDK does not push events into the store.
+
+---
+
+### User Story 16 - Provider Target Set / 2-of-3 Portability Gating (Priority: P0)
+
+As an application developer, I can declare which providers my application targets (e.g., only Cosmos DB and DynamoDB) via static configuration, so that the SDK validates at compile time that every feature I use is supported on my declared providers — and if I don't declare a target set, the SDK assumes all three providers and produces a compile-time error if I use a feature not available on all three, protecting me from accidentally depending on non-portable functionality.
+
+**Why this priority**: Without a governance mechanism, applications may unknowingly depend on features only available on a subset of providers. By defaulting to "all three required" and requiring explicit opt-in to a reduced provider set, the SDK provides compile-time safety for customers who are unaware that a feature is not universally portable, while still allowing informed customers to intentionally target a subset.
+
+**Independent Test**: A CI gate checks that every capability declared in the SDK has conformance test coverage for at least 2 providers. At the application level, compile-time annotation processing validates that all features used are supported by the declared (or default all-three) provider target set.
+
+**Acceptance Scenarios**:
+
+1. **Given** a customer who has NOT declared a provider target set, **When** they use a feature that is only supported on 2 of the 3 providers, **Then** the SDK produces a compile-time error indicating the feature is not available on all three providers and that they must explicitly declare their target set to proceed.
+2. **Given** a customer who has declared a target set of [Cosmos DB, DynamoDB], **When** they use a feature supported on both Cosmos DB and DynamoDB, **Then** compilation succeeds with no warnings.
+3. **Given** a customer who has declared a target set of [Cosmos DB, DynamoDB], **When** they use a feature only supported on Cosmos DB, **Then** the SDK produces a compile-time error indicating the feature is not available on DynamoDB.
+4. **Given** a customer who has declared a target set of all three providers (equivalent to default), **When** they use a 2-of-3 feature, **Then** the SDK produces a compile-time error.
+5. **Given** the provider target set configuration, **When** a maintainer explicitly marks a feature as "provider-specific extension" (not part of the portable contract), **Then** the feature is only usable via the escape hatch mechanism regardless of the declared target set.
+6. **Given** a new feature with conformance tests passing on only 1 provider, **When** a release is attempted, **Then** the CI portability gate fails with a clear message identifying the feature and the missing provider coverage.
+7. **Given** an existing feature that previously passed 2 providers, **When** a provider adapter regresses and conformance tests fail, **Then** the CI gate fails and blocks release until the regression is fixed or the feature is explicitly downgraded.
+
+---
+
+### User Story 17 - Request Cost Metrics on Responses (Priority: P1)
+
+As an application developer, I can access the provider-native request cost (e.g., RU charge, consumed capacity units) on every SDK response so that I can implement cost attribution, budget alerting, and query optimization in my observability pipeline.
+
+**Why this priority**: BlackRock requires cost visibility per operation for chargeback to internal teams and for identifying expensive queries. All three providers expose request cost natively (Cosmos DB Request Units, DynamoDB consumed read/write capacity units, Spanner operation cost metadata), but the current SDK does not surface these on response objects.
+
+**Independent Test**: A sample application performs a write and a query, then reads the cost metric from each response. The metric is a positive numeric value on all providers. The same code works across providers by configuration only.
+
+**Acceptance Scenarios**:
+
+1. **Given** a successful write operation on any provider, **When** the response is returned, **Then** the response includes a numeric cost metric reflecting the provider's native request charge.
+2. **Given** a successful query operation on any provider, **When** the response is returned, **Then** the response includes the cumulative cost metric for the query execution.
+3. **Given** a provider that does not expose cost metrics for a specific operation type, **When** the response is returned, **Then** the cost metric field is empty/null (not an error) and the capability is documented as unavailable.
+4. **Given** cost metrics enabled, **When** bulk operations complete, **Then** cost metrics are available as an aggregate total and (where provider supports) per-item breakdown.
+
+---
+
+### User Story 18 - Local Quorum Consistency (Priority: P1)
+
+As an application developer, I can specify a `LOCAL_QUORUM` consistency level for read operations so that in multi-region deployments I get strong-within-region consistency without the latency penalty of cross-region strong reads.
+
+**Why this priority**: BlackRock operates in multi-region deployments where global strong consistency is too expensive for most reads, but eventual consistency is too weak for financial data. An intermediate level that provides strong reads within the local region satisfies most use cases. Cosmos DB Session/Bounded Staleness, DynamoDB strongly consistent reads (region-local), and Spanner strong reads (region-local with single-region config) all approximate this semantic.
+
+**Independent Test**: A write followed immediately by a `LOCAL_QUORUM` read in the same region returns the written data. The same code works across providers by configuration only.
+
+**Acceptance Scenarios**:
+
+1. **Given** a multi-region deployment, **When** a read is performed with `LOCAL_QUORUM` consistency, **Then** the read reflects all writes acknowledged in the local region.
+2. **Given** a provider that maps `LOCAL_QUORUM` to a native consistency level, **When** the mapping is applied, **Then** the selected native level is documented and the behavior matches the semantic (strong-within-region).
+3. **Given** a single-region deployment, **When** `LOCAL_QUORUM` is specified, **Then** the behavior is equivalent to `STRONG` consistency (no distinction needed).
+4. **Given** a provider that does not have a direct `LOCAL_QUORUM` equivalent, **When** `LOCAL_QUORUM` is requested, **Then** the SDK selects the closest available consistency level and emits a diagnostic noting the approximation.
+
+---
+
+### User Story 19 - Typed Composite Sort Keys (Priority: P1)
+
+As an application developer, I can define sort keys with explicit type semantics (numeric, timestamp, string) so that range queries return results in the correct natural order rather than lexicographic string order.
+
+**Why this priority**: Applications storing time-series data or numeric sequences need range queries like "all events after timestamp X" or "items with sequence > 100" to return correctly ordered results. String-only sort keys require zero-padded encoding tricks that are error-prone. All three providers support typed key columns (Cosmos DB partition key paths with type, DynamoDB sort key with N/S/B types, Spanner typed primary key columns).
+
+**Independent Test**: A sample application stores items with numeric sort keys (1, 2, 10, 20, 100) and queries "sort key > 9". Results return items 10, 20, 100 (not "10" > "9" in string order which would also include "2" and "20" before "100"). Same code works across providers.
+
+**Acceptance Scenarios**:
+
+1. **Given** a collection configured with a numeric sort key type, **When** items are stored and a range query is performed, **Then** results are ordered by numeric value (not lexicographic).
+2. **Given** a collection configured with a timestamp sort key type, **When** a range query specifies a time boundary, **Then** results include only items with timestamps after/before the boundary with correct chronological ordering.
+3. **Given** a collection configured with a string sort key type, **When** a range query is performed, **Then** results are ordered lexicographically (default behavior, unchanged).
+4. **Given** a typed sort key, **When** an item is stored with a value that doesn't match the configured type (e.g., a string where numeric is expected), **Then** the SDK raises a clear validation error before persisting.
+5. **Given** a provider that natively supports the configured sort key type, **When** range queries are executed, **Then** the provider's native type-aware ordering is used. On providers requiring encoding (e.g., DynamoDB N type vs. padded string), the SDK handles encoding transparently.
+
+---
+
+### User Story 20 - Retry with Consistency Downgrade (Priority: P2)
+
+As an application developer, I can configure the SDK to automatically retry a failed strong-consistency read at eventual consistency, so that my application maintains availability during transient failures while being notified of the consistency trade-off.
+
+**Why this priority**: In production multi-region scenarios, strong reads may transiently fail due to replication lag or region connectivity issues. Rather than surfacing an error to the user, the SDK can optionally retry at a weaker consistency level while emitting a diagnostic metric/warning so operators are aware of the degradation.
+
+**Independent Test**: A simulated transient failure on a STRONG read triggers an automatic retry at EVENTUAL. The retry succeeds and the response includes a diagnostic flag indicating the downgrade occurred. Same configuration-driven behavior across providers.
+
+**Acceptance Scenarios**:
+
+1. **Given** consistency downgrade retry enabled via configuration, **When** a STRONG read fails with a transient error, **Then** the SDK retries at EVENTUAL consistency automatically.
+2. **Given** a successful downgraded retry, **When** the response is returned, **Then** the response includes a diagnostic indicator that consistency was downgraded.
+3. **Given** consistency downgrade retry disabled (default), **When** a STRONG read fails, **Then** the error is returned to the caller without any automatic retry at weaker consistency.
+4. **Given** a downgraded retry that also fails, **When** both attempts have been exhausted, **Then** the original STRONG failure error is returned (not the EVENTUAL failure).
+
+---
+
+### User Story 21 - Change Feed Consumption from an External Store (Read-Only) (Priority: P2)
+
+As an application developer, I can point the SDK's change feed reader at an external store (e.g., a Kafka topic or Kinesis stream) that my own source connector already populates from the database, so that I can consume database changes through my existing event streaming infrastructure using the same portable change-event model, without the SDK taking on responsibility for landing data into that store.
+
+**Why this priority**: Enterprise architectures commonly route database change events through a central event bus (Kafka) for consumption by multiple downstream services. Mature source connectors already exist to land database changes into these systems (e.g., Kafka Connect source connectors, the DynamoDB Streams → Kinesis integration, Debezium), so the SDK does not reimplement that ingestion path. Instead it offers a portable, read-only abstraction over the resulting stream, letting applications consume changes with a uniform interface regardless of the originating provider.
+
+> **Non-goal.** The SDK does not push, forward, or archive change events *into* the external store. Populating the store is the customer's responsibility via their own source connector (see FR-144). This boundary is deliberate: it avoids the support burden of reimplementing provider-to-stream ingestion when the ecosystem already solves it.
+
+**Independent Test**: A customer's own connector lands database changes into a Kafka topic. A sample application configures the SDK's read abstraction against that topic and consumes the change events using the portable change-event model. The same consumer configuration works regardless of which database provider sourced the changes. The SDK is not involved in writing to the topic.
+
+**Acceptance Scenarios**:
+
+1. **Given** an external store (e.g., Kafka topic) that the customer's own connector already populates with database changes, **When** the application configures the SDK's read abstraction against it, **Then** change events are consumed using the same portable change-event model as the native change feed.
+2. **Given** a consumer reading from an external store, **When** the consumer stores a checkpoint and restarts, **Then** it resumes from the stored position with at-least-once delivery, consistent with native change feed semantics.
+3. **Given** an external store that is unavailable or whose contents do not match the expected change-event shape, **When** the application attempts to read, **Then** the SDK surfaces a clear, provider-neutral error.
+4. **Given** a request to have the SDK push or archive change events into an external store, **When** the application looks for such a capability, **Then** no such capability exists — the SDK documents that populating the store is the customer's responsibility via their own source connector.
+
+---
+
+### User Story 22 - Telemetry / Observability (Priority: P2)
+
+As an application developer, I can enable OpenTelemetry integration so that every SDK operation emits spans, metrics, and distributed tracing context, allowing me to monitor latency, throughput, error rates, and cost through my existing observability stack.
+
+**Why this priority**: BlackRock's platform requires standardized observability for all infrastructure components. Without built-in telemetry, teams must instrument SDK calls manually, leading to inconsistent metrics and blind spots. OpenTelemetry is the industry standard supported by all major observability backends (Datadog, Prometheus, Azure Monitor, etc.).
+
+**Independent Test**: A sample application enables OpenTelemetry via SDK configuration. After performing CRUD operations, spans are visible in a local Jaeger/OTLP collector with operation name, duration, status, provider, database, and collection attributes. Same code works across providers.
+
+**Acceptance Scenarios**:
+
+1. **Given** OpenTelemetry enabled via configuration, **When** any SDK operation is performed, **Then** a span is emitted with standard attributes (operation type, provider, database, collection, duration, status).
+2. **Given** OpenTelemetry enabled, **When** operations complete, **Then** metrics are emitted for latency (histogram), throughput (counter), error rate (counter by error category), and request cost (gauge/counter).
+3. **Given** an incoming request with a tracing context (W3C traceparent), **When** SDK operations are performed, **Then** the SDK propagates the trace context so spans appear as children in the distributed trace.
+4. **Given** OpenTelemetry disabled (default), **When** SDK operations are performed, **Then** no telemetry overhead is incurred and no spans/metrics are emitted.
+5. **Given** OpenTelemetry enabled, **When** a bulk operation processes N items, **Then** a parent span covers the bulk operation with child spans (or span events) for individual batches.
+
+---
+
+### User Story 23 - Change Feed Delivery Semantics (Priority: P2)
+
+As an application developer, I can configure change feed delivery semantics (at-least-once with checkpoint management) so that my application can reliably process all change events without data loss and resume from where it left off after restarts.
+
+**Why this priority**: Production change feed consumers must handle restarts, crashes, and redeployments without losing events or reprocessing excessively. A portable checkpoint API that works across providers enables reliable exactly-once processing (with idempotent consumers) or at-least-once guarantees.
+
+**Independent Test**: A consumer processes events and checkpoints periodically. After a simulated crash and restart, only events after the last checkpoint are redelivered. Same behavior across all providers.
+
+**Acceptance Scenarios**:
+
+1. **Given** a change feed consumer with checkpoint management enabled, **When** the consumer processes events and calls checkpoint, **Then** the checkpoint position is durably stored.
+2. **Given** a stored checkpoint, **When** the consumer restarts, **Then** consumption resumes from immediately after the checkpoint position with no events skipped.
+3. **Given** a consumer that crashes before checkpointing, **When** it restarts, **Then** events since the last successful checkpoint are redelivered (at-least-once guarantee).
+4. **Given** a configurable checkpoint store, **When** the application specifies a checkpoint storage backend (e.g., same database, external store), **Then** checkpoints are persisted to the configured location.
+5. **Given** multiple consumer instances in a group, **When** each instance checkpoints independently, **Then** per-partition checkpoints are maintained without interference between instances.
+
+---
+
 ### Edge Cases
 
 - What happens when the key model differs by provider (e.g., partitioned keys vs composite primary keys)?
@@ -563,6 +743,107 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 - **FR-107**: Composite partition key prefix queries MUST be a capability-gated feature. When a prefix query is requested on a provider that does not support efficient prefix scoping, the SDK MUST either execute a cross-partition query with appropriate filtering or raise a capability warning, depending on configuration.
 - **FR-108**: The SDK MUST validate that all composite key components are provided for point operations (read-by-key, delete-by-key) and MUST raise a clear error if any component is missing.
 
+#### Change Feed Parallelism Requirements
+
+- **FR-109**: The SDK MUST support concurrent change feed consumption across multiple partitions, allowing applications to scale processing throughput by running multiple consumer instances in parallel.
+- **FR-110**: The SDK MUST provide a partition assignment mechanism that distributes logical partitions among available consumer instances within a consumer group. Assignment strategies MUST include at minimum: static (configured partition-to-consumer mapping) and dynamic (automatic rebalancing).
+- **FR-111**: When dynamic partition assignment is configured and a consumer instance joins or leaves the group, the SDK MUST rebalance partition assignments among remaining consumers within a configurable timeout without losing unprocessed events.
+- **FR-112**: Each consumer instance MUST checkpoint its progress independently per assigned partition. Checkpoints MUST be portable across consumer restarts without requiring re-consumption from the beginning.
+- **FR-113**: The SDK MUST map parallel consumption to each provider's native mechanism:
+  - **Cosmos DB**: Partition-key-range-based lease assignment (ChangeFeedProcessor pattern).
+  - **DynamoDB**: Per-shard iterator management with Streams API.
+  - **Spanner**: Partition-based change stream consumption with partition token management.
+- **FR-114**: Change feed parallelism MUST be capability-gated. On providers that do not support dynamic partition discovery, the SDK MUST document the limitation and require static partition configuration.
+
+#### Change Feed History Retention Requirements
+
+- **FR-115**: The SDK MUST enforce a default 24-hour change feed history window. Requests for changes older than 24 hours MUST be rejected with a clear error when extended history is not enabled.
+- **FR-116**: Extended change feed history (beyond 24 hours) MUST be opt-in via SDK configuration. When enabled, the SDK MUST provide access to historical changes beyond the 24-hour portable baseline.
+- **FR-117**: Each provider adapter MUST implement extended history using the provider's available mechanisms:
+  - **Cosmos DB**: Use the native change feed in "All Changes and Deletes" mode (which provides full retention back to container creation or configured retention period).
+  - **Spanner**: Use native change streams with configurable retention period.
+  - **DynamoDB**: Read historical events from a customer-configured external store (e.g., Kafka topic, Kinesis stream) that the customer's own source connector populates from DynamoDB Streams. The SDK reads from this store for historical replay; it does not archive or push events into it (see FR-118, FR-144).
+- **FR-118**: The SDK MUST NOT archive or push DynamoDB Streams events into the external store. Because DynamoDB Streams retain only 24 hours, extended history on DynamoDB depends on the customer maintaining the external store via their own source connector (e.g., DynamoDB Streams → Kinesis, Kafka Connect, Debezium). The SDK reads historical events from that customer-maintained store, and MUST document this customer responsibility clearly.
+- **FR-119**: When extended history is enabled and delete tracking is configured, delete events MUST be included in the historical stream on all providers. The SDK MUST use each provider's delete-capturing mode (Cosmos DB "All Changes and Deletes", DynamoDB REMOVE events, Spanner DELETE change records).
+- **FR-120**: Extended history MUST be capability-gated. The SDK MUST clearly document that DynamoDB extended history requires additional infrastructure configuration and may have different performance characteristics than native Cosmos DB/Spanner retention.
+
+#### Provider Target Set / Portability Gating Requirements
+
+- **FR-121**: The SDK MUST provide a static configuration mechanism (e.g., annotation or build-time property) for applications to declare their target provider set (any combination of 2 or more of: Cosmos DB, DynamoDB, Spanner).
+- **FR-122**: When no target provider set is explicitly declared, the SDK MUST default to requiring all three providers, meaning all features used must be supported on Cosmos DB, DynamoDB, AND Spanner.
+- **FR-123**: The SDK MUST produce a compile-time error when an application uses a feature that is not supported on all providers in the declared (or default) target set. The error message MUST identify the unsupported feature and the provider(s) lacking support.
+- **FR-124**: Applications MUST be able to resolve the compile-time error by either: (a) removing usage of the unsupported feature, or (b) explicitly declaring a reduced provider target set that excludes the unsupported provider.
+- **FR-125**: Features explicitly declared as "provider-specific extensions" (not part of the portable contract) MUST be exempt from the target set validation and MUST only be accessible via the escape hatch mechanism.
+- **FR-160**: The SDK MUST maintain a machine-readable capability manifest that maps each feature to its provider support status, enabling both compile-time validation and CI gate enforcement.
+- **FR-161**: The CI portability gate MUST enforce that every feature in the portable contract has conformance test coverage passing on at least 2 of the 3 supported providers before release.
+- **FR-162**: When a previously-passing provider adapter regresses (conformance tests fail), the CI gate MUST block release and identify the specific features and providers affected.
+
+#### Request Cost Metrics Requirements
+
+- **FR-126**: Every SDK response object MUST include an optional numeric field representing the provider-native request cost for that operation (e.g., Cosmos DB Request Units, DynamoDB consumed read/write capacity units, Spanner operation cost).
+- **FR-127**: Each provider adapter MUST extract and populate the cost metric from the provider's native response metadata:
+  - **Cosmos DB**: `requestCharge` from `CosmosDiagnostics`.
+  - **DynamoDB**: `consumedCapacity` from response (requires `ReturnConsumedCapacity` on request).
+  - **Spanner**: Operation statistics from `ResultSetStats` where available.
+- **FR-128**: When a provider does not expose cost metrics for a specific operation type, the cost field MUST be null/empty (not an error) and the limitation MUST be documented.
+- **FR-129**: For bulk operations, cost metrics MUST be available as an aggregate total. Where the provider supports per-item cost breakdown, per-item costs MUST also be accessible.
+- **FR-130**: Request cost metrics MUST be surfaced in diagnostic log lines (alongside existing operation diagnostics) when diagnostics logging is enabled.
+
+#### Local Quorum Consistency Requirements
+
+- **FR-131**: The SDK MUST define a `LOCAL_QUORUM` portable consistency level representing strong-within-region read semantics for multi-region deployments.
+- **FR-132**: Each provider adapter MUST map `LOCAL_QUORUM` to the closest available native consistency level:
+  - **Cosmos DB**: `Session` consistency (or `Bounded Staleness` for stronger guarantees in multi-region writes).
+  - **DynamoDB**: Strongly consistent read (inherently region-local in DynamoDB's single-region write model).
+  - **Spanner**: Strong read (inherently provides this guarantee in single-region configurations; in multi-region, maps to a strong read with closest-region routing).
+- **FR-133**: When `LOCAL_QUORUM` is specified in a single-region deployment, the behavior MUST be equivalent to `STRONG` consistency.
+- **FR-134**: When a provider's native consistency model does not have a direct `LOCAL_QUORUM` equivalent, the SDK MUST select the closest available level and MUST emit a diagnostic log entry noting the approximation.
+
+#### Typed Composite Sort Key Requirements
+
+- **FR-135**: The SDK MUST support sort key type declarations (at minimum: `STRING`, `NUMERIC`, `TIMESTAMP`) at the collection level via configuration.
+- **FR-136**: When a sort key type is declared, the SDK MUST ensure range queries respect the declared type's natural ordering (lexicographic for STRING, numeric value ordering for NUMERIC, chronological for TIMESTAMP).
+- **FR-137**: Each provider adapter MUST map typed sort keys to the provider's native mechanism:
+  - **Cosmos DB**: Type-preserving JSON serialization with path configuration.
+  - **DynamoDB**: Use appropriate attribute type (N for NUMERIC, S with ISO-8601 encoding for TIMESTAMP, S for STRING).
+  - **Spanner**: Use native typed columns (INT64/FLOAT64 for NUMERIC, TIMESTAMP for TIMESTAMP, STRING for STRING).
+- **FR-138**: When an item is stored with a sort key value that does not match the configured type (e.g., a non-numeric string for a NUMERIC sort key), the SDK MUST reject the operation with a clear validation error before sending to the provider.
+- **FR-139**: Typed sort keys MUST be backward-compatible. Collections without explicit sort key type configuration MUST continue to use STRING semantics (existing behavior unchanged).
+
+#### Retry with Consistency Downgrade Requirements
+
+- **FR-140**: The SDK MUST support an optional configuration to automatically retry failed STRONG-consistency reads at EVENTUAL consistency on transient errors.
+- **FR-141**: When a consistency-downgraded retry succeeds, the response MUST include a diagnostic flag or metadata indicating that the result was obtained at a weaker consistency level than originally requested.
+- **FR-142**: Consistency downgrade retry MUST be disabled by default. Applications MUST explicitly opt in via configuration.
+- **FR-143**: When both the original STRONG read and the downgraded EVENTUAL retry fail, the SDK MUST return the original STRONG failure error to the caller (the downgrade attempt is transparent).
+
+#### Change Feed External Store Integration (Read-Only) Requirements
+
+> **Scope amendment (2026-07):** The SDK does NOT provide an abstraction that pushes, forwards, or archives change events *into* an external store (Kafka, Kinesis, Event Hubs, Pub/Sub, etc.). Landing database changes into such a store is left to the customer's own source connector, for which mature, well-supported options already exist (e.g., Kafka Connect source connectors, the DynamoDB Streams → Kinesis integration, Debezium). The SDK provides only a portable abstraction to READ change events back out of that store. This boundary is deliberate: the SDK avoids the support burden of reimplementing provider-to-stream ingestion when the ecosystem already solves it.
+
+- **FR-144**: The SDK MUST NOT provide a mechanism that pushes, forwards, or archives change feed events into an external messaging or storage system. Populating an external store from the database's native change stream is the customer's responsibility, accomplished with their own source connector (e.g., Kafka Connect, a DynamoDB Streams → Kinesis pipeline, Debezium).
+- **FR-145**: The SDK MUST provide a portable, read-only abstraction for consuming change events from a customer-configured external store, exposing the same change-event model (FR-067) and checkpoint/resume semantics (FR-070, FR-156) as the native change feed.
+- **FR-146**: External-store read configuration MUST be provider-neutral. The same consumer configuration (e.g., external store type, connection details, topic/stream name) MUST work regardless of which database provider originally sourced the change events.
+- **FR-147**: The SDK MUST clearly document, for each provider, the expected external-store shape and the customer-side connector responsible for populating it, so applications can wire the read abstraction to a store their own pipeline maintains.
+- **FR-148**: When an external store is unavailable or its contents do not match the expected change-event shape, the read abstraction MUST surface a clear, provider-neutral error within the standard error model rather than failing silently.
+
+#### Telemetry / Observability Requirements
+
+- **FR-149**: The SDK MUST support optional OpenTelemetry integration, configurable via SDK configuration without code changes.
+- **FR-150**: When telemetry is enabled, the SDK MUST emit a span for every data-plane operation with standard attributes: operation type, provider name, database name, collection name, duration, and status (success/error).
+- **FR-151**: When telemetry is enabled, the SDK MUST emit metrics for: operation latency (histogram), operation count (counter), error count (counter by error category), and request cost (counter/gauge where available).
+- **FR-152**: The SDK MUST propagate W3C Trace Context (traceparent/tracestate headers) so that SDK operations appear as child spans in distributed traces initiated by the calling application.
+- **FR-153**: When telemetry is disabled (default), the SDK MUST NOT incur telemetry overhead (no span allocation, no metric recording, no context propagation).
+- **FR-154**: Telemetry MUST be implemented via configuration only, consistent with the SDK's escape hatch policy. No code-level callbacks or hook interfaces for telemetry injection.
+
+#### Change Feed Delivery Semantics Requirements
+
+- **FR-155**: The SDK MUST provide at-least-once delivery semantics for change feed consumption. Every committed change MUST be delivered to the consumer at least once (no silent data loss).
+- **FR-156**: The SDK MUST provide a portable checkpoint API that allows consumers to durably record their consumption position. Checkpoints MUST be provider-neutral tokens that can be stored and restored.
+- **FR-157**: The checkpoint store MUST be configurable. The SDK MUST support at minimum: (a) storing checkpoints in the same database (default), and (b) storing checkpoints in an external store (e.g., a separate collection, blob storage, or custom implementation).
+- **FR-158**: After a consumer restart, the SDK MUST resume consumption from the last stored checkpoint. Events between the last checkpoint and the restart MUST be redelivered (at-least-once guarantee).
+- **FR-159**: In parallel consumption scenarios (FR-109), checkpoints MUST be per-partition. Each consumer instance MUST checkpoint its assigned partitions independently without interfering with other instances.
+
 ### Portable Operator and Function Reference
 
 The following operators and functions form the portable query subset, available on all supported providers:
@@ -600,6 +881,17 @@ The following operators and functions form the portable query subset, available 
 | Document chunking (transparent oversized doc splitting) | Cosmos DB, DynamoDB, Spanner |
 | Composite partition keys | Cosmos DB (hierarchical PK), DynamoDB (concatenated), Spanner (multi-column PK) |
 | Efficient composite key prefix scoping | Cosmos DB (hierarchical PK), Spanner (multi-column PK); DynamoDB requires non-efficient fallback query/filtering or capability warning/error per FR-106/FR-107 |
+| Change feed parallel consumption | Cosmos DB, DynamoDB, Spanner |
+| Change feed extended history (>24h) | Cosmos DB (native), Spanner (native); DynamoDB requires a customer-maintained external store (populated by the customer's own connector; SDK reads only) |
+| Change feed delete tracking in extended history | Cosmos DB (All Changes and Deletes mode), DynamoDB (REMOVE events read from a customer-maintained external store), Spanner (DELETE change records) |
+| Provider portability gate (2-of-3 enforcement) | CI/governance — applies to all features in portable contract |
+| Request cost metrics on responses | Cosmos DB (RU charge), DynamoDB (consumed capacity), Spanner (operation stats where available) |
+| `LOCAL_QUORUM` consistency level | Cosmos DB (Session/Bounded Staleness), DynamoDB (strongly consistent read), Spanner (strong read) |
+| Typed composite sort keys | Cosmos DB, DynamoDB (N/S types), Spanner (native typed columns) |
+| Retry with consistency downgrade | Cosmos DB, DynamoDB, Spanner (provider-neutral; config-driven) |
+| Change feed read from external store (read-only) | Cosmos DB, DynamoDB, Spanner (provider-neutral reader; SDK does not push events into the store) |
+| OpenTelemetry integration | Cosmos DB, DynamoDB, Spanner (provider-neutral; config-driven) |
+| Change feed delivery semantics (at-least-once + checkpoint) | Cosmos DB, DynamoDB, Spanner |
 
 ### Key Entities *(include if feature involves data)*
 
@@ -628,6 +920,16 @@ The following operators and functions form the portable query subset, available 
 - **External Storage Backend**: A configured object storage service (Azure Blob Storage, Amazon S3, Google Cloud Storage) used by the large object offloading facility to store payloads that exceed the SDK's uniform document size limit. Configuration includes endpoint, container/bucket name, and authentication credentials.
 - **Document Chunk**: A database item representing one segment of a chunked oversized document. Contains a linkage key (shared across all chunks of the same logical document), a sequence number, and a segment of the compressed/serialized document payload. The root chunk (sequence 0) additionally contains queryable fields and chunk metadata (total count, original size, compression algorithm).
 - **Composite Partition Key**: A partition key composed of two or more named field values that together determine partition placement. Defined at the collection level via configuration. The SDK's `MulticloudDbKey` abstraction supports constructing composite keys from multiple components. Provider adapters map composite keys to the provider's native key model (hierarchical partition keys, concatenated values, or multi-column primary keys).
+- **Consumer Group**: A logical group of change feed consumer instances that collectively process all partitions of a collection's change feed. Partitions are distributed among group members, and rebalancing occurs when members join or leave.
+- **Change Feed Checkpoint**: A durable, opaque position token representing a consumer's progress through a partition's change feed. Stored in a configurable checkpoint store and used to resume consumption after restarts without reprocessing already-consumed events.
+- **Change Feed History Window**: The time range of change events accessible via the SDK. Default is 24 hours (portable across all providers). Extended history beyond 24 hours is capability-gated and requires provider-specific configuration or infrastructure.
+- **External Event Store**: A durable event streaming or storage system (e.g., Kafka, Kinesis, S3) used for DynamoDB extended change feed history. The customer populates this store from DynamoDB Streams using their own source connector (e.g., DynamoDB Streams → Kinesis, Kafka Connect, Debezium); the SDK reads from it when historical access beyond 24 hours is requested. The SDK does not archive or push events into the store.
+- **Provider Target Set**: The set of providers an application declares it intends to target. Defaults to all three (Cosmos DB, DynamoDB, Spanner) if not explicitly declared. Used at compile time to validate that all features in use are supported on the declared providers, and at CI time to enforce the 2-of-3 portability gate for releases.
+- **Capability Manifest**: A machine-readable declaration of all SDK features and their provider support status. Used by CI automation to enforce the 2-of-3 portability gate and by runtime to surface capability queries.
+- **Request Cost Metric**: A numeric value on SDK response objects representing the provider-native cost of an operation (e.g., Cosmos DB Request Units, DynamoDB consumed capacity units). Used for cost attribution, budget alerting, and query optimization.
+- **Typed Sort Key**: A sort key with an explicit type declaration (STRING, NUMERIC, or TIMESTAMP) that determines ordering semantics for range queries. Ensures correct natural ordering (numeric value order, chronological order) rather than defaulting to lexicographic string comparison.
+- **External Change Store Reader**: A portable, read-only abstraction for consuming change events from a customer-configured external store (Kafka, Kinesis, Event Hubs, Pub/Sub) that the customer's own source connector populates from the database. Exposes the same change-event model and checkpoint/resume semantics as the native change feed. Note: the SDK deliberately does not provide a *sink* that pushes events into such stores — landing data there is the customer's responsibility (see FR-144).
+- **Telemetry Span**: An OpenTelemetry span emitted for each SDK data-plane operation when telemetry is enabled. Contains standard attributes (operation type, provider, database, collection, duration, status) and participates in distributed tracing via W3C Trace Context propagation.
 
 ## Success Criteria *(mandatory)*
 
@@ -675,6 +977,18 @@ The following operators and functions form the portable query subset, available 
 - **SC-040**: An application using composite partition keys of `(tenantId, entityType)` can perform point reads, deletes, and queries scoped to the full composite key on all supported providers by changing configuration only.
 - **SC-041**: A query specifying only the leading prefix of a composite partition key (e.g., `tenantId` only) efficiently scopes to that prefix on providers supporting hierarchical partition keys, and falls back to filtered cross-partition scan with correct results on providers that do not.
 - **SC-042**: Attempting a point read with an incomplete composite partition key (missing one or more components) produces a clear, structured validation error before any provider call is made.
+- **SC-043**: A change feed consumer running 4 parallel instances against a 10+ partition collection achieves near-linear throughput scaling compared to a single-instance consumer. The same parallel consumption code works across all providers by configuration only.
+- **SC-044**: When a parallel consumer instance fails, its partitions are rebalanced to surviving instances within 30 seconds (configurable) and no events are lost.
+- **SC-045**: A change feed consumer can read events from 48 hours ago on Cosmos DB and Spanner when extended history is enabled. On DynamoDB with a configured external event store, the same 48-hour historical read works seamlessly.
+- **SC-046**: A change feed consumer with default configuration (no extended history) that requests changes older than 24 hours receives a clear, structured error indicating that extended history must be enabled.
+- **SC-047**: The CI portability gate rejects a release when any portable feature lacks conformance test coverage for at least 2 providers, clearly identifying the offending feature and missing provider.
+- **SC-048**: After any successful data-plane operation, the application can read the request cost metric from the response object. The value is a positive number reflecting the provider's native charge (RU, capacity units, etc.).
+- **SC-049**: A read operation with `LOCAL_QUORUM` consistency in a multi-region deployment returns data reflecting all writes acknowledged in the local region, on all supported providers.
+- **SC-050**: A collection with a NUMERIC sort key correctly orders range query results by numeric value (e.g., 2, 10, 100 — not "10", "100", "2") on all supported providers.
+- **SC-051**: When consistency downgrade retry is enabled and a STRONG read fails transiently, the SDK automatically retries at EVENTUAL and the response includes a diagnostic flag noting the downgrade.
+- **SC-052**: A change feed consumer reads change events from a customer-configured external store (e.g., a Kafka topic populated by the customer's own source connector) using the portable change-event model, and the same consumer configuration works regardless of database provider. The SDK does not push events into the store.
+- **SC-053**: When OpenTelemetry is enabled, every SDK operation emits a span visible in a standard OTLP collector with operation type, provider, database, collection, duration, and status attributes.
+- **SC-054**: A change feed consumer that checkpoints its position and restarts receives only events after the last checkpoint, with no skipped events (at-least-once delivery) on all supported providers.
 
 ## Assumptions
 
@@ -724,6 +1038,24 @@ The following operators and functions form the portable query subset, available 
 - **Composite key encoding**: Composite key support is additive to the existing key API: applications continue to create keys with `MulticloudDbKey.of(...)`, and when multiple partition-key components are needed they supply a composite partition-key value object such as `CompositePartitionKey.of("tenantId", "acme", "entityType", "order")` as the partition-key argument. For providers requiring a single partition key value (DynamoDB), composite components are encoded using a reversible URL-encoding scheme with a pipe (`|`) separator between encoded components. This ensures deterministic encoding/decoding and supports arbitrary character values in components. Example: `MulticloudDbKey.of(CompositePartitionKey.of("tenantId", "acme", "entityType", "order"), sortKey)` → partition key value `acme|order` (or `acme%7Cbar|order` if a component contains the separator).
 - **Composite key and existing `MulticloudDbKey.of(...)` compatibility**: The existing `MulticloudDbKey.of(partitionKey, sortKey)` API remains supported and is equivalent to a single-component partition key. Applications not using composite keys are unaffected. The composite key feature is additive and backward-compatible.
 - **Composite key Cosmos DB mapping**: Cosmos DB hierarchical partition keys (available in SDK v4.25+) support up to 3 levels of sub-partitioning. When a Cosmos DB collection is provisioned with hierarchical partition keys, the SDK maps composite key components directly to hierarchy levels. When the collection uses a traditional single partition key, the SDK concatenates components. Applications should align their Cosmos DB collection configuration with their composite key cardinality.
+- **Change feed 24-hour portable baseline**: The 24-hour change feed history window is the portable baseline because it represents the ceiling at which all three providers (Cosmos DB, DynamoDB, Spanner) deliver equivalent behavior and performance using only native provider capabilities. DynamoDB Streams expire records after 24 hours; Cosmos DB and Spanner retain changes for configurable longer periods. The SDK defaults to 24 hours to guarantee uniform cross-provider behavior.
+- **Change feed extended history — DynamoDB infrastructure requirement**: Extended change feed history on DynamoDB requires customer-provisioned external infrastructure (e.g., Kafka topic, Kinesis Firehose, S3) to persist stream events beyond the native 24-hour retention. The customer is responsible for provisioning and maintaining that infrastructure *and* for landing DynamoDB Streams events into it using their own source connector (e.g., DynamoDB Streams → Kinesis, Kafka Connect, Debezium). The SDK provides only the historical read interface (reading from the store); it does not push or archive events into it. Performance characteristics for DynamoDB historical reads may differ from native Cosmos DB/Spanner retention due to this indirection.
+- **Change feed extended history — Cosmos DB mode**: Extended history on Cosmos DB uses the "All Changes and Deletes" change feed mode, which provides full retention and delete tracking. This mode must be enabled on the Cosmos DB container (a provisioning concern outside the SDK's portable contract).
+- **Change feed extended history — Spanner retention**: Spanner change streams support configurable retention (default 7 days, up to the data retention period). For history beyond Spanner's configured retention, applications must use BigQuery export or similar external mechanisms outside the SDK's scope.
+- **Change feed parallelism — partition assignment**: Dynamic partition assignment (automatic rebalancing) relies on provider-specific mechanisms: Cosmos DB lease documents, DynamoDB stream shard management, Spanner partition tokens. The SDK abstracts these behind a uniform consumer group interface. Applications that require deterministic partition-to-consumer mapping can use static assignment mode.
+- **Provider target set — default behavior**: When no target set is declared, the SDK assumes all three providers are targeted. This ensures customers who are unaware of provider-specific limitations receive compile-time protection against accidentally using non-portable features.
+- **Provider target set — opt-in to reduced set**: Customers who intentionally target a subset (e.g., only Cosmos DB and DynamoDB) must explicitly declare this via static configuration. This opt-in acknowledges that certain features may not be portable to the excluded provider.
+- **Provider target set — compile-time enforcement**: Compile-time validation is the primary enforcement mechanism for application developers. CI-time enforcement (the 2-of-3 gate) applies to SDK releases, not to application builds.
+- **Provider target set — existing features**: The 2-of-3 portability gate applies to new features going forward. Existing features that were released before this policy was enacted are grandfathered and not subject to retroactive enforcement unless they undergo significant modification.
+- **Provider target set — provider-specific extensions**: Features explicitly declared as provider-specific extensions (e.g., Cosmos DB stored procedures, DynamoDB DAX caching) are exempt from the target set validation entirely. These must be accessed through the escape hatch/provider extension mechanism and are clearly documented as non-portable.
+- **Request cost metrics — availability**: Cost metrics are best-effort. Not all providers expose cost information for all operation types (e.g., Spanner may not expose per-operation cost for administrative operations). The SDK documents which operations expose cost metrics per provider.
+- **Request cost metrics — DynamoDB ReturnConsumedCapacity**: To receive cost metrics from DynamoDB, the SDK automatically adds `ReturnConsumedCapacity=TOTAL` to requests when cost metrics are enabled. This adds negligible overhead but applications should be aware it is included in the request.
+- **Local quorum consistency — semantic approximation**: `LOCAL_QUORUM` is a semantic approximation. The exact guarantees differ by provider (Cosmos DB Session is session-scoped, DynamoDB strong reads are region-local by nature, Spanner strong reads are globally linearizable). The SDK documents the specific native mapping for each provider so applications understand the actual guarantees they receive.
+- **Typed sort keys — encoding**: For providers that store sort keys as strings (DynamoDB S type), the SDK uses type-specific encoding to preserve natural ordering: zero-padded fixed-width numeric encoding for NUMERIC, ISO-8601 encoding for TIMESTAMP. The encoding scheme is deterministic and documented but adds a small overhead to key operations.
+- **Retry with consistency downgrade — scope**: Consistency downgrade retry applies only to read operations (read-by-key and query). Write operations are never automatically retried at a different consistency level.
+- **Change feed external store read — delivery semantics**: The SDK's read-only external-store consumer provides at-least-once delivery from the store, consistent with native change feed semantics. Exactly-once end-to-end processing depends on idempotent consumers and on the deduplication guarantees of the customer's own connector and store (e.g., Kafka idempotent producer). The SDK does not push events into the store and therefore makes no delivery guarantee on the ingestion side.
+- **OpenTelemetry — optional dependency**: The OpenTelemetry SDK is an optional runtime dependency. When not present on the classpath, telemetry features are no-ops. Applications that do not need telemetry incur no dependency or performance cost.
+- **Change feed delivery semantics — checkpoint granularity**: Checkpoints are per-partition. In parallel consumption scenarios, each consumer instance maintains independent checkpoints for its assigned partitions. The checkpoint store must support concurrent writes from multiple consumer instances without corruption.
 
 ## Acceptance Checklist
 
@@ -890,3 +1222,93 @@ This checklist is used to accept the feature as “done” at the spec level.
 - [ ] Composite partition key prefix queries are capability-gated and produce a diagnostic warning or error when the provider requires a cross-partition fallback.
 - [ ] The same composite key application code works across Cosmos DB, DynamoDB, and Spanner by changing configuration only.
 
+### Change Feed Parallelism
+
+- [ ] Multiple consumer instances can process a collection's change feed concurrently, with partitions distributed among instances.
+- [ ] When a consumer instance fails, its partitions are rebalanced to surviving instances within the configured timeout.
+- [ ] When a new consumer instance joins, partitions are redistributed without data loss or duplication.
+- [ ] Each consumer instance checkpoints independently per partition; restarting one instance does not affect others.
+- [ ] Parallel consumption throughput scales near-linearly with the number of consumer instances (for a sufficiently partitioned collection).
+- [ ] The same parallel consumption code works across Cosmos DB, DynamoDB, and Spanner by changing configuration only.
+- [ ] On providers without dynamic partition discovery, the SDK supports static partition assignment with documented limitations.
+
+### Change Feed History Retention
+
+- [ ] Default configuration limits change feed access to 24 hours; requests beyond that produce a clear error.
+- [ ] On Cosmos DB with extended history enabled, changes older than 24 hours are accessible via the native "All Changes and Deletes" mode.
+- [ ] On Spanner with extended history enabled, changes older than 24 hours are accessible via native change stream retention.
+- [ ] On DynamoDB with extended history enabled, changes older than 24 hours are accessible by reading from a customer-maintained external store (populated by the customer's own connector).
+- [ ] Delete events are included in extended history streams on all providers when delete tracking is configured.
+- [ ] The SDK does NOT push or archive events into the DynamoDB external store; populating it is the customer's responsibility via their own source connector.
+- [ ] Extended history is capability-gated and documents DynamoDB's different performance characteristics clearly.
+- [ ] The same consumer code reads extended history across all three providers by changing configuration only.
+
+### Provider Target Set / Portability Gating
+
+- [ ] When no provider target set is declared, the SDK defaults to all three providers (Cosmos DB, DynamoDB, Spanner).
+- [ ] Using a feature supported on only 2 of 3 providers WITHOUT declaring a target set produces a compile-time error.
+- [ ] The compile-time error message identifies the unsupported feature and the provider(s) lacking support.
+- [ ] Declaring a target set of [Cosmos DB, DynamoDB] allows use of features supported on those 2 providers without error.
+- [ ] Using a feature not supported on a provider in the declared target set produces a compile-time error.
+- [ ] Features marked as provider-specific extensions are only accessible via the escape hatch, regardless of target set.
+- [ ] A machine-readable capability manifest maps features to provider support status.
+- [ ] A CI gate validates that every portable feature has conformance test coverage for at least 2 of 3 providers (release gate).
+- [ ] Regressions in provider conformance tests block release until resolved.
+
+### Request Cost Metrics
+
+- [ ] Every successful data-plane response includes a numeric cost metric reflecting the provider's native request charge.
+- [ ] Cost metrics are available for both write and query operations on all supported providers.
+- [ ] When a provider does not expose cost for a specific operation type, the cost field is null (not an error).
+- [ ] For bulk operations, aggregate cost metrics are available; per-item breakdown is available where the provider supports it.
+- [ ] Cost metrics are included in diagnostic log lines when diagnostics logging is enabled.
+- [ ] The same cost-reading code works across all providers by configuration only.
+
+### Local Quorum Consistency
+
+- [ ] A `LOCAL_QUORUM` consistency level is available as a per-operation read override.
+- [ ] Reads with `LOCAL_QUORUM` return data reflecting all writes acknowledged in the local region on all supported providers.
+- [ ] In single-region deployments, `LOCAL_QUORUM` behaves equivalently to `STRONG`.
+- [ ] On providers without a direct `LOCAL_QUORUM` equivalent, the closest native level is selected and a diagnostic notes the approximation.
+- [ ] The same `LOCAL_QUORUM` code works across all providers by changing configuration only.
+
+### Typed Composite Sort Keys
+
+- [ ] Sort key type (STRING, NUMERIC, TIMESTAMP) can be declared via collection-level configuration.
+- [ ] Range queries on NUMERIC sort keys return results in numeric value order (not lexicographic).
+- [ ] Range queries on TIMESTAMP sort keys return results in chronological order.
+- [ ] Storing a value that doesn't match the configured sort key type produces a clear validation error.
+- [ ] Collections without explicit sort key type config continue to use STRING semantics (backward compatible).
+- [ ] The same typed sort key code works across all providers by changing configuration only.
+
+### Retry with Consistency Downgrade
+
+- [ ] Configuration enables automatic EVENTUAL retry on transient STRONG read failures.
+- [ ] Successful downgraded retries include a diagnostic flag indicating the consistency was reduced.
+- [ ] Consistency downgrade is disabled by default; explicit opt-in is required.
+- [ ] When both STRONG and EVENTUAL attempts fail, the original STRONG error is returned.
+
+### Change Feed Read from External Store (Read-Only)
+
+- [ ] A read-only abstraction consumes change events from a customer-configured external store using the portable change-event model.
+- [ ] The SDK does NOT provide a sink that pushes, forwards, or archives change events into an external store (populating it is the customer's responsibility via their own source connector).
+- [ ] Reading from the external store provides at-least-once delivery with checkpoint/resume, consistent with native change feed semantics.
+- [ ] An unavailable external store, or contents that don't match the expected change-event shape, surfaces a clear provider-neutral error.
+- [ ] The same external-store read configuration works regardless of which database provider sourced the changes.
+
+### Telemetry / Observability
+
+- [ ] OpenTelemetry integration is enabled/disabled via configuration only (no code hooks).
+- [ ] When enabled, every SDK data-plane operation emits a span with standard attributes (operation, provider, db, collection, duration, status).
+- [ ] Metrics are emitted for latency, throughput, error rate, and request cost.
+- [ ] W3C Trace Context is propagated so SDK spans appear as children in distributed traces.
+- [ ] When disabled (default), no telemetry overhead is incurred.
+- [ ] Bulk operations emit a parent span with child spans/events for individual batches.
+
+### Change Feed Delivery Semantics
+
+- [ ] At-least-once delivery: every committed change is delivered to the consumer at least once.
+- [ ] Checkpoint API allows durable recording of consumption position (provider-neutral tokens).
+- [ ] After restart, consumption resumes from the last checkpoint with no events skipped.
+- [ ] Checkpoint store is configurable (same database or external store).
+- [ ] In parallel consumption, checkpoints are per-partition and per-instance without interference.
