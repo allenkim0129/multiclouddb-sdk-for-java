@@ -89,6 +89,7 @@ public final class PerfMain {
         int repeat     = Math.max(1, intOpt(opt, "repeat", 1));
         int cosmosRu   = intOpt(opt, "cosmos-ru", 0);           // 0 = leave provisioning as-is
         boolean enableDynamoStreams = opt.containsKey("enable-dynamo-streams");
+        int splitWaitSeconds = intOpt(opt, "split-wait-seconds", 0); // pause after a Cosmos RU raise
 
         String batchId = opt.getOrDefault("title",
                 Instant.now().toString().replace(":", "-").replaceAll("\\..*", "Z") + "-batch");
@@ -129,6 +130,27 @@ public final class PerfMain {
                 // Opt-in, cost-incurring provisioning admin (only when the operator asks).
                 if (cosmosRu > 0 && "cosmos".equals(providerId)) {
                     ProvisioningAdmin.ensureCosmosThroughput(cfg, database, collection, cosmosRu);
+                    // A Cosmos physical-partition split is asynchronous and takes minutes to
+                    // complete after the RU raise. Waiting here lets listCursors observe the new
+                    // partition count within THIS run (needed for the multi-partition change feed).
+                    if (splitWaitSeconds > 0) {
+                        System.out.printf(Locale.ROOT,
+                                "-- waiting %ds for the Cosmos partition split to complete ...%n",
+                                splitWaitSeconds);
+                        try {
+                            Thread.sleep(splitWaitSeconds * 1000L);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                        }
+                        // Re-probe so the report records the post-split provisioning/partition state.
+                        MetadataProbe.Meta after = MetadataProbe.probe(
+                                providerId, cfg, database, collection, region, provisioned);
+                        region = after.region();
+                        provisioned = after.provisionedCapacity();
+                        System.out.printf(Locale.ROOT,
+                                "-- post-split metadata: region=%s provisioned=%s%n",
+                                region, provisioned.isBlank() ? "(none)" : provisioned);
+                    }
                 }
                 if (enableDynamoStreams && "dynamo".equals(providerId)) {
                     ProvisioningAdmin.ensureDynamoStreams(cfg, database, collection);
@@ -337,7 +359,7 @@ public final class PerfMain {
               run     [--config-dir DIR] [--providers cosmos,dynamo,spanner]
                       [--scenarios S1,S3,S4,S5,S6] [--threads 1,8,32]
                       [--warmup N] [--iterations N] [--doc-size BYTES] [--page-size N]
-                      [--repeat N] [--cosmos-ru RU] [--enable-dynamo-streams]
+                      [--repeat N] [--cosmos-ru RU] [--split-wait-seconds N] [--enable-dynamo-streams]
                       [--out multiclouddb-perf/results/raw] [--reports multiclouddb-perf/results/reports] [--title NAME]
               report  [--raw multiclouddb-perf/results/raw] [--reports multiclouddb-perf/results/reports]
                       [--run BATCH_ID] [--combined [--title NAME]] [--baseline PROVIDER]
@@ -349,7 +371,10 @@ public final class PerfMain {
             --cosmos-ru RU raises the Cosmos container to RU manual throughput before running
             (splits into multiple physical partitions above ~10K RU/s) — COSTS MONEY.
             --enable-dynamo-streams turns on a NEW_AND_OLD_IMAGES stream on the Dynamo table so the
-            portable change feed (S7) is supported — COSTS MONEY. Both are opt-in and off by default.
+            portable change feed (S7) is supported — COSTS MONEY. All are opt-in and off by default.
+            --split-wait-seconds N pauses N seconds after a --cosmos-ru raise so the asynchronous
+            physical-partition split completes before scenarios run (use ~480 for a 4000->11000 split),
+            letting the change feed observe the extra partitions within the same run.
 
             'run' and 'cleanup' hit live accounts and refuse to run in CI (override: PERF_ALLOW_CI=1).
             'report' is offline. By default it writes ONE report per run (batch) found under --raw,
