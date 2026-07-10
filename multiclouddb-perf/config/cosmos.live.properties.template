@@ -1,0 +1,13 @@
+# Copy to cosmos.live.properties (gitignored) and fill in LIVE account values.
+multiclouddb.provider=cosmos
+multiclouddb.connection.endpoint=https://<your-account>.documents.azure.com:443/
+multiclouddb.connection.key=<primary-key>
+multiclouddb.connection.connectionMode=gateway
+multiclouddb.connection.requestTimeoutSeconds=30
+multiclouddb.database=perfdb
+multiclouddb.collection=perf
+
+# Perf report metadata (optional; recorded in the report Environment table).
+multiclouddb.region=eastus
+multiclouddb.provisionedCapacity=400 RU/s (or autoscale max)
+multiclouddb.sdkVersion=dev

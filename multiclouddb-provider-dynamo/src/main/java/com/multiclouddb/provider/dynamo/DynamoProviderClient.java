@@ -578,7 +578,8 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
 
             ExecuteStatementRequest.Builder stmtBuilder = ExecuteStatementRequest.builder()
                     .statement(stmt)
-                    .limit(pageSize);
+                    .limit(pageSize)
+                    .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL);
 
             if (!params.isEmpty()) stmtBuilder.parameters(params);
             if (query.continuationToken() != null && !query.continuationToken().isBlank()) {
@@ -637,7 +638,8 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
 
         ExecuteStatementRequest.Builder stmtBuilder = ExecuteStatementRequest.builder()
                 .statement(statement)
-                .limit(pageSize);
+                .limit(pageSize)
+                .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL);
 
         if (!params.isEmpty()) stmtBuilder.parameters(params);
         if (nextToken != null && !nextToken.isBlank()) stmtBuilder.nextToken(nextToken);

@@ -42,6 +42,7 @@
         <module>multiclouddb-provider-spanner</module>
         <module>multiclouddb-conformance</module>
         <module>multiclouddb-e2e</module>
+        <module>multiclouddb-perf</module>
     </modules>
 
     <properties>
