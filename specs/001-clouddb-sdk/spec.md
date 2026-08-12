@@ -226,11 +226,11 @@ As an application developer, I can specify a read consistency level (e.g., stron
 
 **Why this priority**: Different read operations within the same application often have different consistency requirements (e.g., strong reads for financial balances, eventual reads for analytics dashboards). All three providers support configurable read consistency, but with different native models. A portable abstraction enables applications to express consistency intent without coupling to provider-specific APIs.
 
-**Independent Test**: A sample application can issue a strongly consistent read and an eventually consistent read against any provider by changing only the consistency parameter on the request, and the SDK maps to the provider's native consistency mechanism.
+**Independent Test**: A sample application can issue legacy `STRONG` and `EVENTUAL` reads on every provider/operation/topology that advertises the corresponding FR-163 guarantee. Unsupported combinations return `UNSUPPORTED_CAPABILITY` before execution.
 
 **Acceptance Scenarios**:
 
-1. **Given** a read operation with consistency level set to STRONG, **When** executed against any provider, **Then** the provider uses its native strongly consistent read mechanism and the returned data reflects all prior acknowledged writes.
+1. **Given** a read operation with legacy consistency level set to `STRONG`, **When** the provider, operation, index, SDK mode/version, and topology advertise `GLOBAL_STRONG`, **Then** the provider uses its native globally strong mechanism and the read observes every write committed before it began.
 2. **Given** a read operation with consistency level set to EVENTUAL, **When** executed against any provider, **Then** the provider uses its native eventually consistent read mechanism, potentially returning slightly stale data with lower latency.
 3. **Given** a read operation with no consistency override, **When** executed, **Then** the provider's default consistency behavior applies (maintaining backward compatibility).
 4. **Given** a provider that does not support the requested consistency level, **When** the operation is submitted, **Then** the SDK raises a clear error indicating the unsupported consistency level.
@@ -295,7 +295,7 @@ As an application developer, I can define and use composite partition keys (part
 
 As an application developer, I can consume a collection's change feed across multiple partitions concurrently so that my event-driven workloads (e.g., position updates, account reconciliation) can scale processing throughput linearly with partition count.
 
-**Why this priority**: BlackRock's event-driven architecture processes millions of position updates daily. Sequential single-partition change feed consumption creates a bottleneck that blocks real-time derived data computation. All three target providers support partitioned change feed consumption natively (Cosmos DB lease-based partition assignment, DynamoDB per-shard iterators, Spanner partition-based change streams), but the current SDK only exposes a single-stream serial consumer.
+**Why this priority**: Large-scale event-driven architectures process millions of updates daily. Sequential single-partition change feed consumption creates a bottleneck that blocks real-time derived data computation. All three target providers support partitioned change feed consumption natively (Cosmos DB lease-based partition assignment, DynamoDB per-shard iterators, Spanner partition-based change streams), but the current SDK only exposes a single-stream serial consumer.
 
 **Independent Test**: A sample application consumes changes from a collection with 10+ logical partitions using 4 concurrent consumers. Throughput scales near-linearly compared to a single consumer. The same code works across all providers by configuration only.
 
@@ -313,7 +313,7 @@ As an application developer, I can consume a collection's change feed across mul
 
 As an application developer, I can consume change feed events older than 24 hours when my provider and configuration support it, so that my application can replay historical changes for recovery, auditing, or late-arriving event processing without external infrastructure (on providers that support it natively) or by reading from a customer-managed external store (on providers that don't).
 
-**Why this priority**: The 24-hour window is the portable baseline where all three providers deliver equivalent behavior and performance natively. Beyond that, Cosmos DB and Spanner provide unbounded or configurable retention out of the box, but DynamoDB Streams expire after 24 hours. BlackRock requires multi-day replay for reconciliation workflows. The SDK must provide a uniform interface for extended history while being transparent about performance and infrastructure trade-offs.
+**Why this priority**: The 24-hour window is the portable baseline where all three providers deliver equivalent behavior and performance natively. Beyond that, Cosmos DB and Spanner provide unbounded or configurable retention out of the box, but DynamoDB Streams expire after 24 hours. Many enterprise workloads require multi-day replay for reconciliation workflows. The SDK must provide a uniform interface for extended history while being transparent about performance and infrastructure trade-offs.
 
 **Independent Test**: A sample application reads changes from 48 hours ago. On Cosmos DB and Spanner, this works with a config flag only. On DynamoDB, the application configures an external event store (e.g., Kafka topic) and the SDK reads historical events from that store seamlessly.
 
@@ -351,7 +351,7 @@ As an application developer, I can declare which providers my application target
 
 As an application developer, I can access the provider-native request cost (e.g., RU charge, consumed capacity units) on every SDK response so that I can implement cost attribution, budget alerting, and query optimization in my observability pipeline.
 
-**Why this priority**: BlackRock requires cost visibility per operation for chargeback to internal teams and for identifying expensive queries. All three providers expose request cost natively (Cosmos DB Request Units, DynamoDB consumed read/write capacity units, Spanner operation cost metadata), but the current SDK does not surface these on response objects.
+**Why this priority**: Enterprise platform teams require cost visibility per operation for chargeback to internal teams and for identifying expensive queries. All three providers expose request cost natively (Cosmos DB Request Units, DynamoDB consumed read/write capacity units, Spanner operation cost metadata), but the current SDK does not surface these on response objects.
 
 **Independent Test**: A sample application performs a write and a query, then reads the cost metric from each response. The metric is a positive numeric value on all providers. The same code works across providers by configuration only.
 
@@ -366,18 +366,18 @@ As an application developer, I can access the provider-native request cost (e.g.
 
 ### User Story 18 - Local Quorum Consistency (Priority: P1)
 
-As an application developer, I can specify a `LOCAL_QUORUM` consistency level for read operations so that in multi-region deployments I get strong-within-region consistency without the latency penalty of cross-region strong reads.
+As an application developer, I can specify a `LOCAL_QUORUM` consistency level for read operations so that a read returns the latest write committed in the serving region as of the start of the read, without requiring cross-region visibility.
 
-**Why this priority**: BlackRock operates in multi-region deployments where global strong consistency is too expensive for most reads, but eventual consistency is too weak for financial data. An intermediate level that provides strong reads within the local region satisfies most use cases. Cosmos DB Session/Bounded Staleness, DynamoDB strongly consistent reads (region-local), and Spanner strong reads (region-local with single-region config) all approximate this semantic.
+**Why this priority**: Enterprise customers operate in multi-region deployments where global strong consistency is too expensive for most reads, but eventual consistency is too weak for critical data. The portable minimum is latest-committed visibility in the region serving the read. Cosmos DB `LATEST_COMMITTED`, DynamoDB strongly consistent reads, and Spanner strong reads satisfy this minimum. Spanner supplies the stronger guarantee of global external consistency; using a stronger native guarantee is allowed, but using Session or Bounded Staleness as a weaker approximation is not.
 
 **Independent Test**: A write followed immediately by a `LOCAL_QUORUM` read in the same region returns the written data. The same code works across providers by configuration only.
 
 **Acceptance Scenarios**:
 
-1. **Given** a multi-region deployment, **When** a read is performed with `LOCAL_QUORUM` consistency, **Then** the read reflects all writes acknowledged in the local region.
-2. **Given** a provider that maps `LOCAL_QUORUM` to a native consistency level, **When** the mapping is applied, **Then** the selected native level is documented and the behavior matches the semantic (strong-within-region).
+1. **Given** a multi-region deployment, **When** a read is performed with `LOCAL_QUORUM` consistency, **Then** the read reflects every write committed in the serving region before the read began.
+2. **Given** a provider that maps `LOCAL_QUORUM` to a native consistency level, **When** the mapping is applied, **Then** the selected native level is documented and meets or exceeds latest-committed visibility in the serving region.
 3. **Given** a single-region deployment, **When** `LOCAL_QUORUM` is specified, **Then** the behavior is equivalent to `STRONG` consistency (no distinction needed).
-4. **Given** a provider that does not have a direct `LOCAL_QUORUM` equivalent, **When** `LOCAL_QUORUM` is requested, **Then** the SDK selects the closest available consistency level and emits a diagnostic noting the approximation.
+4. **Given** a provider, operation, SDK mode, or deployment topology that cannot meet the `LOCAL_QUORUM` minimum, **When** `LOCAL_QUORUM` is requested, **Then** the SDK returns a provider-neutral unsupported-capability error before executing the read and never substitutes Session, bounded-staleness, or eventual semantics.
 
 ---
 
@@ -439,7 +439,7 @@ As an application developer, I can point the SDK's change feed reader at an exte
 
 As an application developer, I can enable OpenTelemetry integration so that every SDK operation emits spans, metrics, and distributed tracing context, allowing me to monitor latency, throughput, error rates, and cost through my existing observability stack.
 
-**Why this priority**: BlackRock's platform requires standardized observability for all infrastructure components. Without built-in telemetry, teams must instrument SDK calls manually, leading to inconsistent metrics and blind spots. OpenTelemetry is the industry standard supported by all major observability backends (Datadog, Prometheus, Azure Monitor, etc.).
+**Why this priority**: Enterprise platforms require standardized observability for all infrastructure components. Without built-in telemetry, teams must instrument SDK calls manually, leading to inconsistent metrics and blind spots. OpenTelemetry is the industry standard supported by all major observability backends (Datadog, Prometheus, Azure Monitor, etc.).
 
 **Independent Test**: A sample application enables OpenTelemetry via SDK configuration. After performing CRUD operations, spans are visible in a local Jaeger/OTLP collector with operation name, duration, status, provider, database, and collection attributes. Same code works across providers.
 
@@ -471,6 +471,76 @@ As an application developer, I can configure change feed delivery semantics (at-
 
 ---
 
+### User Story 24 - Portable Consistency Level Abstraction (Priority: P0)
+
+As an application developer, I can select a read consistency level from a portable, provider-neutral enumeration — `EVENTUAL`, `LOCAL_QUORUM` (latest committed in the serving region), and `GLOBAL_STRONG` (linearizable across regions) — per operation, so that the same application code expresses a testable minimum guarantee on every provider.
+
+**Why this priority**: Consistency is a first-class correctness concern for transactional workloads. Today the only consistency selection actually shipped is a provider-specific connection override (Cosmos DB `consistencyLevel`), which is neither portable nor per-operation. Applications migrating from data stores with explicit tunable consistency (e.g., Cassandra `LOCAL_QUORUM` / `EACH_QUORUM` / `ALL`) need an equivalent portable abstraction, including a global-strong tier for the minority of reads that require cross-region linearizability.
+
+**Independent Test**: A conformance matrix covering provider × operation × index type × SDK mode/version × deployment topology × consistency level exercises every advertised combination and verifies its minimum guarantee. Every unadvertised combination, including `GLOBAL_STRONG` on a DynamoDB MREC global table and strong reads on a GSI, returns `UNSUPPORTED_CAPABILITY` before execution.
+
+**Acceptance Scenarios**:
+
+1. **Given** the portable consistency enumeration, **When** an application selects a level per operation (via operation options) or as a client default, **Then** the SDK applies it uniformly across all providers without provider-specific code.
+2. **Given** `GLOBAL_STRONG` on a multi-region deployment, **When** a read is performed after an acknowledged write, **Then** the read reflects that write regardless of the region serving it, using the provider's cross-region strong mechanism.
+3. **Given** a provider whose native model offers a stronger guarantee than requested, **When** the level is applied, **Then** the SDK may use that stronger guarantee and documents the mapping and its cost/latency implications.
+4. **Given** a consistency level the selected combination cannot satisfy (e.g., `GLOBAL_STRONG` on a DynamoDB MREC global table or GSI), **When** it is requested, **Then** the SDK surfaces a clear, provider-neutral capability error rather than silently downgrading.
+5. **Given** no consistency level is specified, **When** an operation runs, **Then** the provider's account/default consistency applies (backward compatible).
+
+---
+
+### User Story 25 - Request Hedging / Availability Strategy (Priority: P1)
+
+As an application developer, I can enable request hedging (a portable "availability strategy") so that read latency tails are reduced by issuing a secondary request when a primary read exceeds a configurable latency threshold, using each provider's native tail-latency mechanism.
+
+**Why this priority**: Tail latency directly affects user-facing SLAs and is a common differentiator when comparing against tuned source systems (e.g., Cassandra speculative execution). Cosmos DB exposes an availability strategy (cross-region hedging); other providers have analogous or region-local mechanisms. This is a configuration-only optimization not currently exposed portably.
+
+**Independent Test**: A sample enables one hedge per logical read with a threshold set between P99 and max-tolerable latency, drives read load, and observes reduced tail latency while diagnostics report the hedge rate and request-amplification ratio. Same configuration works across providers that support it.
+
+**Acceptance Scenarios**:
+
+1. **Given** hedging enabled with a latency threshold, **When** a read exceeds the threshold, **Then** the SDK issues at most one secondary request and returns the first successful response.
+2. **Given** hedging enabled, **When** reads complete within the threshold, **Then** no secondary request is issued (negligible cost overhead).
+3. **Given** a single-region deployment on a provider whose hedging is cross-region only, **When** hedging is enabled, **Then** the SDK returns a provider-neutral unsupported-capability error before executing reads.
+4. **Given** a provider that does not support request hedging, **When** it is enabled, **Then** the feature is capability-gated and the SDK surfaces a clear indication rather than silently doing nothing.
+
+---
+
+### User Story 26 - Read-Through Caching for Hot Reads (Priority: P1)
+
+As an application developer, I can opt into a read-through cache for hot, repeatedly-read items so that repeated point reads of the same item are served from a provider-managed cache, reducing request cost and read latency.
+
+**Why this priority**: Workloads that repeatedly read the same records (reference/matrix data, configuration) incur disproportionate request-unit/capacity cost. Providers offer managed caches (Cosmos DB integrated cache, DynamoDB DAX) that are transparent to application code; exposing this as a portable, capability-gated opt-in materially improves cost and latency without changing read/write code.
+
+**Independent Test**: A sample repeatedly reads the same item with caching enabled and observes reduced request cost/latency on cache hits (verifiable via diagnostics), with a configurable staleness/eviction bound. Same opt-in works on providers that support it.
+
+**Acceptance Scenarios**:
+
+1. **Given** read-through caching enabled on a supporting provider, **When** the same item is read repeatedly within the staleness window, **Then** subsequent reads are served from cache at reduced cost/latency.
+2. **Given** caching enabled, **When** the configured staleness/eviction bound is exceeded, **Then** the next read refreshes from the origin store.
+3. **Given** a provider without a managed read cache, **When** caching is requested, **Then** the SDK returns a provider-neutral unsupported-capability error before executing reads. Uncached fallback is available only through a separate, explicit fallback policy.
+4. **Given** caching enabled, **When** application read/write code runs, **Then** no code changes are required beyond configuration (the cache is transparent to the data-plane API).
+
+---
+
+### User Story 27 - Portable Secondary Lookup and Text Search (Priority: P2)
+
+As an application developer, I can perform portable secondary lookups and, separately, portable full-text searches over configured fields without conflating structured index predicates with tokenized text matching.
+
+**Why this priority**: Applications frequently need both operational lookups by alternate scalar keys and tokenized text retrieval. All three providers support structured secondary-index lookups, while Cosmos DB and Spanner provide native full-text search and DynamoDB does not. Separate `SECONDARY_SEARCH` and `TEXT_SEARCH` capabilities prevent a provider from advertising one behavior merely because it supports the other.
+
+**Independent Test**: A conformance corpus independently verifies secondary equality/range predicates and text `ALL_TERMS`/`ANY_TERM` matching. Each provider must pass the relevant corpus before advertising that capability; DynamoDB rejects `TEXT_SEARCH` before execution.
+
+**Acceptance Scenarios**:
+
+1. **Given** a configured secondary index, **When** an application supplies equality on its lookup key and optional equality/range predicates (`=`, `<`, `<=`, `>`, `>=`, `BETWEEN`) on its sort field, **Then** `SECONDARY_SEARCH` returns exactly the matching committed items; result order is unspecified unless a separately supported `ORDER BY` is requested.
+2. **Given** a configured text field and canonical analyzer profile, **When** `TEXT_SEARCH` uses `ALL_TERMS` or `ANY_TERM`, **Then** matching is case-insensitive over whole normalized tokens, no relevance ordering is implied, and the result set matches the shared conformance corpus.
+3. **Given** a provider that cannot implement the requested search type or analyzer profile, **When** the search is requested, **Then** the SDK raises a provider-neutral unsupported-capability error before execution; it never substitutes a scan, substring predicate, or a different search type.
+4. **Given** an application target set, **When** it uses either search type, **Then** the portability gate validates `SECONDARY_SEARCH` and `TEXT_SEARCH` independently for every target provider.
+5. **Given** scoring, fuzzy matching, phrase/proximity search, provider-specific analyzers, or semantic/vector search, **When** requested, **Then** each is a separately capability-gated extension and is not implied by portable `TEXT_SEARCH`.
+
+---
+
 ### Edge Cases
 
 - What happens when the key model differs by provider (e.g., partitioned keys vs composite primary keys)?
@@ -480,8 +550,9 @@ As an application developer, I can configure change feed delivery semantics (at-
   level when no override is specified, rather than hardcoding SESSION. An optional
   `consistencyLevel` connection config key allows per-client-instance read overrides
   (≤ account default). DynamoDB and other providers use their own native defaults;
-  consistency configuration is intentionally provider-specific at this time. A portable
-  consistency hint via `OperationOptions` is deferred to a future release.
+  this legacy provider-specific configuration remains for backward compatibility. The
+  preferred portable contract is the `EVENTUAL` / `LOCAL_QUORUM` / `GLOBAL_STRONG`
+  enumeration in FR-163–FR-168, selectable through `OperationOptions` when implemented.
 - How does the SDK handle throttling, quota exhaustion, and rate limits across providers?
 - What happens when a collection/database does not exist, or exists with incompatible settings? The SDK provides `ensureDatabase` and `ensureContainer` methods that create resources idempotently, but does not handle incompatible settings (e.g., different partition key paths on an existing container).
 - What happens when `ensureContainer` is called concurrently from multiple processes? Each provider implementation must handle race conditions gracefully (e.g., catching "already exists" exceptions).
@@ -694,13 +765,10 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 
 #### Read Consistency Level Requirements
 
-- **FR-077**: Read operations (`read` and `query`) MUST support an optional consistency level override that specifies the desired read consistency for that individual operation.
-  - *Implementation status (2026-04):* delivered as a per-client-instance override via Cosmos DB connection config (`consistencyLevel`); a portable per-call override on `OperationOptions` is tracked as deferred future work (see Edge Cases — *default consistency behaviors*).
-- **FR-078**: The SDK MUST define a portable consistency model with at minimum two levels: `STRONG` (linearizable / strongly consistent read) and `EVENTUAL` (eventually consistent read). Providers MAY also expose additional provider-specific consistency levels, but those levels are non-portable and MUST be selectable only through provider-specific configuration so that applications using only the portable SDK surface remain switchable by configuration only.
-- **FR-079**: Each provider adapter MUST map the portable consistency levels to the provider's native equivalent:
-  - **Cosmos DB**: `STRONG` → `Strong` consistency level; `EVENTUAL` → `Eventual` consistency level.
-  - **DynamoDB**: `STRONG` → `ConsistentRead = true`; `EVENTUAL` → `ConsistentRead = false`.
-  - **Spanner**: `STRONG` → strong read (default); `EVENTUAL` → stale read with a provider-configured staleness bound.
+- **FR-077**: Read operations (`read` and `query`) MUST support the optional per-operation consistency override defined by FR-163–FR-168.
+  - *Implementation status (2026-04):* the shipped Cosmos DB `consistencyLevel` connection setting is a legacy per-client override. It remains backward compatible but does not replace the preferred portable per-call `OperationOptions` contract.
+- **FR-078**: The legacy `STRONG` / `EVENTUAL` model MUST remain source-compatible. Legacy `STRONG` is an alias for `GLOBAL_STRONG` because its documented guarantee is linearizability; it MUST NOT be remapped to `LOCAL_QUORUM`. New portable code SHOULD use the FR-163 enumeration.
+- **FR-079**: Legacy aliases MUST use the FR-165 mappings and capability checks. A legacy `STRONG` request on a provider, operation, or topology that cannot provide `GLOBAL_STRONG` MUST fail with `UNSUPPORTED_CAPABILITY` rather than silently weaken the guarantee.
 - **FR-080**: When a requested consistency level is not supported by the provider (e.g., a provider-specific level on an incompatible provider), the SDK MUST raise a clear, capability-gated error.
 - **FR-081**: When no consistency override is specified on a read operation, the provider's default consistency behavior MUST apply, maintaining backward compatibility with existing behavior.
 
@@ -791,13 +859,13 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 
 #### Local Quorum Consistency Requirements
 
-- **FR-131**: The SDK MUST define a `LOCAL_QUORUM` portable consistency level representing strong-within-region read semantics for multi-region deployments.
-- **FR-132**: Each provider adapter MUST map `LOCAL_QUORUM` to the closest available native consistency level:
-  - **Cosmos DB**: `Session` consistency (or `Bounded Staleness` for stronger guarantees in multi-region writes).
-  - **DynamoDB**: Strongly consistent read (inherently region-local in DynamoDB's single-region write model).
-  - **Spanner**: Strong read (inherently provides this guarantee in single-region configurations; in multi-region, maps to a strong read with closest-region routing).
+- **FR-131**: The SDK MUST define `LOCAL_QUORUM` as a read that observes every write committed in the region serving the read before that read began. It does not guarantee visibility of writes acknowledged only in another region.
+- **FR-132**: Each provider adapter MUST use a native guarantee that meets or exceeds FR-131:
+  - **Cosmos DB**: `ReadConsistencyStrategy.LATEST_COMMITTED`, where supported; Session and Bounded Staleness do not satisfy FR-131.
+  - **DynamoDB**: `ConsistentRead = true` on a table or local secondary index. Global secondary indexes do not support this level.
+  - **Spanner**: a strong read. This is stronger than FR-131 because it observes all transactions committed before the read regardless of replica or region.
 - **FR-133**: When `LOCAL_QUORUM` is specified in a single-region deployment, the behavior MUST be equivalent to `STRONG` consistency.
-- **FR-134**: When a provider's native consistency model does not have a direct `LOCAL_QUORUM` equivalent, the SDK MUST select the closest available level and MUST emit a diagnostic log entry noting the approximation.
+- **FR-134**: If the provider, operation, SDK mode/version, index type, or deployment cannot meet FR-131, the SDK MUST fail before execution with `UNSUPPORTED_CAPABILITY`. A stronger mapping is permitted and documented; a weaker approximation is forbidden.
 
 #### Typed Composite Sort Key Requirements
 
@@ -844,6 +912,39 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 - **FR-158**: After a consumer restart, the SDK MUST resume consumption from the last stored checkpoint. Events between the last checkpoint and the restart MUST be redelivered (at-least-once guarantee).
 - **FR-159**: In parallel consumption scenarios (FR-109), checkpoints MUST be per-partition. Each consumer instance MUST checkpoint its assigned partitions independently without interfering with other instances.
 
+#### Portable Consistency Abstraction Requirements
+
+- **FR-163**: The SDK MUST define a preferred portable, provider-neutral read consistency enumeration with the following minimum guarantees: `EVENTUAL` permits committed but stale data with eventual convergence; `LOCAL_QUORUM` has the FR-131 latest-locally-committed guarantee; `GLOBAL_STRONG` is linearizable and observes every write committed before the read began regardless of serving region. The legacy FR-078 aliases remain supported for backward compatibility.
+- **FR-164**: The consistency level MUST be selectable both as a client-level default and per operation via `OperationOptions`. When no level is specified, the provider's account/native default MUST apply (backward compatible).
+- **FR-165**: Each provider adapter MUST map a level only to a native guarantee that meets or exceeds its minimum and MUST document operation/topology restrictions:
+  - **Cosmos DB**: `EVENTUAL` → Eventual; `LOCAL_QUORUM` → `LATEST_COMMITTED`; `GLOBAL_STRONG` → `GLOBAL_STRONG`/Strong. The newer read-consistency strategies are preview, direct-mode features and are capability-gated by SDK version, connection mode, and account topology.
+  - **DynamoDB**: `EVENTUAL` → `ConsistentRead = false`; `LOCAL_QUORUM` → `ConsistentRead = true` on tables/LSIs; `GLOBAL_STRONG` → `ConsistentRead = true` only on an MRSC global table. MREC global tables and GSIs do not satisfy `GLOBAL_STRONG`.
+  - **Spanner**: `EVENTUAL` → a stale read using the configured exact/bounded staleness; both `LOCAL_QUORUM` and `GLOBAL_STRONG` → strong read. Spanner's mapping intentionally collapses the two stronger levels to its globally externally consistent native guarantee.
+- **FR-166**: Portable consistency levels MUST be capability-gated by provider, operation, index type, SDK mode/version, and deployment topology. An unsatisfied request MUST fail before execution with a provider-neutral `UNSUPPORTED_CAPABILITY` error and MUST NOT silently substitute a weaker level.
+- **FR-167**: A provider MAY satisfy a requested level with a stronger native guarantee. Diagnostics and documentation MUST identify the native guarantee and material cost/latency differences; weaker approximations are prohibited.
+- **FR-168**: The SDK MUST document provider-specific read cost, latency, and topology implications. At minimum: Cosmos Strong/Bounded Staleness reads consume approximately twice the RU of single-replica weaker reads and multi-region strong increases write latency; DynamoDB strongly consistent reads consume twice the read capacity of eventual reads and MRSC raises write/read latency; Spanner stale reads can reduce latency while strong reads may require cross-region coordination or read leases.
+
+#### Request Hedging / Availability Strategy Requirements
+
+- **FR-169**: The SDK MUST provide a configuration-only, opt-in request-hedging ("availability strategy") capability that reduces read tail latency by issuing a secondary request when a primary read exceeds a configurable latency threshold.
+- **FR-170**: Each provider adapter MUST map request hedging to the provider's native tail-latency mechanism where one exists (e.g., Cosmos DB availability strategy / cross-region hedging) and MUST document the scope of the mechanism (e.g., cross-region vs. cross-replica).
+- **FR-171**: Request hedging MUST be capability-gated and disabled by default. Providers or topologies without at least two eligible request targets MUST fail configuration with `UNSUPPORTED_CAPABILITY` before executing reads.
+- **FR-172**: The portable strategy MUST issue at most one hedge per logical read, so hedge-attributable branches are bounded at 2× logical reads when every request breaches the threshold. Provider-native and SDK retries MAY make total physical attempts exceed 2×. Diagnostics MUST expose logical-read count, hedge count/rate, hedge-attributable branch count/ratio, total physical-attempt count/ratio (including retries and cancelled attempts), and provider-native cost.
+
+#### Read-Through Caching Requirements
+
+- **FR-173**: The SDK MUST provide an opt-in, configuration-only read-through caching capability for point reads, transparent to the data-plane API (no read/write code changes required to benefit).
+- **FR-174**: Each provider adapter MUST map read-through caching to the provider's managed cache where available (e.g., Cosmos DB integrated cache, DynamoDB DAX) and MUST document the mapping. Enabling caching on an unsupported provider/topology MUST fail before reads execute. Uncached execution requires a separate explicit fallback policy and MUST be reported in diagnostics.
+- **FR-175**: Portable cache hits MUST be limited to `EVENTUAL` reads because Cosmos DB integrated cache and DynamoDB DAX cannot serve stronger reads from cache. Read-through caching MUST expose a configurable staleness/eviction bound. Combining caching with `LOCAL_QUORUM` or `GLOBAL_STRONG` MUST fail before execution unless the application explicitly selects the diagnosed uncached-fallback policy.
+- **FR-176**: Cache hits and misses MUST be observable via diagnostics (e.g., a diagnostic flag or metric) so applications can verify cost/latency benefit and tune the configuration.
+
+#### Portable Secondary Lookup and Text Search Requirements
+
+- **FR-177**: The SDK MUST expose distinct `SECONDARY_SEARCH` and `TEXT_SEARCH` capabilities and request types. Support for one MUST NOT imply support for the other.
+- **FR-178**: `SECONDARY_SEARCH` MUST support equality on a configured scalar lookup key plus optional equality/range predicates (`=`, `<`, `<=`, `>`, `>=`, `BETWEEN`) on a configured scalar sort field. Predicates combine with `AND`; result order is unspecified unless a separately supported `ORDER BY` is requested. Cosmos DB range indexes, DynamoDB secondary-index `Query`, and Spanner secondary indexes are the native mappings.
+- **FR-179**: `TEXT_SEARCH` MUST support `ALL_TERMS` and `ANY_TERM` over fields configured with canonical analyzer profile `PORTABLE_TEXT_V1`. The profile applies Unicode NFKC normalization and locale-independent Unicode default case folding, retains diacritics, treats each maximal sequence of Unicode letters, combining marks, or decimal digits as one token, and treats all other code points as separators. Matching uses whole tokens and implies no result order. A provider MUST pass the versioned analyzer/result conformance corpus, including punctuation, case, diacritic, combining-mark, and non-Latin cases, before advertising the capability. Cosmos DB full-text indexes and Spanner search indexes are candidate mappings; DynamoDB declares this capability unsupported.
+- **FR-180**: Unsupported search types, analyzer profiles, or operators MUST fail before execution with `UNSUPPORTED_CAPABILITY`; adapters MUST NOT substitute scans, substring matching, or another search type. Scoring/ranking, stemming profiles, fuzzy, phrase/proximity, semantic, and vector search are separately gated extensions.
+
 ### Portable Operator and Function Reference
 
 The following operators and functions form the portable query subset, available on all supported providers:
@@ -876,7 +977,7 @@ The following operators and functions form the portable query subset, available 
 | Change feed (delete detection) | Cosmos DB (all versions and deletes mode), DynamoDB, Spanner |
 | Bulk write | Cosmos DB, DynamoDB, Spanner |
 | Bulk read-by-key | Cosmos DB, DynamoDB, Spanner |
-| Read consistency override (`STRONG`/`EVENTUAL`) | Cosmos DB, DynamoDB, Spanner |
+| Legacy read consistency override (`STRONG`/`EVENTUAL`) | Cosmos DB, DynamoDB, Spanner (backward-compatible alias; `STRONG` requires `GLOBAL_STRONG`) |
 | Large object offloading (transparent BLOB storage) | Cosmos DB, DynamoDB, Spanner (requires external storage config) |
 | Document chunking (transparent oversized doc splitting) | Cosmos DB, DynamoDB, Spanner |
 | Composite partition keys | Cosmos DB (hierarchical PK), DynamoDB (concatenated), Spanner (multi-column PK) |
@@ -886,12 +987,18 @@ The following operators and functions form the portable query subset, available 
 | Change feed delete tracking in extended history | Cosmos DB (All Changes and Deletes mode), DynamoDB (REMOVE events read from a customer-maintained external store), Spanner (DELETE change records) |
 | Provider portability gate (2-of-3 enforcement) | CI/governance — applies to all features in portable contract |
 | Request cost metrics on responses | Cosmos DB (RU charge), DynamoDB (consumed capacity), Spanner (operation stats where available) |
-| `LOCAL_QUORUM` consistency level | Cosmos DB (Session/Bounded Staleness), DynamoDB (strongly consistent read), Spanner (strong read) |
+| `LOCAL_QUORUM` consistency level | Cosmos DB (`LATEST_COMMITTED`, preview/direct mode), DynamoDB (strong read on table/LSI), Spanner (strong read; stronger global guarantee) |
 | Typed composite sort keys | Cosmos DB, DynamoDB (N/S types), Spanner (native typed columns) |
 | Retry with consistency downgrade | Cosmos DB, DynamoDB, Spanner (provider-neutral; config-driven) |
 | Change feed read from external store (read-only) | Cosmos DB, DynamoDB, Spanner (provider-neutral reader; SDK does not push events into the store) |
 | OpenTelemetry integration | Cosmos DB, DynamoDB, Spanner (provider-neutral; config-driven) |
 | Change feed delivery semantics (at-least-once + checkpoint) | Cosmos DB, DynamoDB, Spanner |
+| Preferred portable consistency levels (`EVENTUAL` / `LOCAL_QUORUM` / `GLOBAL_STRONG`) | Cosmos DB, DynamoDB, Spanner (capability-gated by level, operation, SDK mode/version, index, and topology) |
+| Global strong consistency (cross-region) | Cosmos DB (global strong), DynamoDB (MRSC global tables only), Spanner (external consistency) |
+| Request hedging / availability strategy | Cosmos DB (cross-region availability strategy); DynamoDB / Spanner where a native mechanism exists (capability-gated) |
+| Read-through caching (hot reads) | Cosmos DB (integrated cache), DynamoDB (DAX); Spanner not supported (capability-gated) |
+| `SECONDARY_SEARCH` | Cosmos DB (range index), DynamoDB (secondary-index Query), Spanner (secondary index) |
+| `TEXT_SEARCH` | Cosmos DB (full-text index), Spanner Enterprise/Enterprise Plus (search index); DynamoDB unsupported |
 
 ### Key Entities *(include if feature involves data)*
 
@@ -915,7 +1022,7 @@ The following operators and functions form the portable query subset, available 
 - **Quota Limit**: A provider-neutral constraint on resource usage (e.g., maximum logical partition size, throughput caps) that the SDK documents and surfaces uniformly across all providers.
 - **Change Feed**: A portable abstraction for consuming a chronologically ordered stream of item-level changes from a collection. Each change event includes the item key and change type, and may include the post-change item state when the provider supports and is configured for full-image emission. Consumption can be started from the beginning, a point in time, or a checkpoint token. Full-image emission and delete detection are separately gated capabilities, and delete events may not include an item image.
 - **Bulk Operation**: A throughput-optimized operation that accepts multiple items (for writes) or multiple keys (for reads) and executes them using the provider's native batch mechanism. The SDK automatically partitions requests that exceed provider batch limits. Results are reported per-item, enabling partial failure handling.
-- **Consistency Level**: A portable enumeration of read consistency guarantees (`STRONG`, `EVENTUAL`) that can be specified per-operation. Each provider adapter maps these to the provider's native consistency mechanism. When no override is specified, the provider's default applies.
+- **Consistency Level**: A preferred portable enumeration of minimum read guarantees — `EVENTUAL` (committed data with eventual convergence), `LOCAL_QUORUM` (latest committed in the serving region), and `GLOBAL_STRONG` (linearizable across regions) — selectable as a client default or per operation. A mapping may be stronger but never weaker; unsupported combinations fail before execution. Legacy `STRONG` is a backward-compatible alias for `GLOBAL_STRONG`.
 - **Large Object Reference**: A structured pointer stored in a database document field that identifies an offloaded payload in external object storage. Contains the storage backend identifier, object path/key, payload size, and content hash for integrity verification. The reference is opaque to applications; the SDK transparently resolves it to the full payload on read.
 - **External Storage Backend**: A configured object storage service (Azure Blob Storage, Amazon S3, Google Cloud Storage) used by the large object offloading facility to store payloads that exceed the SDK's uniform document size limit. Configuration includes endpoint, container/bucket name, and authentication credentials.
 - **Document Chunk**: A database item representing one segment of a chunked oversized document. Contains a linkage key (shared across all chunks of the same logical document), a sequence number, and a segment of the compressed/serialized document payload. The root chunk (sequence 0) additionally contains queryable fields and chunk metadata (total count, original size, compression algorithm).
@@ -930,6 +1037,10 @@ The following operators and functions form the portable query subset, available 
 - **Typed Sort Key**: A sort key with an explicit type declaration (STRING, NUMERIC, or TIMESTAMP) that determines ordering semantics for range queries. Ensures correct natural ordering (numeric value order, chronological order) rather than defaulting to lexicographic string comparison.
 - **External Change Store Reader**: A portable, read-only abstraction for consuming change events from a customer-configured external store (Kafka, Kinesis, Event Hubs, Pub/Sub) that the customer's own source connector populates from the database. Exposes the same change-event model and checkpoint/resume semantics as the native change feed. Note: the SDK deliberately does not provide a *sink* that pushes events into such stores — landing data there is the customer's responsibility (see FR-144).
 - **Telemetry Span**: An OpenTelemetry span emitted for each SDK data-plane operation when telemetry is enabled. Contains standard attributes (operation type, provider, database, collection, duration, status) and participates in distributed tracing via W3C Trace Context propagation.
+- **Availability Strategy (Request Hedging)**: A configuration-only, opt-in optimization that reduces read tail latency by issuing at most one secondary request after a configurable threshold. It is capability-gated and exposes hedge rate, physical request count, request amplification, and native cost diagnostics.
+- **Read-Through Cache**: A provider-managed cache for `EVENTUAL` point reads (e.g., Cosmos DB integrated cache, DynamoDB DAX), exposed as a transparent, opt-in, capability-gated feature with a configurable staleness/eviction bound. Unsupported providers, topologies, or consistency combinations fail unless an explicit uncached-fallback policy is configured.
+- **Secondary Search Index**: A provider-neutral structured index with a scalar equality lookup key and optional scalar range sort field. It is governed by the independent `SECONDARY_SEARCH` capability.
+- **Text Search Index**: A provider-neutral tokenized index with a canonical analyzer profile and portable `ALL_TERMS` / `ANY_TERM` operators. It is governed by `TEXT_SEARCH`; scoring, fuzzy, phrase/proximity, semantic, and vector behavior require separate capabilities.
 
 ## Success Criteria *(mandatory)*
 
@@ -983,12 +1094,17 @@ The following operators and functions form the portable query subset, available 
 - **SC-046**: A change feed consumer with default configuration (no extended history) that requests changes older than 24 hours receives a clear, structured error indicating that extended history must be enabled.
 - **SC-047**: The CI portability gate rejects a release when any portable feature lacks conformance test coverage for at least 2 providers, clearly identifying the offending feature and missing provider.
 - **SC-048**: After any successful data-plane operation, the application can read the request cost metric from the response object. The value is a positive number reflecting the provider's native charge (RU, capacity units, etc.).
-- **SC-049**: A read operation with `LOCAL_QUORUM` consistency in a multi-region deployment returns data reflecting all writes acknowledged in the local region, on all supported providers.
+- **SC-049**: A `LOCAL_QUORUM` read returns every write committed in the serving region before the read began. Each advertised provider/operation combination passes this visibility test; unsupported combinations fail before execution.
 - **SC-050**: A collection with a NUMERIC sort key correctly orders range query results by numeric value (e.g., 2, 10, 100 — not "10", "100", "2") on all supported providers.
 - **SC-051**: When consistency downgrade retry is enabled and a STRONG read fails transiently, the SDK automatically retries at EVENTUAL and the response includes a diagnostic flag noting the downgrade.
 - **SC-052**: A change feed consumer reads change events from a customer-configured external store (e.g., a Kafka topic populated by the customer's own source connector) using the portable change-event model, and the same consumer configuration works regardless of database provider. The SDK does not push events into the store.
 - **SC-053**: When OpenTelemetry is enabled, every SDK operation emits a span visible in a standard OTLP collector with operation type, provider, database, collection, duration, and status attributes.
 - **SC-054**: A change feed consumer that checkpoints its position and restarts receives only events after the last checkpoint, with no skipped events (at-least-once delivery) on all supported providers.
+- **SC-055**: For every provider × operation × index type × SDK mode/version × topology × level combination, the same application code verifies each advertised minimum and receives `UNSUPPORTED_CAPABILITY` before execution for each unadvertised combination; no request receives a weaker guarantee than selected.
+- **SC-056**: A read with `GLOBAL_STRONG` after an acknowledged write in a multi-region deployment reflects that write regardless of the serving region on providers that support cross-region strong consistency; providers that cannot satisfy it return a clear capability error rather than silently downgrading.
+- **SC-057**: Enabling the availability strategy measurably reduces read tail latency on supporting providers, issues no more than one hedge per logical read, reports a hedge-attributable branch ratio between 1.0 and 2.0, and separately reports total physical-attempt amplification including retries and cancelled attempts.
+- **SC-058**: With read-through caching enabled, repeated point reads of the same item within the staleness window are served from cache at reduced request cost/latency, verifiable via diagnostics, on providers that support a managed read cache.
+- **SC-059**: The secondary and text-search conformance corpora pass independently on every provider advertising the corresponding capability. Unsupported search types fail before execution, and text results match portable `ALL_TERMS` / `ANY_TERM` semantics without implied ranking.
 
 ## Assumptions
 
@@ -1025,7 +1141,7 @@ The following operators and functions form the portable query subset, available 
 - **Change feed delete detection**: Delete event availability varies by provider and mode. Cosmos DB's "all versions and deletes" mode surfaces deletes; DynamoDB Streams always includes deletes; Spanner Change Streams include deletes. The SDK gates delete detection as a separate capability. Applications relying on delete events should verify the capability before use.
 - **Bulk operation semantics**: Bulk operations are throughput-optimized, not transactional. Individual items within a bulk request may succeed or fail independently. The SDK does not guarantee atomicity across items in a bulk request. Applications requiring atomic multi-item writes should use provider-specific transactional batch mechanisms via provider extensions.
 - **Bulk operation limits**: Provider-level batch size limits vary (e.g., DynamoDB limits `BatchWriteItem` to 25 items, `BatchGetItem` to 100 keys). The SDK automatically partitions larger requests into multiple provider-level batches. Applications should be aware that very large bulk requests may result in multiple provider round-trips.
-- **Read consistency mapping**: The portable `STRONG` and `EVENTUAL` consistency levels are semantic approximations mapped to each provider's native model. Cosmos DB's intermediate consistency levels (Session, Bounded Staleness, Consistent Prefix) are available as provider-specific extensions but are not part of the portable contract. Spanner's "stale read" implementation of `EVENTUAL` uses a provider-configured staleness bound (default: 15 seconds).
+- **Read consistency mapping**: The preferred portable model is `EVENTUAL` / `LOCAL_QUORUM` / `GLOBAL_STRONG`; legacy `STRONG` aliases `GLOBAL_STRONG`. Native mappings must meet or exceed the selected minimum. Cosmos DB Session, Bounded Staleness, and Consistent Prefix remain provider-specific extensions and do not implement `LOCAL_QUORUM`. Spanner's `EVENTUAL` mapping uses a provider-configured stale-read bound (default: 15 seconds).
 - **Consistency default behavior**: When no consistency override is specified, each provider uses its own default: Cosmos DB uses the account-level consistency setting, DynamoDB defaults to eventually consistent reads, and Spanner defaults to strong reads. The SDK does not normalize these defaults to preserve existing provider behavior for applications that do not opt into consistency overrides.
 - **Large object offloading scope**: The large object offloading facility targets opaque binary payloads (serialized objects, protobufs, compressed archives, images) that exceed the 400 KB uniform document size limit. It is not a general-purpose file storage API. Payloads are stored as single objects in external storage; multi-part upload is used for payloads exceeding provider-specific thresholds (e.g., 5 MB for S3/Azure Blob). Maximum supported payload size is configurable (default 16 MB).
 - **Large object storage backend pairing**: Each database provider is paired with a natural object storage backend: Cosmos DB → Azure Blob Storage, DynamoDB → Amazon S3, Spanner → Google Cloud Storage. Cross-pairing (e.g., Cosmos DB with S3) is technically possible but not a v1 priority.
@@ -1047,15 +1163,22 @@ The following operators and functions form the portable query subset, available 
 - **Provider target set — opt-in to reduced set**: Customers who intentionally target a subset (e.g., only Cosmos DB and DynamoDB) must explicitly declare this via static configuration. This opt-in acknowledges that certain features may not be portable to the excluded provider.
 - **Provider target set — compile-time enforcement**: Compile-time validation is the primary enforcement mechanism for application developers. CI-time enforcement (the 2-of-3 gate) applies to SDK releases, not to application builds.
 - **Provider target set — existing features**: The 2-of-3 portability gate applies to new features going forward. Existing features that were released before this policy was enacted are grandfathered and not subject to retroactive enforcement unless they undergo significant modification.
-- **Provider target set — provider-specific extensions**: Features explicitly declared as provider-specific extensions (e.g., Cosmos DB stored procedures, DynamoDB DAX caching) are exempt from the target set validation entirely. These must be accessed through the escape hatch/provider extension mechanism and are clearly documented as non-portable.
+- **Provider target set — provider-specific extensions**: Features explicitly declared as provider-specific extensions (e.g., Cosmos DB stored procedures or direct use of DAX-specific APIs beyond the portable cache contract) are exempt from target-set validation. The portable read-through-cache abstraction may use DAX internally and remains subject to `READ_THROUGH_CACHE` capability validation.
 - **Request cost metrics — availability**: Cost metrics are best-effort. Not all providers expose cost information for all operation types (e.g., Spanner may not expose per-operation cost for administrative operations). The SDK documents which operations expose cost metrics per provider.
 - **Request cost metrics — DynamoDB ReturnConsumedCapacity**: To receive cost metrics from DynamoDB, the SDK automatically adds `ReturnConsumedCapacity=TOTAL` to requests when cost metrics are enabled. This adds negligible overhead but applications should be aware it is included in the request.
-- **Local quorum consistency — semantic approximation**: `LOCAL_QUORUM` is a semantic approximation. The exact guarantees differ by provider (Cosmos DB Session is session-scoped, DynamoDB strong reads are region-local by nature, Spanner strong reads are globally linearizable). The SDK documents the specific native mapping for each provider so applications understand the actual guarantees they receive.
+- **Local quorum consistency — portable minimum**: `LOCAL_QUORUM` means latest committed in the serving region at read start. Cosmos DB `LATEST_COMMITTED` and DynamoDB strong reads satisfy that minimum; Spanner strong reads exceed it with global external consistency. Session and bounded-staleness reads are weaker and cannot be substituted.
 - **Typed sort keys — encoding**: For providers that store sort keys as strings (DynamoDB S type), the SDK uses type-specific encoding to preserve natural ordering: zero-padded fixed-width numeric encoding for NUMERIC, ISO-8601 encoding for TIMESTAMP. The encoding scheme is deterministic and documented but adds a small overhead to key operations.
 - **Retry with consistency downgrade — scope**: Consistency downgrade retry applies only to read operations (read-by-key and query). Write operations are never automatically retried at a different consistency level.
 - **Change feed external store read — delivery semantics**: The SDK's read-only external-store consumer provides at-least-once delivery from the store, consistent with native change feed semantics. Exactly-once end-to-end processing depends on idempotent consumers and on the deduplication guarantees of the customer's own connector and store (e.g., Kafka idempotent producer). The SDK does not push events into the store and therefore makes no delivery guarantee on the ingestion side.
 - **OpenTelemetry — optional dependency**: The OpenTelemetry SDK is an optional runtime dependency. When not present on the classpath, telemetry features are no-ops. Applications that do not need telemetry incur no dependency or performance cost.
 - **Change feed delivery semantics — checkpoint granularity**: Checkpoints are per-partition. In parallel consumption scenarios, each consumer instance maintains independent checkpoints for its assigned partitions. The checkpoint store must support concurrent writes from multiple consumer instances without corruption.
+- **Portable consistency abstraction — current status**: As of this revision, the only consistency selection shipped is a provider-specific connection override (Cosmos DB `consistencyLevel`); a portable, per-operation consistency enumeration (`EVENTUAL` / `LOCAL_QUORUM` / `GLOBAL_STRONG`) and cross-region `GLOBAL_STRONG` support are specified here (FR-163–FR-168) but not yet fully implemented. `GLOBAL_STRONG` is prioritized because it is required by global multi-region use cases.
+- **Consistency cost and latency**: Cosmos DB quorum reads use approximately twice the RU of weaker single-replica reads and global strong increases write latency. DynamoDB strong reads consume twice the capacity of eventual reads, and MRSC trades higher latency/topology restrictions for zero-RPO global reads. Spanner stale reads can reduce latency; strong reads may require cross-region coordination or configured read leases. Actual charges and latency remain provider/topology dependent and are exposed through diagnostics where available.
+- **Request hedging — cost/benefit**: Hedging requires at least two eligible targets. One hedge bounds hedge-attributable branches at 2× logical reads, but retries can raise total physical attempts above 2×. Operators tune it using separate hedge-attributable and total-attempt amplification, latency, and cost diagnostics; cancelled attempts count in total attempts.
+- **Read-through caching — trade-offs**: Portable caching applies to `EVENTUAL` point reads because Cosmos integrated cache and DAX cannot serve strong reads from cache. It trades bounded staleness for reduced cost/latency. Spanner and unsupported consistency/topology combinations fail fast unless the application explicitly configures uncached fallback.
+- **Search capability separation**: Structured alternate-key lookup and tokenized full-text retrieval are separate contracts. `SECONDARY_SEARCH` is available across all three providers. `TEXT_SEARCH` requires a canonical analyzer conformance profile and is available only where the adapter passes that corpus; DynamoDB does not advertise it.
+- **Non-goal — unified single instance across clouds**: The SDK provides cross-cloud **code portability** (the same application code running against Cosmos DB, DynamoDB, or Spanner instances), not a single unified database instance that spans multiple clouds. The SDK does not replicate data between different providers as one logical cluster.
+- **Non-goal — hybrid cloud + on-premises clusters**: Running a single cluster that spans cloud and on-premises data centers (a capability of some source systems) is out of scope for the multicloud DB SDK. None of Cosmos DB, DynamoDB, or Spanner has an on-premises equivalent; hybrid/on-prem topologies remain the domain of the source system.
 
 ## Acceptance Checklist
 
@@ -1267,9 +1390,9 @@ This checklist is used to accept the feature as “done” at the spec level.
 ### Local Quorum Consistency
 
 - [ ] A `LOCAL_QUORUM` consistency level is available as a per-operation read override.
-- [ ] Reads with `LOCAL_QUORUM` return data reflecting all writes acknowledged in the local region on all supported providers.
+- [ ] Reads with `LOCAL_QUORUM` return every write committed in the serving region before the read began.
 - [ ] In single-region deployments, `LOCAL_QUORUM` behaves equivalently to `STRONG`.
-- [ ] On providers without a direct `LOCAL_QUORUM` equivalent, the closest native level is selected and a diagnostic notes the approximation.
+- [ ] A stronger native guarantee is permitted and documented; a weaker mapping fails before execution with `UNSUPPORTED_CAPABILITY`.
 - [ ] The same `LOCAL_QUORUM` code works across all providers by changing configuration only.
 
 ### Typed Composite Sort Keys
@@ -1312,3 +1435,35 @@ This checklist is used to accept the feature as “done” at the spec level.
 - [ ] After restart, consumption resumes from the last checkpoint with no events skipped.
 - [ ] Checkpoint store is configurable (same database or external store).
 - [ ] In parallel consumption, checkpoints are per-partition and per-instance without interference.
+
+### Portable Consistency Level Abstraction
+
+- [ ] A portable consistency enumeration (`EVENTUAL`, `LOCAL_QUORUM`, `GLOBAL_STRONG`) is selectable as a client default and per operation.
+- [ ] Each provider maps every advertised level to a documented native guarantee that meets or exceeds the portable minimum; unsupported levels fail before execution (no silent downgrade).
+- [ ] `GLOBAL_STRONG` observes every write committed before the read began regardless of serving region on providers/topologies that advertise it.
+- [ ] When no level is specified, the provider's default applies (backward compatible).
+- [ ] Provider-specific read billing, latency, and topology implications are documented for every level.
+
+### Request Hedging / Availability Strategy
+
+- [ ] Request hedging is an opt-in, configuration-only capability with a configurable latency threshold, disabled by default.
+- [ ] Reads exceeding the threshold trigger at most one secondary request; hedge-attributable branches are bounded at 2× logical reads.
+- [ ] Hedge rate, hedge-attributable amplification, total physical-attempt amplification including retries/cancellations, and provider-native cost are observable.
+- [ ] Mapped to each provider's native mechanism; configurations with fewer than two eligible targets fail before reads execute.
+- [ ] Capability-gated on providers without a hedging mechanism.
+
+### Read-Through Caching
+
+- [ ] Read-through caching is an opt-in, transparent, capability-gated feature (no read/write code changes required).
+- [ ] Mapped to the provider's managed cache (Cosmos DB integrated cache, DynamoDB DAX); unsupported providers/topologies fail before reads execute unless explicit uncached fallback is configured.
+- [ ] Portable cache hits are limited to `EVENTUAL` reads; stronger consistency levels fail or use an explicitly configured, diagnosed uncached fallback.
+- [ ] A configurable staleness/eviction bound is exposed and its consistency trade-off documented.
+- [ ] Cache hits/misses are observable via diagnostics.
+
+### Portable Secondary Lookup and Text Search
+
+- [ ] `SECONDARY_SEARCH` and `TEXT_SEARCH` are independent capabilities and request types.
+- [ ] Secondary search supports equality lookup plus optional scalar range predicates and has no implicit result ordering.
+- [ ] Text search supports `PORTABLE_TEXT_V1` `ALL_TERMS` and `ANY_TERM` matching and has no implicit relevance ordering.
+- [ ] Each advertised capability passes its independent conformance corpus; unsupported types/operators fail before execution without scan or substring fallback.
+- [ ] Scoring, fuzzy, phrase/proximity, semantic, and vector search are separately gated capabilities.
