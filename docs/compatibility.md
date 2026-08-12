@@ -198,9 +198,11 @@ SDK configuration only.
 
 Queries are the single exception. When the portable expression DSL cannot
 express what you need (for example Cosmos DB `LIKE`, or provider-specific
-aggregate and ordering syntax), `QueryRequest.nativeExpression()` sends a
-complete, provider-native statement straight to the database with no
-translation:
+aggregate and ordering syntax), `QueryRequest.nativeExpression()` bypasses the
+portable translation pipeline and sends a complete, provider-native statement
+to the database. (The statement is never translated between dialects, though
+the adapter may append a partition-key condition to it - see
+[What happens on a provider mismatch](#what-happens-on-a-provider-mismatch).)
 
 ```java
 // Cosmos DB - Cosmos SQL
