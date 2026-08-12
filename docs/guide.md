@@ -894,6 +894,15 @@ QueryRequest spannerQuery = QueryRequest.builder()
 > setting both throws an error. Native expressions break portability: switching
 > providers requires rewriting the query.
 
+> **Mismatched dialects are not caught by the SDK.** The native statement is
+> never inspected or validated - it is passed straight to the configured
+> provider. Sending Cosmos SQL to DynamoDB therefore fails at execution time as
+> a `MulticloudDbException` with category `INVALID_REQUEST` (raised by the
+> database, after a network round trip), not as an SDK-side compatibility
+> error. A statement that is valid in more than one dialect can even succeed
+> silently while returning different results per provider. See
+> [Escape Hatch Policy](compatibility.md#escape-hatch-policy).
+
 ### Translation Pipeline
 
 When you use a portable `expression`, the SDK processes it through a four-stage

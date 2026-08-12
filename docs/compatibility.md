@@ -183,7 +183,68 @@ the Spanner provider until this gap is addressed.
 
 ## Escape Hatch Policy
 
+### No native client access
+
 The SDK does not expose a `nativeClient()` method. Direct access to the
 underlying provider client is intentionally omitted to enforce portability
 guarantees - code written against the SDK must remain switchable between
 providers by configuration alone.
+
+The same rule applies to code-level hooks, interceptors, and async callbacks:
+provider-specific behaviour is reached through capability-gated features and
+SDK configuration only.
+
+### `nativeExpression()` - the one supported escape hatch
+
+Queries are the single exception. When the portable expression DSL cannot
+express what you need (for example Cosmos DB `LIKE`, or provider-specific
+aggregate and ordering syntax), `QueryRequest.nativeExpression()` sends a
+complete, provider-native statement straight to the database with no
+translation:
+
+```java
+// Cosmos DB - Cosmos SQL
+QueryRequest q = QueryRequest.builder()
+        .nativeExpression("SELECT * FROM c WHERE c.title LIKE '%flight%'")
+        .maxPageSize(25)
+        .build();
+```
+
+All three providers accept the field, but each dialect differs:
+
+| Provider | Dialect passed through |
+|---|---|
+| Cosmos DB | Cosmos SQL (`SELECT * FROM c ...`) |
+| DynamoDB | PartiQL (`SELECT * FROM "database__collection" ...`) |
+| Spanner | GoogleSQL (`SELECT * FROM table ...`) |
+
+`expression()` and `nativeExpression()` are mutually exclusive - setting both
+throws `IllegalArgumentException` when `QueryRequest` is built.
+
+### What happens on a provider mismatch
+
+The SDK does not inspect, tag, or validate the native statement, so a query
+written for one provider is **not** rejected before execution. It is sent to
+the configured provider, and the resulting failure is surfaced through the
+normal error model:
+
+| Stage | Behaviour |
+|---|---|
+| Build time | No validation - the string is stored as-is |
+| SDK dispatch | No validation - passed directly to the provider adapter |
+| Provider execution | The database rejects it, typically as `INVALID_REQUEST` (see [Portable Error Mapping](#portable-error-mapping)) |
+
+Two consequences are worth planning for:
+
+- **The failure costs a round trip.** You get a runtime
+  `MulticloudDbException`, not an SDK-side compatibility error, so a wrong
+  dialect is only detected once the query reaches the database.
+- **A mismatch can silently succeed.** A statement that happens to be valid in
+  more than one dialect (for example
+  `SELECT * FROM todos WHERE status = 'active'` under both PartiQL and
+  GoogleSQL) executes without error, even though results and semantics may
+  differ between providers.
+
+Because of this, treat `nativeExpression()` as a last resort. Any query that
+uses it must be rewritten and re-tested when the target provider changes;
+prefer the portable `expression()` DSL wherever it can express the filter.
