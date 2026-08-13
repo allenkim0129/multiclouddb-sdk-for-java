@@ -149,7 +149,7 @@ final class ProvisioningAdmin {
     }
 
     private static ThroughputProperties targetThroughput(ThroughputResponse current, int targetRu) {
-        return "autoscale".equals(throughputMode(current))
+        return "autoscale max".equals(throughputMode(current))
                 ? ThroughputProperties.createAutoscaledThroughput(targetRu)
                 : ThroughputProperties.createManualThroughput(targetRu);
     }
