@@ -35,7 +35,7 @@ final class ProvisioningAdmin {
     private ProvisioningAdmin() {
     }
 
-    /** Raises the Cosmos container (falling back to the database) to {@code targetRu} manual RU/s. */
+    /** Sets Cosmos throughput while preserving the resource's current manual/autoscale mode. */
     static void ensureCosmosThroughput(ConfigLoader.AppConfig cfg, String database,
                                        String collection, int targetRu) {
         String endpoint = cfg.get("multiclouddb.connection.endpoint", "");
@@ -51,19 +51,24 @@ final class ProvisioningAdmin {
         try (CosmosClient client = builder.buildClient()) {
             CosmosDatabase db = client.getDatabase(database);
             CosmosContainer container = db.getContainer(collection);
-            ThroughputProperties target = ThroughputProperties.createManualThroughput(targetRu);
+            ThroughputResponse before;
             try {
-                ThroughputResponse before = container.readThroughput();
-                ThroughputResponse after = container.replaceThroughput(target);
-                System.out.printf(Locale.ROOT,
-                        "-- cosmos throughput: container %d -> %d RU/s (manual); partition split may take minutes%n",
-                        manual(before), manual(after));
+                before = container.readThroughput();
             } catch (Throwable containerLevel) {
+                before = db.readThroughput();
+                ThroughputProperties target = targetThroughput(before, targetRu);
                 ThroughputResponse after = db.replaceThroughput(target);
                 System.out.printf(Locale.ROOT,
-                        "-- cosmos throughput: database -> %d RU/s (manual, container is shared)%n",
-                        manual(after));
+                        "-- cosmos throughput: database %d -> %d RU/s (%s, shared)%n",
+                        throughput(before), throughput(after), throughputMode(after));
+                return;
             }
+            ThroughputProperties target = targetThroughput(before, targetRu);
+            ThroughputResponse after = container.replaceThroughput(target);
+            System.out.printf(Locale.ROOT,
+                    "-- cosmos throughput: container %d -> %d RU/s (%s); "
+                            + "partition split may take minutes%n",
+                    throughput(before), throughput(after), throughputMode(after));
         } catch (Throwable t) {
             System.out.printf(Locale.ROOT,
                     "!! cosmos throughput admin failed (%s: %s) — leaving provisioning unchanged%n",
@@ -143,11 +148,29 @@ final class ProvisioningAdmin {
         }
     }
 
-    private static int manual(ThroughputResponse r) {
+    private static ThroughputProperties targetThroughput(ThroughputResponse current, int targetRu) {
+        return "autoscale".equals(throughputMode(current))
+                ? ThroughputProperties.createAutoscaledThroughput(targetRu)
+                : ThroughputProperties.createManualThroughput(targetRu);
+    }
+
+    private static int throughput(ThroughputResponse r) {
         try {
+            int autoscale = r.getProperties().getAutoscaleMaxThroughput();
+            if (autoscale > 0) {
+                return autoscale;
+            }
             return r.getProperties().getManualThroughput();
         } catch (Throwable ignore) {
             return -1;
+        }
+    }
+
+    private static String throughputMode(ThroughputResponse r) {
+        try {
+            return r.getProperties().getAutoscaleMaxThroughput() > 0 ? "autoscale max" : "manual";
+        } catch (Throwable ignore) {
+            return "unknown";
         }
     }
 
