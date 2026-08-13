@@ -9,9 +9,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /** Renders a self-contained HTML perf report. */
 final class HtmlReport {
@@ -36,6 +38,7 @@ final class HtmlReport {
         b.append("<p class=\"note\">Fair comparisons require the same offered load, workload profile, client placement, and deterministic capacity. Provider capacity units are not equivalent.</p>");
 
         envTable(b, env, providers);
+        charts(b, stats, providers);
         perProviderTables(b, stats, providers, meta.invalidThrottleRate());
         comparisonTables(b, stats, providers);
         parityAndScaling(b, stats, providers, meta);
@@ -75,9 +78,128 @@ final class HtmlReport {
         b.append("</tbody></table>");
     }
 
+    private static void charts(StringBuilder b, List<StatRow> stats, List<String> providers) {
+        b.append("<h2>2. At a glance</h2>");
+        b.append("<p class=\"note\">Provider colors are consistent across charts. Compare bars only within the same metric; provider cost units are intentionally not charted together.</p>");
+        Set<String> panels = new LinkedHashSet<>();
+        for (StatRow row : stats) {
+            panels.add(row.workload() + "\u0001" + row.scenario());
+        }
+        for (String panel : panels) {
+            String[] parts = panel.split("\u0001", -1);
+            String workload = parts[0];
+            String scenario = parts[1];
+            List<StatRow> rows = stats.stream()
+                    .filter(row -> workload.equals(row.workload()) && scenario.equals(row.scenario()))
+                    .toList();
+            b.append("<section class=\"chart-panel\"><h3>")
+                    .append(Reports.esc(workload)).append(" / ").append(Reports.esc(scenario))
+                    .append("</h3><div class=\"chart-grid\">");
+            b.append(svgChart(rows, providers, "p99 latency", "ms", true, StatRow::p99));
+            b.append(svgChart(rows, providers, "Achieved throughput", "ops/s", false,
+                    StatRow::throughputOpsSec));
+            b.append(svgChart(rows, providers, "Achieved / offered", "%", false,
+                    row -> row.achievedOfferedRatio() * 100.0));
+            if (rows.stream().anyMatch(row -> row.capacityUtilizationPct() != null)) {
+                b.append(svgChart(rows, providers, "Capacity utilization", "%", true,
+                        row -> row.capacityUtilizationPct() == null ? -1.0 : row.capacityUtilizationPct()));
+            }
+            if (rows.stream().anyMatch(row -> row.throttledRate() > 0.0)) {
+                b.append(svgChart(rows, providers, "Throttled operations", "%", true,
+                        row -> row.throttledRate() * 100.0));
+            }
+            b.append("</div></section>");
+        }
+    }
+
+    private static String svgChart(List<StatRow> stats, List<String> providers, String title,
+                                   String unit, boolean lowerBetter, Metric metric) {
+        Map<String, Map<String, Double>> groups = new LinkedHashMap<>();
+        Set<Integer> threadLevels = new LinkedHashSet<>();
+        for (StatRow row : stats) {
+            threadLevels.add(row.threads());
+        }
+        double maximum = 0.0;
+        for (StatRow row : stats) {
+            double value = metric.apply(row);
+            if (value < 0.0) {
+                continue;
+            }
+            String label = row.operation();
+            if (threadLevels.size() > 1) {
+                label += " @" + row.threads() + "t";
+            }
+            groups.computeIfAbsent(label, ignored -> new LinkedHashMap<>())
+                    .put(row.provider(), value);
+            maximum = Math.max(maximum, value);
+        }
+        if (groups.isEmpty()) {
+            return "";
+        }
+        maximum = Math.max(maximum, 1.0);
+        int left = 112;
+        int chartWidth = 360;
+        int rowHeight = 24;
+        int groupGap = 15;
+        int top = 66;
+        int height = top;
+        for (Map<String, Double> group : groups.values()) {
+            long bars = providers.stream().filter(group::containsKey).count();
+            height += (int) bars * rowHeight + groupGap;
+        }
+        int width = 610;
+        StringBuilder svg = new StringBuilder();
+        svg.append("<figure class=\"metric-chart\"><svg viewBox=\"0 0 ")
+                .append(width).append(' ').append(height)
+                .append("\" role=\"img\" aria-label=\"").append(Reports.esc(title)).append("\">");
+        svg.append("<text x=\"12\" y=\"24\" class=\"chart-title\">").append(Reports.esc(title))
+                .append("</text><text x=\"12\" y=\"44\" class=\"chart-subtitle\">")
+                .append(lowerBetter ? "lower is better" : "higher is better")
+                .append(" · ").append(Reports.esc(unit)).append("</text>");
+        int legendX = 300;
+        for (String provider : providers) {
+            svg.append("<rect x=\"").append(legendX).append("\" y=\"15\" width=\"12\" height=\"12\" rx=\"2\" fill=\"")
+                    .append(color(provider)).append("\"/><text x=\"").append(legendX + 17)
+                    .append("\" y=\"26\" class=\"chart-legend\">").append(Reports.esc(provider)).append("</text>");
+            legendX += 92;
+        }
+        int y = top;
+        for (Map.Entry<String, Map<String, Double>> group : groups.entrySet()) {
+            svg.append("<text x=\"12\" y=\"").append(y + 14).append("\" class=\"chart-label\">")
+                    .append(Reports.esc(group.getKey())).append("</text>");
+            for (String provider : providers) {
+                Double value = group.getValue().get(provider);
+                if (value == null) {
+                    continue;
+                }
+                double barWidth = Math.max(value > 0.0 ? 2.0 : 0.0, value / maximum * chartWidth);
+                svg.append(String.format(Locale.ROOT,
+                        "<rect x=\"%d\" y=\"%d\" width=\"%.1f\" height=\"17\" rx=\"3\" fill=\"%s\"/>",
+                        left, y, barWidth, color(provider)));
+                svg.append("<text x=\"").append(String.format(Locale.ROOT, "%.1f", left + barWidth + 7))
+                        .append("\" y=\"").append(y + 13).append("\" class=\"chart-value\">")
+                        .append(Reports.esc(provider)).append(": ").append(Reports.num(value)).append(' ')
+                        .append(Reports.esc(unit)).append("</text>");
+                y += rowHeight;
+            }
+            y += groupGap;
+        }
+        svg.append("</svg></figure>");
+        return svg.toString();
+    }
+
+    private static String color(String provider) {
+        return switch (provider) {
+            case "cosmos" -> "#0078d4";
+            case "dynamo" -> "#ff9900";
+            case "spanner" -> "#34a853";
+            default -> "#6e7781";
+        };
+    }
+
     private static void perProviderTables(StringBuilder b, List<StatRow> stats, List<String> providers,
                                           double invalidThrottleRate) {
-        b.append("<h2>2. Per-provider detail</h2>");
+        b.append("<h2>3. Per-provider detail</h2>");
         for (String provider : providers) {
             b.append("<h3>").append(Reports.esc(provider)).append("</h3>");
             b.append("<table><thead><tr><th>Workload</th><th>Operation</th><th>Scenario</th><th>Threads</th><th>Target ops/s</th><th>Offered ops/s</th><th>Achieved ops/s</th><th>Achieved/Offered</th><th>p50 ms</th><th>p90 ms</th><th>p99 ms</th><th>Cost</th><th>Consumed units/s</th><th>Capacity util</th><th>Throttled</th><th>Retries</th><th>Valid</th></tr></thead><tbody>");
@@ -109,7 +231,7 @@ final class HtmlReport {
     }
 
     private static void comparisonTables(StringBuilder b, List<StatRow> stats, List<String> providers) {
-        b.append("<h2>3. Cross-provider comparison</h2>");
+        b.append("<h2>4. Cross-provider comparison</h2>");
         comparisonTable(b, "p99 latency (lower is better)", stats, providers, true,
                 row -> row.p99(), false);
         comparisonTable(b, "throughput (higher is better)", stats, providers, false,
@@ -163,7 +285,7 @@ final class HtmlReport {
 
     private static void parityAndScaling(StringBuilder b, List<StatRow> stats,
                                          List<String> providers, ReportMeta meta) {
-        b.append("<h2>4. Thread-scaling &amp; migration parity</h2>");
+        b.append("<h2>5. Thread-scaling &amp; migration parity</h2>");
         List<ThreadAnalysis.ParityRow> parity = ThreadAnalysis.parity(stats, providers, meta.baseline());
         if (!parity.isEmpty()) {
             b.append("<h3>Migration parity vs baseline <code>").append(Reports.esc(meta.baseline())).append("</code></h3>");
@@ -239,6 +361,18 @@ final class HtmlReport {
     }
 
     private static String css() {
-        return "<style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:24px;line-height:1.4}table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid #ddd;padding:6px 8px;text-align:left}th{background:#f6f8fa}.best{font-weight:700;background:#eef6ff}.note{color:#555}</style>";
+        return "<style>"
+                + "body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:24px;line-height:1.4;color:#1f2328;background:#fff}"
+                + "table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid #d0d7de;padding:6px 8px;text-align:left}th{background:#f6f8fa}"
+                + ".best{font-weight:700;background:#ddf4ff}.note{color:#57606a}"
+                + ".chart-panel{margin:22px 0 30px;padding:16px 18px;border:1px solid #d0d7de;border-radius:10px;background:#f6f8fa}"
+                + ".chart-panel h3{margin:0 0 12px}.chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:16px}"
+                + ".metric-chart{margin:0;padding:10px;background:#fff;border:1px solid #d8dee4;border-radius:8px;box-shadow:0 1px 2px rgba(31,35,40,.08)}"
+                + ".metric-chart svg{display:block;width:100%;height:auto;min-height:180px}"
+                + ".chart-title{font-size:18px;font-weight:700;fill:#1f2328}.chart-subtitle{font-size:12px;fill:#57606a}"
+                + ".chart-label{font-size:13px;font-weight:600;fill:#24292f}.chart-value,.chart-legend{font-size:12px;fill:#24292f}"
+                + "@media(max-width:700px){body{margin:12px}.chart-grid{grid-template-columns:1fr}.chart-panel{padding:10px}.metric-chart{overflow-x:auto}.metric-chart svg{min-width:560px}}"
+                + "@media print{body{margin:8mm}.chart-panel{break-inside:avoid}.metric-chart{box-shadow:none}}"
+                + "</style>";
     }
 }
