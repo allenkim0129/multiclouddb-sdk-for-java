@@ -8,10 +8,17 @@ multiclouddb.connection.requestTimeoutSeconds=30
 multiclouddb.database=perfdb
 multiclouddb.collection=perf
 
+# Fair-comparison controls. CLI flags override these values.
+# Keep targetOpsPerSec identical in every provider config in a comparison run.
+multiclouddb.perf.targetOpsPerSec=100
+# Both values are required together. The harness switches/updates the table to PROVISIONED.
+multiclouddb.perf.dynamoRcu=100
+multiclouddb.perf.dynamoWcu=100
+
 # Fair-comparison metadata.
 multiclouddb.region=us-east-1
 # Optional cross-cloud colocation label used by --region-policy warn|fail.
 multiclouddb.comparisonRegion=
-# Optional display value; the harness probes actual billing mode / RCU / WCU from DescribeTable.
+# Optional fallback display value; actual RCU/WCU are probed after applying the controls above.
 multiclouddb.provisionedCapacity=PAY_PER_REQUEST or PROVISIONED rcu=... wcu=...
 multiclouddb.sdkVersion=dev

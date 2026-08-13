@@ -10,13 +10,15 @@ records one CSV row per measured operation, then renders Markdown + HTML reports
 
 Use the same for every provider in a comparison set:
 
-- **Offered load**: `--target-ops-per-sec N` to pace actual operation starts across worker threads.
-  Leave it unset/`0` only for max-throughput sweeps (`--threads 1,8,32`).
+- **Offered load**: set `multiclouddb.perf.targetOpsPerSec` identically in every provider
+  property file. `--target-ops-per-sec N` overrides all configs. Use `0` only for
+  max-throughput sweeps (`--threads 1,8,32`).
 - **Workload profile**: `--workload read|write|mixed|query` so you do not accidentally compare a
   read-heavy run with a mixed lifecycle.
 - **Client placement**: same host/JDK, plus matching `comparison_region` labels.
-- **Deterministic capacity**: probe/report actual billing mode + capacity. Use opt-in admin flags to
-  pin capacity first when needed.
+- **Deterministic capacity**: configure `multiclouddb.perf.cosmosRu` or the paired
+  `multiclouddb.perf.dynamoRcu` / `multiclouddb.perf.dynamoWcu` properties. The harness applies
+  them before warmup, waits where required, and probes the actual resulting capacity.
 - **Separate metrics**: compare latency, throughput, and provider-native cost separately.
   **Do not compare Cosmos RU directly with Dynamo RCU/WCU.**
 
@@ -28,6 +30,22 @@ Override with `--invalid-throttle-rate-pct` when re-rendering reports.
 Copy the templates to `*.live.properties` (gitignored) and fill in real values.
 You can optionally set `multiclouddb.comparisonRegion` to declare cross-cloud regions colocated
 (e.g. `westus2` + `us-west-2` → `comparisonRegion=west-us-2-colo`).
+
+The templates also contain the reproducible fairness controls:
+
+```properties
+# Same value in every provider config
+multiclouddb.perf.targetOpsPerSec=100
+
+# Cosmos config
+multiclouddb.perf.cosmosRu=1000
+
+# Dynamo config
+multiclouddb.perf.dynamoRcu=100
+multiclouddb.perf.dynamoWcu=100
+```
+
+CLI capacity and offered-load options override these properties for one-off experiments.
 
 ## Run examples
 
@@ -82,6 +100,16 @@ multiclouddb-perf/perf.sh run --workload query --threads 8 --target-ops-per-sec 
 - `--enable-dynamo-streams` — opt-in Dynamo Streams for change-feed scenarios.
 - `--region-policy warn|fail|ignore` — handle config/probed region or comparison-label mismatches before measurement.
 - `--invalid-throttle-rate-pct PCT` — report validity threshold (default `0.1`).
+
+## Property-file controls
+
+- `multiclouddb.perf.targetOpsPerSec` — paced offered load; must match across provider configs.
+- `multiclouddb.perf.cosmosRu` — Cosmos manual RU/s applied before warmup.
+- `multiclouddb.perf.dynamoRcu` and `multiclouddb.perf.dynamoWcu` — paired Dynamo provisioned
+  capacity applied before warmup.
+
+The CLI forms have precedence. The older `multiclouddb.provisionedCapacity` property is only
+fallback report text and does not control provisioning.
 
 ## What the report now shows
 

@@ -7,6 +7,10 @@ multiclouddb.connection.databaseId=perfdb
 multiclouddb.database=perfdb
 multiclouddb.collection=perf
 
+# Fair-comparison offered load. Keep identical in every provider config in a comparison run.
+# CLI --target-ops-per-sec overrides this value.
+multiclouddb.perf.targetOpsPerSec=100
+
 # Fair-comparison metadata.
 multiclouddb.region=us-central1
 # Optional cross-cloud colocation label used by --region-policy warn|fail.

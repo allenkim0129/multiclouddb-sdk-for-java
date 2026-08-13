@@ -75,14 +75,14 @@ public final class PerfMain {
         int docSize = intOpt(opt, "doc-size", 1024);
         int pageSize = intOpt(opt, "page-size", 100);
         int repeat = Math.max(1, intOpt(opt, "repeat", 1));
-        int cosmosRu = intOpt(opt, "cosmos-ru", 0);
-        int dynamoRcu = optionalPositiveInt(opt, "dynamo-rcu");
-        int dynamoWcu = optionalPositiveInt(opt, "dynamo-wcu");
-        validateDynamoCapacityArgs(dynamoRcu, dynamoWcu);
+        int cliCosmosRu = intOpt(opt, "cosmos-ru", 0);
+        int cliDynamoRcu = optionalPositiveInt(opt, "dynamo-rcu");
+        int cliDynamoWcu = optionalPositiveInt(opt, "dynamo-wcu");
+        validateDynamoCapacityArgs(cliDynamoRcu, cliDynamoWcu);
         boolean enableDynamoStreams = opt.containsKey("enable-dynamo-streams");
         int splitWaitSeconds = intOpt(opt, "split-wait-seconds", 0);
-        double targetOpsPerSec = doubleOpt(opt, "target-ops-per-sec", 0.0);
-        if (targetOpsPerSec < 0.0) {
+        double cliTargetOpsPerSec = doubleOpt(opt, "target-ops-per-sec", 0.0);
+        if (cliTargetOpsPerSec < 0.0) {
             throw new IllegalArgumentException("--target-ops-per-sec must be >= 0");
         }
         double invalidThrottleRate = throttleThreshold(opt);
@@ -98,12 +98,24 @@ public final class PerfMain {
             System.out.println("No live configs found. Nothing to run.");
             return;
         }
+        validateOfferedLoadTargets(plans, opt, cliTargetOpsPerSec);
         applyRegionPolicy(plans, regionPolicy);
 
         List<ResultRow> all = new ArrayList<>();
         int ran = 0;
         for (ProviderRunPlan plan : plans) {
             System.setProperty("multiclouddb.config", plan.configPath().toString());
+            int cosmosRu = opt.containsKey("cosmos-ru")
+                    ? cliCosmosRu
+                    : positiveConfigInt(plan.cfg(), "multiclouddb.perf.cosmosRu");
+            int dynamoRcu = opt.containsKey("dynamo-rcu")
+                    ? cliDynamoRcu
+                    : positiveConfigInt(plan.cfg(), "multiclouddb.perf.dynamoRcu");
+            int dynamoWcu = opt.containsKey("dynamo-wcu")
+                    ? cliDynamoWcu
+                    : positiveConfigInt(plan.cfg(), "multiclouddb.perf.dynamoWcu");
+            validateDynamoCapacityArgs(dynamoRcu, dynamoWcu);
+            double targetOpsPerSec = effectiveTargetOpsPerSec(plan, opt, cliTargetOpsPerSec);
             MetadataProbe.Meta meta = plan.metadata();
             String comparisonRegion = RegionFairness.effectiveComparisonRegion(
                     plan.configuredComparisonRegion(), meta.region(), plan.configuredRegion());
@@ -113,7 +125,6 @@ public final class PerfMain {
                 ResourceAddress address = new ResourceAddress(plan.database(), plan.collection());
                 client.ensureDatabase(plan.database());
                 client.ensureContainer(address);
-                primeCaches(client, address);
 
                 if (cosmosRu > 0 && "cosmos".equals(plan.providerId())) {
                     ProvisioningAdmin.ensureCosmosThroughput(plan.cfg(), plan.database(), plan.collection(), cosmosRu);
@@ -139,6 +150,7 @@ public final class PerfMain {
                     ProvisioningAdmin.ensureDynamoStreams(plan.cfg(), plan.database(), plan.collection());
                     meta = reprobe(plan, meta);
                 }
+                primeCaches(client, address);
 
                 comparisonRegion = RegionFairness.effectiveComparisonRegion(
                         plan.configuredComparisonRegion(), meta.region(), plan.configuredRegion());
@@ -485,6 +497,50 @@ public final class PerfMain {
         boolean onlyOne = (dynamoRcu > 0) != (dynamoWcu > 0);
         if (onlyOne) {
             throw new IllegalArgumentException("--dynamo-rcu and --dynamo-wcu must be provided together");
+        }
+    }
+
+    private static int positiveConfigInt(ConfigLoader.AppConfig cfg, String key) {
+        String raw = cfg.get(key, "");
+        if (raw == null || raw.isBlank()) {
+            return 0;
+        }
+        int value = Integer.parseInt(raw.trim());
+        if (value <= 0) {
+            throw new IllegalArgumentException(key + " must be > 0 when set");
+        }
+        return value;
+    }
+
+    private static double effectiveTargetOpsPerSec(ProviderRunPlan plan, Map<String, String> opt,
+                                                   double cliTargetOpsPerSec) {
+        if (opt.containsKey("target-ops-per-sec")) {
+            return cliTargetOpsPerSec;
+        }
+        String raw = plan.cfg().get("multiclouddb.perf.targetOpsPerSec", "");
+        if (raw == null || raw.isBlank()) {
+            return 0.0;
+        }
+        double value = Double.parseDouble(raw.trim());
+        if (value < 0.0) {
+            throw new IllegalArgumentException(
+                    "multiclouddb.perf.targetOpsPerSec must be >= 0 when set");
+        }
+        return value;
+    }
+
+    private static void validateOfferedLoadTargets(List<ProviderRunPlan> plans, Map<String, String> opt,
+                                                   double cliTargetOpsPerSec) {
+        Double expected = null;
+        for (ProviderRunPlan plan : plans) {
+            double target = effectiveTargetOpsPerSec(plan, opt, cliTargetOpsPerSec);
+            if (expected == null) {
+                expected = target;
+            } else if (Double.compare(expected, target) != 0) {
+                throw new IllegalArgumentException(
+                        "Fair comparison requires the same multiclouddb.perf.targetOpsPerSec "
+                                + "for every provider config; use --target-ops-per-sec to override all providers");
+            }
         }
     }
 

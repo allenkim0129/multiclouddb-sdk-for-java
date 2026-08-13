@@ -44,6 +44,16 @@ The harness probes and reports:
 
 After any opt-in provisioning update, metadata is re-probed before measurements continue.
 
+Capacity and offered load are normally declared in each provider's live property file:
+
+- `multiclouddb.perf.targetOpsPerSec` (identical across all compared providers)
+- `multiclouddb.perf.cosmosRu`
+- `multiclouddb.perf.dynamoRcu` and `multiclouddb.perf.dynamoWcu` (required together)
+
+Equivalent CLI options override the property values for one run. The harness applies capacity
+before cache priming and warmup, then records the probed capacity rather than trusting configured
+display text.
+
 ## Recorded raw data
 
 See [`templates/RESULT_SCHEMA.md`](templates/RESULT_SCHEMA.md). Raw rows include timing offsets,
