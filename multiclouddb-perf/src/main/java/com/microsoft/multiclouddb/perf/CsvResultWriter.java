@@ -14,15 +14,16 @@ import java.nio.file.StandardOpenOption;
 /**
  * Thread-safe, append-only writer for the raw perf result CSV.
  *
- * <p>Schema is defined in {@code multiclouddb-perf/templates/RESULT_SCHEMA.md} (20 columns,
+ * <p>Schema is defined in {@code multiclouddb-perf/templates/RESULT_SCHEMA.md},
  * one row per measured operation). Warmup iterations are never written here.
  */
 final class CsvResultWriter implements AutoCloseable {
 
     static final String HEADER =
-            "run_id,timestamp_utc,provider,region,host_label,jdk,operation,scenario,"
-            + "doc_size_bytes,page_size,threads,iteration,latency_ms,success,error_category,"
-            + "cost_unit,cost_value,provisioned_capacity,sdk_version,notes";
+            "run_id,timestamp_utc,provider,region,comparison_region,host_label,jdk,operation,workload,scenario,"
+            + "doc_size_bytes,page_size,threads,iteration,start_offset_ms,end_offset_ms,latency_ms,success,error_category,"
+            + "cost_unit,cost_value,retry_count,capacity_limit_unit,capacity_limit_value,billing_mode,"
+            + "provisioned_capacity,sdk_version,target_ops_per_sec,notes";
 
     private final Writer writer;
     private final Object lock = new Object();
@@ -49,15 +50,21 @@ final class CsvResultWriter implements AutoCloseable {
     /** Appends one measured-operation row. Thread-safe. */
     void write(ResultRow r) {
         String line = String.join(",",
-                q(r.runId()), q(r.timestampUtc()), q(r.provider()), q(r.region()),
-                q(r.hostLabel()), q(r.jdk()), q(r.operation()), q(r.scenario()),
+                q(r.runId()), q(r.timestampUtc()), q(r.provider()), q(r.region()), q(r.comparisonRegion()),
+                q(r.hostLabel()), q(r.jdk()), q(r.operation()), q(r.workload()), q(r.scenario()),
                 Integer.toString(r.docSizeBytes()),
                 r.pageSize() == null ? "" : Integer.toString(r.pageSize()),
                 Integer.toString(r.threads()), Integer.toString(r.iteration()),
+                fmt(r.startOffsetMs()), fmt(r.endOffsetMs()),
                 fmt(r.latencyMs()), Boolean.toString(r.success()),
                 q(r.errorCategory()), q(r.costUnit()),
                 r.costValue() == null ? "" : fmt(r.costValue()),
-                q(r.provisionedCapacity()), q(r.sdkVersion()), q(r.notes()));
+                r.retryCount() == null ? "" : Integer.toString(r.retryCount()),
+                q(r.capacityLimitUnit()),
+                r.capacityLimitValue() == null ? "" : fmt(r.capacityLimitValue()),
+                q(r.billingMode()), q(r.provisionedCapacity()), q(r.sdkVersion()),
+                r.targetOpsPerSec() == null ? "" : fmt(r.targetOpsPerSec()),
+                q(r.notes()));
         synchronized (lock) {
             try {
                 writer.write(line);

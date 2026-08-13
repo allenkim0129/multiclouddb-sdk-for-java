@@ -9,5 +9,6 @@ package com.microsoft.multiclouddb.perf;
  * @param baseline the provider treated as the migration <em>source</em> for the thread-parity
  *                 analysis (goal 3). May be {@code null}; renderers resolve a default.
  */
-record ReportMeta(String title, String generatedUtc, String sourceLabel, String baseline) {
+record ReportMeta(String title, String generatedUtc, String sourceLabel, String baseline,
+                  double invalidThrottleRate) {
 }

@@ -7,7 +7,10 @@ multiclouddb.connection.requestTimeoutSeconds=30
 multiclouddb.database=perfdb
 multiclouddb.collection=perf
 
-# Perf report metadata (optional; recorded in the report Environment table).
+# Fair-comparison metadata.
 multiclouddb.region=eastus
-multiclouddb.provisionedCapacity=400 RU/s (or autoscale max)
+# Optional cross-cloud colocation label used by --region-policy warn|fail.
+multiclouddb.comparisonRegion=
+# Optional display value; the harness probes actual billing mode / throughput when possible.
+multiclouddb.provisionedCapacity=400 RU/s (manual or autoscale max)
 multiclouddb.sdkVersion=dev

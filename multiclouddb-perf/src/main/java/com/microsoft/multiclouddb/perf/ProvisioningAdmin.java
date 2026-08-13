@@ -1,8 +1,7 @@
-package com.microsoft.multiclouddb.perf;
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
 
-import java.time.Duration;
-import java.time.Instant;
-import java.util.Locale;
+package com.microsoft.multiclouddb.perf;
 
 import com.azure.cosmos.CosmosClient;
 import com.azure.cosmos.CosmosClientBuilder;
@@ -11,32 +10,25 @@ import com.azure.cosmos.CosmosDatabase;
 import com.azure.cosmos.models.ThroughputProperties;
 import com.azure.cosmos.models.ThroughputResponse;
 import com.microsoft.multiclouddb.e2e.ConfigLoader;
-
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.model.BillingMode;
 import software.amazon.awssdk.services.dynamodb.model.DescribeTableResponse;
+import software.amazon.awssdk.services.dynamodb.model.ProvisionedThroughput;
+import software.amazon.awssdk.services.dynamodb.model.ProvisionedThroughputDescription;
 import software.amazon.awssdk.services.dynamodb.model.StreamSpecification;
 import software.amazon.awssdk.services.dynamodb.model.StreamViewType;
 import software.amazon.awssdk.services.dynamodb.model.TableStatus;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Locale;
+
 /**
  * Opt-in, best-effort provisioning admin used only when the operator passes the
- * corresponding CLI flags. These operations change live provisioning and therefore
- * <em>cost real money</em>, so they never run by default. Both use throwaway native admin
- * clients built from the same live config as {@link MetadataProbe}; any failure is logged
- * and swallowed so a provisioning hiccup never aborts the run.
- *
- * <ul>
- *   <li>{@code ensureCosmosThroughput} — raises the container to a target manual RU/s so
- *       Cosmos splits into multiple physical partitions (splits happen above ~10K RU/s or
- *       50&nbsp;GB). Scaling up is applied immediately; the background partition split can
- *       take minutes, so callers should allow time before reading cursors.</li>
- *   <li>{@code ensureDynamoStreams} — enables a DynamoDB Stream
- *       ({@code NEW_AND_OLD_IMAGES}) on the table so the portable change feed is supported,
- *       then waits for the table to return to {@code ACTIVE}.</li>
- * </ul>
+ * corresponding CLI flags.
  */
 final class ProvisioningAdmin {
 
@@ -64,8 +56,7 @@ final class ProvisioningAdmin {
                 ThroughputResponse before = container.readThroughput();
                 ThroughputResponse after = container.replaceThroughput(target);
                 System.out.printf(Locale.ROOT,
-                        "-- cosmos throughput: container %d -> %d RU/s (manual); "
-                        + "partition split may take minutes%n",
+                        "-- cosmos throughput: container %d -> %d RU/s (manual); partition split may take minutes%n",
                         manual(before), manual(after));
             } catch (Throwable containerLevel) {
                 ThroughputResponse after = db.replaceThroughput(target);
@@ -80,31 +71,54 @@ final class ProvisioningAdmin {
         }
     }
 
-    private static int manual(ThroughputResponse r) {
-        try {
-            return r.getProperties().getManualThroughput();
-        } catch (Throwable ignore) {
-            return -1;
+    static void ensureDynamoProvisionedCapacity(ConfigLoader.AppConfig cfg, String database,
+                                                String collection, int targetRcu, int targetWcu) {
+        String table = database + "__" + collection;
+        try (DynamoDbClient ddb = buildDynamoClient(cfg)) {
+            if (ddb == null) {
+                return;
+            }
+            DescribeTableResponse desc = ddb.describeTable(b -> b.tableName(table));
+            ProvisionedThroughputDescription current = desc.table().provisionedThroughput();
+            BillingMode currentMode = desc.table().billingModeSummary() != null
+                    && desc.table().billingModeSummary().billingMode() != null
+                    ? desc.table().billingModeSummary().billingMode()
+                    : current != null ? BillingMode.PROVISIONED : null;
+            Long currentRcu = current != null ? current.readCapacityUnits() : null;
+            Long currentWcu = current != null ? current.writeCapacityUnits() : null;
+            boolean alreadyProvisioned = BillingMode.PROVISIONED.equals(currentMode)
+                    && Long.valueOf(targetRcu).equals(currentRcu)
+                    && Long.valueOf(targetWcu).equals(currentWcu);
+            if (alreadyProvisioned) {
+                System.out.printf(Locale.ROOT,
+                        "-- dynamo capacity already PROVISIONED on %s (rcu=%d wcu=%d)%n",
+                        table, targetRcu, targetWcu);
+                return;
+            }
+            ddb.updateTable(b -> b.tableName(table)
+                    .billingMode(BillingMode.PROVISIONED)
+                    .provisionedThroughput(ProvisionedThroughput.builder()
+                            .readCapacityUnits((long) targetRcu)
+                            .writeCapacityUnits((long) targetWcu)
+                            .build()));
+            System.out.printf(Locale.ROOT,
+                    "-- dynamo capacity: %s -> PROVISIONED rcu=%d wcu=%d on %s ...%n",
+                    currentMode != null ? currentMode : "unknown", targetRcu, targetWcu, table);
+            waitActive(ddb, table, "capacity update");
+        } catch (Throwable t) {
+            System.out.printf(Locale.ROOT,
+                    "!! dynamo capacity admin failed (%s: %s) — leaving provisioning unchanged%n",
+                    t.getClass().getSimpleName(), t.getMessage());
         }
     }
 
     /** Enables a {@code NEW_AND_OLD_IMAGES} stream on the Dynamo table and waits for ACTIVE. */
     static void ensureDynamoStreams(ConfigLoader.AppConfig cfg, String database, String collection) {
-        String region = cfg.get("multiclouddb.connection.region",
-                cfg.get("multiclouddb.region", ""));
-        String accessKey = cfg.get("multiclouddb.auth.accessKeyId", "");
-        String secretKey = cfg.get("multiclouddb.auth.secretAccessKey", "");
         String table = database + "__" + collection;
-        if (region.isBlank()) {
-            System.out.println("!! dynamo streams admin skipped — no region in config");
-            return;
-        }
-        var builder = DynamoDbClient.builder().region(Region.of(region));
-        if (!accessKey.isBlank() && !secretKey.isBlank()) {
-            builder.credentialsProvider(StaticCredentialsProvider.create(
-                    AwsBasicCredentials.create(accessKey, secretKey)));
-        }
-        try (DynamoDbClient ddb = builder.build()) {
+        try (DynamoDbClient ddb = buildDynamoClient(cfg)) {
+            if (ddb == null) {
+                return;
+            }
             DescribeTableResponse desc = ddb.describeTable(b -> b.tableName(table));
             StreamSpecification spec = desc.table().streamSpecification();
             boolean enabled = spec != null && Boolean.TRUE.equals(spec.streamEnabled())
@@ -121,7 +135,7 @@ final class ProvisioningAdmin {
                             .build()));
             System.out.printf(Locale.ROOT,
                     "-- dynamo streams: enabling NEW_AND_OLD_IMAGES on %s ...%n", table);
-            waitActive(ddb, table);
+            waitActive(ddb, table, "stream update");
         } catch (Throwable t) {
             System.out.printf(Locale.ROOT,
                     "!! dynamo streams admin failed (%s: %s) — change feed will record a skip row%n",
@@ -129,7 +143,31 @@ final class ProvisioningAdmin {
         }
     }
 
-    private static void waitActive(DynamoDbClient ddb, String table) {
+    private static int manual(ThroughputResponse r) {
+        try {
+            return r.getProperties().getManualThroughput();
+        } catch (Throwable ignore) {
+            return -1;
+        }
+    }
+
+    private static DynamoDbClient buildDynamoClient(ConfigLoader.AppConfig cfg) {
+        String region = cfg.get("multiclouddb.connection.region", cfg.get("multiclouddb.region", ""));
+        String accessKey = cfg.get("multiclouddb.auth.accessKeyId", "");
+        String secretKey = cfg.get("multiclouddb.auth.secretAccessKey", "");
+        if (region.isBlank()) {
+            System.out.println("!! dynamo admin skipped — no region in config");
+            return null;
+        }
+        var builder = DynamoDbClient.builder().region(Region.of(region));
+        if (!accessKey.isBlank() && !secretKey.isBlank()) {
+            builder.credentialsProvider(StaticCredentialsProvider.create(
+                    AwsBasicCredentials.create(accessKey, secretKey)));
+        }
+        return builder.build();
+    }
+
+    private static void waitActive(DynamoDbClient ddb, String table, String reason) {
         Instant deadline = Instant.now().plus(Duration.ofMinutes(5));
         while (Instant.now().isBefore(deadline)) {
             try {
@@ -140,11 +178,12 @@ final class ProvisioningAdmin {
             }
             DescribeTableResponse d = ddb.describeTable(b -> b.tableName(table));
             if (d.table().tableStatus() == TableStatus.ACTIVE) {
-                System.out.printf(Locale.ROOT, "-- dynamo streams active on %s%n", table);
+                System.out.printf(Locale.ROOT, "-- dynamo %s active on %s%n", reason, table);
                 return;
             }
         }
         System.out.printf(Locale.ROOT,
-                "!! dynamo streams on %s did not reach ACTIVE within 5 min — continuing anyway%n", table);
+                "!! dynamo %s on %s did not reach ACTIVE within 5 min — continuing anyway%n",
+                reason, table);
     }
 }

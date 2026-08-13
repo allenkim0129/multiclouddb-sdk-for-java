@@ -23,33 +23,18 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 /**
- * Single-JVM CLI entry point for the MANUAL, live-account performance harness — the Java
- * replacement for the former {@code run-suite.sh} / {@code run-all.sh} /
- * {@code aggregate-results.sh} / {@code generate-report*.sh} bash pipeline.
- *
- * <p>Subcommands:
- * <pre>
- *   run      Run the provider &times; scenario &times; thread matrix against live accounts
- *            (one client per provider, reused across scenarios — the real customer data
- *            path), then pool statistics and render Markdown + HTML reports.
- *   report   Re-aggregate existing raw CSVs and re-render the reports (no live calls).
- *   cleanup  Delete perf-created items to stop live-account cost (see {@link PerfCleanup}).
- * </pre>
- *
- * <p>Example:
- * <pre>
- *   run  --config-dir multiclouddb-perf/config --scenarios S1,S6 --threads 1,8,32 \
- *        --iterations 500 --out multiclouddb-perf/results/raw --reports multiclouddb-perf/results/reports
- *   report  --raw multiclouddb-perf/results/raw --reports multiclouddb-perf/results/reports --title myrun
- *   cleanup --config multiclouddb-perf/config/cosmos.live.properties --dry-run
- * </pre>
- *
- * <p><b>Refuses to run against live accounts in CI</b> (see {@link #assertNotCi()}); the
- * {@code run} and {@code cleanup} commands are billable and touch live cloud resources.
+ * Single-JVM CLI entry point for the MANUAL, live-account performance harness.
  */
 public final class PerfMain {
 
     private PerfMain() {
+    }
+
+    private record ProviderRunPlan(Path configPath, ConfigLoader.AppConfig cfg,
+                                   String providerId, String database, String collection,
+                                   String sdkVersion, String configuredRegion,
+                                   String configuredComparisonRegion,
+                                   MetadataProbe.Meta metadata) {
     }
 
     public static void main(String[] args) throws Exception {
@@ -76,63 +61,63 @@ public final class PerfMain {
     private static void run(Map<String, String> opt) throws Exception {
         assertNotCi();
         Path configDir = Path.of(opt.getOrDefault("config-dir", "multiclouddb-perf/config"));
-        Path outDir    = Path.of(opt.getOrDefault("out", "multiclouddb-perf/results/raw"));
+        Path outDir = Path.of(opt.getOrDefault("out", "multiclouddb-perf/results/raw"));
         Path reportDir = Path.of(opt.getOrDefault("reports", "multiclouddb-perf/results/reports"));
         List<String> providers = splitCsv(opt.getOrDefault("providers", "cosmos,dynamo,spanner"));
-        List<String> scenarios = splitCsv(opt.getOrDefault("scenarios", "S1,S3,S4,S5,S6"));
+        String workload = workloadOpt(opt.get("workload"));
+        List<String> scenarios = resolveScenarios(opt, workload);
+        validateScenarioWorkload(scenarios, workload);
         List<Integer> threadLevels = splitCsv(opt.getOrDefault("threads", "8")).stream()
-                .map(Integer::parseInt).toList();
-        int warmup     = intOpt(opt, "warmup", 50);
+                .map(Integer::parseInt)
+                .toList();
+        int warmup = intOpt(opt, "warmup", 50);
         int iterations = intOpt(opt, "iterations", 500);
-        int docSize    = intOpt(opt, "doc-size", 1024);
-        int pageSize   = intOpt(opt, "page-size", 100);
-        int repeat     = Math.max(1, intOpt(opt, "repeat", 1));
-        int cosmosRu   = intOpt(opt, "cosmos-ru", 0);           // 0 = leave provisioning as-is
+        int docSize = intOpt(opt, "doc-size", 1024);
+        int pageSize = intOpt(opt, "page-size", 100);
+        int repeat = Math.max(1, intOpt(opt, "repeat", 1));
+        int cosmosRu = intOpt(opt, "cosmos-ru", 0);
+        int dynamoRcu = optionalPositiveInt(opt, "dynamo-rcu");
+        int dynamoWcu = optionalPositiveInt(opt, "dynamo-wcu");
+        validateDynamoCapacityArgs(dynamoRcu, dynamoWcu);
         boolean enableDynamoStreams = opt.containsKey("enable-dynamo-streams");
-        int splitWaitSeconds = intOpt(opt, "split-wait-seconds", 0); // pause after a Cosmos RU raise
+        int splitWaitSeconds = intOpt(opt, "split-wait-seconds", 0);
+        double targetOpsPerSec = doubleOpt(opt, "target-ops-per-sec", 0.0);
+        if (targetOpsPerSec < 0.0) {
+            throw new IllegalArgumentException("--target-ops-per-sec must be >= 0");
+        }
+        double invalidThrottleRate = throttleThreshold(opt);
+        RegionFairness.Policy regionPolicy = RegionFairness.Policy.parse(opt.get("region-policy"));
 
         String batchId = opt.getOrDefault("title",
                 Instant.now().toString().replace(":", "-").replaceAll("\\..*", "Z") + "-batch");
         String jdk = System.getProperty("java.vendor", "?") + " " + System.getProperty("java.version", "?");
         String host = hostname();
 
+        List<ProviderRunPlan> plans = loadProviderPlans(configDir, providers);
+        if (plans.isEmpty()) {
+            System.out.println("No live configs found. Nothing to run.");
+            return;
+        }
+        applyRegionPolicy(plans, regionPolicy);
+
         List<ResultRow> all = new ArrayList<>();
         int ran = 0;
-        for (String provider : providers) {
-            Path cfgPath = configDir.resolve(provider + ".live.properties");
-            if (!Files.exists(cfgPath)) {
-                System.out.printf(Locale.ROOT, "!! Skipping %s — no live config at %s%n", provider, cfgPath);
-                continue;
-            }
-            System.setProperty("multiclouddb.config", cfgPath.toString());
-            ConfigLoader.AppConfig cfg = ConfigLoader.load(cfgPath.toString());
-            String providerId = cfg.sdk().provider().id();
-            String database   = cfg.get("multiclouddb.database", "perfdb");
-            String collection = cfg.get("multiclouddb.collection", "perf");
-            ResourceAddress address = new ResourceAddress(database, collection);
-            String sdkVersion = cfg.get("multiclouddb.sdkVersion", "dev");
-            String cfgRegion = cfg.get("multiclouddb.region", "unknown");
-            String cfgProvisioned = cfg.get("multiclouddb.provisionedCapacity", "");
-            MetadataProbe.Meta meta = MetadataProbe.probe(
-                    providerId, cfg, database, collection, cfgRegion, cfgProvisioned);
-            String region = meta.region();
-            String provisioned = meta.provisionedCapacity();
-            System.out.printf(Locale.ROOT, "-- %s metadata: region=%s provisioned=%s%n",
-                    providerId, region, provisioned.isBlank() ? "(none)" : provisioned);
-
-            Path csv = outDir.resolve(batchId + "-" + providerId + ".csv");
-            try (MulticloudDbClient client = MulticloudDbClientFactory.create(cfg.sdk());
+        for (ProviderRunPlan plan : plans) {
+            System.setProperty("multiclouddb.config", plan.configPath().toString());
+            MetadataProbe.Meta meta = plan.metadata();
+            String comparisonRegion = RegionFairness.effectiveComparisonRegion(
+                    plan.configuredComparisonRegion(), meta.region(), plan.configuredRegion());
+            Path csv = outDir.resolve(batchId + "-" + plan.providerId() + ".csv");
+            try (MulticloudDbClient client = MulticloudDbClientFactory.create(plan.cfg().sdk());
                  CsvResultWriter writer = new CsvResultWriter(csv)) {
-                client.ensureDatabase(database);
+                ResourceAddress address = new ResourceAddress(plan.database(), plan.collection());
+                client.ensureDatabase(plan.database());
                 client.ensureContainer(address);
                 primeCaches(client, address);
 
-                // Opt-in, cost-incurring provisioning admin (only when the operator asks).
-                if (cosmosRu > 0 && "cosmos".equals(providerId)) {
-                    ProvisioningAdmin.ensureCosmosThroughput(cfg, database, collection, cosmosRu);
-                    // A Cosmos physical-partition split is asynchronous and takes minutes to
-                    // complete after the RU raise. Waiting here lets listCursors observe the new
-                    // partition count within THIS run (needed for the multi-partition change feed).
+                if (cosmosRu > 0 && "cosmos".equals(plan.providerId())) {
+                    ProvisioningAdmin.ensureCosmosThroughput(plan.cfg(), plan.database(), plan.collection(), cosmosRu);
+                    meta = reprobe(plan, meta);
                     if (splitWaitSeconds > 0) {
                         System.out.printf(Locale.ROOT,
                                 "-- waiting %ds for the Cosmos partition split to complete ...%n",
@@ -142,19 +127,25 @@ public final class PerfMain {
                         } catch (InterruptedException ie) {
                             Thread.currentThread().interrupt();
                         }
-                        // Re-probe so the report records the post-split provisioning/partition state.
-                        MetadataProbe.Meta after = MetadataProbe.probe(
-                                providerId, cfg, database, collection, region, provisioned);
-                        region = after.region();
-                        provisioned = after.provisionedCapacity();
-                        System.out.printf(Locale.ROOT,
-                                "-- post-split metadata: region=%s provisioned=%s%n",
-                                region, provisioned.isBlank() ? "(none)" : provisioned);
+                        meta = reprobe(plan, meta);
                     }
                 }
-                if (enableDynamoStreams && "dynamo".equals(providerId)) {
-                    ProvisioningAdmin.ensureDynamoStreams(cfg, database, collection);
+                if (dynamoRcu > 0 && "dynamo".equals(plan.providerId())) {
+                    ProvisioningAdmin.ensureDynamoProvisionedCapacity(
+                            plan.cfg(), plan.database(), plan.collection(), dynamoRcu, dynamoWcu);
+                    meta = reprobe(plan, meta);
                 }
+                if (enableDynamoStreams && "dynamo".equals(plan.providerId())) {
+                    ProvisioningAdmin.ensureDynamoStreams(plan.cfg(), plan.database(), plan.collection());
+                    meta = reprobe(plan, meta);
+                }
+
+                comparisonRegion = RegionFairness.effectiveComparisonRegion(
+                        plan.configuredComparisonRegion(), meta.region(), plan.configuredRegion());
+                System.out.printf(Locale.ROOT,
+                        "-- %s metadata: region=%s comparison=%s billing=%s provisioned=%s%n",
+                        plan.providerId(), meta.region(), comparisonRegion, meta.billingMode(),
+                        meta.provisionedCapacity().isBlank() ? "(none)" : meta.provisionedCapacity());
 
                 Consumer<ResultRow> sink = r -> {
                     writer.write(r);
@@ -166,18 +157,21 @@ public final class PerfMain {
                 for (int rep = 1; rep <= repeat; rep++) {
                     for (String scenario : scenarios) {
                         for (int threads : threadLevels) {
-                            // Each repeat gets a distinct run_id so the report pools all
-                            // repeats of the same (provider, op, scenario, threads) into one
-                            // averaged row (Runs column = repeat count); percentiles are
-                            // recomputed over the combined sample.
-                            String runId = batchId + "-" + providerId + "-" + scenario + "-" + threads + "t"
+                            String runId = batchId + "-" + plan.providerId() + "-" + scenario + "-" + threads + "t"
                                     + (repeat > 1 ? "-rep" + rep : "");
-                            RunContext ctx = new RunContext(runId, providerId, scenario, threads,
+                            RunContext ctx = new RunContext(runId, plan.providerId(), scenario, threads,
                                     warmup, iterations, docSize, pageSize,
-                                    region, host, jdk, sdkVersion, provisioned);
+                                    meta.region(), comparisonRegion, host, jdk,
+                                    plan.sdkVersion(), meta.billingMode(), meta.provisionedCapacity(),
+                                    meta.sharedCapacityLimit(), meta.readCapacityLimit(), meta.writeCapacityLimit(),
+                                    targetOpsPerSec > 0.0 ? targetOpsPerSec : null,
+                                    workload == null ? "mixed" : workload);
                             System.out.printf(Locale.ROOT,
-                                    "== %s / %s / %d threads (warmup=%d iter=%d)%s ==%n",
-                                    providerId, scenario, threads, warmup, iterations,
+                                    "== %s / %s / %d threads / workload=%s (warmup=%d iter=%d%s)%s ==%n",
+                                    plan.providerId(), scenario, threads,
+                                    scenarioWorkloadLabel(scenario, ctx.pointWorkload()),
+                                    warmup, iterations,
+                                    targetOpsPerSec > 0.0 ? String.format(Locale.ROOT, ", target=%.2f ops/s", targetOpsPerSec) : "",
                                     repeat > 1 ? " [repeat " + rep + "/" + repeat + "]" : "");
                             try {
                                 new ScenarioRunner(client, address, sink, ctx).run();
@@ -185,31 +179,31 @@ public final class PerfMain {
                             } catch (RuntimeException scenarioFailure) {
                                 System.out.printf(Locale.ROOT,
                                         "!! %s / %s / %dt aborted: %s — continuing with next scenario%n",
-                                        providerId, scenario, threads, scenarioFailure);
+                                        plan.providerId(), scenario, threads, scenarioFailure);
                             }
                         }
                     }
                 }
             }
-            System.out.printf(Locale.ROOT, "-> %s raw rows written to %s%n", providerId, csv);
+            System.out.printf(Locale.ROOT, "-> %s raw rows written to %s%n", plan.providerId(), csv);
         }
 
         if (all.isEmpty()) {
-            System.out.println("No results produced (no provider configs found?). Nothing to report.");
+            System.out.println("No results produced. Nothing to report.");
             return;
         }
-        renderReports(all, reportDir, batchId, "in-memory results from this run", opt.get("baseline"));
+        renderReports(all, reportDir, batchId, "in-memory results from this run",
+                opt.get("baseline"), invalidThrottleRate);
         System.out.printf(Locale.ROOT, "== done == %d scenario-runs, %d raw rows.%n", ran, all.size());
     }
 
     // ── report (offline re-aggregation) ──────────────────────────────────────
 
     private static void report(Map<String, String> opt) {
-        Path rawDir    = Path.of(opt.getOrDefault("raw", "multiclouddb-perf/results/raw"));
+        Path rawDir = Path.of(opt.getOrDefault("raw", "multiclouddb-perf/results/raw"));
         Path reportDir = Path.of(opt.getOrDefault("reports", "multiclouddb-perf/results/reports"));
+        double invalidThrottleRate = throttleThreshold(opt);
 
-        // --combined pools every run into one report (cross-run comparison); the default
-        // emits a separate report per run so operations aren't mixed across unrelated runs.
         if (opt.containsKey("combined")) {
             String title = opt.getOrDefault("title",
                     Instant.now().toString().replace(":", "-").replaceAll("\\..*", "Z") + "-combined");
@@ -218,7 +212,8 @@ public final class PerfMain {
                 System.err.println("No raw CSV rows found under " + rawDir);
                 System.exit(1);
             }
-            renderReports(rows, reportDir, title, rawDir + " (all runs, pooled)", opt.get("baseline"));
+            renderReports(rows, reportDir, title, rawDir + " (all runs, pooled)",
+                    opt.get("baseline"), invalidThrottleRate);
             return;
         }
 
@@ -227,13 +222,14 @@ public final class PerfMain {
             System.err.println("No raw CSV rows found under " + rawDir);
             System.exit(1);
         }
-        String only = opt.get("run");   // optional substring filter to report a single run
+        String only = opt.get("run");
         int made = 0;
         for (Map.Entry<String, List<ResultRow>> e : byBatch.entrySet()) {
             if (only != null && !only.isBlank() && !e.getKey().contains(only)) {
                 continue;
             }
-            renderReports(e.getValue(), reportDir, e.getKey(), rawDir + " (run " + e.getKey() + ")", opt.get("baseline"));
+            renderReports(e.getValue(), reportDir, e.getKey(), rawDir + " (run " + e.getKey() + ")",
+                    opt.get("baseline"), invalidThrottleRate);
             made++;
         }
         if (made == 0) {
@@ -245,12 +241,12 @@ public final class PerfMain {
     }
 
     private static void renderReports(List<ResultRow> rows, Path reportDir, String title, String source,
-                                     String baselineReq) {
+                                      String baselineReq, double invalidThrottleRate) {
         List<StatRow> stats = Statistics.aggregate(rows);
         List<EnvRow> env = Statistics.environment(rows);
         String baseline = ThreadAnalysis.resolveBaseline(baselineReq, Reports.providerOrder(stats));
         ReportMeta meta = new ReportMeta(title,
-                Instant.now().toString().replaceAll("\\..*", "Z"), source, baseline);
+                Instant.now().toString().replaceAll("\\..*", "Z"), source, baseline, invalidThrottleRate);
         Path md = MarkdownReport.write(stats, env, meta, reportDir);
         Path html = HtmlReport.write(stats, env, meta, reportDir);
         System.out.println("Pooled " + rows.size() + " raw rows into " + stats.size() + " group(s).");
@@ -288,7 +284,6 @@ public final class PerfMain {
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
-    /** Aborts if a CI environment is detected, unless {@code PERF_ALLOW_CI=1}. */
     static void assertNotCi() {
         boolean ci = System.getenv("CI") != null || System.getenv("GITHUB_ACTIONS") != null
                 || System.getenv("BUILD_ID") != null;
@@ -305,6 +300,68 @@ public final class PerfMain {
         MulticloudDbKey warm = MulticloudDbKey.of("__warmup__", "__warmup__");
         client.upsert(address, warm, Map.of("id", "__warmup__", "category", "perf"));
         client.delete(address, warm);
+    }
+
+    private static List<ProviderRunPlan> loadProviderPlans(Path configDir, List<String> providers) throws Exception {
+        List<ProviderRunPlan> plans = new ArrayList<>();
+        for (String provider : providers) {
+            Path cfgPath = configDir.resolve(provider + ".live.properties");
+            if (!Files.exists(cfgPath)) {
+                System.out.printf(Locale.ROOT, "!! Skipping %s — no live config at %s%n", provider, cfgPath);
+                continue;
+            }
+            System.setProperty("multiclouddb.config", cfgPath.toString());
+            ConfigLoader.AppConfig cfg = ConfigLoader.load(cfgPath.toString());
+            String providerId = cfg.sdk().provider().id();
+            String database = cfg.get("multiclouddb.database", "perfdb");
+            String collection = cfg.get("multiclouddb.collection", "perf");
+            String sdkVersion = cfg.get("multiclouddb.sdkVersion", "dev");
+            String configuredRegion = cfg.get("multiclouddb.region",
+                    cfg.get("multiclouddb.connection.region", "unknown"));
+            String configuredComparisonRegion = cfg.get("multiclouddb.comparisonRegion", "");
+            String cfgProvisioned = cfg.get("multiclouddb.provisionedCapacity", "");
+            MetadataProbe.Meta meta = MetadataProbe.probe(providerId, cfg, database, collection,
+                    configuredRegion, cfgProvisioned);
+            plans.add(new ProviderRunPlan(cfgPath, cfg, providerId, database, collection,
+                    sdkVersion, configuredRegion, configuredComparisonRegion, meta));
+        }
+        return plans;
+    }
+
+    private static void applyRegionPolicy(List<ProviderRunPlan> plans, RegionFairness.Policy policy) {
+        List<RegionFairness.ProviderRegion> regions = new ArrayList<>();
+        for (ProviderRunPlan plan : plans) {
+            regions.add(new RegionFairness.ProviderRegion(
+                    plan.providerId(),
+                    plan.configuredRegion(),
+                    plan.metadata().region(),
+                    RegionFairness.effectiveComparisonRegion(
+                            plan.configuredComparisonRegion(),
+                            plan.metadata().region(),
+                            plan.configuredRegion())));
+        }
+        RegionFairness.CheckResult result = RegionFairness.validate(regions, policy);
+        for (String message : result.messages()) {
+            String prefix = policy == RegionFairness.Policy.FAIL ? "!!" : "--";
+            System.out.printf(Locale.ROOT, "%s region-policy %s%n", prefix, message);
+        }
+        if (result.failed()) {
+            System.err.println("Aborting before measurements because --region-policy=fail detected a mismatch.");
+            System.exit(2);
+        }
+    }
+
+    private static MetadataProbe.Meta reprobe(ProviderRunPlan plan, MetadataProbe.Meta current) {
+        MetadataProbe.Meta reprobed = MetadataProbe.probe(plan.providerId(), plan.cfg(), plan.database(),
+                plan.collection(), plan.configuredRegion(), current.provisionedCapacity());
+        System.out.printf(Locale.ROOT,
+                "-- refreshed metadata: region=%s comparison=%s billing=%s provisioned=%s%n",
+                reprobed.region(),
+                RegionFairness.effectiveComparisonRegion(plan.configuredComparisonRegion(),
+                        reprobed.region(), plan.configuredRegion()),
+                reprobed.billingMode(),
+                reprobed.provisionedCapacity().isBlank() ? "(none)" : reprobed.provisionedCapacity());
+        return reprobed;
     }
 
     private static String hostname() {
@@ -326,7 +383,7 @@ public final class PerfMain {
             if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
                 opt.put(key, args[++i]);
             } else {
-                opt.put(key, "");   // boolean flag, e.g. --dry-run
+                opt.put(key, "");
             }
         }
         return opt;
@@ -343,6 +400,67 @@ public final class PerfMain {
         return out;
     }
 
+    static List<String> resolveScenarios(Map<String, String> opt, String workload) {
+        if (opt.containsKey("scenarios")) {
+            return splitCsv(opt.get("scenarios"));
+        }
+        if ("query".equals(workload)) {
+            return List.of("S3", "S4", "S5");
+        }
+        if ("read".equals(workload) || "write".equals(workload) || "mixed".equals(workload)) {
+            return List.of("S1", "S6");
+        }
+        return splitCsv("S1,S3,S4,S5,S6");
+    }
+
+    static String workloadOpt(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String value = raw.trim().toLowerCase(Locale.ROOT);
+        return switch (value) {
+            case "read", "write", "mixed", "query" -> value;
+            default -> throw new IllegalArgumentException(
+                    "--workload must be read, write, mixed, or query (was '" + raw + "')");
+        };
+    }
+
+    private static void validateScenarioWorkload(List<String> scenarios, String workload) {
+        if (workload == null) {
+            return;
+        }
+        for (String scenario : scenarios) {
+            if ("query".equals(workload)) {
+                if (!isQueryScenario(scenario)) {
+                    throw new IllegalArgumentException(
+                            "--workload=query only supports query scenarios (S3/S4/S5), not '" + scenario + "'");
+                }
+            } else if (!isPointScenario(scenario)) {
+                throw new IllegalArgumentException(
+                        "--workload=" + workload + " only supports point-operation scenarios (S1/S2/S6), not '"
+                                + scenario + "'");
+            }
+        }
+    }
+
+    private static boolean isQueryScenario(String scenario) {
+        return "S3".equals(scenario) || "S4".equals(scenario) || "S5".equals(scenario);
+    }
+
+    private static boolean isPointScenario(String scenario) {
+        return !isQueryScenario(scenario) && !"S7".equals(scenario);
+    }
+
+    private static String scenarioWorkloadLabel(String scenario, String pointWorkload) {
+        if (isQueryScenario(scenario)) {
+            return "query";
+        }
+        if ("S7".equals(scenario)) {
+            return "changefeed";
+        }
+        return pointWorkload;
+    }
+
     private static int intOpt(Map<String, String> opt, String key, int def) {
         String v = opt.get(key);
         if (v == null || v.isBlank()) {
@@ -351,38 +469,76 @@ public final class PerfMain {
         return Integer.parseInt(v.trim());
     }
 
+    private static int optionalPositiveInt(Map<String, String> opt, String key) {
+        String v = opt.get(key);
+        if (v == null || v.isBlank()) {
+            return 0;
+        }
+        int parsed = Integer.parseInt(v.trim());
+        if (parsed <= 0) {
+            throw new IllegalArgumentException("--" + key + " must be > 0 when set");
+        }
+        return parsed;
+    }
+
+    static void validateDynamoCapacityArgs(int dynamoRcu, int dynamoWcu) {
+        boolean onlyOne = (dynamoRcu > 0) != (dynamoWcu > 0);
+        if (onlyOne) {
+            throw new IllegalArgumentException("--dynamo-rcu and --dynamo-wcu must be provided together");
+        }
+    }
+
+    private static double doubleOpt(Map<String, String> opt, String key, double def) {
+        String v = opt.get(key);
+        if (v == null || v.isBlank()) {
+            return def;
+        }
+        return Double.parseDouble(v.trim());
+    }
+
+    static double throttleThreshold(Map<String, String> opt) {
+        double pct = doubleOpt(opt, "invalid-throttle-rate-pct", 0.1d);
+        if (pct < 0.0) {
+            throw new IllegalArgumentException("--invalid-throttle-rate-pct must be >= 0");
+        }
+        return pct / 100.0d;
+    }
+
     private static void printUsage() {
         System.out.println("""
             Multicloud DB perf harness (MANUAL, live accounts only).
 
             Usage:
               run     [--config-dir DIR] [--providers cosmos,dynamo,spanner]
-                      [--scenarios S1,S3,S4,S5,S6] [--threads 1,8,32]
+                      [--scenarios S1,S3,S4,S5,S6] [--workload read|write|mixed|query]
+                      [--threads 1,8,32] [--target-ops-per-sec N]
                       [--warmup N] [--iterations N] [--doc-size BYTES] [--page-size N]
-                      [--repeat N] [--cosmos-ru RU] [--split-wait-seconds N] [--enable-dynamo-streams]
+                      [--repeat N] [--cosmos-ru RU] [--dynamo-rcu N --dynamo-wcu N]
+                      [--split-wait-seconds N] [--enable-dynamo-streams]
+                      [--region-policy warn|fail|ignore]
+                      [--invalid-throttle-rate-pct PCT]
                       [--out multiclouddb-perf/results/raw] [--reports multiclouddb-perf/results/reports] [--title NAME]
               report  [--raw multiclouddb-perf/results/raw] [--reports multiclouddb-perf/results/reports]
                       [--run BATCH_ID] [--combined [--title NAME]] [--baseline PROVIDER]
+                      [--invalid-throttle-rate-pct PCT]
               cleanup [--config FILE | --config-dir DIR --providers ...] [--dry-run]
 
-            --repeat N runs the whole scenario matrix N times within one batch; the report pools
-            all repeats of a scenario into a single averaged row (Runs column = N) to smooth noise.
-
-            --cosmos-ru RU raises the Cosmos container to RU manual throughput before running
-            (splits into multiple physical partitions above ~10K RU/s) — COSTS MONEY.
-            --enable-dynamo-streams turns on a NEW_AND_OLD_IMAGES stream on the Dynamo table so the
-            portable change feed (S7) is supported — COSTS MONEY. All are opt-in and off by default.
-            --split-wait-seconds N pauses N seconds after a --cosmos-ru raise so the asynchronous
-            physical-partition split completes before scenarios run (use ~480 for a 4000->11000 split),
-            letting the change feed observe the extra partitions within the same run.
+            --target-ops-per-sec N applies a fair offered-load cap across worker threads by pacing
+            actual operation starts. Leave it unset or 0 for existing max-throughput mode.
+            --workload read|write|mixed|query selects explicit workload profiles; existing scenarios
+            remain usable, and query scenarios keep their current semantics.
+            --cosmos-ru RU raises Cosmos to manual throughput before running — COSTS MONEY.
+            --dynamo-rcu/--dynamo-wcu switches the Dynamo table to PROVISIONED and waits for ACTIVE — COSTS MONEY.
+            --enable-dynamo-streams turns on a NEW_AND_OLD_IMAGES stream for Dynamo change-feed runs — COSTS MONEY.
+            --region-policy warns (default), fails, or ignores config/probed region mismatches and
+            comparison-region mismatches before measurements.
+            --invalid-throttle-rate-pct defaults to 0.1; rows above that throttled-op rate are reported invalid.
 
             'run' and 'cleanup' hit live accounts and refuse to run in CI (override: PERF_ALLOW_CI=1).
             'report' is offline. By default it writes ONE report per run (batch) found under --raw,
             named <batchId>-REPORT.{md,html}. Use --run BATCH_ID to report a single run, or
             --combined to pool every run into one cross-run report named by --title.
-            --baseline PROVIDER sets the migration-source provider for the thread-parity analysis
-            (goal 3: migrated apps must not need more threads); defaults to the first non-cosmos
-            provider. Sweep several thread levels (e.g. --threads 1,8,32) to populate it.
+            --baseline PROVIDER sets the migration-source provider for the thread-parity analysis.
             """);
     }
 }

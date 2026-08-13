@@ -10,11 +10,15 @@ package com.microsoft.multiclouddb.perf;
  * the combined sample, and {@code runCount} records how many distinct runs contributed.
  */
 record StatRow(
-        String provider, String operation, String scenario, int threads,
+        String provider, String operation, String workload, String scenario, int threads,
         int docSizeBytes, Integer pageSize,
         int runCount, int count, int successCount,
         double p50, double p90, double p99, double max, double mean, double stdev,
         double throughputOpsSec,
-        Double costMean, Double costP99,
+        Double targetOpsPerSec, double offeredOpsSec, double achievedOfferedRatio,
+        String costUnit, Double costMean, Double costP99, Double consumedUnitsPerSec,
+        String capacityLimitUnit, Double capacityLimitValue, Double capacityUtilizationPct,
+        int throttledCount, double throttledRate,
+        Integer retryCountTotal, Double retryMean,
         double errorRate) {
 }

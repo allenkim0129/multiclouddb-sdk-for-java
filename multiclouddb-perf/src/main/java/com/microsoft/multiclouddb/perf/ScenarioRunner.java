@@ -3,6 +3,7 @@
 
 package com.microsoft.multiclouddb.perf;
 
+import com.multiclouddb.api.DocumentResult;
 import com.multiclouddb.api.MulticloudDbClient;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.MulticloudDbKey;
@@ -22,24 +23,19 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 
 /**
- * Runs one scenario for one provider against a live account, timing each portable
- * {@link MulticloudDbClient} operation and emitting one {@link ResultRow} per measured op
- * to the supplied sink. Warmup iterations are not recorded.
- *
- * <p>The client, address, and run metadata are injected by {@link PerfMain}, which owns the
- * client lifecycle and drives the full provider &times; scenario &times; thread-level matrix
- * in a single JVM (the real customer data path — no per-run process re-exec).
+ * Runs one scenario for one provider against a live account and emits one
+ * {@link ResultRow} per measured operation.
  */
 final class ScenarioRunner {
 
-    /** Marker fields written on every perf-created doc so {@link PerfCleanup} can find and
-     *  reconstruct the exact key ({@code partitionKey}/{@code sortKey}) to delete it. */
     static final String MARKER_TAG = "perfHarness";
-    static final String MARKER_PK  = "perfPartitionKey";
-    static final String MARKER_SK  = "perfSortKey";
+    static final String MARKER_PK = "perfPartitionKey";
+    static final String MARKER_SK = "perfSortKey";
 
     private final MulticloudDbClient client;
     private final ResourceAddress address;
@@ -49,15 +45,202 @@ final class ScenarioRunner {
 
     ScenarioRunner(MulticloudDbClient client, ResourceAddress address,
                    Consumer<ResultRow> sink, RunContext ctx) {
-        this.client  = client;
+        this.client = client;
         this.address = address;
-        this.sink    = sink;
-        this.ctx     = ctx;
+        this.sink = sink;
+        this.ctx = ctx;
         this.payload = "x".repeat(Math.max(0, ctx.docSize() - 128));
     }
 
-    /** Builds a perf document for {@code key}, stamped with cleanup markers. Reuses the shared
-     *  payload string so per-op allocation stays negligible relative to network latency. */
+    void run() {
+        switch (ctx.scenario()) {
+            case "S3" -> {
+                queryPhase(true);
+                queryPhase(false);
+            }
+            case "S4", "S5" -> queryPhase(false);
+            case "S7" -> changeFeedPhase();
+            default -> pointOpsPhase();
+        }
+    }
+
+    private void pointOpsPhase() {
+        switch (ctx.pointWorkload()) {
+            case "read" -> pointReadPhase();
+            case "write" -> pointWritePhase();
+            default -> pointMixedPhase();
+        }
+    }
+
+    private void pointMixedPhase() {
+        int total = ctx.warmup() + ctx.iterations();
+        forEachKey("mixed", "create", null, total,
+                i -> MulticloudDbKey.of(ctx.runId() + "-" + i),
+                (key, i) -> client.createWithDiagnostics(address, key, docFor(key)));
+        forEachKey("mixed", "read", null, total,
+                i -> MulticloudDbKey.of(ctx.runId() + "-" + i),
+                (key, i) -> diagnostics(client.read(address, key)));
+        forEachKey("mixed", "update", null, total,
+                i -> MulticloudDbKey.of(ctx.runId() + "-" + i),
+                (key, i) -> client.updateWithDiagnostics(address, key, docFor(key)));
+        forEachKey("mixed", "delete", null, total,
+                i -> MulticloudDbKey.of(ctx.runId() + "-" + i),
+                (key, i) -> client.deleteWithDiagnostics(address, key));
+    }
+
+    private void pointReadPhase() {
+        int total = ctx.warmup() + ctx.iterations();
+        List<MulticloudDbKey> seeded = seedIndependentKeys("read", total);
+        try {
+            forEachKey("read", "read", null, total,
+                    i -> seeded.get(i),
+                    (key, i) -> diagnostics(client.read(address, key)));
+        } finally {
+            cleanupKeys(seeded);
+        }
+    }
+
+    private void pointWritePhase() {
+        int total = ctx.warmup() + ctx.iterations();
+        List<MulticloudDbKey> updateKeys = seedIndependentKeys("update", total);
+        List<MulticloudDbKey> upsertKeys = seedIndependentKeys("upsert", total);
+        List<MulticloudDbKey> deleteKeys = seedIndependentKeys("delete", total);
+        List<MulticloudDbKey> createdKeys = new ArrayList<>(total);
+        try {
+            forEachKey("write", "create", null, total,
+                    i -> {
+                        MulticloudDbKey key = MulticloudDbKey.of(ctx.runId() + "-write-create-" + i,
+                                ctx.runId() + "-write-create-" + i);
+                        synchronized (createdKeys) {
+                            createdKeys.add(key);
+                        }
+                        return key;
+                    },
+                    (key, i) -> client.createWithDiagnostics(address, key, docFor(key)));
+            forEachKey("write", "update", null, total,
+                    updateKeys::get,
+                    (key, i) -> client.updateWithDiagnostics(address, key, docFor(key)));
+            forEachKey("write", "upsert", null, total,
+                    upsertKeys::get,
+                    (key, i) -> client.upsertWithDiagnostics(address, key, docFor(key)));
+            forEachKey("write", "delete", null, total,
+                    deleteKeys::get,
+                    (key, i) -> client.deleteWithDiagnostics(address, key));
+        } finally {
+            cleanupKeys(createdKeys);
+            cleanupKeys(updateKeys);
+            cleanupKeys(upsertKeys);
+            cleanupKeys(deleteKeys);
+        }
+    }
+
+    private void queryPhase(boolean scoped) {
+        String pk = ctx.runId() + "-qpk";
+        int seed = Math.max(ctx.pageSize() * 2, 200);
+        List<MulticloudDbKey> seeded = new ArrayList<>(seed);
+        try {
+            for (int i = 0; i < seed; i++) {
+                MulticloudDbKey k = MulticloudDbKey.of(pk, "item-" + i);
+                client.create(address, k, docFor(k));
+                seeded.add(k);
+            }
+        } catch (RuntimeException seedFailure) {
+            String cat = seedFailure instanceof MulticloudDbException me
+                    ? errorCategory(me) : "PROVIDER_ERROR";
+            emitFailureRow("query", "query", ctx.pageSize(),
+                    scoped ? "scoped" : "unscoped",
+                    "query seeding failed: " + seedFailure.getMessage(), cat);
+            cleanupKeys(seeded);
+            return;
+        }
+        try {
+            String note = scoped ? "scoped" : "unscoped";
+            forEachIteration("query", "query", ctx.pageSize(), note, (i) -> {
+                QueryRequest.Builder qb = QueryRequest.builder()
+                        .expression("category = @cat")
+                        .parameter("cat", "perf")
+                        .maxPageSize(ctx.pageSize());
+                if (scoped) {
+                    qb.partitionKey(pk);
+                }
+                QueryPage page = client.query(address, qb.build());
+                return page.diagnostics();
+            });
+        } finally {
+            cleanupKeys(seeded);
+        }
+    }
+
+    private void changeFeedPhase() {
+        List<ChangeFeedCursor> cursors;
+        try {
+            cursors = client.listCursors(address);
+        } catch (MulticloudDbException e) {
+            emitFailureRow("changefeed", "readChanges", null, "unsupported",
+                    "change feed unsupported: " + e.error().category().getValue(), errorCategory(e));
+            System.out.println("   change feed unsupported on this provider — recorded skip row.");
+            return;
+        }
+        if (cursors.isEmpty()) {
+            emitFailureRow("changefeed", "readChanges", null, "no-cursors", "no cursors returned", "PROVIDER_ERROR");
+            return;
+        }
+        final ChangeFeedCursor[] cur = cursors.toArray(new ChangeFeedCursor[0]);
+        final int partitions = cur.length;
+        System.out.printf(Locale.ROOT,
+                "   change feed: %d physical partition(s)/cursor(s) at tip%n", partitions);
+
+        int seed = Math.min(ctx.warmup() + ctx.iterations(), Math.max(ctx.pageSize() * 5, 500));
+        List<MulticloudDbKey> seeded = new ArrayList<>(seed);
+        try {
+            for (int i = 0; i < seed; i++) {
+                MulticloudDbKey k = MulticloudDbKey.of(ctx.runId() + "-cf-" + i);
+                client.create(address, k, docFor(k));
+                seeded.add(k);
+            }
+        } catch (RuntimeException seedFailure) {
+            String cat = seedFailure instanceof MulticloudDbException me
+                    ? errorCategory(me) : "PROVIDER_ERROR";
+            emitFailureRow("changefeed", "readChanges", null, "seed-failed",
+                    "change feed seeding failed: " + seedFailure.getMessage(), cat);
+            cleanupKeys(seeded);
+            return;
+        }
+        try {
+            forEachIteration("changefeed", "readChanges", null, partitions + "part", (i) -> {
+                ChangeFeedPage page = client.readChanges(address, cur[i % partitions]);
+                return page == null ? null : page.diagnostics();
+            });
+        } finally {
+            cleanupKeys(seeded);
+        }
+    }
+
+    private List<MulticloudDbKey> seedIndependentKeys(String prefix, int total) {
+        List<MulticloudDbKey> seeded = new ArrayList<>(total);
+        try {
+            for (int i = 0; i < total; i++) {
+                MulticloudDbKey key = MulticloudDbKey.of(ctx.runId() + '-' + prefix, prefix + '-' + i);
+                client.upsert(address, key, docFor(key));
+                seeded.add(key);
+            }
+        } catch (RuntimeException seedFailure) {
+            cleanupKeys(seeded);
+            throw seedFailure;
+        }
+        return seeded;
+    }
+
+    private void cleanupKeys(List<MulticloudDbKey> keys) {
+        for (MulticloudDbKey key : keys) {
+            try {
+                client.delete(address, key);
+            } catch (RuntimeException ignore) {
+                // best-effort cleanup
+            }
+        }
+    }
+
     private Map<String, Object> docFor(MulticloudDbKey key) {
         Map<String, Object> d = new HashMap<>();
         d.put("category", "perf");
@@ -70,218 +253,182 @@ final class ScenarioRunner {
         return d;
     }
 
-    void run() {
-        switch (ctx.scenario()) {
-            case "S3" -> {          // partition-scoped vs unscoped query (cost parity probe)
-                queryPhase(true);
-                queryPhase(false);
-            }
-            case "S4", "S5" -> queryPhase(false);   // page-size / predicate-count sweeps
-            case "S7" -> changeFeedPhase();          // capability-gated change feed
-            default   -> pointOpsPhase();            // S1/S2/S6 and any unknown id
-        }
+    @FunctionalInterface
+    private interface KeyedOp {
+        OperationDiagnostics apply(MulticloudDbKey key, int index) throws Exception;
     }
-
-    // ── Scenario phases ──────────────────────────────────────────────────────
-
-    /** create → read → update → delete lifecycle, each op type measured separately. */
-    private void pointOpsPhase() {
-        int total = ctx.warmup() + ctx.iterations();
-        forEachKey("create", null, total, (key, i) -> { client.create(address, key, docFor(key)); return null; });
-        forEachKey("read",   null, total, (key, i) -> { client.read(address, key);               return null; });
-        forEachKey("update", null, total, (key, i) -> { client.update(address, key, docFor(key)); return null; });
-        forEachKey("delete", null, total, (key, i) -> { client.delete(address, key);              return null; });
-    }
-
-    /** Seed a fixed result set, then measure repeated first-page queries. */
-    private void queryPhase(boolean scoped) {
-        String pk = ctx.runId() + "-qpk";
-        int seed = Math.max(ctx.pageSize() * 2, 200);
-        // Shared partition key, unique sort key -> all rows in ONE partition, so the
-        // scoped query (partitionKey=pk) is a genuine single-partition read.
-        List<MulticloudDbKey> seeded = new ArrayList<>(seed);
-        try {
-            for (int i = 0; i < seed; i++) {
-                MulticloudDbKey k = MulticloudDbKey.of(pk, "item-" + i);
-                client.create(address, k, docFor(k));
-                seeded.add(k);
-            }
-        } catch (RuntimeException seedFailure) {
-            // Seeding is a prerequisite for the query measurement. If it fails on a
-            // provider (e.g. the target table lacks a composite sort key), record a
-            // single skip row and bail out gracefully rather than aborting the whole
-            // run — mirrors changeFeedPhase's UNSUPPORTED handling.
-            String cat = seedFailure instanceof MulticloudDbException me
-                    ? errorCategory(me) : "PROVIDER_ERROR";
-            sink.accept(row("query", ctx.pageSize(), 0, 0.0, false, cat, null,
-                    "query seeding failed: " + seedFailure.getMessage()));
-            System.out.println("   query seeding failed — recorded skip row and skipping query phase.");
-            for (MulticloudDbKey k : seeded) {
-                try { client.delete(address, k); } catch (RuntimeException ignore) { /* best-effort */ }
-            }
-            return;
-        }
-        try {
-            String note = scoped ? "scoped" : "unscoped";
-            forEachIteration("query", ctx.pageSize(), note, (i) -> {
-                QueryRequest.Builder qb = QueryRequest.builder()
-                        .expression("category = @cat")
-                        .parameter("cat", "perf")
-                        .maxPageSize(ctx.pageSize());
-                if (scoped) {
-                    qb.partitionKey(pk);
-                }
-                QueryPage page = client.query(address, qb.build());
-                return requestCharge(page.diagnostics());
-            });
-        } finally {
-            for (MulticloudDbKey k : seeded) {
-                try { client.delete(address, k); } catch (RuntimeException ignore) { /* best-effort cleanup */ }
-            }
-        }
-    }
-
-    /** Change-feed read; records a single UNSUPPORTED_CAPABILITY row when unavailable. */
-    private void changeFeedPhase() {
-        List<ChangeFeedCursor> cursors;
-        try {
-            cursors = client.listCursors(address);
-        } catch (MulticloudDbException e) {
-            sink.accept(row("readChanges", null, 0, 0.0, false,
-                    errorCategory(e), null, "change feed unsupported: " + e.error().category().getValue()));
-            System.out.println("   change feed unsupported on this provider — recorded skip row.");
-            return;
-        }
-        if (cursors.isEmpty()) {
-            sink.accept(row("readChanges", null, 0, 0.0, false, "PROVIDER_ERROR", null, "no cursors returned"));
-            return;
-        }
-        // One cursor per physical partition (Cosmos feed range / DynamoDB Streams shard).
-        // The count tells us how many physical partitions the container is spread across.
-        final ChangeFeedCursor[] cur = cursors.toArray(new ChangeFeedCursor[0]);
-        final int partitions = cur.length;
-        System.out.printf(Locale.ROOT,
-                "   change feed: %d physical partition(s)/cursor(s) at tip%n", partitions);
-
-        // Cursors are minted at the tip, so we must produce changes AFTER listing them for
-        // there to be anything to read. Seed writes across many unique partition keys so the
-        // changes spread across every physical partition. Seed count is capped to keep the
-        // live cost bounded while still filling several pages per partition.
-        int seed = Math.min(ctx.warmup() + ctx.iterations(), Math.max(ctx.pageSize() * 5, 500));
-        List<MulticloudDbKey> seeded = new ArrayList<>(seed);
-        try {
-            for (int i = 0; i < seed; i++) {
-                MulticloudDbKey k = MulticloudDbKey.of(ctx.runId() + "-cf-" + i);
-                client.create(address, k, docFor(k));
-                seeded.add(k);
-            }
-        } catch (RuntimeException seedFailure) {
-            String cat = seedFailure instanceof MulticloudDbException me
-                    ? errorCategory(me) : "PROVIDER_ERROR";
-            sink.accept(row("readChanges", null, 0, 0.0, false, cat, null,
-                    "change feed seeding failed: " + seedFailure.getMessage()));
-            for (MulticloudDbKey k : seeded) {
-                try { client.delete(address, k); } catch (RuntimeException ignore) { /* best-effort */ }
-            }
-            return;
-        }
-        try {
-            // Rotate reads across ALL physical partitions (not just cursor 0). Each cursor is
-            // immutable and read independently, so this is safe under the threaded pool; we
-            // measure the latency/throughput of reading a page of changes from each partition.
-            forEachIteration("readChanges", null, partitions + "part", (i) -> {
-                ChangeFeedPage page = client.readChanges(address, cur[i % partitions]);
-                return page == null ? null : requestCharge(page.diagnostics());
-            });
-        } finally {
-            for (MulticloudDbKey k : seeded) {
-                try { client.delete(address, k); } catch (RuntimeException ignore) { /* best-effort */ }
-            }
-        }
-    }
-
-    // ── Measurement primitives ───────────────────────────────────────────────
 
     @FunctionalInterface
-    private interface KeyedOp { Double apply(MulticloudDbKey key, int index) throws Exception; }
+    private interface IterOp {
+        OperationDiagnostics apply(int index) throws Exception;
+    }
 
     @FunctionalInterface
-    private interface IterOp { Double apply(int index) throws Exception; }
+    private interface KeyFactory {
+        MulticloudDbKey create(int index);
+    }
 
-    /** Runs {@code total} keyed ops across the thread pool; records only post-warmup ops. */
-    private void forEachKey(String op, Integer pageSize, int total, KeyedOp fn) {
+    @FunctionalInterface
+    private interface IndexedTask {
+        Sample apply(int index);
+    }
+
+    private record Sample(int iteration, long startedNanos, long finishedNanos,
+                          double latencyMs, boolean success, String errorCategory,
+                          OperationDiagnostics diagnostics, String notes) {
+    }
+
+    private record CapacityLimit(String unit, Double value) {
+    }
+
+    private void forEachKey(String workload, String op, Integer pageSize, int total,
+                            KeyFactory keyFactory, KeyedOp fn) {
         System.out.printf(Locale.ROOT, "   %-11s ...", op);
         System.out.flush();
-        runPool(total, (i) -> {
-            MulticloudDbKey key = MulticloudDbKey.of(ctx.runId() + "-" + i);
-            measure(op, pageSize, i, () -> fn.apply(key, i));
+        List<Sample> samples = runPool(total, (i) -> {
+            MulticloudDbKey key = keyFactory.create(i);
+            return measure(i, "", () -> fn.apply(key, i));
         });
+        emitRows(workload, op, pageSize, samples);
         System.out.println(" done");
     }
 
-    /** Runs {@code warmup+iterations} indexed ops (no per-key semantics). */
-    private void forEachIteration(String op, Integer pageSize, String note, IterOp fn) {
+    private void forEachIteration(String workload, String op, Integer pageSize, String note, IterOp fn) {
         int total = ctx.warmup() + ctx.iterations();
         System.out.printf(Locale.ROOT, "   %-11s (%s) ...", op, note);
         System.out.flush();
-        runPool(total, (i) -> measure(op, pageSize, i, note, () -> fn.apply(i)));
+        List<Sample> samples = runPool(total, (i) -> measure(i, note, () -> fn.apply(i)));
+        emitRows(workload, op, pageSize, samples);
         System.out.println(" done");
     }
 
-    private void measure(String op, Integer pageSize, int i, ThrowingSupplier<Double> call) {
-        measure(op, pageSize, i, "", call);
-    }
-
-    private void measure(String op, Integer pageSize, int i, String note, ThrowingSupplier<Double> call) {
-        boolean record = i >= ctx.warmup();
-        int iteration = i - ctx.warmup();
-        long start = System.nanoTime();
-        Double cost = null;
-        boolean success = true;
-        String errCat = "";
-        try {
-            cost = call.get();
-        } catch (MulticloudDbException e) {
-            success = false;
-            errCat = errorCategory(e);
-        } catch (Exception e) {
-            success = false;
-            errCat = "PROVIDER_ERROR";
-        }
-        double latencyMs = (System.nanoTime() - start) / 1_000_000.0;
-        if (record) {
-            sink.accept(row(op, pageSize, iteration, latencyMs, success, errCat, cost, note));
-        }
-    }
-
-    private void runPool(int total, java.util.function.IntConsumer task) {
+    private List<Sample> runPool(int total, IndexedTask task) {
         ExecutorService pool = Executors.newFixedThreadPool(ctx.threads());
+        Semaphore permits = new Semaphore(ctx.threads());
+        StartPacer pacer = new StartPacer(ctx.targetOpsPerSec());
+        List<Future<Sample>> futures = new ArrayList<>(total);
+        long scheduleBaseNanos = System.nanoTime();
         try {
-            List<Future<?>> futures = new ArrayList<>(total);
             for (int i = 0; i < total; i++) {
+                pacer.await(i, scheduleBaseNanos);
+                permits.acquireUninterruptibly();
                 final int idx = i;
-                futures.add(pool.submit(() -> task.accept(idx)));
+                futures.add(pool.submit(() -> {
+                    try {
+                        return task.apply(idx);
+                    } finally {
+                        permits.release();
+                    }
+                }));
             }
-            for (Future<?> f : futures) {
-                try { f.get(); } catch (Exception e) { /* per-op errors already recorded */ }
+            List<Sample> out = new ArrayList<>(Math.max(0, ctx.iterations()));
+            for (Future<Sample> f : futures) {
+                try {
+                    Sample sample = f.get();
+                    if (sample != null) {
+                        out.add(sample);
+                    }
+                } catch (Exception e) {
+                    // per-op failures are captured by measure(); do not abort the run here
+                }
             }
+            return out;
         } finally {
             pool.shutdown();
         }
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
+    private Sample measure(int rawIndex, String note, ThrowingSupplier<OperationDiagnostics> call) {
+        boolean record = rawIndex >= ctx.warmup();
+        int iteration = rawIndex - ctx.warmup();
+        long started = System.nanoTime();
+        OperationDiagnostics diagnostics = null;
+        boolean success = true;
+        String errorCategory = "";
+        try {
+            diagnostics = call.get();
+        } catch (MulticloudDbException e) {
+            success = false;
+            errorCategory = errorCategory(e);
+        } catch (Exception e) {
+            success = false;
+            errorCategory = "PROVIDER_ERROR";
+        }
+        long finished = System.nanoTime();
+        double latencyMs = (finished - started) / 1_000_000.0;
+        if (!record) {
+            return null;
+        }
+        return new Sample(iteration, started, finished, latencyMs, success, errorCategory, diagnostics, note);
+    }
 
-    private ResultRow row(String op, Integer pageSize, int iteration, double latencyMs,
-                          boolean success, String errCat, Double cost, String notes) {
-        String unit = (cost != null && cost > 0.0) ? costUnit(ctx.provider(), op) : "";
-        return new ResultRow(
-                ctx.runId(), Instant.now().toString(), ctx.provider(), ctx.region(),
-                ctx.hostLabel(), ctx.jdk(), op, ctx.scenario(),
+    private void emitRows(String workload, String op, Integer pageSize, List<Sample> samples) {
+        if (samples.isEmpty()) {
+            return;
+        }
+        long baseStart = Long.MAX_VALUE;
+        for (Sample sample : samples) {
+            baseStart = Math.min(baseStart, sample.startedNanos());
+        }
+        for (Sample sample : samples) {
+            double startOffsetMs = (sample.startedNanos() - baseStart) / 1_000_000.0;
+            double endOffsetMs = (sample.finishedNanos() - baseStart) / 1_000_000.0;
+            sink.accept(row(workload, op, pageSize, sample, startOffsetMs, endOffsetMs));
+        }
+    }
+
+    private void emitFailureRow(String workload, String op, Integer pageSize, String note,
+                                String message, String errorCategory) {
+        sink.accept(new ResultRow(
+                ctx.runId(), Instant.now().toString(), ctx.provider(), ctx.region(), ctx.comparisonRegion(),
+                ctx.hostLabel(), ctx.jdk(), op, workload, ctx.scenario(),
                 op.equals("read") || op.equals("delete") ? 0 : ctx.docSize(),
-                pageSize, ctx.threads(), iteration, latencyMs, success, errCat,
-                unit, (cost != null && cost > 0.0) ? cost : null,
-                ctx.provisionedCapacity(), ctx.sdkVersion(), notes);
+                pageSize, ctx.threads(), 0,
+                0.0, 0.0, 0.0,
+                false, errorCategory,
+                "", null, null,
+                capacityLimit(op).unit(), capacityLimit(op).value(),
+                ctx.billingMode(), ctx.provisionedCapacity(), ctx.sdkVersion(), ctx.targetOpsPerSec(),
+                note + ": " + message));
+    }
+
+    private ResultRow row(String workload, String op, Integer pageSize, Sample sample,
+                          double startOffsetMs, double endOffsetMs) {
+        Double cost = requestCharge(sample.diagnostics());
+        String costUnit = (cost != null && cost > 0.0) ? costUnit(ctx.provider(), op) : "";
+        CapacityLimit capacityLimit = capacityLimit(op);
+        return new ResultRow(
+                ctx.runId(), Instant.now().toString(), ctx.provider(), ctx.region(), ctx.comparisonRegion(),
+                ctx.hostLabel(), ctx.jdk(), op, workload, ctx.scenario(),
+                op.equals("read") || op.equals("delete") ? 0 : ctx.docSize(),
+                pageSize, ctx.threads(), sample.iteration(),
+                startOffsetMs, endOffsetMs, sample.latencyMs(),
+                sample.success(), sample.errorCategory(),
+                costUnit, (cost != null && cost > 0.0) ? cost : null,
+                retryCount(sample.diagnostics()),
+                capacityLimit.unit(), capacityLimit.value(),
+                ctx.billingMode(), ctx.provisionedCapacity(), ctx.sdkVersion(), ctx.targetOpsPerSec(), sample.notes());
+    }
+
+    private CapacityLimit capacityLimit(String op) {
+        if ("cosmos".equals(ctx.provider()) && ctx.sharedCapacityLimit() != null) {
+            return new CapacityLimit("RU/s", ctx.sharedCapacityLimit());
+        }
+        boolean read = op.equals("read") || op.equals("query") || op.equals("readChanges");
+        boolean write = op.equals("create") || op.equals("update") || op.equals("upsert") || op.equals("delete");
+        if ("dynamo".equals(ctx.provider())) {
+            if (read && ctx.readCapacityLimit() != null) {
+                return new CapacityLimit("RCU/s", ctx.readCapacityLimit());
+            }
+            if (write && ctx.writeCapacityLimit() != null) {
+                return new CapacityLimit("WCU/s", ctx.writeCapacityLimit());
+            }
+        }
+        return new CapacityLimit("", null);
+    }
+
+    private static OperationDiagnostics diagnostics(DocumentResult result) {
+        return result == null ? null : result.diagnostics();
     }
 
     private static Double requestCharge(OperationDiagnostics diag) {
@@ -292,14 +439,18 @@ final class ScenarioRunner {
         return rc > 0.0 ? rc : null;
     }
 
+    private static Integer retryCount(OperationDiagnostics diag) {
+        return diag == null ? null : diag.retryCount();
+    }
+
     private static String costUnit(String provider, String op) {
         boolean write = op.equals("create") || op.equals("update")
                 || op.equals("upsert") || op.equals("delete");
         return switch (provider) {
-            case "cosmos"  -> "RU";
-            case "dynamo"  -> write ? "WCU" : "RCU";
+            case "cosmos" -> "RU";
+            case "dynamo" -> write ? "WCU" : "RCU";
             case "spanner" -> "PU-ms";
-            default        -> "";
+            default -> "";
         };
     }
 
@@ -311,6 +462,31 @@ final class ScenarioRunner {
         }
     }
 
+    private static final class StartPacer {
+        private final double intervalNanos;
+
+        private StartPacer(Double targetOpsPerSec) {
+            this.intervalNanos = targetOpsPerSec == null || targetOpsPerSec <= 0.0
+                    ? 0.0 : 1_000_000_000.0 / targetOpsPerSec;
+        }
+
+        private void await(int index, long baseNanos) {
+            if (intervalNanos <= 0.0) {
+                return;
+            }
+            long scheduled = baseNanos + Math.round(index * intervalNanos);
+            while (true) {
+                long remaining = scheduled - System.nanoTime();
+                if (remaining <= 0) {
+                    return;
+                }
+                LockSupport.parkNanos(Math.min(remaining, 1_000_000L));
+            }
+        }
+    }
+
     @FunctionalInterface
-    private interface ThrowingSupplier<T> { T get() throws Exception; }
+    private interface ThrowingSupplier<T> {
+        T get() throws Exception;
+    }
 }

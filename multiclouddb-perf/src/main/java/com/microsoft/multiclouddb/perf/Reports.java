@@ -49,6 +49,18 @@ final class Reports {
         return x == null ? "—" : num(x);
     }
 
+    static String pct(double ratio) {
+        return String.format(Locale.ROOT, "%.2f%%", ratio * 100.0);
+    }
+
+    static String pctOrDash(Double ratio) {
+        return ratio == null ? "—" : String.format(Locale.ROOT, "%.2f%%", ratio);
+    }
+
+    static String validity(StatRow row, double invalidThrottleRate) {
+        return row.throttledRate() > invalidThrottleRate ? "invalid" : "valid";
+    }
+
     /** Short human explanation of what a given operation row measures. */
     static String opMeasures(String op) {
         if (op == null) {
@@ -61,6 +73,7 @@ final class Reports {
             case "upsert": return "Insert-or-replace one item by key";
             case "delete": return "Delete one item by key";
             case "query":  return "Run a filtered query, fetch one page";
+            case "readChanges": return "Read one change-feed page";
             default:       return op;
         }
     }

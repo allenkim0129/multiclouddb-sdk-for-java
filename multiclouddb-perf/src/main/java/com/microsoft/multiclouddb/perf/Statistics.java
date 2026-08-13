@@ -16,21 +16,13 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * Pooled aggregation of raw {@link ResultRow}s into {@link StatRow}s — the Java
- * replacement for the former {@code aggregate-results.sh}/awk stage.
- *
- * <p>Rows are grouped by {@code (provider, operation, scenario, threads, docSizeBytes,
- * pageSize)} — the run id is deliberately excluded, so repeating a scenario N times
- * pools all raw samples into one row (percentiles recomputed over the combined sample,
- * which is statistically stronger than averaging per-run percentiles) and records the
- * contributing run count.
+ * Pooled aggregation of raw {@link ResultRow}s into {@link StatRow}s.
  */
 final class Statistics {
 
     private Statistics() {
     }
 
-    /** Reads every {@code *.csv} under {@code rawDir} into raw rows, parsed by header name. */
     static List<ResultRow> readRawCsv(Path rawDir) {
         List<ResultRow> rows = new ArrayList<>();
         for (List<ResultRow> batch : readRawByBatch(rawDir).values()) {
@@ -39,12 +31,6 @@ final class Statistics {
         return rows;
     }
 
-    /**
-     * Reads raw CSVs grouped by <em>run</em> (batch), preserving file order. The batch id is
-     * derived from the file name {@code <batchId>-<provider>.csv} by stripping the trailing
-     * {@code -<provider>} segment, so every distinct run can be reported on its own instead of
-     * being pooled together with unrelated runs.
-     */
     static Map<String, List<ResultRow>> readRawByBatch(Path rawDir) {
         Map<String, List<ResultRow>> byBatch = new LinkedHashMap<>();
         if (!Files.isDirectory(rawDir)) {
@@ -64,7 +50,6 @@ final class Statistics {
         return byBatch;
     }
 
-    /** {@code <batchId>-<provider>.csv} -> {@code <batchId>} (provider ids never contain '-'). */
     private static String batchIdOf(Path csv) {
         String name = csv.getFileName().toString();
         if (name.endsWith(".csv")) {
@@ -86,32 +71,48 @@ final class Statistics {
                 continue;
             }
             List<String> f = parseCsvLine(lines.get(i));
+            String operation = get(f, col, "operation");
             rows.add(new ResultRow(
-                    get(f, col, "run_id"), get(f, col, "timestamp_utc"),
-                    get(f, col, "provider"), get(f, col, "region"),
-                    get(f, col, "host_label"), get(f, col, "jdk"),
-                    get(f, col, "operation"), get(f, col, "scenario"),
+                    get(f, col, "run_id"),
+                    get(f, col, "timestamp_utc"),
+                    get(f, col, "provider"),
+                    get(f, col, "region"),
+                    get(f, col, "comparison_region"),
+                    get(f, col, "host_label"),
+                    get(f, col, "jdk"),
+                    operation,
+                    workloadOrDefault(get(f, col, "workload"), operation),
+                    get(f, col, "scenario"),
                     intOr(get(f, col, "doc_size_bytes"), 0),
                     intOrNull(get(f, col, "page_size")),
                     intOr(get(f, col, "threads"), 1),
                     intOr(get(f, col, "iteration"), 0),
+                    doubleOr(get(f, col, "start_offset_ms"), 0.0),
+                    doubleOr(get(f, col, "end_offset_ms"), 0.0),
                     doubleOr(get(f, col, "latency_ms"), 0.0),
                     "true".equalsIgnoreCase(get(f, col, "success")),
-                    get(f, col, "error_category"), get(f, col, "cost_unit"),
+                    get(f, col, "error_category"),
+                    get(f, col, "cost_unit"),
                     doubleOrNull(get(f, col, "cost_value")),
-                    get(f, col, "provisioned_capacity"), get(f, col, "sdk_version"),
+                    intOrNull(get(f, col, "retry_count")),
+                    get(f, col, "capacity_limit_unit"),
+                    doubleOrNull(get(f, col, "capacity_limit_value")),
+                    get(f, col, "billing_mode"),
+                    get(f, col, "provisioned_capacity"),
+                    get(f, col, "sdk_version"),
+                    doubleOrNull(get(f, col, "target_ops_per_sec")),
                     get(f, col, "notes")));
         }
         return rows;
     }
 
-    /** Pools raw rows into per-group statistics, preserving first-seen group order. */
     static List<StatRow> aggregate(List<ResultRow> rows) {
         Map<String, Group> groups = new LinkedHashMap<>();
         for (ResultRow r : rows) {
-            String key = String.join("\u0001", r.provider(), r.operation(), r.scenario(),
-                    Integer.toString(r.threads()), Integer.toString(r.docSizeBytes()),
-                    r.pageSize() == null ? "" : Integer.toString(r.pageSize()));
+            String key = String.join("\u0001", r.provider(), r.operation(), workloadOrDefault(r.workload(), r.operation()),
+                    r.scenario(), Integer.toString(r.threads()), Integer.toString(r.docSizeBytes()),
+                    r.pageSize() == null ? "" : Integer.toString(r.pageSize()),
+                    r.targetOpsPerSec() == null ? "unbounded" : Double.toString(r.targetOpsPerSec()));
             groups.computeIfAbsent(key, k -> new Group(r)).add(r);
         }
         List<StatRow> out = new ArrayList<>(groups.size());
@@ -121,36 +122,53 @@ final class Statistics {
         return out;
     }
 
-    /** Distinct per-provider environment metadata, first value seen wins. */
     static List<EnvRow> environment(List<ResultRow> rows) {
         Map<String, EnvRow> env = new LinkedHashMap<>();
         for (ResultRow r : rows) {
             env.computeIfAbsent(r.provider(), p -> new EnvRow(
-                    r.provider(), r.region(), r.hostLabel(), r.jdk(),
-                    r.provisionedCapacity(), r.sdkVersion()));
+                    r.provider(), r.region(), r.comparisonRegion(), r.hostLabel(), r.jdk(),
+                    r.billingMode(), r.provisionedCapacity(), r.sdkVersion()));
         }
         return new ArrayList<>(env.values());
     }
 
-    // ── Grouping accumulator ─────────────────────────────────────────────────
-
     private static final class Group {
-        final String provider, operation, scenario;
-        final int threads, docSize;
+        final String provider;
+        final String operation;
+        final String workload;
+        final String scenario;
+        final int threads;
+        final int docSize;
         final Integer pageSize;
         final List<Double> latencies = new ArrayList<>();
         final List<Double> costs = new ArrayList<>();
         final java.util.Set<String> runIds = new java.util.HashSet<>();
-        int count, success, errors;
+        final Map<String, RunWindow> runWindows = new LinkedHashMap<>();
+        int count;
+        int success;
+        int errors;
+        int throttled;
+        int retryCountTotal;
+        boolean hasRetryData;
         double latencySum;
+        double costSum;
+        String costUnit;
+        String capacityLimitUnit;
+        Double capacityLimitValue;
+        double targetOpsPerSecSum;
+        int targetOpsPerSecCount;
 
         Group(ResultRow r) {
             this.provider = r.provider();
             this.operation = r.operation();
+            this.workload = workloadOrDefault(r.workload(), r.operation());
             this.scenario = r.scenario();
             this.threads = r.threads();
             this.docSize = r.docSizeBytes();
             this.pageSize = r.pageSize();
+            this.costUnit = r.costUnit();
+            this.capacityLimitUnit = r.capacityLimitUnit();
+            this.capacityLimitValue = r.capacityLimitValue();
         }
 
         void add(ResultRow r) {
@@ -161,11 +179,34 @@ final class Statistics {
             } else {
                 errors++;
             }
+            if ("THROTTLED".equalsIgnoreCase(r.errorCategory())) {
+                throttled++;
+            }
             latencies.add(r.latencyMs());
             latencySum += r.latencyMs();
             if (r.costValue() != null) {
                 costs.add(r.costValue());
+                costSum += r.costValue();
             }
+            if (r.retryCount() != null) {
+                hasRetryData = true;
+                retryCountTotal += r.retryCount();
+            }
+            if ((costUnit == null || costUnit.isBlank()) && r.costUnit() != null && !r.costUnit().isBlank()) {
+                costUnit = r.costUnit();
+            }
+            if ((capacityLimitUnit == null || capacityLimitUnit.isBlank())
+                    && r.capacityLimitUnit() != null && !r.capacityLimitUnit().isBlank()) {
+                capacityLimitUnit = r.capacityLimitUnit();
+            }
+            if (capacityLimitValue == null && r.capacityLimitValue() != null) {
+                capacityLimitValue = r.capacityLimitValue();
+            }
+            if (r.targetOpsPerSec() != null) {
+                targetOpsPerSecSum += r.targetOpsPerSec();
+                targetOpsPerSecCount++;
+            }
+            runWindows.computeIfAbsent(r.runId(), ignored -> new RunWindow()).add(r);
         }
 
         StatRow toStatRow() {
@@ -181,26 +222,89 @@ final class Statistics {
                 }
                 sd = Math.sqrt(ss / (lat.size() - 1));
             }
-            int th = Math.max(1, threads);
-            double throughput = 0.0;
-            double wallSec = (latencySum / 1000.0) / th;
-            if (wallSec > 0) {
-                throughput = success / wallSec;
+
+            double totalOfferedWindowSec = 0.0;
+            double totalAchievedWindowSec = 0.0;
+            boolean hasTimelineData = false;
+            for (RunWindow window : runWindows.values()) {
+                totalOfferedWindowSec += window.offeredWindowSec();
+                totalAchievedWindowSec += window.achievedWindowSec();
+                hasTimelineData = hasTimelineData || window.hasTimelineData();
             }
-            List<Double> cs = new ArrayList<>(costs);
-            Collections.sort(cs);
-            Double costMean = cs.isEmpty() ? null : cs.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
-            Double costP99 = cs.isEmpty() ? null : percentile(cs, 99);
+            double throughput;
+            if (hasTimelineData && totalAchievedWindowSec > 0.0) {
+                throughput = success / totalAchievedWindowSec;
+            } else {
+                int th = Math.max(1, threads);
+                double wallSec = (latencySum / 1000.0) / th;
+                throughput = wallSec > 0 ? success / wallSec : 0.0;
+            }
+            double offeredOpsSec = 0.0;
+            if (hasTimelineData && totalOfferedWindowSec > 0.0) {
+                offeredOpsSec = count / totalOfferedWindowSec;
+            } else {
+                offeredOpsSec = throughput;
+            }
+            Double targetOpsPerSec = targetOpsPerSecCount == 0
+                    ? null : targetOpsPerSecSum / targetOpsPerSecCount;
+            Double costMean = costs.isEmpty() ? null : costs.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+            Double costP99 = costs.isEmpty() ? null : percentile(sorted(costs), 99);
+            Double consumedUnitsPerSec = costSum > 0.0 && totalAchievedWindowSec > 0.0
+                    ? costSum / totalAchievedWindowSec : null;
+            Double capacityUtilizationPct = comparableUnits(costUnit, capacityLimitUnit)
+                    && consumedUnitsPerSec != null && capacityLimitValue != null && capacityLimitValue > 0.0
+                    ? (consumedUnitsPerSec / capacityLimitValue) * 100.0
+                    : null;
+            double throttledRate = count > 0 ? (double) throttled / count : 0.0;
+            Double retryMean = hasRetryData && count > 0 ? (double) retryCountTotal / count : null;
             double errorRate = count > 0 ? (double) errors / count : 0.0;
-            return new StatRow(provider, operation, scenario, threads, docSize, pageSize,
+            double achievedOfferedRatio = offeredOpsSec > 0.0 ? throughput / offeredOpsSec : 0.0;
+            return new StatRow(provider, operation, workload, scenario, threads, docSize, pageSize,
                     runIds.size(), count, success,
                     percentile(lat, 50), percentile(lat, 90), percentile(lat, 99),
                     lat.isEmpty() ? 0.0 : lat.get(lat.size() - 1), mean, sd,
-                    throughput, costMean, costP99, errorRate);
+                    throughput, targetOpsPerSec, offeredOpsSec, achievedOfferedRatio,
+                    costUnit == null ? "" : costUnit, costMean, costP99, consumedUnitsPerSec,
+                    capacityLimitUnit == null ? "" : capacityLimitUnit, capacityLimitValue, capacityUtilizationPct,
+                    throttled, throttledRate,
+                    hasRetryData ? retryCountTotal : null, retryMean,
+                    errorRate);
         }
     }
 
-    /** Linear-interpolation percentile over a pre-sorted list (matches the prior awk). */
+    private static final class RunWindow {
+        private double maxStartOffsetMs;
+        private double maxEndOffsetMs;
+        private boolean hasTimelineData;
+
+        void add(ResultRow row) {
+            maxStartOffsetMs = Math.max(maxStartOffsetMs, row.startOffsetMs());
+            maxEndOffsetMs = Math.max(maxEndOffsetMs, row.endOffsetMs());
+            hasTimelineData = hasTimelineData || row.startOffsetMs() > 0.0 || row.endOffsetMs() > 0.0;
+        }
+
+        double offeredWindowSec() {
+            if (!hasTimelineData) {
+                return 0.0;
+            }
+            if (maxStartOffsetMs > 0.0) {
+                return maxStartOffsetMs / 1000.0;
+            }
+            return maxEndOffsetMs / 1000.0;
+        }
+
+        double achievedWindowSec() {
+            if (!hasTimelineData) {
+                return 0.0;
+            }
+            return maxEndOffsetMs / 1000.0;
+        }
+
+        boolean hasTimelineData() {
+            return hasTimelineData;
+        }
+    }
+
     static double percentile(List<Double> sorted, double p) {
         int n = sorted.size();
         if (n == 0) {
@@ -218,7 +322,18 @@ final class Statistics {
         return sorted.get(lo) + (sorted.get(hi) - sorted.get(lo)) * (k - lo);
     }
 
-    // ── CSV helpers ──────────────────────────────────────────────────────────
+    private static List<Double> sorted(List<Double> values) {
+        List<Double> out = new ArrayList<>(values);
+        Collections.sort(out);
+        return out;
+    }
+
+    private static boolean comparableUnits(String costUnit, String capacityLimitUnit) {
+        if (costUnit == null || costUnit.isBlank() || capacityLimitUnit == null || capacityLimitUnit.isBlank()) {
+            return false;
+        }
+        return capacityLimitUnit.startsWith(costUnit);
+    }
 
     private static Map<String, Integer> headerIndex(String header) {
         Map<String, Integer> col = new LinkedHashMap<>();
@@ -237,7 +352,6 @@ final class Statistics {
         return fields.get(idx);
     }
 
-    /** Minimal RFC-4180 line parser: handles quoted fields and doubled quotes. */
     static List<String> parseCsvLine(String line) {
         List<String> out = new ArrayList<>();
         StringBuilder sb = new StringBuilder();
@@ -266,6 +380,19 @@ final class Statistics {
         }
         out.add(sb.toString());
         return out;
+    }
+
+    private static String workloadOrDefault(String workload, String operation) {
+        if (workload != null && !workload.isBlank()) {
+            return workload;
+        }
+        if ("query".equals(operation)) {
+            return "query";
+        }
+        if ("readChanges".equals(operation)) {
+            return "changefeed";
+        }
+        return "mixed";
     }
 
     private static int intOr(String s, int def) {

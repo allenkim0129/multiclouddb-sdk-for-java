@@ -8,7 +8,10 @@ multiclouddb.connection.requestTimeoutSeconds=30
 multiclouddb.database=perfdb
 multiclouddb.collection=perf
 
-# Perf report metadata (optional; recorded in the report Environment table).
+# Fair-comparison metadata.
 multiclouddb.region=us-east-1
-multiclouddb.provisionedCapacity=on-demand (or provisioned RCU/WCU)
+# Optional cross-cloud colocation label used by --region-policy warn|fail.
+multiclouddb.comparisonRegion=
+# Optional display value; the harness probes actual billing mode / RCU / WCU from DescribeTable.
+multiclouddb.provisionedCapacity=PAY_PER_REQUEST or PROVISIONED rcu=... wcu=...
 multiclouddb.sdkVersion=dev
