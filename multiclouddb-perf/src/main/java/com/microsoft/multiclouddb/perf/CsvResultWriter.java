@@ -20,7 +20,7 @@ import java.nio.file.StandardOpenOption;
 final class CsvResultWriter implements AutoCloseable {
 
     static final String HEADER =
-            "run_id,timestamp_utc,provider,region,comparison_region,host_label,jdk,operation,workload,scenario,"
+            "run_id,timestamp_utc,provider,region,comparison_region,transport_profile,host_label,jdk,operation,workload,scenario,"
             + "doc_size_bytes,page_size,threads,iteration,start_offset_ms,end_offset_ms,latency_ms,success,error_category,"
             + "cost_unit,cost_value,retry_count,capacity_limit_unit,capacity_limit_value,billing_mode,"
             + "provisioned_capacity,sdk_version,target_ops_per_sec,notes";
@@ -35,6 +35,16 @@ final class CsvResultWriter implements AutoCloseable {
                 Files.createDirectories(parent);
             }
             boolean existed = Files.exists(file) && Files.size(file) > 0;
+            if (existed) {
+                try (var reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+                    String existingHeader = reader.readLine();
+                    if (!HEADER.equals(existingHeader)) {
+                        throw new IllegalStateException(
+                                "Result CSV schema does not match the current harness: " + file
+                                        + ". Use a new --title or remove the old raw file.");
+                    }
+                }
+            }
             this.writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             if (!existed) {
@@ -51,6 +61,7 @@ final class CsvResultWriter implements AutoCloseable {
     void write(ResultRow r) {
         String line = String.join(",",
                 q(r.runId()), q(r.timestampUtc()), q(r.provider()), q(r.region()), q(r.comparisonRegion()),
+                q(r.transportProfile()),
                 q(r.hostLabel()), q(r.jdk()), q(r.operation()), q(r.workload()), q(r.scenario()),
                 Integer.toString(r.docSizeBytes()),
                 r.pageSize() == null ? "" : Integer.toString(r.pageSize()),

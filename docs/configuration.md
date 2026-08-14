@@ -49,6 +49,11 @@ Select a provider and supply its connection and auth properties.
 | `multiclouddb.connection.endpoint` | Cosmos DB account URI or emulator URI |
 | `multiclouddb.connection.key` | Master key (omit for Azure Identity auth) |
 | `multiclouddb.connection.connectionMode` | `gateway` (default) or `direct` |
+| `multiclouddb.connection.gatewayMaxConnectionPoolSize` | Gateway HTTP/1.1 maximum connection-pool size (optional, positive integer) |
+| `multiclouddb.connection.gatewayHttp2Enabled` | Enables Gateway HTTP/2 (`true`/`false`; optional, Gateway mode only) |
+| `multiclouddb.connection.gatewayHttp2MinConnectionPoolSize` | Gateway HTTP/2 minimum connection-pool size (optional) |
+| `multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize` | Gateway HTTP/2 maximum connection-pool size (optional) |
+| `multiclouddb.connection.gatewayHttp2MaxConcurrentStreams` | Maximum concurrent HTTP/2 streams per connection (optional) |
 | `multiclouddb.connection.tenantId` | Azure AD tenant ID (optional, for Entra ID) |
 | `multiclouddb.connection.consistencyLevel` | Read consistency override (optional — see below) |
 
@@ -70,6 +75,16 @@ Select a provider and supply its connection and auth properties.
 
 - **Gateway** (default) - HTTP-based routing through the Cosmos DB gateway. Required for the emulator.
 - **Direct** - TCP-based direct connectivity. Better performance for production workloads.
+
+Gateway transport settings are rejected when `connectionMode=direct` rather than silently ignored.
+For transport-equivalent benchmarks against DynamoDB's synchronous client, use Gateway HTTP/1.1
+with the same pool size, for example:
+
+```properties
+multiclouddb.connection.connectionMode=gateway
+multiclouddb.connection.gatewayMaxConnectionPoolSize=64
+multiclouddb.connection.gatewayHttp2Enabled=false
+```
 
 ### Consistency Level
 
@@ -154,6 +169,7 @@ multiclouddb.connection.consistencyLevel=EVENTUAL
 |-----|-------------|
 | `multiclouddb.connection.endpoint` | DynamoDB Local URI (omit for AWS) |
 | `multiclouddb.connection.region` | AWS region (e.g., `us-east-1`) |
+| `multiclouddb.connection.maxConnections` | Maximum connections in the synchronous Apache HTTP/1.1 pool (optional, positive integer) |
 | `multiclouddb.auth.accessKeyId` | AWS access key ID |
 | `multiclouddb.auth.secretAccessKey` | AWS secret access key |
 
@@ -162,6 +178,13 @@ multiclouddb.connection.consistencyLevel=EVENTUAL
     DynamoDB has no native "database" concept. The `ResourceAddress` database
     and collection are composed into a single table name using the pattern
     `database__collection` (double underscore separator).
+
+The DynamoDB provider uses the AWS SDK synchronous Apache HTTP/1.1 client. For a benchmark that
+matches a Cosmos Gateway pool of 64 connections:
+
+```properties
+multiclouddb.connection.maxConnections=64
+```
 
 ---
 

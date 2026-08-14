@@ -49,8 +49,8 @@ final class MarkdownReport {
 
     private static void environment(StringBuilder b, List<EnvRow> env, List<String> providers) {
         b.append("## 1. Environment\n\n");
-        b.append("| Provider | Region | Comparison region | Billing mode | Provisioned capacity | Client host | JDK | SDK version |\n");
-        b.append("|---|---|---|---|---|---|---|---|\n");
+        b.append("| Provider | Region | Comparison region | Transport | Billing mode | Provisioned capacity | Client host | JDK | SDK version |\n");
+        b.append("|---|---|---|---|---|---|---|---|---|\n");
         Map<String, EnvRow> byProvider = new LinkedHashMap<>();
         for (EnvRow row : env) {
             byProvider.put(row.provider(), row);
@@ -63,6 +63,7 @@ final class MarkdownReport {
             b.append("| ").append(provider)
                     .append(" | ").append(orDash(row.region()))
                     .append(" | ").append(orDash(row.comparisonRegion()))
+                    .append(" | ").append(orDash(row.transportProfile()))
                     .append(" | ").append(orDash(row.billingMode()))
                     .append(" | ").append(orDash(row.provisionedCapacity()))
                     .append(" | ").append(orDash(row.hostLabel()))

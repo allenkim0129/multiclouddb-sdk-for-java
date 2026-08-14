@@ -54,6 +54,19 @@ Equivalent CLI options override the property values for one run. The harness app
 before cache priming and warmup, then records the probed capacity rather than trusting configured
 display text.
 
+### Transport fairness
+
+The primary cross-provider profile uses HTTP/1.1 with an equal connection-pool size:
+
+- Cosmos Gateway: `gatewayMaxConnectionPoolSize=64`, `gatewayHttp2Enabled=false`
+- Dynamo synchronous Apache client: `maxConnections=64`
+
+Cosmos Gateway HTTP/2 is a separate optimization profile configured with
+`gatewayHttp2Enabled`, `gatewayHttp2MinConnectionPoolSize`,
+`gatewayHttp2MaxConnectionPoolSize`, and `gatewayHttp2MaxConcurrentStreams`. Cosmos Direct mode
+uses RNTBD rather than HTTP and is also reported separately. Reports record the effective
+transport profile so results with different protocols or pools are not silently compared.
+
 ## Recorded raw data
 
 See [`templates/RESULT_SCHEMA.md`](templates/RESULT_SCHEMA.md). Raw rows include timing offsets,

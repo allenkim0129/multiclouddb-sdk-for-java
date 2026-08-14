@@ -107,9 +107,10 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         String connectionMode = config.connection().getOrDefault(
                 CosmosConstants.CONFIG_CONNECTION_MODE, CosmosConstants.CONNECTION_MODE_DEFAULT);
         if (CosmosConstants.CONNECTION_MODE_DIRECT.equalsIgnoreCase(connectionMode)) {
+            rejectGatewayTransportSettings(config);
             builder.directMode();
         } else {
-            builder.gatewayMode();
+            builder.gatewayMode(gatewayConnectionConfig(config));
         }
 
         String consistencyStr = config.connection().get(CosmosConstants.CONFIG_CONSISTENCY_LEVEL);
@@ -137,6 +138,86 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         this.changeFeedReader = new CosmosChangeFeedReader(ProviderId.COSMOS, effectiveRetentionMillis);
         LOG.info("Cosmos client created for endpoint: {}", endpoint);
         LOG.info("Cosmos read consistency: {}", readConsistencyOverride != null ? readConsistencyOverride : "account default");
+    }
+
+    static GatewayConnectionConfig gatewayConnectionConfig(MulticloudDbClientConfig config) {
+        GatewayConnectionConfig gateway = new GatewayConnectionConfig();
+        Integer maxConnections = positiveInt(config,
+                CosmosConstants.CONFIG_GATEWAY_MAX_CONNECTION_POOL_SIZE);
+        if (maxConnections != null) {
+            gateway.setMaxConnectionPoolSize(maxConnections);
+        }
+
+        Boolean http2Enabled = strictBoolean(
+                config.connection().get(CosmosConstants.CONFIG_GATEWAY_HTTP2_ENABLED),
+                CosmosConstants.CONFIG_GATEWAY_HTTP2_ENABLED);
+        Integer http2MaxConnections = positiveInt(config,
+                CosmosConstants.CONFIG_GATEWAY_HTTP2_MAX_CONNECTION_POOL_SIZE);
+        Integer http2MinConnections = positiveInt(config,
+                CosmosConstants.CONFIG_GATEWAY_HTTP2_MIN_CONNECTION_POOL_SIZE);
+        Integer http2MaxStreams = positiveInt(config,
+                CosmosConstants.CONFIG_GATEWAY_HTTP2_MAX_CONCURRENT_STREAMS);
+        if (http2Enabled != null || http2MaxConnections != null
+                || http2MinConnections != null || http2MaxStreams != null) {
+            Http2ConnectionConfig http2 = new Http2ConnectionConfig();
+            if (http2Enabled != null) {
+                http2.setEnabled(http2Enabled);
+            }
+            if (http2MaxConnections != null) {
+                http2.setMaxConnectionPoolSize(http2MaxConnections);
+            }
+            if (http2MinConnections != null) {
+                http2.setMinConnectionPoolSize(http2MinConnections);
+            }
+            if (http2MaxStreams != null) {
+                http2.setMaxConcurrentStreams(http2MaxStreams);
+            }
+            gateway.setHttp2ConnectionConfig(http2);
+        }
+        return gateway;
+    }
+
+    private static void rejectGatewayTransportSettings(MulticloudDbClientConfig config) {
+        for (String key : new String[] {
+                CosmosConstants.CONFIG_GATEWAY_MAX_CONNECTION_POOL_SIZE,
+                CosmosConstants.CONFIG_GATEWAY_HTTP2_ENABLED,
+                CosmosConstants.CONFIG_GATEWAY_HTTP2_MAX_CONNECTION_POOL_SIZE,
+                CosmosConstants.CONFIG_GATEWAY_HTTP2_MIN_CONNECTION_POOL_SIZE,
+                CosmosConstants.CONFIG_GATEWAY_HTTP2_MAX_CONCURRENT_STREAMS}) {
+            if (config.connection().containsKey(key)) {
+                throw new IllegalArgumentException(
+                        "connection." + key + " applies only when connectionMode=gateway");
+            }
+        }
+    }
+
+    private static Integer positiveInt(MulticloudDbClientConfig config, String key) {
+        String raw = config.connection().get(key);
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            int value = Integer.parseInt(raw.trim());
+            if (value <= 0) {
+                throw new IllegalArgumentException("connection." + key + " must be > 0");
+            }
+            return value;
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("connection." + key + " must be an integer", e);
+        }
+    }
+
+    private static Boolean strictBoolean(String raw, String key) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        if ("true".equalsIgnoreCase(raw.trim())) {
+            return true;
+        }
+        if ("false".equalsIgnoreCase(raw.trim())) {
+            return false;
+        }
+        throw new IllegalArgumentException("connection." + key + " must be true or false");
     }
 
     /**

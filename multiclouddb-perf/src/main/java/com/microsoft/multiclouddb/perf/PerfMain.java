@@ -173,7 +173,8 @@ public final class PerfMain {
                                     + (repeat > 1 ? "-rep" + rep : "");
                             RunContext ctx = new RunContext(runId, plan.providerId(), scenario, threads,
                                     warmup, iterations, docSize, pageSize,
-                                    meta.region(), comparisonRegion, host, jdk,
+                                    meta.region(), comparisonRegion, transportProfile(plan.providerId(), plan.cfg()),
+                                    host, jdk,
                                     plan.sdkVersion(), meta.billingMode(), meta.provisionedCapacity(),
                                     meta.sharedCapacityLimit(), meta.readCapacityLimit(), meta.writeCapacityLimit(),
                                     targetOpsPerSec > 0.0 ? targetOpsPerSec : null,
@@ -527,6 +528,40 @@ public final class PerfMain {
                     "multiclouddb.perf.targetOpsPerSec must be >= 0 when set");
         }
         return value;
+    }
+
+    static String transportProfile(String providerId, ConfigLoader.AppConfig cfg) {
+        if ("cosmos".equals(providerId)) {
+            String mode = cfg.get("multiclouddb.connection.connectionMode", "gateway");
+            if ("direct".equalsIgnoreCase(mode)) {
+                return "direct (RNTBD)";
+            }
+            boolean http2 = Boolean.parseBoolean(
+                    cfg.get("multiclouddb.connection.gatewayHttp2Enabled", "false"));
+            if (http2) {
+                return "gateway HTTP/2 pool="
+                        + valueOrDefault(cfg, "multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize")
+                        + " minPool="
+                        + valueOrDefault(cfg, "multiclouddb.connection.gatewayHttp2MinConnectionPoolSize")
+                        + " streams="
+                        + valueOrDefault(cfg, "multiclouddb.connection.gatewayHttp2MaxConcurrentStreams");
+            }
+            return "gateway HTTP/1.1 pool="
+                    + valueOrDefault(cfg, "multiclouddb.connection.gatewayMaxConnectionPoolSize");
+        }
+        if ("dynamo".equals(providerId)) {
+            return "Apache HTTP/1.1 pool="
+                    + valueOrDefault(cfg, "multiclouddb.connection.maxConnections");
+        }
+        if ("spanner".equals(providerId)) {
+            return "gRPC/HTTP/2 (SDK-managed)";
+        }
+        return "unknown";
+    }
+
+    private static String valueOrDefault(ConfigLoader.AppConfig cfg, String key) {
+        String value = cfg.get(key, "");
+        return value == null || value.isBlank() ? "sdk-default" : value.trim();
     }
 
     private static void validateOfferedLoadTargets(List<ProviderRunPlan> plans, Map<String, String> opt,

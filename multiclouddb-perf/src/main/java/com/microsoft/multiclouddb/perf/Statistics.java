@@ -78,6 +78,7 @@ final class Statistics {
                     get(f, col, "provider"),
                     get(f, col, "region"),
                     get(f, col, "comparison_region"),
+                    get(f, col, "transport_profile"),
                     get(f, col, "host_label"),
                     get(f, col, "jdk"),
                     operation,
@@ -107,6 +108,7 @@ final class Statistics {
     }
 
     static List<StatRow> aggregate(List<ResultRow> rows) {
+        validateSingleTransportProfile(rows);
         Map<String, Group> groups = new LinkedHashMap<>();
         for (ResultRow r : rows) {
             String key = String.join("\u0001", r.provider(), r.operation(), workloadOrDefault(r.workload(), r.operation()),
@@ -122,11 +124,26 @@ final class Statistics {
         return out;
     }
 
+    private static void validateSingleTransportProfile(List<ResultRow> rows) {
+        Map<String, String> profiles = new LinkedHashMap<>();
+        for (ResultRow row : rows) {
+            String profile = row.transportProfile() == null ? "" : row.transportProfile().trim();
+            String existing = profiles.putIfAbsent(row.provider(), profile);
+            if (existing != null && !existing.equals(profile)) {
+                throw new IllegalArgumentException(
+                        "Cannot aggregate multiple transport profiles for provider " + row.provider()
+                                + ": '" + existing + "' and '" + profile
+                                + "'. Render the profiles as separate reports.");
+            }
+        }
+    }
+
     static List<EnvRow> environment(List<ResultRow> rows) {
         Map<String, EnvRow> env = new LinkedHashMap<>();
         for (ResultRow r : rows) {
             env.computeIfAbsent(r.provider(), p -> new EnvRow(
-                    r.provider(), r.region(), r.comparisonRegion(), r.hostLabel(), r.jdk(),
+                    r.provider(), r.region(), r.comparisonRegion(), r.transportProfile(),
+                    r.hostLabel(), r.jdk(),
                     r.billingMode(), r.provisionedCapacity(), r.sdkVersion()));
         }
         return new ArrayList<>(env.values());

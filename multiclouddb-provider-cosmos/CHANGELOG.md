@@ -7,6 +7,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- Gateway transport controls: `gatewayMaxConnectionPoolSize`, `gatewayHttp2Enabled`,
+  `gatewayHttp2MinConnectionPoolSize`, `gatewayHttp2MaxConnectionPoolSize`, and
+  `gatewayHttp2MaxConcurrentStreams`. Gateway-only settings fail fast in Direct/RNTBD mode.
+
 ## [0.1.0-beta.2] — 2026-06-17
 
 > **Requires `multiclouddb-api` 0.1.0-beta.2 or later** — this release consumes API surface (change-feed cursors, `CLIENT_CLOSED` envelope, `EXTENDED_CHANGE_FEED_HISTORY` capability) introduced in API beta.2. The dependency is pinned in the published POM.

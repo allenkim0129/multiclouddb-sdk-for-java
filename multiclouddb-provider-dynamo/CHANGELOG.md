@@ -7,6 +7,11 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- `maxConnections` connection setting for the synchronous Apache HTTP/1.1 client, allowing
+  explicit connection-pool parity in cross-provider performance tests.
+
 ### Fixed
 
 - Query cost diagnostics on the PartiQL paths (`queryWithTranslation`, `executePartiQL`) now request `ReturnConsumedCapacity.TOTAL`, so `OperationDiagnostics.requestCharge()` reports the consumed capacity units for portable queries routed through the expression translator (the default path). Previously these requests omitted the flag, leaving `consumedCapacity()` null and `requestCharge()` at `0.0` — a silent cost-reporting gap versus the Cosmos provider (which always reports RU). Point-read/write CRUD paths and the native Scan/Query paths were already requesting it.

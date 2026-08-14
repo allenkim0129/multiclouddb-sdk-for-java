@@ -13,6 +13,7 @@ record ResultRow(
         String provider,
         String region,
         String comparisonRegion,
+        String transportProfile,
         String hostLabel,
         String jdk,
         String operation,

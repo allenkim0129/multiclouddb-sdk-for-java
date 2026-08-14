@@ -59,6 +59,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 import software.amazon.awssdk.services.dynamodb.model.TableStatus;
 import software.amazon.awssdk.services.dynamodb.waiters.DynamoDbWaiter;
 import software.amazon.awssdk.http.SdkHttpResponse;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
 
 import java.math.BigDecimal;
 import java.net.URI;
@@ -156,6 +157,12 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
                                 .putAdvancedOption(SdkAdvancedClientOption.USER_AGENT_SUFFIX,
                                         SdkUserAgent.userAgent(config))
                                 .build());
+        Integer maxConnections = positiveConnectionInt(
+                config.connection().get(DynamoConstants.CONFIG_MAX_CONNECTIONS),
+                DynamoConstants.CONFIG_MAX_CONNECTIONS);
+        if (maxConnections != null) {
+            builder.httpClientBuilder(ApacheHttpClient.builder().maxConnections(maxConnections));
+        }
 
         // Custom endpoint for DynamoDB Local
         if (endpoint != null && !endpoint.isBlank()) {
@@ -175,6 +182,21 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         this.changeFeedReader = DynamoChangeFeedReader.create(ProviderId.DYNAMO, config);
         LOG.info("DynamoDB client created for region: {}, endpoint: {}", region,
                 endpoint != null ? endpoint : "default");
+    }
+
+    static Integer positiveConnectionInt(String raw, String key) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            int value = Integer.parseInt(raw.trim());
+            if (value <= 0) {
+                throw new IllegalArgumentException("connection." + key + " must be > 0");
+            }
+            return value;
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("connection." + key + " must be an integer", e);
+        }
     }
 
     /** Package-private constructor for testing — injects a pre-configured {@link DynamoDbClient}. */

@@ -55,7 +55,7 @@ final class HtmlReport {
     }
 
     private static void envTable(StringBuilder b, List<EnvRow> env, List<String> providers) {
-        b.append("<h2>1. Environment</h2><table><thead><tr><th>Provider</th><th>Region</th><th>Comparison region</th><th>Billing mode</th><th>Provisioned capacity</th><th>Client host</th><th>JDK</th><th>SDK version</th></tr></thead><tbody>");
+        b.append("<h2>1. Environment</h2><table><thead><tr><th>Provider</th><th>Region</th><th>Comparison region</th><th>Transport</th><th>Billing mode</th><th>Provisioned capacity</th><th>Client host</th><th>JDK</th><th>SDK version</th></tr></thead><tbody>");
         Map<String, EnvRow> byProvider = new LinkedHashMap<>();
         for (EnvRow row : env) {
             byProvider.put(row.provider(), row);
@@ -68,6 +68,7 @@ final class HtmlReport {
             b.append("<tr><td>").append(Reports.esc(row.provider()))
                     .append("</td><td>").append(Reports.esc(orDash(row.region())))
                     .append("</td><td>").append(Reports.esc(orDash(row.comparisonRegion())))
+                    .append("</td><td>").append(Reports.esc(orDash(row.transportProfile())))
                     .append("</td><td>").append(Reports.esc(orDash(row.billingMode())))
                     .append("</td><td>").append(Reports.esc(orDash(row.provisionedCapacity())))
                     .append("</td><td>").append(Reports.esc(orDash(row.hostLabel())))

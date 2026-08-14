@@ -381,7 +381,7 @@ final class ScenarioRunner {
                                 String message, String errorCategory) {
         sink.accept(new ResultRow(
                 ctx.runId(), Instant.now().toString(), ctx.provider(), ctx.region(), ctx.comparisonRegion(),
-                ctx.hostLabel(), ctx.jdk(), op, workload, ctx.scenario(),
+                ctx.transportProfile(), ctx.hostLabel(), ctx.jdk(), op, workload, ctx.scenario(),
                 op.equals("read") || op.equals("delete") ? 0 : ctx.docSize(),
                 pageSize, ctx.threads(), 0,
                 0.0, 0.0, 0.0,
@@ -399,7 +399,7 @@ final class ScenarioRunner {
         CapacityLimit capacityLimit = capacityLimit(op);
         return new ResultRow(
                 ctx.runId(), Instant.now().toString(), ctx.provider(), ctx.region(), ctx.comparisonRegion(),
-                ctx.hostLabel(), ctx.jdk(), op, workload, ctx.scenario(),
+                ctx.transportProfile(), ctx.hostLabel(), ctx.jdk(), op, workload, ctx.scenario(),
                 op.equals("read") || op.equals("delete") ? 0 : ctx.docSize(),
                 pageSize, ctx.threads(), sample.iteration(),
                 startOffsetMs, endOffsetMs, sample.latencyMs(),

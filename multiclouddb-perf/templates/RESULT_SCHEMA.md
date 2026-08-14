@@ -9,6 +9,7 @@ One row per measured operation. Warmup iterations are never written.
 | `provider` | enum | `cosmos` \| `dynamo` \| `spanner`. |
 | `region` | string | Probed/config region recorded for the provider resource. |
 | `comparison_region` | string | Colocation label used for fairness checks/reporting. |
+| `transport_profile` | string | Effective protocol and pool profile, e.g. `gateway HTTP/1.1 pool=64`. |
 | `host_label` | string | Client host descriptor. |
 | `jdk` | string | JDK vendor+version. |
 | `operation` | enum | `create` \| `read` \| `update` \| `upsert` \| `delete` \| `query` \| `readChanges`. |

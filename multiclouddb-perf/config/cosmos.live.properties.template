@@ -3,6 +3,13 @@ multiclouddb.provider=cosmos
 multiclouddb.connection.endpoint=https://<your-account>.documents.azure.com:443/
 multiclouddb.connection.key=<primary-key>
 multiclouddb.connection.connectionMode=gateway
+# Fair HTTP/1.1 transport profile: match Dynamo maxConnections.
+multiclouddb.connection.gatewayMaxConnectionPoolSize=64
+multiclouddb.connection.gatewayHttp2Enabled=false
+# For a separate Cosmos HTTP/2 optimization run, set true and tune these:
+# multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize=8
+# multiclouddb.connection.gatewayHttp2MinConnectionPoolSize=2
+# multiclouddb.connection.gatewayHttp2MaxConcurrentStreams=32
 multiclouddb.connection.requestTimeoutSeconds=30
 multiclouddb.database=perfdb
 multiclouddb.collection=perf

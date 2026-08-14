@@ -34,6 +34,24 @@ public final class CosmosConstants {
     /** Connection config key for the connection mode ({@code direct} or {@code gateway}). */
     public static final String CONFIG_CONNECTION_MODE = "connectionMode";
 
+    /** Gateway HTTP/1.1 maximum connection-pool size. */
+    public static final String CONFIG_GATEWAY_MAX_CONNECTION_POOL_SIZE = "gatewayMaxConnectionPoolSize";
+
+    /** Enables the Cosmos Gateway HTTP/2 transport. */
+    public static final String CONFIG_GATEWAY_HTTP2_ENABLED = "gatewayHttp2Enabled";
+
+    /** Gateway HTTP/2 maximum connection-pool size. */
+    public static final String CONFIG_GATEWAY_HTTP2_MAX_CONNECTION_POOL_SIZE =
+            "gatewayHttp2MaxConnectionPoolSize";
+
+    /** Gateway HTTP/2 minimum connection-pool size. */
+    public static final String CONFIG_GATEWAY_HTTP2_MIN_CONNECTION_POOL_SIZE =
+            "gatewayHttp2MinConnectionPoolSize";
+
+    /** Maximum concurrent HTTP/2 streams per connection. */
+    public static final String CONFIG_GATEWAY_HTTP2_MAX_CONCURRENT_STREAMS =
+            "gatewayHttp2MaxConcurrentStreams";
+
     // ── Connection mode values ────────────────────────────────────────────────
 
     /** Gateway connection mode — recommended for emulator and restricted networks. */

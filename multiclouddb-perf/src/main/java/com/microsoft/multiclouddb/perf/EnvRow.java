@@ -5,6 +5,7 @@ package com.microsoft.multiclouddb.perf;
 
 /** Distinct per-provider environment metadata for the report Environment table. */
 record EnvRow(
-        String provider, String region, String comparisonRegion, String hostLabel, String jdk,
+        String provider, String region, String comparisonRegion, String transportProfile,
+        String hostLabel, String jdk,
         String billingMode, String provisionedCapacity, String sdkVersion) {
 }

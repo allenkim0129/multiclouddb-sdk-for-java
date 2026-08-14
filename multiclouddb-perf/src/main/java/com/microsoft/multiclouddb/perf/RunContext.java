@@ -7,7 +7,7 @@ package com.microsoft.multiclouddb.perf;
 record RunContext(
         String runId, String provider, String scenario,
         int threads, int warmup, int iterations, int docSize, int pageSize,
-        String region, String comparisonRegion, String hostLabel, String jdk,
+        String region, String comparisonRegion, String transportProfile, String hostLabel, String jdk,
         String sdkVersion, String billingMode, String provisionedCapacity,
         Double sharedCapacityLimit, Double readCapacityLimit, Double writeCapacityLimit,
         Double targetOpsPerSec, String pointWorkload) {

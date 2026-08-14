@@ -16,6 +16,9 @@ Use the same for every provider in a comparison set:
 - **Workload profile**: `--workload read|write|mixed|query` so you do not accidentally compare a
   read-heavy run with a mixed lifecycle.
 - **Client placement**: same host/JDK, plus matching `comparison_region` labels.
+- **Transport profile**: use Cosmos Gateway HTTP/1.1 and Dynamo Apache HTTP/1.1 with the same
+  connection-pool size for the primary comparison. Treat Cosmos HTTP/2 and Direct/RNTBD as
+  separate optimization profiles.
 - **Deterministic capacity**: configure `multiclouddb.perf.cosmosRu` or the paired
   `multiclouddb.perf.dynamoRcu` / `multiclouddb.perf.dynamoWcu` properties. The harness applies
   them before warmup, waits where required, and probes the actual resulting capacity.
@@ -43,6 +46,15 @@ multiclouddb.perf.cosmosRu=1000
 # Dynamo config
 multiclouddb.perf.dynamoRcu=100
 multiclouddb.perf.dynamoWcu=100
+
+# Transport-equivalent HTTP/1.1 profile
+# Cosmos config
+multiclouddb.connection.connectionMode=gateway
+multiclouddb.connection.gatewayMaxConnectionPoolSize=64
+multiclouddb.connection.gatewayHttp2Enabled=false
+
+# Dynamo config
+multiclouddb.connection.maxConnections=64
 ```
 
 CLI capacity and offered-load options override these properties for one-off experiments.
@@ -107,6 +119,12 @@ multiclouddb-perf/perf.sh run --workload query --threads 8 --target-ops-per-sec 
 - `multiclouddb.perf.cosmosRu` — Cosmos manual RU/s applied before warmup.
 - `multiclouddb.perf.dynamoRcu` and `multiclouddb.perf.dynamoWcu` — paired Dynamo provisioned
   capacity applied before warmup.
+- `multiclouddb.connection.gatewayMaxConnectionPoolSize` — Cosmos Gateway HTTP/1.1 pool.
+- `multiclouddb.connection.gatewayHttp2Enabled` — enable the separate Cosmos HTTP/2 profile.
+- `multiclouddb.connection.gatewayHttp2MinConnectionPoolSize`,
+  `gatewayHttp2MaxConnectionPoolSize`, and `gatewayHttp2MaxConcurrentStreams` — Cosmos HTTP/2
+  pool and multiplexing controls.
+- `multiclouddb.connection.maxConnections` — Dynamo synchronous Apache HTTP/1.1 pool.
 
 The CLI forms have precedence. The older `multiclouddb.provisionedCapacity` property is only
 fallback report text and does not control provisioning.
@@ -118,6 +136,7 @@ fallback report text and does not control provisioning.
 - Probed billing mode (`manual`, `autoscale`, `PROVISIONED`, `PAY_PER_REQUEST`, ...).
 - Throttled count/rate, retry totals when surfaced by diagnostics, and row validity.
 - Environment metadata including `comparison_region`.
+- Effective transport profile and configured connection pool.
 
 ## Offline re-rendering
 
