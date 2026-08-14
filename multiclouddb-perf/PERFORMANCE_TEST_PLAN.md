@@ -17,7 +17,8 @@ DynamoDB, and Spanner:
   The harness paces **actual operation starts** across worker threads and records
   both target and achieved/offered results.
 - Use `--threads` sweeps without `--target-ops-per-sec` only for max-throughput / saturation studies.
-- Use `--workload read|write|mixed|query` so the workload semantics are explicit.
+- Use `--workload read|write|mixed|query` for one profile, or `--workload all` to run the
+  read, write, and query profiles in one batch and generate one report.
 - Check `comparison_region` in the environment table. `--region-policy fail` should be used for
   final fairness-sensitive runs.
 - Use opt-in provisioning flags first when capacity must be pinned:

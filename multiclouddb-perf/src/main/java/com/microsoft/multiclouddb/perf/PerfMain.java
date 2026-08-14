@@ -168,31 +168,38 @@ public final class PerfMain {
 
                 for (int rep = 1; rep <= repeat; rep++) {
                     for (String scenario : scenarios) {
-                        for (int threads : threadLevels) {
-                            String runId = batchId + "-" + plan.providerId() + "-" + scenario + "-" + threads + "t"
-                                    + (repeat > 1 ? "-rep" + rep : "");
-                            RunContext ctx = new RunContext(runId, plan.providerId(), scenario, threads,
-                                    warmup, iterations, docSize, pageSize,
-                                    meta.region(), comparisonRegion, transportProfile(plan.providerId(), plan.cfg()),
-                                    host, jdk,
-                                    plan.sdkVersion(), meta.billingMode(), meta.provisionedCapacity(),
-                                    meta.sharedCapacityLimit(), meta.readCapacityLimit(), meta.writeCapacityLimit(),
-                                    targetOpsPerSec > 0.0 ? targetOpsPerSec : null,
-                                    workload == null ? "mixed" : workload);
-                            System.out.printf(Locale.ROOT,
-                                    "== %s / %s / %d threads / workload=%s (warmup=%d iter=%d%s)%s ==%n",
-                                    plan.providerId(), scenario, threads,
-                                    scenarioWorkloadLabel(scenario, ctx.pointWorkload()),
-                                    warmup, iterations,
-                                    targetOpsPerSec > 0.0 ? String.format(Locale.ROOT, ", target=%.2f ops/s", targetOpsPerSec) : "",
-                                    repeat > 1 ? " [repeat " + rep + "/" + repeat + "]" : "");
-                            try {
-                                new ScenarioRunner(client, address, sink, ctx).run();
-                                ran++;
-                            } catch (RuntimeException scenarioFailure) {
+                        for (String scenarioWorkload : scenarioWorkloads(scenario, workload)) {
+                            for (int threads : threadLevels) {
+                                String runId = batchId + "-" + plan.providerId() + "-" + scenario
+                                        + ("all".equals(workload) ? "-" + scenarioWorkload : "")
+                                        + "-" + threads + "t"
+                                        + (repeat > 1 ? "-rep" + rep : "");
+                                RunContext ctx = new RunContext(runId, plan.providerId(), scenario, threads,
+                                        warmup, iterations, docSize, pageSize,
+                                        meta.region(), comparisonRegion, transportProfile(plan.providerId(), plan.cfg()),
+                                        host, jdk,
+                                        plan.sdkVersion(), meta.billingMode(), meta.provisionedCapacity(),
+                                        meta.sharedCapacityLimit(), meta.readCapacityLimit(), meta.writeCapacityLimit(),
+                                        targetOpsPerSec > 0.0 ? targetOpsPerSec : null,
+                                        scenarioWorkload);
                                 System.out.printf(Locale.ROOT,
-                                        "!! %s / %s / %dt aborted: %s — continuing with next scenario%n",
-                                        plan.providerId(), scenario, threads, scenarioFailure);
+                                        "== %s / %s / %d threads / workload=%s (warmup=%d iter=%d%s)%s ==%n",
+                                        plan.providerId(), scenario, threads,
+                                        scenarioWorkloadLabel(scenario, ctx.pointWorkload()),
+                                        warmup, iterations,
+                                        targetOpsPerSec > 0.0
+                                                ? String.format(Locale.ROOT, ", target=%.2f ops/s", targetOpsPerSec)
+                                                : "",
+                                        repeat > 1 ? " [repeat " + rep + "/" + repeat + "]" : "");
+                                try {
+                                    new ScenarioRunner(client, address, sink, ctx).run();
+                                    ran++;
+                                } catch (RuntimeException scenarioFailure) {
+                                    System.out.printf(Locale.ROOT,
+                                            "!! %s / %s / %dt / workload=%s aborted: %s"
+                                                    + " — continuing with next scenario%n",
+                                            plan.providerId(), scenario, threads, scenarioWorkload, scenarioFailure);
+                                }
                             }
                         }
                     }
@@ -420,6 +427,9 @@ public final class PerfMain {
         if ("query".equals(workload)) {
             return List.of("S3", "S4", "S5");
         }
+        if ("all".equals(workload)) {
+            return List.of("S1", "S6", "S3", "S4", "S5");
+        }
         if ("read".equals(workload) || "write".equals(workload) || "mixed".equals(workload)) {
             return List.of("S1", "S6");
         }
@@ -432,9 +442,9 @@ public final class PerfMain {
         }
         String value = raw.trim().toLowerCase(Locale.ROOT);
         return switch (value) {
-            case "read", "write", "mixed", "query" -> value;
+            case "read", "write", "mixed", "query", "all" -> value;
             default -> throw new IllegalArgumentException(
-                    "--workload must be read, write, mixed, or query (was '" + raw + "')");
+                    "--workload must be read, write, mixed, query, or all (was '" + raw + "')");
         };
     }
 
@@ -443,6 +453,13 @@ public final class PerfMain {
             return;
         }
         for (String scenario : scenarios) {
+            if ("all".equals(workload)) {
+                if ("S7".equals(scenario)) {
+                    throw new IllegalArgumentException(
+                            "--workload=all supports point and query scenarios, not change-feed scenario 'S7'");
+                }
+                continue;
+            }
             if ("query".equals(workload)) {
                 if (!isQueryScenario(scenario)) {
                     throw new IllegalArgumentException(
@@ -454,6 +471,19 @@ public final class PerfMain {
                                 + scenario + "'");
             }
         }
+    }
+
+    static List<String> scenarioWorkloads(String scenario, String workload) {
+        if (isQueryScenario(scenario)) {
+            return List.of("query");
+        }
+        if ("S7".equals(scenario)) {
+            return List.of("changefeed");
+        }
+        if ("all".equals(workload)) {
+            return List.of("read", "write");
+        }
+        return List.of(workload == null ? "mixed" : workload);
     }
 
     private static boolean isQueryScenario(String scenario) {
@@ -601,7 +631,7 @@ public final class PerfMain {
 
             Usage:
               run     [--config-dir DIR] [--providers cosmos,dynamo,spanner]
-                      [--scenarios S1,S3,S4,S5,S6] [--workload read|write|mixed|query]
+                      [--scenarios S1,S3,S4,S5,S6] [--workload read|write|mixed|query|all]
                       [--threads 1,8,32] [--target-ops-per-sec N]
                       [--warmup N] [--iterations N] [--doc-size BYTES] [--page-size N]
                       [--repeat N] [--cosmos-ru RU] [--dynamo-rcu N --dynamo-wcu N]
@@ -616,8 +646,8 @@ public final class PerfMain {
 
             --target-ops-per-sec N applies a fair offered-load cap across worker threads by pacing
             actual operation starts. Leave it unset or 0 for existing max-throughput mode.
-            --workload read|write|mixed|query selects explicit workload profiles; existing scenarios
-            remain usable, and query scenarios keep their current semantics.
+            --workload read|write|mixed|query selects one explicit workload profile.
+            --workload all runs read, write, and query profiles in one batch and writes one report.
             --cosmos-ru RU raises Cosmos to manual throughput before running — COSTS MONEY.
             --dynamo-rcu/--dynamo-wcu switches the Dynamo table to PROVISIONED and waits for ACTIVE — COSTS MONEY.
             --enable-dynamo-streams turns on a NEW_AND_OLD_IMAGES stream for Dynamo change-feed runs — COSTS MONEY.

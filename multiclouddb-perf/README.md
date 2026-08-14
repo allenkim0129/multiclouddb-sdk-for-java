@@ -13,8 +13,8 @@ Use the same for every provider in a comparison set:
 - **Offered load**: set `multiclouddb.perf.targetOpsPerSec` identically in every provider
   property file. `--target-ops-per-sec N` overrides all configs. Use `0` only for
   max-throughput sweeps (`--threads 1,8,32`).
-- **Workload profile**: `--workload read|write|mixed|query` so you do not accidentally compare a
-  read-heavy run with a mixed lifecycle.
+- **Workload profile**: `--workload read|write|mixed|query` selects one profile.
+  `--workload all` runs the read, write, and query profiles in one batch and one report.
 - **Client placement**: same host/JDK, plus matching `comparison_region` labels.
 - **Transport profile**: use Cosmos Gateway HTTP/1.1 and Dynamo Apache HTTP/1.1 with the same
   connection-pool size for the primary comparison. Treat Cosmos HTTP/2 and Direct/RNTBD as
@@ -66,10 +66,10 @@ CLI capacity and offered-load options override these properties for one-off expe
 ```bash
 multiclouddb-perf/perf.sh run \
   --providers cosmos,dynamo \
-  --workload read \
-  --scenarios S1,S6 \
+  --workload all \
+  --scenarios S1,S3,S4,S5 \
   --threads 8 \
-  --target-ops-per-sec 1500 \
+  --target-ops-per-sec 80 \
   --iterations 500 \
   --region-policy warn
 ```
@@ -106,7 +106,8 @@ multiclouddb-perf/perf.sh run --workload query --threads 8 --target-ops-per-sec 
 
 - `--target-ops-per-sec N` — pace actual starts across worker threads; `0`/unset keeps legacy unbounded mode.
 - `--threads 1,8,32` — concurrency sweep for saturation/max-throughput analysis.
-- `--workload read|write|mixed|query` — explicit workload profiles.
+- `--workload read|write|mixed|query|all` — explicit workload profile, or all read/write/query
+  profiles in one batch and report.
 - `--dynamo-rcu N --dynamo-wcu N` — switch/update Dynamo to `PROVISIONED` and wait for `ACTIVE`.
 - `--cosmos-ru N` — set Cosmos manual throughput before the run.
 - `--enable-dynamo-streams` — opt-in Dynamo Streams for change-feed scenarios.
