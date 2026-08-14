@@ -14,6 +14,7 @@ record StatRow(
         int docSizeBytes, Integer pageSize,
         int runCount, int count, int successCount,
         double p50, double p90, double p99, double max, double mean, double stdev,
+        Double endpointRttMs, Double serviceP50, Double serviceP99,
         double throughputOpsSec,
         Double targetOpsPerSec, double offeredOpsSec, double achievedOfferedRatio,
         String costUnit, Double costMean, Double costP99, Double consumedUnitsPerSec,

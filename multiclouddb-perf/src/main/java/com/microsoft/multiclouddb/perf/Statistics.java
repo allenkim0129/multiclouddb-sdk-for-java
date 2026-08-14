@@ -79,6 +79,7 @@ final class Statistics {
                     get(f, col, "region"),
                     get(f, col, "comparison_region"),
                     get(f, col, "transport_profile"),
+                    doubleOrNull(get(f, col, "endpoint_rtt_ms")),
                     get(f, col, "host_label"),
                     get(f, col, "jdk"),
                     operation,
@@ -143,7 +144,7 @@ final class Statistics {
         for (ResultRow r : rows) {
             env.computeIfAbsent(r.provider(), p -> new EnvRow(
                     r.provider(), r.region(), r.comparisonRegion(), r.transportProfile(),
-                    r.hostLabel(), r.jdk(),
+                    r.endpointRttMs(), r.hostLabel(), r.jdk(),
                     r.billingMode(), r.provisionedCapacity(), r.sdkVersion()));
         }
         return new ArrayList<>(env.values());
@@ -174,6 +175,7 @@ final class Statistics {
         Double capacityLimitValue;
         double targetOpsPerSecSum;
         int targetOpsPerSecCount;
+        Double endpointRttMs;
 
         Group(ResultRow r) {
             this.provider = r.provider();
@@ -186,6 +188,7 @@ final class Statistics {
             this.costUnit = r.costUnit();
             this.capacityLimitUnit = r.capacityLimitUnit();
             this.capacityLimitValue = r.capacityLimitValue();
+            this.endpointRttMs = r.endpointRttMs();
         }
 
         void add(ResultRow r) {
@@ -218,6 +221,9 @@ final class Statistics {
             }
             if (capacityLimitValue == null && r.capacityLimitValue() != null) {
                 capacityLimitValue = r.capacityLimitValue();
+            }
+            if (endpointRttMs == null && r.endpointRttMs() != null) {
+                endpointRttMs = r.endpointRttMs();
             }
             if (r.targetOpsPerSec() != null) {
                 targetOpsPerSecSum += r.targetOpsPerSec();
@@ -276,10 +282,13 @@ final class Statistics {
             Double retryMean = hasRetryData && count > 0 ? (double) retryCountTotal / count : null;
             double errorRate = count > 0 ? (double) errors / count : 0.0;
             double achievedOfferedRatio = offeredOpsSec > 0.0 ? throughput / offeredOpsSec : 0.0;
+            Double serviceP50 = serviceTime(percentile(lat, 50), endpointRttMs);
+            Double serviceP99 = serviceTime(percentile(lat, 99), endpointRttMs);
             return new StatRow(provider, operation, workload, scenario, threads, docSize, pageSize,
                     runIds.size(), count, success,
                     percentile(lat, 50), percentile(lat, 90), percentile(lat, 99),
                     lat.isEmpty() ? 0.0 : lat.get(lat.size() - 1), mean, sd,
+                    endpointRttMs, serviceP50, serviceP99,
                     throughput, targetOpsPerSec, offeredOpsSec, achievedOfferedRatio,
                     costUnit == null ? "" : costUnit, costMean, costP99, consumedUnitsPerSec,
                     capacityLimitUnit == null ? "" : capacityLimitUnit, capacityLimitValue, capacityUtilizationPct,
@@ -320,6 +329,19 @@ final class Statistics {
         boolean hasTimelineData() {
             return hasTimelineData;
         }
+    }
+
+    /**
+     * Latency minus the measured endpoint round-trip time: the portion of the
+     * wall-clock latency the service itself is responsible for. Returns
+     * {@code null} when no RTT baseline was captured, and clamps at zero so a
+     * sub-RTT sample never reports negative service time.
+     */
+    static Double serviceTime(double latencyMs, Double endpointRttMs) {
+        if (endpointRttMs == null) {
+            return null;
+        }
+        return Math.max(0.0, latencyMs - endpointRttMs);
     }
 
     static double percentile(List<Double> sorted, double p) {

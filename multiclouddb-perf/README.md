@@ -15,7 +15,10 @@ Use the same for every provider in a comparison set:
   max-throughput sweeps (`--threads 1,8,32`).
 - **Workload profile**: `--workload read|write|mixed|query` selects one profile.
   `--workload all` runs the read, write, and query profiles in one batch and one report.
-- **Client placement**: same host/JDK, plus matching `comparison_region` labels.
+- **Client placement**: same host/JDK, plus matching `comparison_region` labels. A single client
+  cannot be colocated with two clouds at once, so the harness probes each endpoint's TCP RTT at
+  run start and the report also presents **service time** (`latency − RTT`). Compare service time
+  when the client sits outside both clouds; compare raw latency only from a colocated client.
 - **Transport profile**: use Cosmos Gateway HTTP/1.1 and Dynamo Apache HTTP/1.1 with the same
   connection-pool size for the primary comparison. Treat Cosmos HTTP/2 and Direct/RNTBD as
   separate optimization profiles.
@@ -52,10 +55,15 @@ multiclouddb.perf.dynamoWcu=100
 multiclouddb.connection.connectionMode=gateway
 multiclouddb.connection.gatewayMaxConnectionPoolSize=64
 multiclouddb.connection.gatewayHttp2Enabled=false
+multiclouddb.connection.contentResponseOnWriteEnabled=false
 
 # Dynamo config
 multiclouddb.connection.maxConnections=64
 ```
+
+`contentResponseOnWriteEnabled=false` suppresses the document body Cosmos otherwise returns on
+every write. DynamoDB's `PutItem` returns no item, so leaving it enabled charges Cosmos for
+bandwidth its counterpart never pays.
 
 CLI capacity and offered-load options override these properties for one-off experiments.
 
@@ -138,6 +146,7 @@ fallback report text and does not control provisioning.
 - Throttled count/rate, retry totals when surfaced by diagnostics, and row validity.
 - Environment metadata including `comparison_region`.
 - Effective transport profile and configured connection pool.
+- Measured endpoint RTT per provider, plus RTT-normalised `svc p50` / `svc p99` service time.
 
 ## Offline re-rendering
 

@@ -6,6 +6,8 @@ multiclouddb.connection.connectionMode=gateway
 # Fair HTTP/1.1 transport profile: match Dynamo maxConnections.
 multiclouddb.connection.gatewayMaxConnectionPoolSize=64
 multiclouddb.connection.gatewayHttp2Enabled=false
+# Dynamo's PutItem returns no item; suppress the Cosmos write payload to match.
+multiclouddb.connection.contentResponseOnWriteEnabled=false
 # For a separate Cosmos HTTP/2 optimization run, set true and tune these:
 # multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize=8
 # multiclouddb.connection.gatewayHttp2MinConnectionPoolSize=2

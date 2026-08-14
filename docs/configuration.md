@@ -55,6 +55,7 @@ Select a provider and supply its connection and auth properties.
 | `multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize` | Gateway HTTP/2 maximum connection-pool size (optional) |
 | `multiclouddb.connection.gatewayHttp2MaxConcurrentStreams` | Maximum concurrent HTTP/2 streams per connection (optional) |
 | `multiclouddb.connection.tenantId` | Azure AD tenant ID (optional, for Entra ID) |
+| `multiclouddb.connection.contentResponseOnWriteEnabled` | Return the document body in write responses (`true`/`false`; default `true`) |
 | `multiclouddb.connection.consistencyLevel` | Read consistency override (optional — see below) |
 
 ### Authentication Modes
@@ -85,6 +86,21 @@ multiclouddb.connection.connectionMode=gateway
 multiclouddb.connection.gatewayMaxConnectionPoolSize=64
 multiclouddb.connection.gatewayHttp2Enabled=false
 ```
+
+### Write Response Payload
+
+By default Cosmos DB returns the full stored document in `create` / `update` / `upsert`
+responses. The portable API never surfaces that body — writes return no document on any
+provider — so it is pure overhead on the wire.
+
+```properties
+multiclouddb.connection.contentResponseOnWriteEnabled=false
+```
+
+Setting `false` trims write latency and bandwidth. Per-operation diagnostics (request charge,
+activity id, ETag, HTTP status) are still populated, and reads are unaffected. This also matches
+DynamoDB's `PutItem`, which returns no item by default, so it is the correct setting for
+transport-equivalent benchmarks. The default remains `true` for backwards compatibility.
 
 ### Consistency Level
 

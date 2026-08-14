@@ -14,6 +14,7 @@ record ResultRow(
         String region,
         String comparisonRegion,
         String transportProfile,
+        Double endpointRttMs,
         String hostLabel,
         String jdk,
         String operation,

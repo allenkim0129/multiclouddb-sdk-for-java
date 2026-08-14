@@ -38,6 +38,9 @@ import java.util.regex.Pattern;
  *     (case-insensitive): {@code STRONG}, {@code BOUNDED_STALENESS},
  *     {@code SESSION}, {@code CONSISTENT_PREFIX}, {@code EVENTUAL}.
  *     The override must be equal to or weaker than the account's default.</li>
+ * <li>{@code contentResponseOnWriteEnabled} — whether write responses carry the
+ *     stored document body (optional; defaults to {@code true}). Set {@code false}
+ *     to trim write latency and bandwidth; reads are unaffected.</li>
  * </ul>
  */
 public class CosmosProviderClient implements MulticloudDbProviderClient {
@@ -86,9 +89,12 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             throw new IllegalArgumentException(CosmosConstants.ERR_ENDPOINT_REQUIRED);
         }
 
+        Boolean contentResponseOnWrite = strictBoolean(
+                config.connection().get(CosmosConstants.CONFIG_CONTENT_RESPONSE_ON_WRITE_ENABLED),
+                CosmosConstants.CONFIG_CONTENT_RESPONSE_ON_WRITE_ENABLED);
         CosmosClientBuilder builder = new CosmosClientBuilder()
                 .endpoint(endpoint)
-                .contentResponseOnWriteEnabled(true);
+                .contentResponseOnWriteEnabled(contentResponseOnWrite == null || contentResponseOnWrite);
 
         if (key != null && !key.isBlank()) {
             builder.key(key);
@@ -138,6 +144,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         this.changeFeedReader = new CosmosChangeFeedReader(ProviderId.COSMOS, effectiveRetentionMillis);
         LOG.info("Cosmos client created for endpoint: {}", endpoint);
         LOG.info("Cosmos read consistency: {}", readConsistencyOverride != null ? readConsistencyOverride : "account default");
+        LOG.info("Cosmos content response on write: {}", contentResponseOnWrite == null || contentResponseOnWrite);
     }
 
     static GatewayConnectionConfig gatewayConnectionConfig(MulticloudDbClientConfig config) {

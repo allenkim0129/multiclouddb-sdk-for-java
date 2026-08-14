@@ -116,6 +116,7 @@ public final class PerfMain {
                     : positiveConfigInt(plan.cfg(), "multiclouddb.perf.dynamoWcu");
             validateDynamoCapacityArgs(dynamoRcu, dynamoWcu);
             double targetOpsPerSec = effectiveTargetOpsPerSec(plan, opt, cliTargetOpsPerSec);
+            Double endpointRttMs = NetworkBaseline.probeRttMs(plan.providerId(), plan.cfg());
             MetadataProbe.Meta meta = plan.metadata();
             String comparisonRegion = RegionFairness.effectiveComparisonRegion(
                     plan.configuredComparisonRegion(), meta.region(), plan.configuredRegion());
@@ -177,7 +178,7 @@ public final class PerfMain {
                                 RunContext ctx = new RunContext(runId, plan.providerId(), scenario, threads,
                                         warmup, iterations, docSize, pageSize,
                                         meta.region(), comparisonRegion, transportProfile(plan.providerId(), plan.cfg()),
-                                        host, jdk,
+                                        endpointRttMs, host, jdk,
                                         plan.sdkVersion(), meta.billingMode(), meta.provisionedCapacity(),
                                         meta.sharedCapacityLimit(), meta.readCapacityLimit(), meta.writeCapacityLimit(),
                                         targetOpsPerSec > 0.0 ? targetOpsPerSec : null,

@@ -49,8 +49,8 @@ final class MarkdownReport {
 
     private static void environment(StringBuilder b, List<EnvRow> env, List<String> providers) {
         b.append("## 1. Environment\n\n");
-        b.append("| Provider | Region | Comparison region | Transport | Billing mode | Provisioned capacity | Client host | JDK | SDK version |\n");
-        b.append("|---|---|---|---|---|---|---|---|---|\n");
+        b.append("| Provider | Region | Comparison region | Transport | Endpoint RTT | Billing mode | Provisioned capacity | Client host | JDK | SDK version |\n");
+        b.append("|---|---|---|---|---|---|---|---|---|---|\n");
         Map<String, EnvRow> byProvider = new LinkedHashMap<>();
         for (EnvRow row : env) {
             byProvider.put(row.provider(), row);
@@ -64,6 +64,7 @@ final class MarkdownReport {
                     .append(" | ").append(orDash(row.region()))
                     .append(" | ").append(orDash(row.comparisonRegion()))
                     .append(" | ").append(orDash(row.transportProfile()))
+                    .append(" | ").append(rtt(row.endpointRttMs()))
                     .append(" | ").append(orDash(row.billingMode()))
                     .append(" | ").append(orDash(row.provisionedCapacity()))
                     .append(" | ").append(orDash(row.hostLabel()))
@@ -78,8 +79,8 @@ final class MarkdownReport {
         b.append("## 2. Per-provider detail\n\n");
         for (String provider : providers) {
             b.append("### ").append(provider).append("\n\n");
-            b.append("| Workload | Operation | Scenario | Threads | Target ops/s | Offered ops/s | Achieved ops/s | Achieved/Offered | p50 ms | p90 ms | p99 ms | Cost | Consumed units/s | Capacity util | Throttled | Retries | Valid |\n");
-            b.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+            b.append("| Workload | Operation | Scenario | Threads | Target ops/s | Offered ops/s | Achieved ops/s | Achieved/Offered | p50 ms | p90 ms | p99 ms | svc p50 ms | svc p99 ms | Cost | Consumed units/s | Capacity util | Throttled | Retries | Valid |\n");
+            b.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
             for (StatRow row : stats) {
                 if (!provider.equals(row.provider())) {
                     continue;
@@ -95,6 +96,8 @@ final class MarkdownReport {
                         .append(" | ").append(Reports.num(row.p50()))
                         .append(" | ").append(Reports.num(row.p90()))
                         .append(" | ").append(Reports.num(row.p99()))
+                        .append(" | ").append(Reports.numOrDash(row.serviceP50()))
+                        .append(" | ").append(Reports.numOrDash(row.serviceP99()))
                         .append(" | ").append(costSummary(row))
                         .append(" | ").append(Reports.numOrDash(row.consumedUnitsPerSec()))
                         .append(" | ").append(utilSummary(row))
@@ -108,8 +111,13 @@ final class MarkdownReport {
 
     private static void crossProvider(StringBuilder b, List<StatRow> stats, List<String> providers) {
         b.append("## 3. Cross-provider comparison\n\n");
+        b.append("> `p99` is raw wall-clock latency from this client. `service-time p99` subtracts the measured "
+                + "endpoint TCP RTT, so a provider is not penalised purely for being further from the test host. "
+                + "Only a colocated client per cloud removes network distance entirely.\n\n");
         comparisonTable(b, "p99 latency (lower is better)", stats, providers, true,
                 row -> row.p99(), false);
+        comparisonTable(b, "service-time p99, RTT-normalised (lower is better)", stats, providers, true,
+                row -> row.serviceP99() == null ? -1.0 : row.serviceP99(), true);
         comparisonTable(b, "throughput (higher is better)", stats, providers, false,
                 StatRow::throughputOpsSec, false);
         comparisonTable(b, "cost mean (lower is better within provider units)", stats, providers, true,
@@ -222,6 +230,10 @@ final class MarkdownReport {
             }
         }
         return best;
+    }
+
+    private static String rtt(Double value) {
+        return value == null ? "—" : Reports.num(value) + " ms";
     }
 
     private static String costSummary(StatRow row) {

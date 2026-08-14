@@ -59,14 +59,28 @@ display text.
 
 The primary cross-provider profile uses HTTP/1.1 with an equal connection-pool size:
 
-- Cosmos Gateway: `gatewayMaxConnectionPoolSize=64`, `gatewayHttp2Enabled=false`
+- Cosmos Gateway: `gatewayMaxConnectionPoolSize=64`, `gatewayHttp2Enabled=false`,
+  `contentResponseOnWriteEnabled=false`
 - Dynamo synchronous Apache client: `maxConnections=64`
+
+Cosmos returns the stored document on every write by default while DynamoDB's `PutItem` returns
+no item, so `contentResponseOnWriteEnabled=false` removes a payload asymmetry the portable API
+never exposes to callers.
 
 Cosmos Gateway HTTP/2 is a separate optimization profile configured with
 `gatewayHttp2Enabled`, `gatewayHttp2MinConnectionPoolSize`,
 `gatewayHttp2MaxConnectionPoolSize`, and `gatewayHttp2MaxConcurrentStreams`. Cosmos Direct mode
 uses RNTBD rather than HTTP and is also reported separately. Reports record the effective
 transport profile so results with different protocols or pools are not silently compared.
+
+### Network-distance fairness
+
+A single client host cannot be colocated with two clouds simultaneously, so raw latency carries
+the client-to-endpoint round trip for each provider. The harness probes each provider endpoint's
+TCP handshake time once per run (`endpoint_rtt_ms`) and reports **service time**
+(`latency − RTT`) alongside raw latency. Raw latency answers "what does this client see"; service
+time answers "how fast is the service itself" and is the comparable metric from a non-colocated
+client. Both are reported; neither replaces the other.
 
 ## Recorded raw data
 

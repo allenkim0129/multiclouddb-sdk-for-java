@@ -34,6 +34,21 @@ public final class CosmosConstants {
     /** Connection config key for the connection mode ({@code direct} or {@code gateway}). */
     public static final String CONFIG_CONNECTION_MODE = "connectionMode";
 
+    /**
+     * Connection config key controlling whether Cosmos returns the written document
+     * body in write responses ({@code create}, {@code update}, {@code upsert}).
+     * <p>
+     * Defaults to {@code true} (the document is returned). Set to {@code false} to
+     * suppress the response payload, which reduces write latency and bandwidth.
+     * DynamoDB's {@code PutItem} returns no item by default, so {@code false} is the
+     * transport-equivalent setting for cross-provider performance comparisons.
+     * <p>
+     * The portable contract is unaffected: {@code create}/{@code update}/{@code upsert}
+     * do not return the stored document on any provider, and per-operation diagnostics
+     * (request charge, activity id, ETag, status code) are still populated.
+     */
+    public static final String CONFIG_CONTENT_RESPONSE_ON_WRITE_ENABLED = "contentResponseOnWriteEnabled";
+
     /** Gateway HTTP/1.1 maximum connection-pool size. */
     public static final String CONFIG_GATEWAY_MAX_CONNECTION_POOL_SIZE = "gatewayMaxConnectionPoolSize";
 

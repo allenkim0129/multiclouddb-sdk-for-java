@@ -55,7 +55,7 @@ final class HtmlReport {
     }
 
     private static void envTable(StringBuilder b, List<EnvRow> env, List<String> providers) {
-        b.append("<h2>1. Environment</h2><table><thead><tr><th>Provider</th><th>Region</th><th>Comparison region</th><th>Transport</th><th>Billing mode</th><th>Provisioned capacity</th><th>Client host</th><th>JDK</th><th>SDK version</th></tr></thead><tbody>");
+        b.append("<h2>1. Environment</h2><table><thead><tr><th>Provider</th><th>Region</th><th>Comparison region</th><th>Transport</th><th>Endpoint RTT</th><th>Billing mode</th><th>Provisioned capacity</th><th>Client host</th><th>JDK</th><th>SDK version</th></tr></thead><tbody>");
         Map<String, EnvRow> byProvider = new LinkedHashMap<>();
         for (EnvRow row : env) {
             byProvider.put(row.provider(), row);
@@ -69,6 +69,7 @@ final class HtmlReport {
                     .append("</td><td>").append(Reports.esc(orDash(row.region())))
                     .append("</td><td>").append(Reports.esc(orDash(row.comparisonRegion())))
                     .append("</td><td>").append(Reports.esc(orDash(row.transportProfile())))
+                    .append("</td><td>").append(Reports.esc(rtt(row.endpointRttMs())))
                     .append("</td><td>").append(Reports.esc(orDash(row.billingMode())))
                     .append("</td><td>").append(Reports.esc(orDash(row.provisionedCapacity())))
                     .append("</td><td>").append(Reports.esc(orDash(row.hostLabel())))
@@ -97,6 +98,10 @@ final class HtmlReport {
                     .append(Reports.esc(workload)).append(" / ").append(Reports.esc(scenario))
                     .append("</h3><div class=\"chart-grid\">");
             b.append(svgChart(rows, providers, "p99 latency", "ms", true, StatRow::p99));
+            if (rows.stream().anyMatch(row -> row.serviceP99() != null)) {
+                b.append(svgChart(rows, providers, "p99 service time (RTT-normalised)", "ms", true,
+                        row -> row.serviceP99() == null ? -1.0 : row.serviceP99()));
+            }
             b.append(svgChart(rows, providers, "Achieved throughput", "ops/s", false,
                     StatRow::throughputOpsSec));
             b.append(svgChart(rows, providers, "Achieved / offered", "%", false,
@@ -203,7 +208,7 @@ final class HtmlReport {
         b.append("<h2>3. Per-provider detail</h2>");
         for (String provider : providers) {
             b.append("<h3>").append(Reports.esc(provider)).append("</h3>");
-            b.append("<table><thead><tr><th>Workload</th><th>Operation</th><th>Scenario</th><th>Threads</th><th>Target ops/s</th><th>Offered ops/s</th><th>Achieved ops/s</th><th>Achieved/Offered</th><th>p50 ms</th><th>p90 ms</th><th>p99 ms</th><th>Cost</th><th>Consumed units/s</th><th>Capacity util</th><th>Throttled</th><th>Retries</th><th>Valid</th></tr></thead><tbody>");
+            b.append("<table><thead><tr><th>Workload</th><th>Operation</th><th>Scenario</th><th>Threads</th><th>Target ops/s</th><th>Offered ops/s</th><th>Achieved ops/s</th><th>Achieved/Offered</th><th>p50 ms</th><th>p90 ms</th><th>p99 ms</th><th>svc p50 ms</th><th>svc p99 ms</th><th>Cost</th><th>Consumed units/s</th><th>Capacity util</th><th>Throttled</th><th>Retries</th><th>Valid</th></tr></thead><tbody>");
             for (StatRow row : stats) {
                 if (!provider.equals(row.provider())) {
                     continue;
@@ -219,6 +224,8 @@ final class HtmlReport {
                         .append("</td><td>").append(Reports.num(row.p50()))
                         .append("</td><td>").append(Reports.num(row.p90()))
                         .append("</td><td>").append(Reports.num(row.p99()))
+                        .append("</td><td>").append(Reports.esc(Reports.numOrDash(row.serviceP50())))
+                        .append("</td><td>").append(Reports.esc(Reports.numOrDash(row.serviceP99())))
                         .append("</td><td>").append(Reports.esc(costSummary(row)))
                         .append("</td><td>").append(Reports.esc(Reports.numOrDash(row.consumedUnitsPerSec())))
                         .append("</td><td>").append(Reports.esc(utilSummary(row)))
@@ -233,8 +240,11 @@ final class HtmlReport {
 
     private static void comparisonTables(StringBuilder b, List<StatRow> stats, List<String> providers) {
         b.append("<h2>4. Cross-provider comparison</h2>");
+        b.append("<p class=\"note\">p99 is raw wall-clock latency from this client. Service-time p99 subtracts the measured endpoint TCP RTT, so a provider is not penalised purely for being further from the test host. Only a colocated client per cloud removes network distance entirely.</p>");
         comparisonTable(b, "p99 latency (lower is better)", stats, providers, true,
                 row -> row.p99(), false);
+        comparisonTable(b, "service-time p99, RTT-normalised (lower is better)", stats, providers, true,
+                row -> row.serviceP99() == null ? -1.0 : row.serviceP99(), true);
         comparisonTable(b, "throughput (higher is better)", stats, providers, false,
                 StatRow::throughputOpsSec, false);
         comparisonTable(b, "cost mean (lower is better within provider units)", stats, providers, true,
@@ -341,6 +351,10 @@ final class HtmlReport {
             }
         }
         return best;
+    }
+
+    private static String rtt(Double value) {
+        return value == null ? "\u2014" : Reports.num(value) + " ms";
     }
 
     private static String costSummary(StatRow row) {

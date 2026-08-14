@@ -12,6 +12,11 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Gateway transport controls: `gatewayMaxConnectionPoolSize`, `gatewayHttp2Enabled`,
   `gatewayHttp2MinConnectionPoolSize`, `gatewayHttp2MaxConnectionPoolSize`, and
   `gatewayHttp2MaxConcurrentStreams`. Gateway-only settings fail fast in Direct/RNTBD mode.
+- `contentResponseOnWriteEnabled` connection config key (default `true`, unchanged behaviour).
+  Set `false` to suppress the document body in `create`/`update`/`upsert` responses, trimming
+  write latency and bandwidth. Per-operation diagnostics (request charge, activity id, ETag,
+  status code) are still populated, and reads are unaffected. `false` is the transport-equivalent
+  setting when benchmarking against DynamoDB, whose `PutItem` returns no item by default.
 
 ## [0.1.0-beta.2] — 2026-06-17
 
