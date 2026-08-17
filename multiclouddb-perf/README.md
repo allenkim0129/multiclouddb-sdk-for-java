@@ -19,9 +19,10 @@ Use the same for every provider in a comparison set:
   cannot be colocated with two clouds at once, so the harness probes each endpoint's TCP RTT at
   run start and the report also presents **service time** (`latency − RTT`). Compare service time
   when the client sits outside both clouds; compare raw latency only from a colocated client.
-- **Transport profile**: use Cosmos Gateway HTTP/1.1 and Dynamo Apache HTTP/1.1 with the same
-  connection-pool size for the primary comparison. Treat Cosmos HTTP/2 and Direct/RNTBD as
-  separate optimization profiles.
+- **Transport profile**: each provider runs its recommended data path — Cosmos Gateway V2
+  (thin client) over HTTP/2, Dynamo's Apache HTTP/1.1 client. Protocol parity is deliberately
+  not a goal, since Cosmos is optimized for HTTP/2 and the AWS synchronous client offers no
+  HTTP/2 transport. Gateway V1 HTTP/1.1 and Direct/RNTBD are separate diagnostic profiles.
 - **Deterministic capacity**: configure `multiclouddb.perf.cosmosRu` or the paired
   `multiclouddb.perf.dynamoRcu` / `multiclouddb.perf.dynamoWcu` properties. The harness applies
   them before warmup, waits where required, and probes the actual resulting capacity.
@@ -50,32 +51,26 @@ multiclouddb.perf.cosmosRu=1000
 multiclouddb.perf.dynamoRcu=100
 multiclouddb.perf.dynamoWcu=100
 
-# Transport-equivalent HTTP/1.1 profile
-# Cosmos config
+# Transport: each provider's recommended data path
+# Cosmos config — Gateway V2 (thin client) over HTTP/2
 multiclouddb.connection.connectionMode=gateway
-multiclouddb.connection.gatewayMaxConnectionPoolSize=64
-multiclouddb.connection.gatewayHttp2Enabled=false
+multiclouddb.connection.gatewayHttp2Enabled=true
+multiclouddb.connection.thinClientEnabled=true
+multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize=64
+multiclouddb.connection.gatewayHttp2MinConnectionPoolSize=8
+multiclouddb.connection.gatewayHttp2MaxConcurrentStreams=32
 multiclouddb.connection.contentResponseOnWriteEnabled=false
 
 # Dynamo config
 multiclouddb.connection.maxConnections=64
 ```
 
-The default Cosmos perf profile is **Gateway V2 (thin client) over HTTP/2** — the fastest
-non-Direct data path — set in `config/cosmos.live.properties.template`:
-
-```properties
-multiclouddb.connection.gatewayHttp2Enabled=true
-multiclouddb.connection.thinClientEnabled=true
-multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize=64
-multiclouddb.connection.gatewayHttp2MinConnectionPoolSize=8
-multiclouddb.connection.gatewayHttp2MaxConcurrentStreams=32
-```
-
-Dynamo's synchronous client is HTTP/1.1-only, so this profile compares each provider's best
-available path rather than an identical transport. For the transport-equivalent comparison set
-`gatewayHttp2Enabled=false` and `thinClientEnabled=false` instead. The `transport_profile`
-column records which profile produced each row, and aggregation refuses to mix them.
+Cosmos DB is optimized for HTTP/2 and Gateway V2 requires it, while Dynamo's synchronous client
+is HTTP/1.1-only, so protocol parity is deliberately not a goal — each provider runs the path its
+service recommends. To attribute a Cosmos change to the transport rather than the service, set
+`gatewayHttp2Enabled=false` and `thinClientEnabled=false` for a diagnostic Gateway V1 run. The
+`transport_profile` column records which profile produced each row and aggregation refuses to mix
+them, so a diagnostic run needs its own `--title`.
 
 `contentResponseOnWriteEnabled=false` suppresses the document body Cosmos otherwise returns on
 every write. DynamoDB's `PutItem` returns no item, so leaving it enabled charges Cosmos for
@@ -145,7 +140,10 @@ multiclouddb-perf/perf.sh run --workload query --threads 8 --target-ops-per-sec 
 - `multiclouddb.perf.dynamoRcu` and `multiclouddb.perf.dynamoWcu` — paired Dynamo provisioned
   capacity applied before warmup.
 - `multiclouddb.connection.gatewayMaxConnectionPoolSize` — Cosmos Gateway HTTP/1.1 pool.
-- `multiclouddb.connection.gatewayHttp2Enabled` — enable the separate Cosmos HTTP/2 profile.
+- `multiclouddb.connection.gatewayHttp2Enabled` — Cosmos Gateway HTTP/2; **on by default**,
+  set `false` only for the diagnostic Gateway V1 profile.
+- `multiclouddb.connection.thinClientEnabled` — Cosmos Gateway V2 (thin client); requires
+  HTTP/2 and is rejected without it.
 - `multiclouddb.connection.gatewayHttp2MinConnectionPoolSize`,
   `gatewayHttp2MaxConnectionPoolSize`, and `gatewayHttp2MaxConcurrentStreams` — Cosmos HTTP/2
   pool and multiplexing controls.

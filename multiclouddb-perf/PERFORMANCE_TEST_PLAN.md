@@ -55,48 +55,39 @@ Equivalent CLI options override the property values for one run. The harness app
 before cache priming and warmup, then records the probed capacity rather than trusting configured
 display text.
 
-### Transport fairness
+### Transport profile
 
-Two profiles are supported, and they answer different questions. Reports record the effective
-`transport_profile`, and aggregation refuses to mix profiles for the same provider, so results
-from the two can never be silently combined.
-
-**Default — best available path per provider.** Each provider runs its recommended data path:
+The transport protocol is **deliberately not held constant** across providers. Cosmos DB is
+optimized for HTTP/2 and Gateway V2 (thin client) requires it, while DynamoDB's synchronous
+client is HTTP/1.1-only. Forcing a shared protocol would run Cosmos on a path the service no
+longer optimizes for, measuring a configuration nobody deploys. Each provider therefore runs its
+own recommended data path:
 
 - Cosmos Gateway V2 (thin client) over HTTP/2: `thinClientEnabled=true`,
   `gatewayHttp2Enabled=true`, HTTP/2 pool 64 / min 8 / 32 streams,
   `contentResponseOnWriteEnabled=false`
-- Dynamo synchronous Apache client: `maxConnections=64` (HTTP/1.1 only — the AWS synchronous
-  client offers no HTTP/2 transport, so this asymmetry is inherent, not a configuration choice)
-
-**Alternative — transport-equivalent HTTP/1.1.** Forces both providers onto the same protocol
-and pool size, isolating service behaviour from protocol differences:
-
-- Cosmos Gateway V1: `gatewayMaxConnectionPoolSize=64`, `gatewayHttp2Enabled=false`,
-  `thinClientEnabled=false`, `contentResponseOnWriteEnabled=false`
 - Dynamo synchronous Apache client: `maxConnections=64`
 
-Neither profile is "the fair one" on its own: the default compares what a user would actually
-deploy, the alternative compares the services with the transport held constant.
+This answers *how the two services perform as they would actually be deployed*. It does not
+isolate how much of any gap is protocol versus service, so report transport as part of the
+result rather than correcting for it. Every other axis in this section — offered load, capacity,
+payload, client host, region labels — stays fixed; transport is the one axis intentionally free.
+
+**Diagnostic profile — Gateway V1 over HTTP/1.1.** Not the baseline. Use it only to attribute a
+Cosmos change to the transport rather than the service: `gatewayHttp2Enabled=false`,
+`thinClientEnabled=false`, `gatewayMaxConnectionPoolSize=64`. HTTP/2 is **on by default** as of
+the current provider, so opting out requires both keys explicitly — omitting them yields HTTP/2.
+Gateway V2 requires HTTP/2 and is rejected without it, so `thinClientEnabled=true` can never
+silently degrade to a Gateway V1 run.
+
+Reports record the effective `transport_profile`, and aggregation refuses to mix profiles for the
+same provider, so a diagnostic run needs its own `--title` and can never be silently combined
+with the default profile. Cosmos Direct mode uses RNTBD rather than HTTP and is reported as its
+own profile.
 
 Cosmos returns the stored document on every write by default while DynamoDB's `PutItem` returns
 no item, so `contentResponseOnWriteEnabled=false` removes a payload asymmetry the portable API
 never exposes to callers.
-
-Cosmos Gateway HTTP/2 is **on by default** as of the current provider, so the HTTP/1.1
-parity profile must opt out explicitly with `gatewayHttp2Enabled=false`. Omitting it no longer
-yields HTTP/1.1 and would silently compare HTTP/2 against Dynamo's HTTP/1.1 client.
-
-Gateway V2 requires HTTP/2 and is rejected without it, so `thinClientEnabled=true` cannot
-silently degrade to a Gateway V1 run.
-
-Cosmos Gateway HTTP/2 is a separate optimization profile configured with
-`gatewayHttp2Enabled`, `gatewayHttp2MinConnectionPoolSize`,
-`gatewayHttp2MaxConnectionPoolSize`, and `gatewayHttp2MaxConcurrentStreams`. Gateway V2
-(thin client, `thinClientEnabled=true`) is a third profile: it keeps HTTP/2 but routes the data
-plane through the leaner thin-client proxy instead of the compute gateway. Cosmos Direct mode
-uses RNTBD rather than HTTP and is also reported separately. Reports record the effective
-transport profile so results with different protocols or pools are not silently compared.
 
 ### Network-distance fairness
 
