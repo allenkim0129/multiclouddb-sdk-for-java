@@ -61,6 +61,11 @@ multiclouddb.connection.contentResponseOnWriteEnabled=false
 multiclouddb.connection.maxConnections=64
 ```
 
+HTTP/2 is the provider default, so `gatewayHttp2Enabled=false` is now a deliberate opt-out
+required for HTTP/1.1 parity with Dynamo's synchronous client — omitting it compares HTTP/2
+against HTTP/1.1. For a Cosmos-optimised (non-parity) run instead set `gatewayHttp2Enabled=true`
+and `thinClientEnabled=true` to exercise Gateway V2.
+
 `contentResponseOnWriteEnabled=false` suppresses the document body Cosmos otherwise returns on
 every write. DynamoDB's `PutItem` returns no item, so leaving it enabled charges Cosmos for
 bandwidth its counterpart never pays.

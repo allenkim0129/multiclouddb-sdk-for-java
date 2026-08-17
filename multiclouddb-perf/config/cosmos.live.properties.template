@@ -5,7 +5,11 @@ multiclouddb.connection.key=<primary-key>
 multiclouddb.connection.connectionMode=gateway
 # Fair HTTP/1.1 transport profile: match Dynamo maxConnections.
 multiclouddb.connection.gatewayMaxConnectionPoolSize=64
+# HTTP/2 is now the provider default; set false explicitly for HTTP/1.1 parity with Dynamo.
 multiclouddb.connection.gatewayHttp2Enabled=false
+# Gateway V2 / thin client. Requires gatewayHttp2Enabled=true, so it is off in the
+# HTTP/1.1 parity profile. Enable both for a Cosmos-optimised run.
+multiclouddb.connection.thinClientEnabled=false
 # Dynamo's PutItem returns no item; suppress the Cosmos write payload to match.
 multiclouddb.connection.contentResponseOnWriteEnabled=false
 # For a separate Cosmos HTTP/2 optimization run, set true and tune these:

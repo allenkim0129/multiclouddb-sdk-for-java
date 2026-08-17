@@ -12,11 +12,31 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Gateway transport controls: `gatewayMaxConnectionPoolSize`, `gatewayHttp2Enabled`,
   `gatewayHttp2MinConnectionPoolSize`, `gatewayHttp2MaxConnectionPoolSize`, and
   `gatewayHttp2MaxConcurrentStreams`. Gateway-only settings fail fast in Direct/RNTBD mode.
+- `thinClientEnabled` connection config key (default `false`) selecting Gateway V2, the Cosmos
+  thin-client data plane. Requires `connectionMode=gateway` and `gatewayHttp2Enabled`; both are
+  validated and rejected rather than silently ignored. Because the Cosmos SDK offers no
+  per-client API for Gateway V2, this sets the JVM-wide `COSMOS.THINCLIENT_ENABLED` system
+  property — an operator-supplied `-D` value is never overwritten. Left off by default because
+  azure-cosmos 4.81.0 has no automatic Gateway V1 fallback (that arrives in 4.82.0).
 - `contentResponseOnWriteEnabled` connection config key (default `true`, unchanged behaviour).
   Set `false` to suppress the document body in `create`/`update`/`upsert` responses, trimming
   write latency and bandwidth. Per-operation diagnostics (request charge, activity id, ETag,
   status code) are still populated, and reads are unaffected. `false` is the transport-equivalent
   setting when benchmarking against DynamoDB, whose `PutItem` returns no item by default.
+
+### Changed
+
+- **Gateway HTTP/2 is now enabled by default.** Previously Gateway mode used HTTP/1.1 unless
+  `gatewayHttp2Enabled=true` was set. HTTP/2 multiplexes concurrent requests over a single
+  connection, removing HTTP/1.1 head-of-line blocking and per-request connection acquisition, and
+  it is a prerequisite for Gateway V2. The adapter now always emits an explicit
+  `Http2ConnectionConfig`, so the effective protocol follows this configuration rather than the
+  SDK's `COSMOS.HTTP2_ENABLED` system property. Set `gatewayHttp2Enabled=false` to restore
+  HTTP/1.1 — required for transport-equivalent benchmarks against HTTP/1.1-only clients.
+- Upgraded `azure-cosmos` from 4.78.0 to 4.81.0. This promotes `Http2ConnectionConfig` from
+  `@Beta` to GA — the adapter's HTTP/2 controls were previously built on a Beta API — and picks
+  up HTTP/2 PING keepalive for gateway endpoints plus Gateway V1/V2 `ReadConsistencyStrategy`
+  support. No breaking changes across 4.79–4.81.
 
 ## [0.1.0-beta.2] — 2026-06-17
 

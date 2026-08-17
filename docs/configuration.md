@@ -50,11 +50,12 @@ Select a provider and supply its connection and auth properties.
 | `multiclouddb.connection.key` | Master key (omit for Azure Identity auth) |
 | `multiclouddb.connection.connectionMode` | `gateway` (default) or `direct` |
 | `multiclouddb.connection.gatewayMaxConnectionPoolSize` | Gateway HTTP/1.1 maximum connection-pool size (optional, positive integer) |
-| `multiclouddb.connection.gatewayHttp2Enabled` | Enables Gateway HTTP/2 (`true`/`false`; optional, Gateway mode only) |
+| `multiclouddb.connection.gatewayHttp2Enabled` | Enables Gateway HTTP/2 (`true`/`false`; **default `true`**, Gateway mode only) |
 | `multiclouddb.connection.gatewayHttp2MinConnectionPoolSize` | Gateway HTTP/2 minimum connection-pool size (optional) |
 | `multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize` | Gateway HTTP/2 maximum connection-pool size (optional) |
 | `multiclouddb.connection.gatewayHttp2MaxConcurrentStreams` | Maximum concurrent HTTP/2 streams per connection (optional) |
 | `multiclouddb.connection.tenantId` | Azure AD tenant ID (optional, for Entra ID) |
+| `multiclouddb.connection.thinClientEnabled` | Routes data-plane traffic through Gateway V2 / thin client (`true`/`false`; default `false`) |
 | `multiclouddb.connection.contentResponseOnWriteEnabled` | Return the document body in write responses (`true`/`false`; default `true`) |
 | `multiclouddb.connection.consistencyLevel` | Read consistency override (optional — see below) |
 
@@ -78,14 +79,42 @@ Select a provider and supply its connection and auth properties.
 - **Direct** - TCP-based direct connectivity. Better performance for production workloads.
 
 Gateway transport settings are rejected when `connectionMode=direct` rather than silently ignored.
-For transport-equivalent benchmarks against DynamoDB's synchronous client, use Gateway HTTP/1.1
-with the same pool size, for example:
+
+**HTTP/2 is enabled by default** in Gateway mode. It multiplexes concurrent requests over one
+connection, removing the head-of-line blocking and per-request connection acquisition of
+HTTP/1.1. To force HTTP/1.1 — for example for a transport-equivalent benchmark against
+DynamoDB's HTTP/1.1 synchronous client — set it explicitly:
 
 ```properties
 multiclouddb.connection.connectionMode=gateway
 multiclouddb.connection.gatewayMaxConnectionPoolSize=64
 multiclouddb.connection.gatewayHttp2Enabled=false
 ```
+
+### Gateway V2 (thin client)
+
+Gateway V2, also called the *thin client*, is a leaner data-plane proxy than the classic compute
+gateway (Gateway V1). It forwards requests over HTTP/2 with far less per-request work, cutting
+latency without moving to Direct/RNTBD mode.
+
+```properties
+multiclouddb.connection.connectionMode=gateway
+multiclouddb.connection.gatewayHttp2Enabled=true
+multiclouddb.connection.thinClientEnabled=true
+```
+
+Requires Gateway mode and HTTP/2; both are validated and rejected rather than silently ignored.
+
+!!! warning "Opt-in, and JVM-wide"
+
+    `thinClientEnabled` defaults to `false`. The Cosmos Java SDK exposes no per-client builder
+    API for Gateway V2 — it is selected by the JVM-wide `COSMOS.THINCLIENT_ENABLED` system
+    property, so enabling it affects **every** Cosmos client in the process. An operator-supplied
+    `-DCOSMOS.THINCLIENT_ENABLED` always wins and is never overwritten.
+
+    Automatic fallback to Gateway V1 behind an HTTP/2 connectivity probe is **not** in
+    azure-cosmos 4.81.0 (it lands in 4.82.0), so an account or region without thin-client
+    support has no safety net. Verify the path before enabling it in production.
 
 ### Write Response Payload
 

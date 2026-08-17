@@ -67,9 +67,15 @@ Cosmos returns the stored document on every write by default while DynamoDB's `P
 no item, so `contentResponseOnWriteEnabled=false` removes a payload asymmetry the portable API
 never exposes to callers.
 
+Cosmos Gateway HTTP/2 is **on by default** as of the current provider, so the HTTP/1.1
+parity profile must opt out explicitly with `gatewayHttp2Enabled=false`. Omitting it no longer
+yields HTTP/1.1 and would silently compare HTTP/2 against Dynamo's HTTP/1.1 client.
+
 Cosmos Gateway HTTP/2 is a separate optimization profile configured with
 `gatewayHttp2Enabled`, `gatewayHttp2MinConnectionPoolSize`,
-`gatewayHttp2MaxConnectionPoolSize`, and `gatewayHttp2MaxConcurrentStreams`. Cosmos Direct mode
+`gatewayHttp2MaxConnectionPoolSize`, and `gatewayHttp2MaxConcurrentStreams`. Gateway V2
+(thin client, `thinClientEnabled=true`) is a third profile: it keeps HTTP/2 but routes the data
+plane through the leaner thin-client proxy instead of the compute gateway. Cosmos Direct mode
 uses RNTBD rather than HTTP and is also reported separately. Reports record the effective
 transport profile so results with different protocols or pools are not silently compared.
 

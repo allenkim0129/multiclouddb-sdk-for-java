@@ -52,7 +52,18 @@ public final class CosmosConstants {
     /** Gateway HTTP/1.1 maximum connection-pool size. */
     public static final String CONFIG_GATEWAY_MAX_CONNECTION_POOL_SIZE = "gatewayMaxConnectionPoolSize";
 
-    /** Enables the Cosmos Gateway HTTP/2 transport. */
+    /**
+     * Enables the Cosmos Gateway HTTP/2 transport. Defaults to {@code true}.
+     * <p>
+     * HTTP/2 multiplexes concurrent requests over a single connection, removing the
+     * head-of-line blocking and per-request connection acquisition of HTTP/1.1. It is
+     * also a prerequisite for Gateway V2 — see
+     * {@link #CONFIG_THIN_CLIENT_ENABLED}.
+     * <p>
+     * Set to {@code false} to force HTTP/1.1, for example when comparing against a
+     * provider whose client is HTTP/1.1-only, or when an intermediary proxy does not
+     * negotiate HTTP/2.
+     */
     public static final String CONFIG_GATEWAY_HTTP2_ENABLED = "gatewayHttp2Enabled";
 
     /** Gateway HTTP/2 maximum connection-pool size. */
@@ -66,6 +77,39 @@ public final class CosmosConstants {
     /** Maximum concurrent HTTP/2 streams per connection. */
     public static final String CONFIG_GATEWAY_HTTP2_MAX_CONCURRENT_STREAMS =
             "gatewayHttp2MaxConcurrentStreams";
+
+    /**
+     * Routes data-plane traffic through the Cosmos DB thin client, also known as
+     * Gateway V2. Defaults to {@code false}.
+     * <p>
+     * Gateway V2 is a leaner data-plane proxy than the classic compute gateway
+     * (Gateway V1): it forwards requests over HTTP/2 with substantially less
+     * per-request work, which lowers latency without requiring Direct/RNTBD mode.
+     * <p>
+     * Requires {@code connectionMode=gateway} and
+     * {@link #CONFIG_GATEWAY_HTTP2_ENABLED} — both are validated at construction
+     * and rejected rather than silently ignored.
+     * <p>
+     * <b>Why this defaults to {@code false}.</b> The Cosmos Java SDK exposes no
+     * per-client builder API for Gateway V2; it is selected by the JVM-wide
+     * {@code COSMOS.THINCLIENT_ENABLED} system property. Automatic fallback to
+     * Gateway V1 behind an HTTP/2 connectivity probe is not present in
+     * azure-cosmos 4.81.0 — it arrives in 4.82.0 — so an account or region without
+     * thin-client support has no safety net today. Opt in explicitly once you have
+     * verified the path, and revisit the default when 4.82.0 is released.
+     * <p>
+     * Because the underlying switch is a system property, enabling it affects every
+     * Cosmos client in the JVM. An operator-supplied
+     * {@code -DCOSMOS.THINCLIENT_ENABLED} always wins and is never overwritten.
+     */
+    public static final String CONFIG_THIN_CLIENT_ENABLED = "thinClientEnabled";
+
+    /**
+     * JVM system property the Cosmos SDK reads to select Gateway V2 (thin client).
+     * Read via {@code System.getProperty} on each call, so it may be set before any
+     * client is built.
+     */
+    public static final String THIN_CLIENT_SYSTEM_PROPERTY = "COSMOS.THINCLIENT_ENABLED";
 
     // ── Connection mode values ────────────────────────────────────────────────
 

@@ -117,6 +117,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             builder.directMode();
         } else {
             builder.gatewayMode(gatewayConnectionConfig(config));
+            applyThinClientSelection(config);
         }
 
         String consistencyStr = config.connection().get(CosmosConstants.CONFIG_CONSISTENCY_LEVEL);
@@ -155,33 +156,81 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             gateway.setMaxConnectionPoolSize(maxConnections);
         }
 
-        Boolean http2Enabled = strictBoolean(
-                config.connection().get(CosmosConstants.CONFIG_GATEWAY_HTTP2_ENABLED),
-                CosmosConstants.CONFIG_GATEWAY_HTTP2_ENABLED);
         Integer http2MaxConnections = positiveInt(config,
                 CosmosConstants.CONFIG_GATEWAY_HTTP2_MAX_CONNECTION_POOL_SIZE);
         Integer http2MinConnections = positiveInt(config,
                 CosmosConstants.CONFIG_GATEWAY_HTTP2_MIN_CONNECTION_POOL_SIZE);
         Integer http2MaxStreams = positiveInt(config,
                 CosmosConstants.CONFIG_GATEWAY_HTTP2_MAX_CONCURRENT_STREAMS);
-        if (http2Enabled != null || http2MaxConnections != null
-                || http2MinConnections != null || http2MaxStreams != null) {
-            Http2ConnectionConfig http2 = new Http2ConnectionConfig();
-            if (http2Enabled != null) {
-                http2.setEnabled(http2Enabled);
-            }
-            if (http2MaxConnections != null) {
-                http2.setMaxConnectionPoolSize(http2MaxConnections);
-            }
-            if (http2MinConnections != null) {
-                http2.setMinConnectionPoolSize(http2MinConnections);
-            }
-            if (http2MaxStreams != null) {
-                http2.setMaxConcurrentStreams(http2MaxStreams);
-            }
-            gateway.setHttp2ConnectionConfig(http2);
+
+        // Always emit an explicit Http2ConnectionConfig: HTTP/2 is on by default, and
+        // relying on the SDK's own default would leave the effective protocol dependent
+        // on the COSMOS.HTTP2_ENABLED system property rather than this configuration.
+        Http2ConnectionConfig http2 = new Http2ConnectionConfig();
+        http2.setEnabled(http2Enabled(config));
+        if (http2MaxConnections != null) {
+            http2.setMaxConnectionPoolSize(http2MaxConnections);
         }
+        if (http2MinConnections != null) {
+            http2.setMinConnectionPoolSize(http2MinConnections);
+        }
+        if (http2MaxStreams != null) {
+            http2.setMaxConcurrentStreams(http2MaxStreams);
+        }
+        gateway.setHttp2ConnectionConfig(http2);
         return gateway;
+    }
+
+    /**
+     * Returns whether Gateway HTTP/2 is effectively enabled, applying the
+     * default-on behaviour when the key is absent.
+     */
+    static boolean http2Enabled(MulticloudDbClientConfig config) {
+        Boolean explicit = strictBoolean(
+                config.connection().get(CosmosConstants.CONFIG_GATEWAY_HTTP2_ENABLED),
+                CosmosConstants.CONFIG_GATEWAY_HTTP2_ENABLED);
+        return explicit == null || explicit;
+    }
+
+    /**
+     * Selects Gateway V2 (thin client) when requested.
+     * <p>
+     * The Cosmos SDK has no per-client builder API for Gateway V2, so the switch is
+     * the JVM-wide {@code COSMOS.THINCLIENT_ENABLED} system property. Two guards keep
+     * that from becoming a hidden global side effect:
+     * <ul>
+     *   <li>An operator-supplied value is authoritative and is never overwritten —
+     *       a {@code -D} flag set at launch wins over configuration.</li>
+     *   <li>The property is only ever set when explicitly requested; leaving
+     *       {@code thinClientEnabled} unset writes nothing.</li>
+     * </ul>
+     * Gateway V2 requires HTTP/2, so requesting it with HTTP/2 disabled is rejected
+     * rather than silently downgraded to Gateway V1.
+     */
+    private static void applyThinClientSelection(MulticloudDbClientConfig config) {
+        Boolean requested = strictBoolean(
+                config.connection().get(CosmosConstants.CONFIG_THIN_CLIENT_ENABLED),
+                CosmosConstants.CONFIG_THIN_CLIENT_ENABLED);
+        if (requested == null || !requested) {
+            return;
+        }
+        if (!http2Enabled(config)) {
+            throw new IllegalArgumentException("connection."
+                    + CosmosConstants.CONFIG_THIN_CLIENT_ENABLED
+                    + " requires connection." + CosmosConstants.CONFIG_GATEWAY_HTTP2_ENABLED
+                    + "=true; Gateway V2 is only reachable over HTTP/2");
+        }
+        String existing = System.getProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY);
+        if (existing != null && !existing.isBlank()) {
+            LOG.info("Cosmos Gateway V2 (thin client) left at operator-supplied -D{}={}",
+                    CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY, existing);
+            return;
+        }
+        System.setProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY, "true");
+        LOG.warn("Cosmos Gateway V2 (thin client) enabled via {} — this is JVM-wide and "
+                + "affects every Cosmos client in this process. azure-cosmos 4.81.0 has no "
+                + "automatic fallback to Gateway V1, so verify the account and region support it.",
+                CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY);
     }
 
     private static void rejectGatewayTransportSettings(MulticloudDbClientConfig config) {
@@ -190,7 +239,8 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
                 CosmosConstants.CONFIG_GATEWAY_HTTP2_ENABLED,
                 CosmosConstants.CONFIG_GATEWAY_HTTP2_MAX_CONNECTION_POOL_SIZE,
                 CosmosConstants.CONFIG_GATEWAY_HTTP2_MIN_CONNECTION_POOL_SIZE,
-                CosmosConstants.CONFIG_GATEWAY_HTTP2_MAX_CONCURRENT_STREAMS}) {
+                CosmosConstants.CONFIG_GATEWAY_HTTP2_MAX_CONCURRENT_STREAMS,
+                CosmosConstants.CONFIG_THIN_CLIENT_ENABLED}) {
             if (config.connection().containsKey(key)) {
                 throw new IllegalArgumentException(
                         "connection." + key + " applies only when connectionMode=gateway");
