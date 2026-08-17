@@ -38,6 +38,7 @@ final class HtmlReport {
         b.append("<p class=\"note\">Fair comparisons require the same offered load, workload profile, client placement, and deterministic capacity. Provider capacity units are not equivalent.</p>");
 
         envTable(b, env, providers);
+        whatWasTested(b, stats);
         charts(b, stats, providers);
         perProviderTables(b, stats, providers, meta.invalidThrottleRate());
         comparisonTables(b, stats, providers);
@@ -81,7 +82,7 @@ final class HtmlReport {
     }
 
     private static void charts(StringBuilder b, List<StatRow> stats, List<String> providers) {
-        b.append("<h2>2. At a glance</h2>");
+        b.append("<h2>3. At a glance</h2>");
         b.append("<p class=\"note\">Provider colors are consistent across charts. Compare bars only within the same metric; provider cost units are intentionally not charted together.</p>");
         Set<String> panels = new LinkedHashSet<>();
         for (StatRow row : stats) {
@@ -203,12 +204,57 @@ final class HtmlReport {
         };
     }
 
+    private static void whatWasTested(StringBuilder b, List<StatRow> stats) {
+        b.append("<h2>2. What was tested</h2>");
+        b.append("<p class=\"note\">Scenario identifiers are labels for a measurement profile, not "
+                + "for distinct code paths: two scenarios given the same parameters exercise the "
+                + "same work.</p>");
+        b.append("<table><thead><tr><th>Scenario</th><th>Workload</th><th>Operation</th>"
+                + "<th>Partition scope</th><th>Doc size</th><th>Page size</th><th>Threads</th>"
+                + "<th>Measured ops</th></tr></thead><tbody>");
+        Map<String, Scenarios.Profile> profiles = Scenarios.profiles(stats);
+        for (Scenarios.Profile profile : profiles.values()) {
+            b.append("<tr><td>").append(Reports.esc(profile.scenario()))
+                    .append("</td><td>").append(Reports.esc(profile.workload()))
+                    .append("</td><td>").append(Reports.esc(profile.operation()))
+                    .append("</td><td>").append(Reports.esc(profile.scope()))
+                    .append("</td><td>").append(Reports.esc(Scenarios.docSizeLabel(profile.docSize())))
+                    .append("</td><td>").append(profile.pageSize() == null ? "&mdash;" : profile.pageSize())
+                    .append("</td><td>").append(profile.threads())
+                    .append("</td><td>").append(profile.count())
+                    .append("</td></tr>");
+        }
+        b.append("</tbody></table>");
+        b.append("<p class=\"note\">").append(Reports.esc(Scenarios.columnNote())).append("</p>");
+
+        b.append("<ul>");
+        for (Map.Entry<String, String> entry : Scenarios.purposes(profiles).entrySet()) {
+            b.append("<li><strong>").append(Reports.esc(entry.getKey())).append("</strong> &mdash; ")
+                    .append(Reports.esc(entry.getValue())).append("</li>");
+        }
+        b.append("</ul>");
+        String duplicates = Scenarios.duplicateScenarioNote(profiles);
+        if (duplicates != null) {
+            b.append("<p class=\"note\">").append(Reports.esc(duplicates)).append("</p>");
+        }
+
+        b.append("<h3>How each measurement is taken</h3><ul>");
+        for (String note : Scenarios.methodology()) {
+            b.append("<li>").append(Reports.esc(note)).append("</li>");
+        }
+        b.append("</ul>");
+        if (profiles.values().stream().anyMatch(pr -> Scenarios.isQuery(pr.scenario()))) {
+            b.append("<p class=\"note\">").append(Reports.esc(Scenarios.queryOrderingNote()))
+                    .append("</p>");
+        }
+    }
+
     private static void perProviderTables(StringBuilder b, List<StatRow> stats, List<String> providers,
                                           double invalidThrottleRate) {
-        b.append("<h2>3. Per-provider detail</h2>");
+        b.append("<h2>4. Per-provider detail</h2>");
         for (String provider : providers) {
             b.append("<h3>").append(Reports.esc(provider)).append("</h3>");
-            b.append("<table><thead><tr><th>Workload</th><th>Operation</th><th>Scenario</th><th>Threads</th><th>Target ops/s</th><th>Offered ops/s</th><th>Achieved ops/s</th><th>Achieved/Offered</th><th>p50 ms</th><th>p90 ms</th><th>p99 ms</th><th>svc p50 ms</th><th>svc p99 ms</th><th>Cost</th><th>Consumed units/s</th><th>Capacity util</th><th>Throttled</th><th>Retries</th><th>Valid</th></tr></thead><tbody>");
+            b.append("<table><thead><tr><th>Workload</th><th>Operation</th><th>Scenario</th><th>Scope</th><th>Threads</th><th>Target ops/s</th><th>Offered ops/s</th><th>Achieved ops/s</th><th>Achieved/Offered</th><th>p50 ms</th><th>p90 ms</th><th>p99 ms</th><th>svc p50 ms</th><th>svc p99 ms</th><th>Cost</th><th>Consumed units/s</th><th>Capacity util</th><th>Throttled</th><th>Retries</th><th>Valid</th></tr></thead><tbody>");
             for (StatRow row : stats) {
                 if (!provider.equals(row.provider())) {
                     continue;
@@ -216,6 +262,7 @@ final class HtmlReport {
                 b.append("<tr><td>").append(Reports.esc(row.workload()))
                         .append("</td><td>").append(Reports.esc(row.operation()))
                         .append("</td><td>").append(Reports.esc(row.scenario()))
+                        .append("</td><td>").append(Reports.esc(Scenarios.scopeColumn(row.variant())))
                         .append("</td><td>").append(row.threads())
                         .append("</td><td>").append(Reports.esc(Reports.numOrDash(row.targetOpsPerSec())))
                         .append("</td><td>").append(Reports.num(row.offeredOpsSec()))
@@ -239,7 +286,7 @@ final class HtmlReport {
     }
 
     private static void comparisonTables(StringBuilder b, List<StatRow> stats, List<String> providers) {
-        b.append("<h2>4. Cross-provider comparison</h2>");
+        b.append("<h2>5. Cross-provider comparison</h2>");
         b.append("<p class=\"note\">p99 is raw wall-clock latency from this client. Service-time p99 subtracts the measured endpoint TCP RTT, so a provider is not penalised purely for being further from the test host. Only a colocated client per cloud removes network distance entirely.</p>");
         comparisonTable(b, "p99 latency (lower is better)", stats, providers, true,
                 row -> row.p99(), false);
@@ -255,7 +302,7 @@ final class HtmlReport {
                                         List<String> providers, boolean lowerBetter,
                                         Metric metric, boolean skipMissingMetric) {
         b.append("<h3>").append(Reports.esc(title)).append("</h3>");
-        b.append("<table><thead><tr><th>Workload</th><th>Operation</th><th>Scenario</th><th>Threads</th>");
+        b.append("<table><thead><tr><th>Workload</th><th>Operation</th><th>Scenario</th><th>Scope</th><th>Threads</th>");
         for (String provider : providers) {
             b.append("<th>").append(Reports.esc(provider)).append("</th>");
         }
@@ -268,7 +315,8 @@ final class HtmlReport {
             if (skipMissingMetric && value < 0.0) {
                 continue;
             }
-            String key = row.workload() + "\u0001" + row.operation() + "\u0001" + row.scenario() + "\u0001" + row.threads();
+            String key = row.workload() + "\u0001" + row.operation() + "\u0001" + row.scenario()
+                    + "\u0001" + row.variant() + "\u0001" + row.threads();
             grouped.computeIfAbsent(key, ignored -> new LinkedHashMap<>()).put(row.provider(), value);
             sample.putIfAbsent(key, row);
         }
@@ -278,6 +326,7 @@ final class HtmlReport {
             b.append("<tr><td>").append(Reports.esc(row.workload()))
                     .append("</td><td>").append(Reports.esc(row.operation()))
                     .append("</td><td>").append(Reports.esc(row.scenario()))
+                    .append("</td><td>").append(Reports.esc(Scenarios.scopeColumn(row.variant())))
                     .append("</td><td>").append(row.threads()).append("</td>");
             for (String provider : providers) {
                 Double value = entry.getValue().get(provider);
@@ -296,15 +345,16 @@ final class HtmlReport {
 
     private static void parityAndScaling(StringBuilder b, List<StatRow> stats,
                                          List<String> providers, ReportMeta meta) {
-        b.append("<h2>5. Thread-scaling &amp; migration parity</h2>");
+        b.append("<h2>6. Thread-scaling &amp; migration parity</h2>");
         List<ThreadAnalysis.ParityRow> parity = ThreadAnalysis.parity(stats, providers, meta.baseline());
         if (!parity.isEmpty()) {
             b.append("<h3>Migration parity vs baseline <code>").append(Reports.esc(meta.baseline())).append("</code></h3>");
-            b.append("<table><thead><tr><th>Workload</th><th>Operation</th><th>Scenario</th><th>Threads</th><th>Baseline ops/s</th><th>Baseline p99</th><th>Verdict</th></tr></thead><tbody>");
+            b.append("<table><thead><tr><th>Workload</th><th>Operation</th><th>Scenario</th><th>Scope</th><th>Threads</th><th>Baseline ops/s</th><th>Baseline p99</th><th>Verdict</th></tr></thead><tbody>");
             for (ThreadAnalysis.ParityRow row : parity) {
                 b.append("<tr><td>").append(Reports.esc(row.workload()))
                         .append("</td><td>").append(Reports.esc(row.operation()))
                         .append("</td><td>").append(Reports.esc(row.scenario()))
+                        .append("</td><td>").append(Reports.esc(Scenarios.scopeColumn(row.variant())))
                         .append("</td><td>").append(row.threads())
                         .append("</td><td>").append(Reports.num(row.baseTput()))
                         .append("</td><td>").append(Reports.num(row.baseP99()))
@@ -319,12 +369,13 @@ final class HtmlReport {
             return;
         }
         b.append("<h3>Thread scaling</h3>");
-        b.append("<table><thead><tr><th>Provider</th><th>Workload</th><th>Operation</th><th>Scenario</th><th>Peak threads</th><th>Scale</th></tr></thead><tbody>");
+        b.append("<table><thead><tr><th>Provider</th><th>Workload</th><th>Operation</th><th>Scenario</th><th>Scope</th><th>Peak threads</th><th>Scale</th></tr></thead><tbody>");
         for (ThreadAnalysis.ScalingRow row : scaling) {
             b.append("<tr><td>").append(Reports.esc(row.provider()))
                     .append("</td><td>").append(Reports.esc(row.workload()))
                     .append("</td><td>").append(Reports.esc(row.operation()))
                     .append("</td><td>").append(Reports.esc(row.scenario()))
+                    .append("</td><td>").append(Reports.esc(Scenarios.scopeColumn(row.variant())))
                     .append("</td><td>").append(row.peakThreads())
                     .append("</td><td>").append(String.format(Locale.ROOT, "%.2fx", row.scalingFactor()))
                     .append("</td></tr>");

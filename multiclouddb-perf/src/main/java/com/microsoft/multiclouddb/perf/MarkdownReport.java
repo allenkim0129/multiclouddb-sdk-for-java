@@ -33,6 +33,7 @@ final class MarkdownReport {
 
         List<String> providers = Reports.providerOrder(stats);
         environment(b, env, providers);
+        whatWasTested(b, stats);
         perProvider(b, stats, providers, meta.invalidThrottleRate());
         crossProvider(b, stats, providers);
         parityAndScaling(b, stats, providers, meta);
@@ -74,13 +75,52 @@ final class MarkdownReport {
         b.append('\n');
     }
 
+    private static void whatWasTested(StringBuilder b, List<StatRow> stats) {
+        b.append("## 2. What was tested\n\n");
+        b.append("Scenario identifiers are labels for a measurement profile, not for distinct "
+                + "code paths: two scenarios given the same parameters exercise the same work.\n\n");
+
+        b.append("| Scenario | Workload | Operation | Partition scope | Doc size | Page size | Threads | Measured ops |\n");
+        b.append("|---|---|---|---|---|---|---|---|\n");
+        Map<String, Scenarios.Profile> profiles = Scenarios.profiles(stats);
+        for (Scenarios.Profile profile : profiles.values()) {
+            b.append("| ").append(profile.scenario())
+                    .append(" | ").append(profile.workload())
+                    .append(" | ").append(profile.operation())
+                    .append(" | ").append(profile.scope())
+                    .append(" | ").append(Scenarios.docSizeLabel(profile.docSize()))
+                    .append(" | ").append(profile.pageSize() == null ? "—" : profile.pageSize())
+                    .append(" | ").append(profile.threads())
+                    .append(" | ").append(profile.count()).append(" |\n");
+        }
+        b.append('\n').append(Scenarios.columnNote()).append("\n\n");
+
+        for (Map.Entry<String, String> entry : Scenarios.purposes(profiles).entrySet()) {
+            b.append("- **").append(entry.getKey()).append("** — ").append(entry.getValue()).append('\n');
+        }
+        String duplicates = Scenarios.duplicateScenarioNote(profiles);
+        if (duplicates != null) {
+            b.append('\n').append("> ").append(duplicates).append('\n');
+        }
+        b.append('\n');
+
+        b.append("### How each measurement is taken\n\n");
+        for (String note : Scenarios.methodology()) {
+            b.append("- ").append(note).append('\n');
+        }
+        if (profiles.values().stream().anyMatch(pr -> Scenarios.isQuery(pr.scenario()))) {
+            b.append('\n').append("> ").append(Scenarios.queryOrderingNote()).append('\n');
+        }
+        b.append('\n');
+    }
+
     private static void perProvider(StringBuilder b, List<StatRow> stats, List<String> providers,
                                     double invalidThrottleRate) {
-        b.append("## 2. Per-provider detail\n\n");
+        b.append("## 3. Per-provider detail\n\n");
         for (String provider : providers) {
             b.append("### ").append(provider).append("\n\n");
-            b.append("| Workload | Operation | Scenario | Threads | Target ops/s | Offered ops/s | Achieved ops/s | Achieved/Offered | p50 ms | p90 ms | p99 ms | svc p50 ms | svc p99 ms | Cost | Consumed units/s | Capacity util | Throttled | Retries | Valid |\n");
-            b.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+            b.append("| Workload | Operation | Scenario | Scope | Threads | Target ops/s | Offered ops/s | Achieved ops/s | Achieved/Offered | p50 ms | p90 ms | p99 ms | svc p50 ms | svc p99 ms | Cost | Consumed units/s | Capacity util | Throttled | Retries | Valid |\n");
+            b.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
             for (StatRow row : stats) {
                 if (!provider.equals(row.provider())) {
                     continue;
@@ -88,6 +128,7 @@ final class MarkdownReport {
                 b.append("| ").append(row.workload())
                         .append(" | ").append(row.operation())
                         .append(" | ").append(row.scenario())
+                        .append(" | ").append(Scenarios.scopeColumn(row.variant()))
                         .append(" | ").append(row.threads())
                         .append(" | ").append(Reports.numOrDash(row.targetOpsPerSec()))
                         .append(" | ").append(Reports.num(row.offeredOpsSec()))
@@ -110,7 +151,7 @@ final class MarkdownReport {
     }
 
     private static void crossProvider(StringBuilder b, List<StatRow> stats, List<String> providers) {
-        b.append("## 3. Cross-provider comparison\n\n");
+        b.append("## 4. Cross-provider comparison\n\n");
         b.append("> `p99` is raw wall-clock latency from this client. `service-time p99` subtracts the measured "
                 + "endpoint TCP RTT, so a provider is not penalised purely for being further from the test host. "
                 + "Only a colocated client per cloud removes network distance entirely.\n\n");
@@ -128,12 +169,12 @@ final class MarkdownReport {
                                         List<String> providers, boolean lowerBetter,
                                         Metric metric, boolean skipMissingMetric) {
         b.append("### ").append(title).append("\n\n");
-        b.append("| Workload | Operation | Scenario | Threads | ");
+        b.append("| Workload | Operation | Scenario | Scope | Threads | ");
         for (String provider : providers) {
             b.append(provider).append(" | ");
         }
         b.append("Best |\n");
-        b.append("|---|---|---|---|");
+        b.append("|---|---|---|---|---|");
         for (int i = 0; i < providers.size(); i++) {
             b.append("---|");
         }
@@ -146,7 +187,8 @@ final class MarkdownReport {
             if (skipMissingMetric && value < 0.0) {
                 continue;
             }
-            String key = row.workload() + "\u0001" + row.operation() + "\u0001" + row.scenario() + "\u0001" + row.threads();
+            String key = row.workload() + "\u0001" + row.operation() + "\u0001" + row.scenario()
+                    + "\u0001" + row.variant() + "\u0001" + row.threads();
             grouped.computeIfAbsent(key, ignored -> new LinkedHashMap<>()).put(row.provider(), value);
             sample.putIfAbsent(key, row);
         }
@@ -156,6 +198,7 @@ final class MarkdownReport {
             b.append("| ").append(row.workload())
                     .append(" | ").append(row.operation())
                     .append(" | ").append(row.scenario())
+                    .append(" | ").append(Scenarios.scopeColumn(row.variant()))
                     .append(" | ").append(row.threads()).append(" | ");
             for (String provider : providers) {
                 Double value = entry.getValue().get(provider);
@@ -174,16 +217,17 @@ final class MarkdownReport {
 
     private static void parityAndScaling(StringBuilder b, List<StatRow> stats,
                                          List<String> providers, ReportMeta meta) {
-        b.append("## 4. Thread-scaling & migration parity\n\n");
+        b.append("## 5. Thread-scaling & migration parity\n\n");
         List<ThreadAnalysis.ParityRow> parity = ThreadAnalysis.parity(stats, providers, meta.baseline());
         if (!parity.isEmpty()) {
             b.append("### Migration parity vs baseline `").append(meta.baseline()).append("`\n\n");
-            b.append("| Workload | Operation | Scenario | Threads | Baseline ops/s | Baseline p99 | Verdict |\n");
-            b.append("|---|---|---|---|---|---|---|\n");
+            b.append("| Workload | Operation | Scenario | Scope | Threads | Baseline ops/s | Baseline p99 | Verdict |\n");
+            b.append("|---|---|---|---|---|---|---|---|\n");
             for (ThreadAnalysis.ParityRow row : parity) {
                 b.append("| ").append(row.workload())
                         .append(" | ").append(row.operation())
                         .append(" | ").append(row.scenario())
+                        .append(" | ").append(Scenarios.scopeColumn(row.variant()))
                         .append(" | ").append(row.threads())
                         .append(" | ").append(Reports.num(row.baseTput()))
                         .append(" | ").append(Reports.num(row.baseP99()))
@@ -197,13 +241,14 @@ final class MarkdownReport {
             return;
         }
         b.append("### Thread scaling\n\n");
-        b.append("| Provider | Workload | Operation | Scenario | Peak threads | Scale |\n");
-        b.append("|---|---|---|---|---|---|\n");
+        b.append("| Provider | Workload | Operation | Scenario | Scope | Peak threads | Scale |\n");
+        b.append("|---|---|---|---|---|---|---|\n");
         for (ThreadAnalysis.ScalingRow row : scaling) {
             b.append("| ").append(row.provider())
                     .append(" | ").append(row.workload())
                     .append(" | ").append(row.operation())
                     .append(" | ").append(row.scenario())
+                    .append(" | ").append(Scenarios.scopeColumn(row.variant()))
                     .append(" | ").append(row.peakThreads())
                     .append(" | ").append(String.format(Locale.ROOT, "%.2fx", row.scalingFactor()))
                     .append(" |\n");

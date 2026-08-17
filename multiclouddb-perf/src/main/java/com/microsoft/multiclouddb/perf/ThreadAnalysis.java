@@ -34,7 +34,7 @@ final class ThreadAnalysis {
     }
 
     /** One matched-concurrency comparison of every target provider against the baseline. */
-    record ParityRow(String operation, String workload, String scenario, int threads,
+    record ParityRow(String operation, String workload, String scenario, String variant, int threads,
                      String baseline, double baseTput, double baseP99,
                      Map<String, Double> targetTput, Map<String, Double> targetP99,
                      boolean pass) {
@@ -42,6 +42,7 @@ final class ThreadAnalysis {
 
     /** Throughput of one provider/operation across the swept thread levels. */
     record ScalingRow(String provider, String operation, String workload, String scenario,
+                      String variant,
                       Map<Integer, Double> tputByThreads, double scalingFactor,
                       int peakThreads) {
     }
@@ -81,10 +82,13 @@ final class ThreadAnalysis {
         if (baseline == null || providers.size() < 2) {
             return List.of();
         }
-        // key = operation \u0001 scenario \u0001 threads -> provider -> row
+        // key = operation \u0001 scenario \u0001 query scope \u0001 threads -> provider -> row.
+        // Query scope belongs in the key: comparing a single-partition baseline against a
+        // cross-partition target would report a migration regression that does not exist.
         Map<String, Map<String, StatRow>> grouped = new LinkedHashMap<>();
         for (StatRow s : stats) {
-            String key = s.operation() + "\u0001" + s.workload() + "\u0001" + s.scenario() + "\u0001" + s.threads();
+            String key = s.operation() + "\u0001" + s.workload() + "\u0001" + s.scenario()
+                    + "\u0001" + s.variant() + "\u0001" + s.threads();
             grouped.computeIfAbsent(key, k -> new LinkedHashMap<>()).put(s.provider(), s);
         }
         List<ParityRow> out = new ArrayList<>();
@@ -115,7 +119,8 @@ final class ThreadAnalysis {
             if (!anyTarget) {
                 continue;
             }
-            out.add(new ParityRow(base.operation(), base.workload(), base.scenario(), base.threads(),
+            out.add(new ParityRow(base.operation(), base.workload(), base.scenario(), base.variant(),
+                    base.threads(),
                     baseline, base.throughputOpsSec(), base.p99(), tgtTput, tgtP99, pass));
         }
         return out;
@@ -126,7 +131,8 @@ final class ThreadAnalysis {
         Map<String, Map<Integer, Double>> grouped = new LinkedHashMap<>();
         Map<String, StatRow> any = new LinkedHashMap<>();
         for (StatRow s : stats) {
-            String key = s.provider() + "\u0001" + s.operation() + "\u0001" + s.workload() + "\u0001" + s.scenario();
+            String key = s.provider() + "\u0001" + s.operation() + "\u0001" + s.workload()
+                    + "\u0001" + s.scenario() + "\u0001" + s.variant();
             grouped.computeIfAbsent(key, k -> new LinkedHashMap<>()).put(s.threads(), s.throughputOpsSec());
             any.putIfAbsent(key, s);
         }
@@ -152,7 +158,7 @@ final class ThreadAnalysis {
                     }
                 }
                 double factor = lowTput > 0 ? peakTput / lowTput : 0;
-                out.add(new ScalingRow(p, s.operation(), s.workload(), s.scenario(),
+                out.add(new ScalingRow(p, s.operation(), s.workload(), s.scenario(), s.variant(),
                         new LinkedHashMap<>(byThreads), factor, peakThreads));
             }
         }

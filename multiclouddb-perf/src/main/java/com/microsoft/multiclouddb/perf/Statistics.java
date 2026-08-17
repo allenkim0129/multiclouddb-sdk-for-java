@@ -112,8 +112,12 @@ final class Statistics {
         validateSingleTransportProfile(rows);
         Map<String, Group> groups = new LinkedHashMap<>();
         for (ResultRow r : rows) {
+            // Query scope is part of the identity of a measurement: a single-partition read and a
+            // cross-partition fan-out are different operations, and averaging them together
+            // produces a blended number that describes neither.
             String key = String.join("\u0001", r.provider(), r.operation(), workloadOrDefault(r.workload(), r.operation()),
-                    r.scenario(), Integer.toString(r.threads()), Integer.toString(r.docSizeBytes()),
+                    r.scenario(), String.valueOf(Scenarios.variant(r.notes())),
+                    Integer.toString(r.threads()), Integer.toString(r.docSizeBytes()),
                     r.pageSize() == null ? "" : Integer.toString(r.pageSize()),
                     r.targetOpsPerSec() == null ? "unbounded" : Double.toString(r.targetOpsPerSec()));
             groups.computeIfAbsent(key, k -> new Group(r)).add(r);
@@ -155,6 +159,7 @@ final class Statistics {
         final String operation;
         final String workload;
         final String scenario;
+        final String variant;
         final int threads;
         final int docSize;
         final Integer pageSize;
@@ -182,6 +187,7 @@ final class Statistics {
             this.operation = r.operation();
             this.workload = workloadOrDefault(r.workload(), r.operation());
             this.scenario = r.scenario();
+            this.variant = Scenarios.variant(r.notes());
             this.threads = r.threads();
             this.docSize = r.docSizeBytes();
             this.pageSize = r.pageSize();
@@ -284,7 +290,7 @@ final class Statistics {
             double achievedOfferedRatio = offeredOpsSec > 0.0 ? throughput / offeredOpsSec : 0.0;
             Double serviceP50 = serviceTime(percentile(lat, 50), endpointRttMs);
             Double serviceP99 = serviceTime(percentile(lat, 99), endpointRttMs);
-            return new StatRow(provider, operation, workload, scenario, threads, docSize, pageSize,
+            return new StatRow(provider, operation, workload, scenario, variant, threads, docSize, pageSize,
                     runIds.size(), count, success,
                     percentile(lat, 50), percentile(lat, 90), percentile(lat, 99),
                     lat.isEmpty() ? 0.0 : lat.get(lat.size() - 1), mean, sd,

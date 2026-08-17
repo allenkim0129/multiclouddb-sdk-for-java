@@ -34,7 +34,7 @@ One row per measured operation. Warmup iterations are never written.
 | `provisioned_capacity` | string | Human-readable probed/config capacity description. |
 | `sdk_version` | string | multiclouddb SDK version under test. |
 | `target_ops_per_sec` | float | Requested offered-load target; blank/0 means unbounded mode. |
-| `notes` | string | Free-form annotations (e.g. scoped query, unsupported capability). |
+| `notes` | string | Free-form annotations. For query rows this is the partition scope, exactly `scoped` or `unscoped`, which the report treats as part of a measurement's identity; other values (e.g. failure text) are ignored for grouping. |
 
 These fields are sufficient to derive offered ops/s, achieved/offered ratio,
 provider-native consumed units/sec, capacity utilization when a numeric limit is

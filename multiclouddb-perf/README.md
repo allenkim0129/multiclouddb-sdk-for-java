@@ -161,6 +161,12 @@ fallback report text and does not control provisioning.
 - Environment metadata including `comparison_region`.
 - Effective transport profile and configured connection pool.
 - Measured endpoint RTT per provider, plus RTT-normalised `svc p50` / `svc p99` service time.
+- A **What was tested** section: every scenario/workload/operation profile that ran, with its
+  partition scope, document size, page size, thread count, and measured operation count, plus
+  what each scenario is for and how the measurement is taken.
+- A **Scope** column separating single-partition from cross-partition queries. These are
+  aggregated as distinct measurements, so a partition-scoped query is never averaged together
+  with a cross-partition fan-out.
 
 ## Offline re-rendering
 
