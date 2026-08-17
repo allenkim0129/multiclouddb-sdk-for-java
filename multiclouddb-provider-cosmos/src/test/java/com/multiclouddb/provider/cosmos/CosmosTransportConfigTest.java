@@ -14,7 +14,10 @@ import org.mockito.MockedConstruction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -111,6 +114,122 @@ class CosmosTransportConfigTest {
     void invalidContentResponseOnWriteFailsFast() {
         assertThrows(IllegalArgumentException.class,
                 () -> new CosmosProviderClient(writeResponseConfig("sometimes")));
+    }
+
+    @Test
+    void http2IsEnabledByDefault() {
+        GatewayConnectionConfig gateway = CosmosProviderClient.gatewayConnectionConfig(baseConfig().build());
+
+        assertNotNull(gateway.getHttp2ConnectionConfig(),
+                "an explicit Http2ConnectionConfig must always be emitted so the effective "
+                        + "protocol follows configuration, not the COSMOS.HTTP2_ENABLED system property");
+        assertEquals(true, gateway.getHttp2ConnectionConfig().isEnabled());
+        assertTrue(CosmosProviderClient.http2Enabled(baseConfig().build()));
+    }
+
+    @Test
+    void thinClientSetsSystemPropertyOnlyWhenRequested() {
+        String original = System.getProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY);
+        System.clearProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY);
+        try (MockedConstruction<CosmosClientBuilder> mocked = mockConstruction(CosmosClientBuilder.class,
+                (mock, ctx) -> stubBuilder(mock))) {
+
+            new CosmosProviderClient(thinClientConfig(null, null)).close();
+            assertNull(System.getProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY),
+                    "an unset thinClientEnabled must not write the JVM-wide property");
+
+            new CosmosProviderClient(thinClientConfig("false", null)).close();
+            assertNull(System.getProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY),
+                    "thinClientEnabled=false must not write the JVM-wide property");
+
+            new CosmosProviderClient(thinClientConfig("true", null)).close();
+            assertEquals("true", System.getProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY));
+        } finally {
+            restore(original);
+        }
+    }
+
+    @Test
+    void operatorSuppliedThinClientPropertyIsNeverOverwritten() {
+        String original = System.getProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY);
+        System.setProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY, "false");
+        try (MockedConstruction<CosmosClientBuilder> mocked = mockConstruction(CosmosClientBuilder.class,
+                (mock, ctx) -> stubBuilder(mock))) {
+
+            new CosmosProviderClient(thinClientConfig("true", null)).close();
+
+            assertEquals("false", System.getProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY),
+                    "an operator -D value must win over configuration");
+        } finally {
+            restore(original);
+        }
+    }
+
+    @Test
+    void thinClientRequiresHttp2() {
+        String original = System.getProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY);
+        System.clearProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY);
+        try (MockedConstruction<CosmosClientBuilder> mocked = mockConstruction(CosmosClientBuilder.class,
+                (mock, ctx) -> stubBuilder(mock))) {
+
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> new CosmosProviderClient(thinClientConfig("true", "false")));
+
+            assertTrue(error.getMessage().contains(CosmosConstants.CONFIG_GATEWAY_HTTP2_ENABLED),
+                    "the failure must name the conflicting key, got: " + error.getMessage());
+            assertNull(System.getProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY),
+                    "a rejected configuration must not leave the JVM-wide property set");
+        } finally {
+            restore(original);
+        }
+    }
+
+    @Test
+    void thinClientIsRejectedInDirectMode() {
+        MulticloudDbClientConfig config = baseConfig()
+                .connection(CosmosConstants.CONFIG_KEY,
+                        "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw==")
+                .connection(CosmosConstants.CONFIG_CONNECTION_MODE, CosmosConstants.CONNECTION_MODE_DIRECT)
+                .connection(CosmosConstants.CONFIG_THIN_CLIENT_ENABLED, "true")
+                .build();
+
+        assertThrows(IllegalArgumentException.class, () -> new CosmosProviderClient(config));
+    }
+
+    @Test
+    void invalidThinClientValueFailsFast() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new CosmosProviderClient(thinClientConfig("maybe", null)));
+    }
+
+    private static void restore(String original) {
+        if (original == null) {
+            System.clearProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY);
+        } else {
+            System.setProperty(CosmosConstants.THIN_CLIENT_SYSTEM_PROPERTY, original);
+        }
+    }
+
+    private static void stubBuilder(CosmosClientBuilder mock) {
+        when(mock.endpoint(anyString())).thenReturn(mock);
+        when(mock.key(anyString())).thenReturn(mock);
+        when(mock.contentResponseOnWriteEnabled(anyBoolean())).thenReturn(mock);
+        when(mock.gatewayMode(any(GatewayConnectionConfig.class))).thenReturn(mock);
+        when(mock.userAgentSuffix(anyString())).thenReturn(mock);
+        when(mock.buildClient()).thenReturn(mock(CosmosClient.class));
+    }
+
+    private static MulticloudDbClientConfig thinClientConfig(String thinClient, String http2) {
+        MulticloudDbClientConfig.Builder builder = baseConfig()
+                .connection(CosmosConstants.CONFIG_KEY,
+                        "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw==");
+        if (thinClient != null) {
+            builder.connection(CosmosConstants.CONFIG_THIN_CLIENT_ENABLED, thinClient);
+        }
+        if (http2 != null) {
+            builder.connection(CosmosConstants.CONFIG_GATEWAY_HTTP2_ENABLED, http2);
+        }
+        return builder.build();
     }
 
     private static MulticloudDbClientConfig writeResponseConfig(String contentResponseOnWrite) {
