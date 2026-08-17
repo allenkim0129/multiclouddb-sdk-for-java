@@ -27,6 +27,20 @@ public final class SpannerCapabilities {
             Capability.EXTENDED_CHANGE_FEED_HISTORY_CAP.withNotes(
                     "Default 24h; configurable up to 7d natively via CREATE CHANGE STREAM ... OPTIONS(retention_period=...). "
                     + "Cost scales with change-data volume × retention."),
+            Capability.PATCH_CAP.withNotes(
+                    "Equivalent atomic patch updates the standard data document envelope in a retryable "
+                    + "read-write transaction. Dynamic top-level fields do not require DDL; only runtime "
+                    + "values compatible with physical columns are mirrored, while null or incompatible "
+                    + "values clear their mirror to typed null. Fractional finite increments use the "
+                    + "envelope, while integral overflow is INVALID_REQUEST."),
+            Capability.NESTED_PATCH_UNSUPPORTED.withNotes(
+                    "Nested JSON traversal is deferred from the v1 compatibility scope. Nested paths "
+                    + "fail fast with UNSUPPORTED_CAPABILITY; replace the whole top-level field with a "
+                    + "SET instead"),
+            Capability.EXACT_FRACTIONAL_INCREMENT_UNSUPPORTED.withNotes(
+                    "fractional INCREMENT is evaluated in IEEE-754 binary64; accumulated results "
+                    + "may differ in the last ulp from DynamoDB's exact decimal arithmetic. "
+                    + "Integral increments remain exact"),
             // Query DSL capabilities
             Capability.PORTABLE_QUERY_EXPRESSION_CAP.withNotes("Portable expression translation to Spanner GoogleSQL"),
             Capability.LIKE_OPERATOR_CAP.withNotes("LIKE operator supported in GoogleSQL"),

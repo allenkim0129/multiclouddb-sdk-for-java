@@ -28,7 +28,7 @@ class CosmosErrorMappingTest {
             "403, AUTHORIZATION_FAILED",
             "404, NOT_FOUND",
             "409, CONFLICT",
-            "412, CONFLICT",
+            "412, NOT_FOUND",
             "429, THROTTLED",
             "449, TRANSIENT_FAILURE",
             "500, TRANSIENT_FAILURE",
@@ -56,6 +56,7 @@ class CosmosErrorMappingTest {
             "401, false",
             "404, false",
             "409, false",
+            "412, false",
             "429, true",
             "449, true",
             "500, true",
@@ -110,6 +111,31 @@ class CosmosErrorMappingTest {
 
         assertEquals("activity-123", result.error().providerDetails().get("requestId"));
         assertEquals("3.5", result.error().providerDetails().get("requestCharge"));
+    }
+
+    @Test
+    @DisplayName("Only a genuine 409 maps to CONFLICT; a failed precondition does not")
+    void onlyResourceConflictMapsToConflict() {
+        // The adapter attaches no If-Match on any operation, so its only
+        // precondition is patch's path-scoped existence predicate. Routing 412 to
+        // CONFLICT would resurrect a category the portable patch contract does not
+        // document, and would do so only on Cosmos.
+        assertEquals(MulticloudDbErrorCategory.NOT_FOUND,
+                CosmosErrorMapper.map(mockCosmosException(412, 0), OperationNames.PATCH)
+                        .error().category(),
+                "412 proves a required path was absent, which the peers report as NOT_FOUND");
+
+        for (int statusCode : new int[] { 400, 401, 403, 404, 412, 429, 449, 500, 502, 503, 418 }) {
+            MulticloudDbException mapped =
+                    CosmosErrorMapper.map(mockCosmosException(statusCode, 0), OperationNames.PATCH);
+            assertNotEquals(MulticloudDbErrorCategory.CONFLICT, mapped.error().category(),
+                    () -> "only 409 may map to CONFLICT, but " + statusCode + " did");
+        }
+
+        assertEquals(MulticloudDbErrorCategory.CONFLICT,
+                CosmosErrorMapper.map(mockCosmosException(409, 0), OperationNames.CREATE)
+                        .error().category(),
+                "409 is a real resource conflict and must keep CONFLICT");
     }
 
     @Test

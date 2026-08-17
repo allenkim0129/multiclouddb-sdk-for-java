@@ -16,8 +16,10 @@ import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
+import com.multiclouddb.api.PatchOperation;
 import com.multiclouddb.api.changefeed.ChangeFeedCursor;
 import com.multiclouddb.api.changefeed.ChangeFeedPage;
+import com.multiclouddb.api.internal.PatchValidator;
 import com.multiclouddb.api.query.TranslatedQuery;
 
 import java.util.ArrayList;
@@ -61,6 +63,85 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      * Upsert (create or replace) a document.
      */
     void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options);
+
+    /**
+     * Validate a PATCH request before an SPI implementation performs any
+     * provider SDK work.
+     * <p>
+     * Provider implementations must invoke this method immediately after their
+     * lifecycle guard in {@link #patch(ResourceAddress, MulticloudDbKey, List,
+     * OperationOptions)}. This applies the same portable list, path, overlap,
+     * reserved-root, numeric-domain, and request-size validation used by the
+     * public client, then checks {@link Capability#PATCH} and (when needed)
+     * {@link Capability#NESTED_PATCH}. It is required because callers can
+     * invoke a provider SPI implementation directly without passing through
+     * {@code DefaultMulticloudDbClient}.
+     * <p>
+     * This is SPI support for provider adapters, not an application entry
+     * point. Application code should call
+     * {@link com.multiclouddb.api.MulticloudDbClient#patch(ResourceAddress,
+     * MulticloudDbKey, List, OperationOptions)} instead.
+     *
+     * @param operations requested operations; must be non-null and non-empty
+     * @throws MulticloudDbException with {@code INVALID_REQUEST} for a portable
+     *         request violation, or {@code UNSUPPORTED_CAPABILITY} when this
+     *         provider does not declare the required PATCH capability
+     */
+    default void validatePatchRequest(List<PatchOperation> operations) {
+        PatchValidator.validate(operations, providerId());
+        CapabilitySet capabilities = capabilities();
+        requirePatchCapability(capabilities, Capability.PATCH, providerId(),
+                "Patch is not supported by provider " + providerId().id());
+        if (PatchValidator.hasNestedPath(operations)) {
+            requirePatchCapability(capabilities, Capability.NESTED_PATCH, providerId(),
+                    "Nested patch paths are not supported by provider " + providerId().id()
+                            + "; patch the top-level field instead");
+        }
+    }
+
+    private static void requirePatchCapability(CapabilitySet capabilities, String capability,
+            ProviderId provider, String message) {
+        if (!capabilities.isSupported(capability)) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    message,
+                    provider,
+                    OperationNames.PATCH,
+                    false,
+                    Map.of("capability", capability)));
+        }
+    }
+
+    /**
+     * Apply field-level modifications to an existing document using a
+     * provider-native primitive or an equivalent atomic provider transaction.
+     * <p>
+     * Implementations must invoke {@link #validatePatchRequest(List)} before
+     * translating or executing this operation. That requirement makes direct
+     * SPI calls observe the same portable validation and capability checks as
+     * the public facade.
+     * <p>
+     * Default implementation throws {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}
+     * so that adapters predating this operation continue to compile and fail
+     * predictably.
+     *
+     * @param address    target database + collection
+     * @param key        document key; must identify an existing document
+     * @param operations validated, non-empty, disjoint-path operations
+     * @param options    operation options; {@code ttlSeconds} is ignored
+     * @throws MulticloudDbException with category NOT_FOUND if the document or a
+     *         required field does not exist
+     */
+    default void patch(ResourceAddress address, MulticloudDbKey key,
+                       List<PatchOperation> operations, OperationOptions options) {
+        throw new MulticloudDbException(new MulticloudDbError(
+                MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                "Provider does not support patch",
+                providerId(),
+                OperationNames.PATCH,
+                false,
+                Map.of()));
+    }
 
     /**
      * Delete a document by key.

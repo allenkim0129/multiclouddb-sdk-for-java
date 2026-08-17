@@ -15,6 +15,7 @@ import com.multiclouddb.api.MulticloudDbKey;
 import com.multiclouddb.api.OperationDiagnostics;
 import com.multiclouddb.api.OperationNames;
 import com.multiclouddb.api.OperationOptions;
+import com.multiclouddb.api.PatchOperation;
 import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
@@ -24,6 +25,7 @@ import com.multiclouddb.api.changefeed.ChangeFeedPage;
 import com.multiclouddb.api.changefeed.CursorExpiredException;
 import com.multiclouddb.api.changefeed.internal.CursorToken;
 import com.multiclouddb.api.changefeed.internal.CursorTokenCodec;
+import com.multiclouddb.spi.DocumentFieldValidator;
 import com.multiclouddb.api.query.Expression;
 import com.multiclouddb.api.query.ExpressionParseException;
 import com.multiclouddb.api.query.ExpressionParser;
@@ -86,6 +88,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         checkOpen(OperationNames.CREATE);
         Instant start = Instant.now();
         try {
+            DocumentFieldValidator.validateWritableDocument(document, config.provider(), OperationNames.CREATE);
             DocumentSizeValidator.validate(document, OperationNames.CREATE);
             providerClient.create(address, key, document, options);
             LOG.debug("create completed: address={}, key={}, duration={}ms",
@@ -118,6 +121,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         checkOpen(OperationNames.UPDATE);
         Instant start = Instant.now();
         try {
+            DocumentFieldValidator.validateWritableDocument(document, config.provider(), OperationNames.UPDATE);
             DocumentSizeValidator.validate(document, OperationNames.UPDATE);
             providerClient.update(address, key, document, options);
             LOG.debug("update completed: address={}, key={}, duration={}ms",
@@ -134,6 +138,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         checkOpen(OperationNames.UPSERT);
         Instant start = Instant.now();
         try {
+            DocumentFieldValidator.validateWritableDocument(document, config.provider(), OperationNames.UPSERT);
             DocumentSizeValidator.validate(document, OperationNames.UPSERT);
             providerClient.upsert(address, key, document, options);
             LOG.debug("upsert completed: address={}, key={}, duration={}ms",
@@ -142,6 +147,42 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
             throw enrichException(e, "upsert", start);
         } catch (Exception e) {
             throw wrapUnexpected(e, "upsert", start);
+        }
+    }
+
+    @Override
+    public void patch(ResourceAddress address, MulticloudDbKey key, List<PatchOperation> operations,
+                      OperationOptions options) {
+        checkOpen(OperationNames.PATCH);
+        Objects.requireNonNull(address, "address");
+        Objects.requireNonNull(key, "key");
+        Instant start = Instant.now();
+        try {
+            // Snapshot the caller-owned list before dispatch. PatchOperation is
+            // already a deeply immutable, cycle-checked graph, but the List that
+            // carries those operations is not: the provider re-reads it after
+            // PatchValidator has approved it, so a caller mutating the list
+            // concurrently could slip an unvalidated operation past every check
+            // (TOCTOU). A null list is passed through untouched instead of being
+            // rejected here, so the provider's validatePatchRequest still reports
+            // it as the portable INVALID_REQUEST rather than a raw
+            // NullPointerException normalised to PROVIDER_ERROR.
+            List<PatchOperation> snapshot = operations == null ? null : List.copyOf(operations);
+            // No validatePatchRequest call here on purpose. The SPI contract
+            // (MulticloudDbProviderClient#patch) requires every implementation to
+            // invoke it immediately after its lifecycle guard, and all three
+            // adapters do; the SPI default implementation rejects the request
+            // outright with UNSUPPORTED_CAPABILITY without touching a provider
+            // SDK. Validating here as well would re-run the whole request-size
+            // check — a full serialization of an operand graph that may approach
+            // the 399 KB ceiling — twice on every patch.
+            providerClient.patch(address, key, snapshot, options);
+            LOG.debug("patch completed: address={}, key={}, operations={}, duration={}ms",
+                    address, key, snapshot.size(), Duration.between(start, Instant.now()).toMillis());
+        } catch (MulticloudDbException e) {
+            throw enrichException(e, OperationNames.PATCH, start);
+        } catch (Exception e) {
+            throw wrapUnexpected(e, OperationNames.PATCH, start);
         }
     }
 

@@ -65,6 +65,9 @@ public final class Capability {
     public static final String ENDS_WITH                    = "ends_with";
     public static final String REGEX_MATCH                  = "regex_match";
     public static final String CASE_FUNCTIONS               = "case_functions";
+    public static final String PATCH                        = "patch";
+    public static final String NESTED_PATCH                 = "nested_patch";
+    public static final String EXACT_FRACTIONAL_INCREMENT   = "exact_fractional_increment";
 
     // ── Pre-built singleton instances ─────────────────────────────────────────
     // Each well-known capability has a SUPPORTED and an _UNSUPPORTED singleton.
@@ -140,6 +143,31 @@ public final class Capability {
     public static final Capability CASE_FUNCTIONS_CAP               = intern(CASE_FUNCTIONS, true);
     /** Unsupported singleton — case functions. */
     public static final Capability CASE_FUNCTIONS_UNSUPPORTED       = intern(CASE_FUNCTIONS, false);
+
+    /**
+     * Supported singleton — field-level partial update via a provider-native
+     * primitive or an equivalent atomic provider transaction.
+     */
+    public static final Capability PATCH_CAP                        = intern(PATCH, true);
+    /** Unsupported singleton — field-level partial update. */
+    public static final Capability PATCH_UNSUPPORTED                = intern(PATCH, false);
+
+    /** Supported singleton — patching a field below the document's top level. */
+    public static final Capability NESTED_PATCH_CAP                 = intern(NESTED_PATCH, true);
+    /** Unsupported singleton — nested-path patching. */
+    public static final Capability NESTED_PATCH_UNSUPPORTED         = intern(NESTED_PATCH, false);
+
+    /**
+     * Supported singleton — a fractional {@code INCREMENT} accumulates in exact
+     * decimal arithmetic, so repeated fractional deltas produce no binary
+     * rounding drift. Informational only: every provider accepts fractional
+     * increments, so this never causes an {@code UNSUPPORTED_CAPABILITY}
+     * rejection — it exists so callers that need bit-identical fractional totals
+     * across providers can branch.
+     */
+    public static final Capability EXACT_FRACTIONAL_INCREMENT_CAP         = intern(EXACT_FRACTIONAL_INCREMENT, true);
+    /** Unsupported singleton — fractional increments accumulate in IEEE-754 binary64. */
+    public static final Capability EXACT_FRACTIONAL_INCREMENT_UNSUPPORTED = intern(EXACT_FRACTIONAL_INCREMENT, false);
 
     // ── Instance fields ───────────────────────────────────────────────────────
 

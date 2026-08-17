@@ -14,10 +14,13 @@ import com.multiclouddb.api.MulticloudDbKey;
 import com.multiclouddb.api.OperationDiagnostics;
 import com.multiclouddb.api.OperationNames;
 import com.multiclouddb.api.OperationOptions;
+import com.multiclouddb.api.PatchOperation;
 import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
+import com.multiclouddb.api.PatchNumericDomain;
+import com.multiclouddb.spi.DocumentFieldValidator;
 import com.multiclouddb.spi.SdkUserAgent;
 import com.multiclouddb.api.SortOrder;
 import com.multiclouddb.api.query.TranslatedQuery;
@@ -33,6 +36,7 @@ import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerException;
+import com.google.cloud.spanner.Type;
 
 import java.time.Duration;
 import java.util.Map;
@@ -43,6 +47,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 /**
@@ -61,8 +66,9 @@ import java.util.regex.Pattern;
  * <ul>
  * <li>Primary key columns:
  * {@code partitionKey STRING(MAX), sortKey STRING(MAX)}</li>
- * <li>Document fields are stored as individual columns (STRING, INT64, BOOL,
- * FLOAT64)</li>
+ * <li>The internal {@code data} column stores the complete document envelope;
+ * compatible physical columns are populated when present for existing query
+ * schemas and legacy-row compatibility.</li>
  * </ul>
  */
 public class SpannerProviderClient implements MulticloudDbProviderClient {
@@ -166,7 +172,18 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     private final String databaseId;
     private final SpannerChangeFeedReader changeFeedReader;
     private final boolean emulatorMode;
+    /**
+     * Physical column layout per table, keyed by case-folded table name (Spanner
+     * identifiers are case-insensitive). Populated lazily by
+     * {@link #tableColumns(String, String)}, which never caches an empty
+     * (table-does-not-exist) result, and cleared for a table by
+     * {@link #invalidateTableColumns(String)} after schema-changing DDL.
+     */
+    private final Map<String, Map<String, TableColumn>> tableColumns = new ConcurrentHashMap<>();
     private volatile boolean closed = false;
+
+    private record TableColumn(String name, Type type) {
+    }
 
     /**
      * Constructs a Cloud Spanner provider client from the supplied configuration.
@@ -214,6 +231,21 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
+     * Package-private constructor for unit tests that need a provider client
+     * without opening a Spanner session pool.
+     */
+    SpannerProviderClient(Spanner spanner, DatabaseClient databaseClient) {
+        this.spanner = spanner;
+        this.databaseClient = databaseClient;
+        this.config = MulticloudDbClientConfig.builder().provider(ProviderId.SPANNER).build();
+        this.projectId = "test-project";
+        this.instanceId = "test-instance";
+        this.databaseId = "test-database";
+        this.changeFeedReader = null;
+        this.emulatorMode = true;
+    }
+
+    /**
      * Inserts a new row into the Spanner table that corresponds to
      * {@code address.collection()}.
      * <p>
@@ -224,9 +256,10 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      *   <li>{@code sortKey} — set to {@code key.sortKey()} if present, otherwise
      *       {@code key.partitionKey()}.</li>
      * </ul>
-     * All remaining document fields are written as individual columns via
-     * {@link #writeFullDocument}. If the row already exists, the mutation fails
-     * with {@link com.multiclouddb.api.MulticloudDbErrorCategory#CONFLICT}.
+     * All document fields are written to the {@code data} document envelope;
+     * compatible physical columns are populated when they exist. If the row
+     * already exists, the mutation fails with
+     * {@link com.multiclouddb.api.MulticloudDbErrorCategory#CONFLICT}.
      *
      * @param address  the logical database + collection; the collection maps directly to
      *                 a Spanner table name
@@ -238,14 +271,14 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     @Override
     public void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.CREATE);
-        validateNoReservedFields(document, OperationNames.CREATE);
+        DocumentFieldValidator.validateWritableDocument(document, ProviderId.SPANNER, OperationNames.CREATE);
         try {
             String table = address.collection();
             Mutation.WriteBuilder mutation = Mutation.newInsertBuilder(table)
                     .set(SpannerConstants.FIELD_PARTITION_KEY).to(key.partitionKey())
                     .set(SpannerConstants.FIELD_SORT_KEY).to(key.sortKey() != null ? key.sortKey() : key.partitionKey());
 
-            writeFullDocument(mutation, document, OperationNames.CREATE);
+            writeFullDocument(mutation, document, table, OperationNames.CREATE);
             databaseClient.write(List.of(mutation.build()));
             logItemDiagnostics(OperationNames.CREATE, address);
         } catch (SpannerException e) {
@@ -254,40 +287,17 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
-     * Replaces field values on an existing row in Spanner (partial update).
+     * Replaces an existing row with the supplied document.
      * <p>
-     * Uses a Spanner {@code UPDATE} mutation, which requires the row to already exist.
-     * If the row is not found, Spanner throws a {@code NOT_FOUND} error which is mapped
-     * to {@link com.multiclouddb.api.MulticloudDbErrorCategory#NOT_FOUND}.
-     * <p>
-     * <strong>FIELD_DATA merge.</strong> Because Spanner's {@code UPDATE} mutation
-     * is a <em>partial</em> write — columns not present in {@code document} are
-     * <em>preserved</em> at the row level, not overwritten — but the SDK uses the
-     * internal {@link SpannerConstants#FIELD_DATA} metadata column to track which
-     * fields are SDK-visible on read (so {@link SpannerRowMapper} can distinguish
-     * "explicitly null" from "absent schema column"), naively rewriting
-     * {@code FIELD_DATA} with only the keys in {@code document} would hide
-     * every previously-written field on the next {@code read()}.
-     * <p>
-     * To avoid that silent-data-loss bug, this method runs inside a
-     * {@code readWriteTransaction}: it reads the existing {@code FIELD_DATA},
-     * unions the field set with {@code document.keySet()}, and writes the
-     * merged metadata together with the partial column updates in a single
-     * atomic commit.
-     * <p>
-     * <strong>Cross-provider asymmetry.</strong> This makes Spanner
-     * {@code update()} a partial update that preserves unrelated fields. The
-     * sibling providers do not: Cosmos {@code update()} calls
-     * {@code replaceItem} (full-document replace) and DynamoDB
-     * {@code update()} calls {@code PutItem} with an {@code attribute_exists}
-     * guard (full-item replace). The portable SPI contract for {@code update()}
-     * partial-vs-full semantics is currently undefined; aligning the three
-     * providers is tracked as follow-up work.
+     * A Spanner {@code UPDATE} mutation leaves omitted physical columns intact,
+     * but the newly written {@link SpannerConstants#FIELD_DATA} envelope is the
+     * authoritative portable document. The row mapper and portable-expression
+     * translator therefore hide stale physical columns from current SDK rows,
+     * matching Cosmos and DynamoDB replacement semantics.
      *
      * @param address  the logical database + collection
      * @param key      the document key identifying the row to update
-     * @param document the document payload; fields present here become column values,
-     *                 fields absent here keep their existing values
+     * @param document the complete replacement document
      * @param options  operation options (currently unused by this provider)
      * @throws com.multiclouddb.api.MulticloudDbException category {@code NOT_FOUND} if
      *         the row does not exist, or any other Spanner error
@@ -295,82 +305,16 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     @Override
     public void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.UPDATE);
-        validateNoReservedFields(document, OperationNames.UPDATE);
+        DocumentFieldValidator.validateWritableDocument(document, ProviderId.SPANNER, OperationNames.UPDATE);
         try {
             String table = address.collection();
-            String pk = key.partitionKey();
-            String sk = key.sortKey() != null ? key.sortKey() : key.partitionKey();
+            Mutation.WriteBuilder mutation = Mutation.newUpdateBuilder(table)
+                    .set(SpannerConstants.FIELD_PARTITION_KEY).to(key.partitionKey())
+                    .set(SpannerConstants.FIELD_SORT_KEY).to(
+                            key.sortKey() != null ? key.sortKey() : key.partitionKey());
 
-            databaseClient.readWriteTransaction().run(txn -> {
-                // 1) Read the existing FIELD_DATA so we can merge the field set.
-                //    Use a forward-compat null on missing column (legacy rows).
-                Set<String> mergedFields = new LinkedHashSet<>();
-                com.google.cloud.spanner.Struct existing =
-                        txn.readRow(table, Key.of(pk, sk), List.of(SpannerConstants.FIELD_DATA));
-                if (existing == null) {
-                    // Row not found — throw a typed SpannerException with the
-                    // NOT_FOUND code so the outer catch + SpannerErrorMapper
-                    // surfaces MulticloudDbErrorCategory.NOT_FOUND, exactly
-                    // matching the behaviour of a plain UPDATE mutation
-                    // (which also fails with NOT_FOUND at commit time).
-                    // Throwing a non-SpannerException here causes the runner
-                    // to wrap it in an opaque SpannerException whose ErrorCode
-                    // is missing, which the mapper then degrades to
-                    // PROVIDER_ERROR — breaking error-normalisation parity.
-                    throw com.google.cloud.spanner.SpannerExceptionFactory.newSpannerException(
-                            ErrorCode.NOT_FOUND,
-                            "Spanner row not found for update: partitionKey=" + pk
-                                    + ", sortKey=" + sk);
-                }
-                // Track whether we successfully parsed a pre-existing FIELD_DATA
-                // metadata blob. If FIELD_DATA was NULL (a legacy row that pre-dates
-                // this SDK ever writing to it) or malformed, we cannot know the
-                // complete set of SDK-visible columns for this row. Stamping
-                // FIELD_DATA with only the current update payload's keys would then
-                // cause SpannerRowMapper to filter out every legacy column on the
-                // next read (silent data loss). In that case we deliberately leave
-                // FIELD_DATA alone — the reader's "no metadata => project every
-                // column" fallback (SpannerRowMapper.toJsonNode L84-95 +
-                // SpannerRowMapper.parseFieldMetadata) preserves the legacy columns.
-                boolean hadValidPriorMetadata = false;
-                if (!existing.isNull(0)) {
-                    String existingJson = existing.getString(0);
-                    try {
-                        List<String> parsed = JSON_MAPPER.readValue(existingJson,
-                                JSON_MAPPER.getTypeFactory().constructCollectionType(List.class, String.class));
-                        mergedFields.addAll(parsed);
-                        hadValidPriorMetadata = true;
-                    } catch (com.fasterxml.jackson.core.JsonProcessingException ignored) {
-                        // Malformed FIELD_DATA on the existing row — treat the row
-                        // as legacy (no trustworthy metadata). hadValidPriorMetadata
-                        // stays false, so we skip the FIELD_DATA stamp below and
-                        // let the reader fallback project every column.
-                    }
-                }
-
-                // 2) Build the partial-update mutation. Document fields go in via
-                //    writeDocumentFields; the merged FIELD_DATA is set explicitly
-                //    after, so previously-written columns remain visible on read.
-                Mutation.WriteBuilder mutation = Mutation.newUpdateBuilder(table)
-                        .set(SpannerConstants.FIELD_PARTITION_KEY).to(pk)
-                        .set(SpannerConstants.FIELD_SORT_KEY).to(sk);
-                List<String> newFields = writeDocumentFields(mutation, document);
-                mergedFields.addAll(newFields);
-
-                // 3) Stamp the merged FIELD_DATA so reads see the union of every
-                //    SDK-written column for this row, not just the partial update.
-                //    Skipped for legacy / malformed-metadata rows — see the
-                //    hadValidPriorMetadata comment above. A subsequent upsert()
-                //    (INSERT_OR_UPDATE) or create() will promote the row into the
-                //    metadata regime by writing a complete FIELD_DATA.
-                if (hadValidPriorMetadata) {
-                    mutation.set(SpannerConstants.FIELD_DATA).to(
-                            serialiseFieldNames(new ArrayList<>(mergedFields), OperationNames.UPDATE));
-                }
-
-                txn.buffer(mutation.build());
-                return null;
-            });
+            writeFullDocument(mutation, document, table, OperationNames.UPDATE);
+            databaseClient.write(List.of(mutation.build()));
 
             logItemDiagnostics(OperationNames.UPDATE, address);
         } catch (SpannerException e) {
@@ -381,12 +325,12 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     /**
      * Creates or replaces a row in Spanner (INSERT_OR_UPDATE mutation / upsert semantics).
      * <p>
-     * Uses a Spanner {@code INSERT_OR_UPDATE} mutation paired with a freshly stamped
-     * {@link SpannerConstants#FIELD_DATA} listing only the new document's fields. On
-     * read, {@link SpannerRowMapper} filters columns by {@code FIELD_DATA}, so any
-     * column from a prior write that is not in the new document is invisible to the
-     * SDK — preserving the "full document replacement" semantics that {@code upsert}
-     * provides on schemaless stores (Cosmos, DynamoDB).
+     * Uses a Spanner {@code INSERT_OR_UPDATE} mutation paired with a fresh
+     * {@link SpannerConstants#FIELD_DATA} document envelope. On read,
+     * {@link SpannerRowMapper} treats that envelope as authoritative, so any
+     * field from a prior write that is not in the new document is invisible to
+     * the SDK — preserving the "full document replacement" semantics that
+     * {@code upsert} provides on schemaless stores (Cosmos, DynamoDB).
      * <p>
      * <b>Why INSERT_OR_UPDATE rather than REPLACE.</b> A Spanner {@code REPLACE}
      * mutation on an existing row is internally a delete-then-insert and surfaces in
@@ -410,14 +354,14 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     @Override
     public void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.UPSERT);
-        validateNoReservedFields(document, OperationNames.UPSERT);
+        DocumentFieldValidator.validateWritableDocument(document, ProviderId.SPANNER, OperationNames.UPSERT);
         try {
             String table = address.collection();
             Mutation.WriteBuilder mutation = Mutation.newInsertOrUpdateBuilder(table)
                     .set(SpannerConstants.FIELD_PARTITION_KEY).to(key.partitionKey())
                     .set(SpannerConstants.FIELD_SORT_KEY).to(key.sortKey() != null ? key.sortKey() : key.partitionKey());
 
-            writeFullDocument(mutation, document, OperationNames.UPSERT);
+            writeFullDocument(mutation, document, table, OperationNames.UPSERT);
             databaseClient.write(List.of(mutation.build()));
             logItemDiagnostics(OperationNames.UPSERT, address);
         } catch (SpannerException e) {
@@ -425,133 +369,440 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
         }
     }
 
-    /**
-     * Rejects any document that contains a field name reserved by the Spanner
-     * provider for internal metadata. Today the only reserved name is
-     * {@link SpannerConstants#FIELD_DATA}. Called by every write-side public
-     * entry point ({@code create} / {@code update} / {@code upsert}) before
-     * the call enters any Spanner SDK call — including the
-     * {@code readWriteTransaction().run(...)} lambda in {@link #update}, which
-     * would otherwise wrap our typed {@link MulticloudDbException} as an
-     * opaque {@code SpannerException} and degrade the category to
-     * {@code PROVIDER_ERROR}.
-     *
-     * @param document    the document the caller is trying to write; may be {@code null}
-     * @param operationOp the operation name (for the error envelope)
-     * @throws MulticloudDbException category {@code INVALID_REQUEST} if a
-     *         reserved field name is present
-     */
-    private static void validateNoReservedFields(Map<String, Object> document, String operationOp) {
-        if (document == null) return;
-        // Spanner resolves column names case-insensitively (`Data`, `DATA`, and
-        // `data` all bind to the same column at write time). The reserved-field
-        // check therefore must also be case-insensitive — otherwise a user
-        // document like {"Data": "x"} would slip past validation and the
-        // mutation builder would later try to set both the SDK-internal column
-        // for "Data" *and* our own FIELD_DATA stamp, producing a deep
-        // INVALID_ARGUMENT: Duplicate column name from the Spanner client
-        // instead of the friendly INVALID_REQUEST we want to surface here.
-        String reservedHit = null;
-        for (String key : document.keySet()) {
-            if (key != null && SpannerConstants.FIELD_DATA.equalsIgnoreCase(key)) {
-                reservedHit = key;
-                break;
-            }
-        }
-        if (reservedHit != null) {
-            String message = "Field name '" + reservedHit + "' collides with reserved name '"
-                    + SpannerConstants.FIELD_DATA + "' (case-insensitive match — Spanner column "
-                    + "names are case-insensitive); rename the field in your document. (Cosmos "
-                    + "and DynamoDB do not reserve this name; this is a Spanner-specific "
-                    + "restriction tracked for a future schema-migration release.)";
-            throw new MulticloudDbException(new MulticloudDbError(
-                    MulticloudDbErrorCategory.INVALID_REQUEST,
-                    message,
-                    ProviderId.SPANNER, operationOp, false, null));
-        }
-    }
-
-    /**
-     * Writes the document field values into a Spanner mutation and returns the
-     * list of explicitly-written field names.
-     * <p>
-     * The fields {@code partitionKey} and {@code sortKey} are skipped because they
-     * are set by the caller before invoking this method. The internal
-     * {@link SpannerConstants#FIELD_DATA} column is also skipped (it is reserved
-     * for SDK metadata and is written by the caller, not from user input).
-     * Each remaining entry is written via {@link #setMutationValue}.
-     * <p>
-     * The returned list reflects only the fields written by <em>this</em> call —
-     * the caller is responsible for merging with any previously-stored
-     * {@code FIELD_DATA} when partial-update semantics require it (see
-     * {@link #update}).
-     *
-     * @param mutation the mutation builder to populate
-     * @param document the document payload; may be {@code null} (no fields written)
-     * @return the field names that were written by this call (may be empty)
-     */
-    private List<String> writeDocumentFields(Mutation.WriteBuilder mutation, Map<String, Object> document) {
-        List<String> fieldNames = new ArrayList<>();
-        if (document == null) {
-            return fieldNames;
-        }
-        for (Map.Entry<String, Object> entry : document.entrySet()) {
-            String name = entry.getKey();
-            Object value = entry.getValue();
-
-            // Skip primary key fields — already set by caller from the
-            // MulticloudDbKey. These names are conventionally not user-document
-            // fields in this SDK (Cosmos/Dynamo also inject them on top of the
-            // user payload), so silent skip is consistent across providers.
-            if (SpannerConstants.FIELD_SORT_KEY.equals(name) || SpannerConstants.FIELD_PARTITION_KEY.equals(name))
-                continue;
-            // Defensive: the internal metadata column is reserved. Public
-            // methods (create/update/upsert) validate up front via
-            // {@link #validateNoReservedFields} before any Spanner SDK call,
-            // so this branch should never be reached. Case-insensitive match —
-            // Spanner column names are case-insensitive, so `Data` / `DATA` /
-            // `data` would all collide with the FIELD_DATA stamp. Kept as a
-            // no-op skip in case a future code path constructs a write builder
-            // without routing through that validation.
-            if (name != null && SpannerConstants.FIELD_DATA.equalsIgnoreCase(name))
-                continue;
-
-            setMutationValue(mutation, name, value);
-            fieldNames.add(name);
-        }
-        return fieldNames;
-    }
-
-    /**
-     * Serialises a list of field names for storage in the {@code FIELD_DATA}
-     * metadata column. Wraps the rare {@link com.fasterxml.jackson.core.JsonProcessingException}
-     * as a {@link MulticloudDbException} so callers don't see a raw
-     * {@code IllegalStateException}.
-     */
-    private static String serialiseFieldNames(List<String> fieldNames, String op) {
+    /** Applies field-level modifications atomically in a retryable Spanner transaction. */
+    @Override
+    public void patch(ResourceAddress address, MulticloudDbKey key, List<PatchOperation> operations,
+            OperationOptions options) {
+        checkOpen(OperationNames.PATCH);
+        validatePatchRequest(operations);
         try {
-            return JSON_MAPPER.writeValueAsString(fieldNames);
-        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            String table = address.collection();
+            String pk = key.partitionKey();
+            String sk = key.sortKey() != null ? key.sortKey() : key.partitionKey();
+            Map<String, TableColumn> physicalColumns = tableColumns(table, OperationNames.PATCH);
+
+            databaseClient.readWriteTransaction().run(txn -> {
+                com.google.cloud.spanner.Struct envelopeRow = txn.readRow(
+                        table, Key.of(pk, sk), List.of(SpannerConstants.FIELD_DATA));
+                if (envelopeRow == null) {
+                    // Typed SpannerException required: a plain exception would be
+                    // wrapped opaquely by the transaction runner and degraded to
+                    // PROVIDER_ERROR by SpannerErrorMapper. Same rationale as update().
+                    throw com.google.cloud.spanner.SpannerExceptionFactory.newSpannerException(
+                            ErrorCode.NOT_FOUND,
+                            "Spanner row not found for patch: partitionKey=" + pk + ", sortKey=" + sk);
+                }
+
+                Map<String, Object> fields = envelopeRow.isNull(0)
+                        ? null
+                        : SpannerRowMapper.parseDocumentEnvelope(envelopeRow.getString(0));
+                if (fields == null) {
+                    // Legacy rows carry only a field-name array (or no metadata), so
+                    // reconstructing their visible document still requires physical
+                    // columns. New envelope rows avoid this full-row fallback.
+                    try (ResultSet rs = txn.executeQuery(
+                            Statement.newBuilder(String.format(SpannerConstants.QUERY_READ_BY_KEY, table))
+                                    .bind(SpannerConstants.FIELD_PARTITION_KEY).to(pk)
+                                    .bind(SpannerConstants.FIELD_SORT_KEY).to(sk)
+                                    .build())) {
+                        if (!rs.next()) {
+                            throw com.google.cloud.spanner.SpannerExceptionFactory.newSpannerException(
+                                    ErrorCode.NOT_FOUND,
+                                    "Spanner row not found for patch: partitionKey=" + pk
+                                            + ", sortKey=" + sk);
+                        }
+                        fields = SpannerRowMapper.toMap(rs);
+                    }
+                }
+                fields = documentFields(fields);
+
+                Mutation.WriteBuilder mutation = Mutation.newUpdateBuilder(table)
+                        .set(SpannerConstants.FIELD_PARTITION_KEY).to(pk)
+                        .set(SpannerConstants.FIELD_SORT_KEY).to(sk);
+
+                for (PatchOperation op : operations) {
+                    String field = op.rootField();
+                    TableColumn physicalColumn = physicalColumns.get(field.toLowerCase(Locale.ROOT));
+                    if (op.requiresExistingPath() && !fields.containsKey(field)) {
+                        throw com.google.cloud.spanner.SpannerExceptionFactory.newSpannerException(
+                                ErrorCode.NOT_FOUND,
+                                "Patch target field does not exist: '" + field + "' (partitionKey="
+                                        + pk + ", sortKey=" + sk + ")");
+                    }
+                    switch (op.type()) {
+                        case SET, REPLACE -> {
+                            Object value = op.value();
+                            fields.put(field, value);
+                            writePhysicalPatchValue(mutation, physicalColumn, value);
+                        }
+                        case REMOVE -> {
+                            fields.remove(field);
+                            writePhysicalPatchValue(mutation, physicalColumn, null);
+                        }
+                        case INCREMENT -> {
+                            Object existing = fields.get(field);
+                            if (!(existing instanceof Number base)) {
+                                throw com.google.cloud.spanner.SpannerExceptionFactory.newSpannerException(
+                                        ErrorCode.INVALID_ARGUMENT,
+                                        "INCREMENT target '" + field + "' is not numeric: "
+                                                + (existing == null ? "null" : existing.getClass().getName()));
+                            }
+                            Object incremented = addDelta(base, (Number) op.value());
+                            fields.put(field, incremented);
+                            writePhysicalPatchValue(mutation, physicalColumn, incremented);
+                        }
+                    }
+                }
+
+                mutation.set(SpannerConstants.FIELD_DATA).to(
+                        serialiseDocument(documentFields(fields), OperationNames.PATCH));
+
+                txn.buffer(mutation.build());
+                return null;
+            });
+
+            logItemDiagnostics(OperationNames.PATCH, address);
+        } catch (SpannerException e) {
+            throw SpannerErrorMapper.map(e, OperationNames.PATCH);
+        }
+    }
+
+    /** Adds an INCREMENT delta using the shared portable result-domain rules. */
+    private static Object addDelta(Number base, Number delta) {
+        try {
+            return PatchNumericDomain.add(base, delta);
+        } catch (IllegalArgumentException e) {
+            throw com.google.cloud.spanner.SpannerExceptionFactory.newSpannerException(
+                    ErrorCode.INVALID_ARGUMENT,
+                    e.getMessage());
+        }
+    }
+
+    /**
+     * Mirrors an envelope value only when its runtime kind can be represented
+     * by the physical column. An incompatible replacement explicitly clears
+     * the mirror so a stale typed value cannot outlive the authoritative
+     * envelope or affect non-SDK consumers of that column.
+     */
+    private void writePhysicalPatchValue(Mutation.WriteBuilder mutation, TableColumn column,
+            Object value) {
+        if (column == null || !supportsPhysicalMirror(column.type())) {
+            return;
+        }
+        if (value == null || !isCompatibleWithColumn(value, column.type())) {
+            setTypedNull(mutation, column.name(), column.type());
+            return;
+        }
+        setCompatiblePhysicalValue(mutation, column.name(), value, column.type());
+    }
+
+    static boolean isCompatibleWithColumn(Object value, Type columnType) {
+        return switch (columnType.getCode()) {
+            case INT64 -> value instanceof Long || value instanceof Integer
+                    || value instanceof Short || value instanceof Byte;
+            case FLOAT64 -> value instanceof Number number
+                    && Double.isFinite(number.doubleValue());
+            case BOOL -> value instanceof Boolean;
+            case STRING -> value instanceof String;
+            default -> false;
+        };
+    }
+
+    private static boolean supportsPhysicalMirror(Type columnType) {
+        return switch (columnType.getCode()) {
+            case INT64, FLOAT64, BOOL, STRING -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * Writes a compatible runtime value to its matching physical Spanner type.
+     * <p>
+     * Callers must have already established compatibility with
+     * {@link #isCompatibleWithColumn(Object, Type)}.
+     */
+    private static void setCompatiblePhysicalValue(Mutation.WriteBuilder mutation, String column,
+            Object value, Type columnType) {
+        switch (columnType.getCode()) {
+            case INT64 -> mutation.set(column).to(((Number) value).longValue());
+            case FLOAT64 -> mutation.set(column).to(((Number) value).doubleValue());
+            case BOOL -> mutation.set(column).to((Boolean) value);
+            case STRING -> {
+                String text = (String) value;
+                mutation.set(column).to(!text.isEmpty() && text.charAt(0) == '\u0001'
+                        ? '\u0001' + text
+                        : text);
+            }
+            default -> throw new IllegalArgumentException(
+                    "Unsupported physical mirror type: " + columnType.getCode());
+        }
+    }
+
+    private Map<String, TableColumn> tableColumns(String table, String op) {
+        String cacheKey = tableCacheKey(table);
+        Map<String, TableColumn> cached = tableColumns.get(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+        try {
+            Map<String, TableColumn> loaded = loadTableColumns(table);
+            if (!loaded.isEmpty()) {
+                // Never cache a negative result. loadTableColumns() returns an
+                // EMPTY map (not an error) for a table that does not exist yet,
+                // and create() resolves columns through writeFullDocument BEFORE
+                // the write itself fails with NOT_FOUND. Caching that empty map
+                // would poison the client for its whole lifetime: a later
+                // ensureContainer() creates the table, but every physical mirror
+                // column would still be skipped by writePhysicalPatchValue()
+                // (column == null), silently breaking the documented
+                // compatibility mirrors for non-SDK consumers while SDK reads
+                // stay correct through the envelope — a failure with no symptom.
+                tableColumns.put(cacheKey, loaded);
+            }
+            return loaded;
+        } catch (SpannerException | MulticloudDbException e) {
+            // Already portable (or mapped by the caller's SpannerException handler).
+            throw e;
+        } catch (RuntimeException e) {
+            // Nothing raw may cross the portable surface: an IllegalStateException
+            // or NPE from the underlying client would otherwise bypass every
+            // `catch (SpannerException)` handler in this class.
             throw new MulticloudDbException(new MulticloudDbError(
                     MulticloudDbErrorCategory.PROVIDER_ERROR,
-                    "Failed to serialise FIELD_DATA: " + e.getMessage(),
+                    "Failed to load Spanner column metadata for table '" + table + "': "
+                            + e.getMessage(),
                     ProviderId.SPANNER, op, false, null));
         }
     }
 
     /**
-     * Writes document fields into a mutation and stamps the {@link
-     * SpannerConstants#FIELD_DATA} metadata column with the full set of fields
-     * written by this call. Suitable for full-document write paths
-     * ({@code create} / {@code upsert}, where the entire row is being written).
-     * <p>
-     * Do not call this from {@code update()} — partial updates require
-     * read-merge-write of {@code FIELD_DATA} so previously-written columns
-     * remain visible (see {@link #update}).
+     * Case-folds a table name for the metadata cache. The lookup query matches
+     * on {@code LOWER(TABLE_NAME) = LOWER(@_tablename)} because Spanner
+     * identifiers are case-insensitive, so {@code Todos} and {@code todos} must
+     * resolve to one cache entry rather than two independently loaded copies.
      */
-    private void writeFullDocument(Mutation.WriteBuilder mutation, Map<String, Object> document, String op) {
-        List<String> fieldNames = writeDocumentFields(mutation, document);
-        mutation.set(SpannerConstants.FIELD_DATA).to(serialiseFieldNames(fieldNames, op));
+    private static String tableCacheKey(String table) {
+        return table == null ? "" : table.toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * Drops any cached physical-column layout for {@code table}, forcing the
+     * next write to re-read {@code INFORMATION_SCHEMA}. Called after DDL that
+     * can change the layout ({@link #ensureContainer(ResourceAddress)}), since
+     * an entry loaded before a {@code CREATE TABLE} / {@code ALTER TABLE ... ADD
+     * COLUMN} would otherwise keep mirroring an out-of-date column set.
+     */
+    private void invalidateTableColumns(String table) {
+        tableColumns.remove(tableCacheKey(table));
+    }
+
+    /**
+     * Loads the physical column layout of {@code table} from
+     * {@code INFORMATION_SCHEMA.COLUMNS}.
+     * <p>
+     * The result set is consumed with an ordinary {@code while (rs.next())}
+     * loop. The previous implementation probed {@code SELECT * FROM <table>
+     * LIMIT 0} and read {@link ResultSet#getType()}, but both {@code getType()}
+     * and {@code getMetadata()} are guarded by
+     * {@code Preconditions.checkState(..., "next() call required")} in
+     * {@code GrpcResultSet} — with {@code LIMIT 0} no row is ever consumed, so
+     * every write path threw {@link IllegalStateException}.
+     * <p>
+     * Columns whose declared type has no {@link Type} counterpart (arrays,
+     * protos, enums, tokenlists, structs, …) are skipped: the map exists solely
+     * to decide physical mirroring, and an unmappable type is never mirrored,
+     * so omitting it is behaviourally identical to declaring it unmirrorable.
+     * <p>
+     * The map is <em>keyed</em> by the case-folded column name because Spanner
+     * column identifiers are case-insensitive (the same reason
+     * {@code PatchValidator.overlaps} compares segments with
+     * {@code equalsIgnoreCase}); {@link TableColumn#name()} keeps the
+     * {@code INFORMATION_SCHEMA} casing so mutations address the column exactly
+     * as declared. Keying case-sensitively made a patch on {@code /status} miss
+     * a column declared {@code Status} and silently leave a stale mirror behind.
+     *
+     * @return an unmodifiable map from case-folded column name to column, empty
+     *         when the table does not exist (callers must not cache that)
+     */
+    private Map<String, TableColumn> loadTableColumns(String table) {
+        Map<String, TableColumn> columns = new LinkedHashMap<>();
+        Statement statement = Statement.newBuilder(SpannerConstants.QUERY_TABLE_COLUMNS)
+                .bind(SpannerConstants.PARAM_TABLE_NAME).to(table)
+                .build();
+        try (ResultSet rs = databaseClient.singleUse().executeQuery(statement)) {
+            while (rs.next()) {
+                String name = rs.getString(SpannerConstants.COLUMN_METADATA_NAME);
+                Type type = parseSpannerType(rs.getString(SpannerConstants.COLUMN_METADATA_SPANNER_TYPE));
+                if (name != null && type != null) {
+                    columns.put(name.toLowerCase(Locale.ROOT), new TableColumn(name, type));
+                }
+            }
+        }
+        return Collections.unmodifiableMap(columns);
+    }
+
+    /**
+     * Maps an {@code INFORMATION_SCHEMA.SPANNER_TYPE} string (e.g.
+     * {@code STRING(MAX)}, {@code INT64}, {@code ARRAY<INT64>}) onto a
+     * {@link Type}. {@code Type.fromProto} is package-private in
+     * {@code com.google.cloud.spanner}, so the mapping is explicit here.
+     *
+     * @return the matching {@link Type}, or {@code null} for a type this
+     *         provider cannot represent (the caller then skips the column)
+     */
+    static Type parseSpannerType(String spannerType) {
+        if (spannerType == null) {
+            return null;
+        }
+        String declared = spannerType.trim();
+        if (declared.regionMatches(true, 0, "ARRAY<", 0, 6) && declared.endsWith(">")) {
+            Type element = parseSpannerType(declared.substring(6, declared.length() - 1));
+            return element == null ? null : Type.array(element);
+        }
+        int paren = declared.indexOf('(');
+        if (paren >= 0) {
+            declared = declared.substring(0, paren);
+        }
+        return switch (declared.trim().toUpperCase(Locale.ROOT)) {
+            case "BOOL" -> Type.bool();
+            case "INT64" -> Type.int64();
+            case "FLOAT32" -> Type.float32();
+            case "FLOAT64" -> Type.float64();
+            case "NUMERIC" -> Type.numeric();
+            case "STRING" -> Type.string();
+            case "JSON" -> Type.json();
+            case "BYTES" -> Type.bytes();
+            case "TIMESTAMP" -> Type.timestamp();
+            case "DATE" -> Type.date();
+            default -> null;
+        };
+    }
+
+    private static Map<String, Object> documentFields(Map<String, Object> document) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        if (document == null) {
+            return fields;
+        }
+        for (Map.Entry<String, Object> entry : document.entrySet()) {
+            String name = entry.getKey();
+            if (SpannerConstants.FIELD_PARTITION_KEY.equals(name)
+                    || SpannerConstants.FIELD_SORT_KEY.equals(name)
+                    || (name != null && SpannerConstants.FIELD_DATA.equalsIgnoreCase(name))) {
+                continue;
+            }
+            fields.put(name, documentValue(entry.getValue()));
+        }
+        return fields;
+    }
+
+    /**
+     * Normalises a runtime value for the {@code data} envelope.
+     * <p>
+     * {@code Map} / {@code Collection} values are handed to Jackson as-is: the
+     * envelope is serialised once, by {@link #serialiseDocument}, and any
+     * failure surfaces there. This method used to serialise them here purely as
+     * a serialisability probe and throw the result away — paying a second full
+     * serialisation on every write — and, worse, silently substituted
+     * {@code value.toString()} when the probe failed, storing a Java debug
+     * string such as {@code {a=1}} in place of the caller's document. An
+     * unserialisable nested value now fails the operation with
+     * {@code INVALID_REQUEST} instead of corrupting the stored data.
+     * <p>
+     * Every other non-scalar type keeps the historical {@code toString()}
+     * fallback so common JDK values (e.g. {@code java.time.Instant}) continue to
+     * round-trip through the STRING mirrors.
+     */
+    private static Object documentValue(Object value) {
+        if (value == null || value instanceof String || value instanceof Number || value instanceof Boolean) {
+            return value;
+        }
+        if (value instanceof Map<?, ?> || value instanceof Collection<?>) {
+            return value;
+        }
+        return value.toString();
+    }
+
+    private static String serialiseDocument(Map<String, Object> document, String op) {
+        try {
+            return JSON_MAPPER.writeValueAsString(
+                    Map.of(SpannerConstants.FIELD_DATA_DOCUMENT, document));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            // The only serialisable input here is the caller's own document, so
+            // a Jackson failure means the request carried a value the SDK cannot
+            // store (e.g. a Map/Collection holding a type with no serialiser, or
+            // a self-referential structure). That is a caller-fixable INVALID_REQUEST,
+            // not an opaque PROVIDER_ERROR — and it must be reported rather than
+            // silently degraded to a toString() of the offending value.
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.INVALID_REQUEST,
+                    "Document contains a value that cannot be serialised to the Spanner '"
+                            + SpannerConstants.FIELD_DATA + "' envelope: " + e.getMessage(),
+                    ProviderId.SPANNER, op, false, null), e);
+        }
+    }
+
+    /**
+     * Writes document fields into a mutation and stamps the {@link
+     * SpannerConstants#FIELD_DATA} column with the complete document envelope.
+     * Suitable for full-document write paths ({@code create} / {@code update}
+     * / {@code upsert}). The envelope, rather than untouched physical columns,
+     * defines the document visible to SDK reads and portable queries. Every
+     * supported physical mirror is also written or cleared so a replacement
+     * never leaves a stale value after a field is omitted or changes runtime
+     * type.
+     */
+    private void writeFullDocument(Mutation.WriteBuilder mutation, Map<String, Object> document,
+            String table, String op) {
+        Map<String, Object> documentFields = documentFields(document);
+        for (TableColumn column : tableColumns(table, op).values()) {
+            if (isDocumentMirrorColumn(column)) {
+                writePhysicalPatchValue(mutation, column, mirrorValue(documentFields, column.name()));
+            }
+        }
+        mutation.set(SpannerConstants.FIELD_DATA).to(serialiseDocument(documentFields, op));
+    }
+
+    /**
+     * Resolves the document value that mirrors {@code columnName}.
+     * <p>
+     * {@code column.name()} carries the {@code INFORMATION_SCHEMA} casing while
+     * {@code documentFields} is keyed by the caller's casing, and Spanner column
+     * identifiers are case-insensitive. A case-sensitive lookup therefore
+     * resolved a column declared {@code Status} against a document field
+     * {@code status} to {@code null} and cleared the mirror to a typed NULL —
+     * defeating the very purpose of the compatibility mirror. An exact match
+     * still wins, so a document that (legally) carries both {@code Status} and
+     * {@code status} resolves deterministically rather than by map iteration
+     * order.
+     *
+     * @return the mirrored value, or {@code null} when the document has no
+     *         field for that column (which correctly clears the mirror)
+     */
+    private static Object mirrorValue(Map<String, Object> documentFields, String columnName) {
+        if (documentFields.containsKey(columnName)) {
+            return documentFields.get(columnName);
+        }
+        for (Map.Entry<String, Object> entry : documentFields.entrySet()) {
+            if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(columnName)) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Reports whether a physical column participates in document mirroring.
+     * <p>
+     * All three exclusions compare case-insensitively because Spanner column
+     * identifiers are. A table declaring {@code PartitionKey} was previously
+     * treated as a mirror column by the {@code .equals()} comparisons, so the
+     * same column was set twice in one mutation — once as the key and once as a
+     * mirror — and Spanner rejected the write with {@code Duplicate column name}.
+     */
+    private static boolean isDocumentMirrorColumn(TableColumn column) {
+        return !SpannerConstants.FIELD_PARTITION_KEY.equalsIgnoreCase(column.name())
+                && !SpannerConstants.FIELD_SORT_KEY.equalsIgnoreCase(column.name())
+                && !SpannerConstants.FIELD_DATA.equalsIgnoreCase(column.name());
     }
 
     /**
@@ -691,18 +942,23 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             String expression = query.expression();
             if (expression == null || expression.isBlank()
                     || expression.trim().equalsIgnoreCase(SpannerConstants.QUERY_SELECT_ALL_COSMOS)) {
+                // SDK-generated scans carry the portable row alias so ORDER BY can
+                // read the authoritative document envelope (dynamic top-level
+                // fields have no physical column to sort by).
                 if (query.partitionKey() != null) {
                     // Scope scan to items with matching partitionKey
                     return executeStatement(
-                            String.format(SpannerConstants.QUERY_SCOPED_FULL_SCAN, table),
+                            aliasedScan(table) + SpannerConstants.QUERY_PARTITION_KEY_WHERE,
                             Map.of(SpannerConstants.PARAM_PK_VAL, query.partitionKey()),
-                            query.maxPageSize(), offset, query);
+                            query.maxPageSize(), offset, query, true);
                 }
                 // Full scan
-                return executeStatement(SpannerConstants.QUERY_SELECT_ALL_PREFIX + table, null, query.maxPageSize(), offset, query);
+                return executeStatement(aliasedScan(table), null, query.maxPageSize(), offset,
+                        query, true);
             }
 
-            // Legacy: pass through as-is
+            // Legacy: pass through as-is. The caller owns provider-native SQL and it
+            // exposes no portable row alias, so ORDER BY stays on bare columns.
             if (query.partitionKey() != null) {
                 String stmt = appendPartitionKeyConditionSQL(expression);
                 Map<String, Object> combined = new LinkedHashMap<>();
@@ -759,8 +1015,10 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                 sql = appendPartitionKeyConditionSQL(sql);
             }
 
-            // Apply ORDER BY before LIMIT/OFFSET
-            sql = appendResultSetControl(sql, query);
+            // Apply ORDER BY before LIMIT/OFFSET. The translated statement exposes
+            // the portable row alias, so sort keys read the same authoritative
+            // envelope the WHERE clause does.
+            sql = appendResultSetControl(sql, query, true);
 
             // Append LIMIT/OFFSET to the translated SQL for pagination
             String pagedSql = sql + " LIMIT " + (pageSize + 1) + " OFFSET " + offset;
@@ -1062,6 +1320,13 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             }
         }
 
+        // The physical column layout may have changed: this call may have just
+        // created the table, or an operator may have run
+        // `ALTER TABLE ... ADD COLUMN` out of band before calling us. Drop the
+        // cached layout so the next write re-reads INFORMATION_SCHEMA instead of
+        // mirroring an out-of-date (possibly non-existent) column set.
+        invalidateTableColumns(tableName);
+
         // If the user opted in to extended change-feed retention, ensure the
         // companion Spanner CHANGE STREAM exists with the requested
         // retention_period option. This is idempotent: if the stream already
@@ -1311,6 +1576,20 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * </ul>
      */
     static String appendResultSetControl(String sql, QueryRequest query) {
+        return appendResultSetControl(sql, query, false);
+    }
+
+    /**
+     * @param envelopeOrdering when {@code true}, non-key {@link QueryRequest#orderBy()}
+     *        fields are sorted through the authoritative {@code data} envelope
+     *        via {@link SpannerExpressionTranslator#orderByExpression} instead of
+     *        a bare physical column reference. Only SDK-generated SQL that
+     *        exposes the {@link SpannerExpressionTranslator#ROW_ALIAS} row alias
+     *        may pass {@code true}; caller-supplied native/legacy GoogleSQL has
+     *        no such alias (and is provider-native by definition), so it keeps
+     *        the bare-column form.
+     */
+    static String appendResultSetControl(String sql, QueryRequest query, boolean envelopeOrdering) {
         // Caller-supplied SQL already orders its results — do not emit a
         // second ORDER BY clause, even when the caller also populates
         // QueryRequest.orderBy().
@@ -1339,7 +1618,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             for (int i = 0; i < query.orderBy().size(); i++) {
                 SortOrder so = query.orderBy().get(i);
                 if (i > 0) result.append(", ");
-                result.append(so.field()).append(" ").append(so.direction().name());
+                appendSortKey(result, so, envelopeOrdering);
                 if (SpannerConstants.FIELD_PARTITION_KEY.equals(so.field())) sortsByPartitionKey = true;
                 if (SpannerConstants.FIELD_SORT_KEY.equals(so.field())) sortsBySortKey = true;
             }
@@ -1362,6 +1641,39 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
+     * Appends one {@code ORDER BY} sort key.
+     * <p>
+     * {@code partitionKey} / {@code sortKey} are physical key columns that never
+     * appear in the document envelope, so they always sort as bare columns —
+     * which also keeps the deterministic-pagination tie-breakers intact. Every
+     * other field is a portable document field, and on the envelope-aware paths
+     * it is routed through {@link SpannerExpressionTranslator#orderByExpression}
+     * so ORDER BY reads the same authoritative source as the WHERE clause and
+     * {@link SpannerRowMapper}.
+     */
+    private static void appendSortKey(StringBuilder result, SortOrder so, boolean envelopeOrdering) {
+        boolean keyColumn = SpannerConstants.FIELD_PARTITION_KEY.equals(so.field())
+                || SpannerConstants.FIELD_SORT_KEY.equals(so.field());
+        if (envelopeOrdering && !keyColumn) {
+            result.append(SpannerExpressionTranslator.orderByExpression(
+                    so.field(), so.direction().name()));
+        } else {
+            result.append(so.field()).append(" ").append(so.direction().name());
+        }
+    }
+
+    /**
+     * Builds the SDK's scan projection with the portable row alias
+     * ({@code SELECT r.* FROM <table> AS r}). The alias is what lets
+     * {@link #appendResultSetControl(String, QueryRequest, boolean)} emit
+     * envelope-authoritative ORDER BY keys on the scan paths.
+     */
+    private static String aliasedScan(String table) {
+        return "SELECT " + SpannerExpressionTranslator.ROW_ALIAS + ".* FROM " + table
+                + " AS " + SpannerExpressionTranslator.ROW_ALIAS;
+    }
+
+    /**
      * Executes a GoogleSQL statement with LIMIT/OFFSET pagination and returns one page.
      * <p>
      * Appends {@code LIMIT (pageSize + 1) OFFSET offset} to detect whether more pages
@@ -1375,11 +1687,16 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      */
     private QueryPage executeStatement(String sql, Map<String, Object> parameters,
             Integer pageSize, long offset) {
-        return executeStatement(sql, parameters, pageSize, offset, null);
+        return executeStatement(sql, parameters, pageSize, offset, null, false);
     }
 
     private QueryPage executeStatement(String sql, Map<String, Object> parameters,
             Integer pageSize, long offset, QueryRequest query) {
+        return executeStatement(sql, parameters, pageSize, offset, query, false);
+    }
+
+    private QueryPage executeStatement(String sql, Map<String, Object> parameters,
+            Integer pageSize, long offset, QueryRequest query, boolean envelopeOrdering) {
         int limit = pageSize != null ? pageSize : SpannerConstants.PAGE_SIZE_DEFAULT;
         // Respect Top N limit: cap the page size
         if (query != null && query.limit() != null) {
@@ -1387,7 +1704,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
         }
 
         // Append ORDER BY before LIMIT/OFFSET
-        String baseSQL = appendResultSetControl(sql, query);
+        String baseSQL = appendResultSetControl(sql, query, envelopeOrdering);
 
         // Append LIMIT/OFFSET for pagination
         String pagedSql = baseSQL + " LIMIT " + (limit + 1) + " OFFSET " + offset;
@@ -1486,63 +1803,14 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     private static final com.fasterxml.jackson.databind.ObjectMapper JSON_MAPPER =
             new com.fasterxml.jackson.databind.ObjectMapper();
 
-    /**
-     * Sets a single column value in a Spanner mutation builder.
-     * <p>
-     * Supported Java types: {@link String}, {@link Long}, {@link Integer},
-     * {@link Boolean}, {@link Double}, {@link Float}, and {@code null}
-     * (written as {@code NULL STRING}). {@link Map} and {@link java.util.Collection}
-     * values are serialised as JSON with an unambiguous marker prefix
-     * ({@link SpannerConstants#JSON_VALUE_MARKER}); on read, the marker is detected
-     * and the value is parsed back into a JSON node. Any other type falls back to
-     * {@link Object#toString()} to preserve the prior behaviour and avoid surprise
-     * failures for types Jackson cannot handle without extra modules (e.g.,
-     * {@code java.time.Instant}).
-     *
-     * @param mutation the mutation builder to write the column into
-     * @param column   the Spanner column name
-     * @param value    the value to write; {@code null} writes a null STRING
-     */
-    private void setMutationValue(Mutation.WriteBuilder mutation, String column, Object value) {
-        if (value == null) {
-            mutation.set(column).to((String) null);
-        } else if (value instanceof String s) {
-            // Escape leading SOH (U+0001) so a user string starting with the
-            // SDK's JSON_VALUE_MARKER (which begins with U+0001) cannot collide
-            // with marker-prefixed encoded values on read. Reader strips one
-            // leading SOH when it sees the U+0001 U+0001 escape pair.
-            if (!s.isEmpty() && s.charAt(0) == '\u0001') {
-                mutation.set(column).to('\u0001' + s);
-            } else {
-                mutation.set(column).to(s);
-            }
-        } else if (value instanceof Long l) {
-            mutation.set(column).to(l);
-        } else if (value instanceof Integer i) {
-            mutation.set(column).to((long) i);
-        } else if (value instanceof Boolean b) {
-            mutation.set(column).to(b);
-        } else if (value instanceof Double d) {
-            mutation.set(column).to(d);
-        } else if (value instanceof Float f) {
-            mutation.set(column).to((double) f);
-        } else if (value instanceof Map<?, ?> || value instanceof Collection<?>) {
-            // Complex containers: encode as JSON with marker prefix so reads can
-            // unambiguously round-trip them back to Map/List without misclassifying
-            // user strings that happen to start with '{' or '['.
-            try {
-                mutation.set(column).to(
-                        SpannerConstants.JSON_VALUE_MARKER + JSON_MAPPER.writeValueAsString(value));
-            } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
-                // Nested unsupported value (e.g. java.time.Instant without jsr310 module):
-                // fall back to toString() rather than failing the write.
-                LOG.debug("JSON serialise failed for column '{}', falling back to toString(): {}",
-                        column, ex.getMessage());
-                mutation.set(column).to(value.toString());
-            }
-        } else {
-            // Unknown types: preserve historical toString() fallback.
-            mutation.set(column).to(value.toString());
+    private static void setTypedNull(Mutation.WriteBuilder mutation, String column, Type columnType) {
+        switch (columnType.getCode()) {
+            case INT64 -> mutation.set(column).to((Long) null);
+            case FLOAT64 -> mutation.set(column).to((Double) null);
+            case BOOL -> mutation.set(column).to((Boolean) null);
+            case STRING -> mutation.set(column).to((String) null);
+            default -> throw new IllegalArgumentException(
+                    "Unsupported physical mirror type: " + columnType.getCode());
         }
     }
 

@@ -111,7 +111,7 @@ This document resolves key design choices for the Multicloud DB SDK and records 
 - Rationale: These five functions have direct equivalents in all three providers (see operator/function matrix in `query-filter-research.md`). Translation is straightforward:
   - `starts_with` → `STARTSWITH` (Cosmos), `begins_with` (DynamoDB PartiQL), `STARTS_WITH` (Spanner)
   - `contains` → `CONTAINS` (Cosmos), `contains` (DynamoDB PartiQL), `STRPOS(...) > 0` (Spanner)
-  - `field_exists` → `IS_DEFINED` (Cosmos), `IS NOT MISSING` (DynamoDB PartiQL), `IS NOT NULL` (Spanner)
+  - `field_exists` → present-and-non-null predicate: `IS_DEFINED AND NOT IS_NULL` (Cosmos), `IS NOT MISSING AND IS NOT NULL` (DynamoDB PartiQL), JSON non-null type test over the authoritative envelope (Spanner)
   - `string_length` → `LENGTH` (Cosmos), `char_length` (DynamoDB PartiQL), `CHAR_LENGTH` (Spanner)
   - `collection_size` → `ARRAY_LENGTH` (Cosmos), `size` (DynamoDB PartiQL), `ARRAY_LENGTH` (Spanner)
 - Alternatives considered:

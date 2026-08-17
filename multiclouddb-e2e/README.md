@@ -103,6 +103,8 @@ Each run exercises the full CRUD surface on a `products` collection:
 | 2 | Read one by ID | `client.read(...)` |
 | 3 | Update a product | `client.upsert(...)` |
 | 4 | Verify update | `client.read(...)` |
+| 4b | Patch two fields | `client.patch(...)` |
+| 4c | Verify patch (asserts `price` and dynamic `onSale`) | `client.read(...)` |
 | 5 | List all (paged) | `client.query(...)` |
 | 6 | Filter by category | `client.query(expression)` |
 | 7 | Filter in-stock + price | `client.query(expression)` |

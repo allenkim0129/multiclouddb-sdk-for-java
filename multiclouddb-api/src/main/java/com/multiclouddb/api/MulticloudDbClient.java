@@ -24,6 +24,15 @@ import java.util.Map;
 public interface MulticloudDbClient extends AutoCloseable {
 
     /**
+     * Maximum number of {@link PatchOperation}s accepted by a single
+     * {@link #patch(ResourceAddress, MulticloudDbKey, List, OperationOptions)} call.
+     * <p>
+     * This is Cosmos DB's native per-request limit. The SDK applies it uniformly
+     * so that a patch which succeeds on one provider cannot fail on another.
+     */
+    int MAX_PATCH_OPERATIONS = 10;
+
+    /**
      * Insert a new document. Fails if a document with the same key already exists.
      *
      * @param address  target database + collection
@@ -60,8 +69,9 @@ public interface MulticloudDbClient extends AutoCloseable {
     }
 
     /**
-     * Update an existing document. Fails if a document with the given key does not
-     * exist.
+     * Replace an existing document. Fields absent from {@code document} are
+     * removed from the portable document view. Fails if a document with the
+     * given key does not exist.
      *
      * @param address  target database + collection
      * @param key      document key
@@ -72,8 +82,8 @@ public interface MulticloudDbClient extends AutoCloseable {
     void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options);
 
     /**
-     * Update an existing document using default options. Fails if key does not
-     * exist.
+     * Replace an existing document using default options. Fails if key does
+     * not exist.
      */
     default void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document) {
         update(address, key, document, OperationOptions.defaults());
@@ -95,6 +105,78 @@ public interface MulticloudDbClient extends AutoCloseable {
      */
     default void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document) {
         upsert(address, key, document, OperationOptions.defaults());
+    }
+
+    /**
+     * Apply field-level modifications to an existing document without sending
+     * the whole document.
+     * <p>
+     * Cosmos DB and DynamoDB execute native partial writes; Spanner supplies
+     * an equivalent atomic document-envelope update in a retryable read-write
+     * transaction. No
+     * provider exposes a non-transactional client-side read-modify-write or
+     * lost-update window. All operations in one call are applied
+     * <strong>atomically</strong>: either every operation takes effect or none does.
+     * <p>
+     * <strong>When to use it.</strong> {@code patch()} is a latency and
+     * concurrency optimisation, and the only way to express a safe atomic
+     * counter. Cosmos DB and DynamoDB can also reduce request payload; Spanner
+     * rewrites its document envelope transactionally. It is <em>not</em> a
+     * guaranteed write-cost reduction: billing depends on provider pricing,
+     * account configuration, indexing, item shape, and workload. Prefer it
+     * when you are changing a few fields of a large document, when you would
+     * otherwise read-then-write, or when concurrent writers touch disjoint
+     * fields.
+     * <p>
+     * <strong>Contract.</strong>
+     * <ul>
+     *   <li>The document must already exist — a missing key throws
+     *       {@link MulticloudDbErrorCategory#NOT_FOUND}. Use
+     *       {@link #upsert(ResourceAddress, MulticloudDbKey, Map, OperationOptions)}
+     *       to create.</li>
+     *   <li>At most {@link #MAX_PATCH_OPERATIONS} operations per call.</li>
+     *   <li>The deterministic serialized list of every operation's type, path,
+     *       and optional value (including a {@code REMOVE}'s type and path)
+     *       must not exceed 399 KB (408,576 bytes).</li>
+     *   <li>Operations must address disjoint paths; duplicate, case-only alias,
+     *       and ancestor paths in the same call are {@code INVALID_REQUEST}.</li>
+     *   <li>{@code REPLACE}, {@code REMOVE} and {@code INCREMENT} require the
+     *       target field to exist and throw {@code NOT_FOUND} otherwise.
+     *       {@code SET} creates or overwrites, but never creates missing
+     *       intermediate objects on a nested path.</li>
+     *   <li>{@code INCREMENT} integral deltas and their resulting value must
+     *       fit signed 64-bit range;
+     *       fractional deltas must be finite, no greater than
+     *       9,007,199,254,740,991 in magnitude, and round-trip through an
+     *       IEEE-754 {@code double} without decimal precision loss.</li>
+     *   <li>Nested paths require {@link Capability#NESTED_PATCH}, which Spanner
+     *       does not declare; using one there throws
+     *       {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}.</li>
+     *   <li>{@link OperationOptions#ttlSeconds()} is <strong>ignored</strong> by
+     *       {@code patch()} on every provider — patching never changes a
+     *       document's TTL. Use {@code upsert()} to reset expiry.</li>
+     * </ul>
+     * See {@link PatchOperation} for path rules and per-operation semantics.
+     *
+     * @param address    target database + collection
+     * @param key        document key; must identify an existing document
+     * @param operations the modifications to apply, in order
+     * @param options    operation options (timeout, etc.); {@code ttlSeconds} is ignored
+     * @throws MulticloudDbException with category NOT_FOUND if the document — or a
+     *         field required by {@code REPLACE}/{@code REMOVE}/{@code INCREMENT} — does
+     *         not exist; INVALID_REQUEST if the operation list violates the portable
+     *         contract; UNSUPPORTED_CAPABILITY if the provider does not declare
+     *         {@link Capability#PATCH} or, for nested paths,
+     *         {@link Capability#NESTED_PATCH}
+     */
+    void patch(ResourceAddress address, MulticloudDbKey key, List<PatchOperation> operations,
+               OperationOptions options);
+
+    /**
+     * Apply field-level modifications to an existing document, using default options.
+     */
+    default void patch(ResourceAddress address, MulticloudDbKey key, List<PatchOperation> operations) {
+        patch(address, key, operations, OperationOptions.defaults());
     }
 
     /**

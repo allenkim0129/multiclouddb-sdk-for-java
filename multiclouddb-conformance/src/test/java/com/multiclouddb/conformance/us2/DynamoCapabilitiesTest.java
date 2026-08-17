@@ -22,6 +22,17 @@ public class DynamoCapabilitiesTest extends CapabilitiesConformanceTest {
         return ProviderId.DYNAMO;
     }
 
+    @Override
+    protected boolean expectedNestedPatchSupport() {
+        return true;
+    }
+
+    @Override
+    protected boolean expectedExactFractionalIncrementSupport() {
+        // UpdateItem adds in the DynamoDB N type — exact decimal arithmetic.
+        return true;
+    }
+
     @Test
     void dynamoLikeNotSupported() throws Exception {
         try (var client = com.multiclouddb.conformance.ConformanceHarness.createClient(ProviderId.DYNAMO)) {

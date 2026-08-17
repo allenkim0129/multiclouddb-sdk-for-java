@@ -28,6 +28,17 @@ public final class DynamoCapabilities {
                     "DynamoDB Streams is fixed at 24h server-side. SDK-managed archive-on-read "
                     + "via Kafka (customer-provisioned brokers) is on the v1.x roadmap; for now drain "
                     + "Streams into a customer-provisioned Kafka cluster outside the SDK for >24h."),
+            Capability.PATCH_CAP.withNotes(
+                    "UpdateItem with a compiled UpdateExpression; all operations applied atomically. "
+                    + "Capacity cost depends on item shape and account configuration; patch is a "
+                    + "payload-size and lost-update-safety optimization, not a guaranteed WCU saving"),
+            Capability.NESTED_PATCH_CAP.withNotes(
+                    "Document paths (a.b.c) address nested map attributes directly in the "
+                    + "UpdateExpression"),
+            Capability.EXACT_FRACTIONAL_INCREMENT_CAP.withNotes(
+                    "fractional INCREMENT is evaluated in the DynamoDB N type, which is exact "
+                    + "decimal arithmetic with 38 significant digits, so accumulated results carry "
+                    + "no binary rounding drift; Cosmos and Spanner evaluate in IEEE-754 binary64"),
             // Query DSL capabilities
             Capability.PORTABLE_QUERY_EXPRESSION_CAP.withNotes("Portable expression translation to DynamoDB PartiQL"),
             Capability.LIKE_OPERATOR_UNSUPPORTED.withNotes("LIKE not natively supported in PartiQL on DynamoDB"),

@@ -22,6 +22,17 @@ public class SpannerCapabilitiesTest extends CapabilitiesConformanceTest {
         return ProviderId.SPANNER;
     }
 
+    @Override
+    protected boolean expectedNestedPatchSupport() {
+        return false;
+    }
+
+    @Override
+    protected boolean expectedExactFractionalIncrementSupport() {
+        // PatchNumericDomain.add evaluates the fractional result in binary64.
+        return false;
+    }
+
     @Test
     void spannerSupportsAllQueryDsl() throws Exception {
         try (var client = com.multiclouddb.conformance.ConformanceHarness.createClient(ProviderId.SPANNER)) {

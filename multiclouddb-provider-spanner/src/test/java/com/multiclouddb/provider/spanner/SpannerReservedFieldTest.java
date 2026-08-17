@@ -28,8 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * provider's internal {@code FIELD_DATA} metadata column) must throw a typed
  * {@link MulticloudDbException} with category
  * {@link MulticloudDbErrorCategory#INVALID_REQUEST}, rather than silently
- * drop the field. Silent drop would produce cross-provider data loss because
- * Cosmos and DynamoDB persist user fields named {@code "data"}.
+ * drop the field. The shared SDK validator now applies the same
+ * case-insensitive reservation to Cosmos DB and DynamoDB before dispatch.
  *
  * <p>The rejection happens before any network call, so this test does not
  * need a running emulator. No provider tag is set so the unit profile picks

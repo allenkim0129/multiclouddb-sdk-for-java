@@ -128,6 +128,35 @@ public final class CosmosConstants {
     /** JSON path of the partition key field in every Cosmos container. */
     public static final String PARTITION_KEY_PATH = "/" + FIELD_PARTITION_KEY;
 
+    // ── Patch ─────────────────────────────────────────────────────────────────
+
+    /**
+     * HTTP status Cosmos uses for a failed patch precondition.
+     * <p>
+     * The adapter never sends an {@code If-Match} ETag on a patch. The only
+     * precondition it attaches is a path-scoped conditional-patch filter
+     * predicate ({@code FROM c WHERE IS_DEFINED(c["field"]) ...}), evaluated
+     * server-side inside the same atomic write. A 412 therefore proves that a
+     * required path was absent when the write was evaluated, and is mapped to the
+     * portable {@code NOT_FOUND} that DynamoDB and Spanner report for the same
+     * state — not to {@code CONFLICT}, because a concurrent write to a field the
+     * patch does not address cannot falsify the predicate. Emulator behavior is
+     * verified separately by the pending T192 conformance run.
+     */
+    public static final int STATUS_PRECONDITION_FAILED = 412;
+
+    /**
+     * HTTP status Cosmos uses for a natively rejected patch operation, such as an
+     * {@code increment} whose target vanished or stopped being numeric after the
+     * adapter's validating read. It is untyped, so the adapter re-reads and
+     * reclassifies it from current state rather than reporting
+     * {@code INVALID_REQUEST} where the peer providers report {@code NOT_FOUND}.
+     */
+    public static final int STATUS_BAD_REQUEST = 400;
+
+    /** HTTP status Cosmos uses for a missing item. */
+    public static final int STATUS_NOT_FOUND = 404;
+
     // ── Paging ────────────────────────────────────────────────────────────────
 
     /** Default page size used when the caller does not specify one. */

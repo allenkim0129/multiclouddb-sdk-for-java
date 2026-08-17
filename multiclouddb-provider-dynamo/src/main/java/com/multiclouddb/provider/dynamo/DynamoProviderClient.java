@@ -14,10 +14,13 @@ import com.multiclouddb.api.MulticloudDbKey;
 import com.multiclouddb.api.OperationDiagnostics;
 import com.multiclouddb.api.OperationNames;
 import com.multiclouddb.api.OperationOptions;
+import com.multiclouddb.api.PatchOperation;
 import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
+import com.multiclouddb.api.PatchNumericDomain;
+import com.multiclouddb.spi.DocumentFieldValidator;
 import com.multiclouddb.spi.SdkUserAgent;
 import com.multiclouddb.api.query.TranslatedQuery;
 import com.multiclouddb.spi.MulticloudDbProviderClient;
@@ -53,10 +56,13 @@ import software.amazon.awssdk.services.dynamodb.model.DescribeTableRequest;
 import software.amazon.awssdk.services.dynamodb.model.DescribeTableResponse;
 import software.amazon.awssdk.services.dynamodb.model.ResourceInUseException;
 import software.amazon.awssdk.services.dynamodb.model.ResourceNotFoundException;
+import software.amazon.awssdk.services.dynamodb.model.ReturnValuesOnConditionCheckFailure;
 import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 import software.amazon.awssdk.services.dynamodb.model.ScanResponse;
 import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 import software.amazon.awssdk.services.dynamodb.model.TableStatus;
+import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.UpdateItemResponse;
 import software.amazon.awssdk.services.dynamodb.waiters.DynamoDbWaiter;
 import software.amazon.awssdk.http.SdkHttpResponse;
 
@@ -213,6 +219,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     @Override
     public void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.CREATE);
+        DocumentFieldValidator.validateWritableDocument(document, ProviderId.DYNAMO, OperationNames.CREATE);
         try {
             Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
@@ -303,8 +310,8 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      * <p>
      * Uses a {@code PutItem} with an {@code attribute_exists(partitionKey)} condition
      * expression. If no item with the given key exists, the operation fails with
-     * {@link com.multiclouddb.api.MulticloudDbErrorCategory#CONFLICT} (mapped from
-     * DynamoDB's {@code ConditionalCheckFailedException}).
+     * {@link com.multiclouddb.api.MulticloudDbErrorCategory#NOT_FOUND} (mapped
+     * from DynamoDB's {@code ConditionalCheckFailedException}).
      *
      * @param address  the logical database + collection
      * @param key      the document key identifying the item to replace
@@ -316,6 +323,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     @Override
     public void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.UPDATE);
+        DocumentFieldValidator.validateWritableDocument(document, ProviderId.DYNAMO, OperationNames.UPDATE);
         try {
             Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
@@ -372,6 +380,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     @Override
     public void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.UPSERT);
+        DocumentFieldValidator.validateWritableDocument(document, ProviderId.DYNAMO, OperationNames.UPSERT);
         try {
             Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
@@ -394,6 +403,282 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         } catch (DynamoDbException e) {
             throw DynamoErrorMapper.map(e, OperationNames.UPSERT);
         }
+    }
+
+    /**
+     * Applies field-level modifications using a DynamoDB {@code UpdateItem}.
+     * <p>
+     * The operation list is compiled into a single {@code UpdateExpression}
+     * ({@code SET ... REMOVE ...}) guarded by a {@code ConditionExpression}, so
+     * DynamoDB applies every change atomically in one request. The caller has
+     * already validated the list, so this method only translates.
+     *
+     * <h4>Enforcing the portable contract</h4>
+     * {@code UpdateItem} would otherwise <em>create</em> a missing item, and
+     * {@code REMOVE} on a missing attribute is a silent no-op — both diverge from
+     * Cosmos. The condition expression closes both gaps: it always asserts
+     * {@code attribute_exists(partitionKey)} for the document itself, adds an
+     * {@code attribute_exists(path)} term for every operation that requires its
+     * target to be present, and bounds integral increment results to signed
+     * 64-bit range. Failed conditions request an {@code ALL_OLD} image so the
+     * adapter can distinguish a missing target ({@code NOT_FOUND}) from a
+     * nonnumeric or overflowing increment ({@code INVALID_REQUEST}); an
+     * unprovable concurrent transition remains {@code CONFLICT}.
+     *
+     * <h4>Cost</h4>
+     * Patch is not a billing guarantee. Capacity use depends on item shape,
+     * account configuration, and the active pricing model; measure it against
+     * a full write for the workload that matters to the application.
+     *
+     * @param address    the logical database + collection
+     * @param key        the document key; must identify an existing item
+     * @param operations the validated modifications to apply
+     * @param options    operation options; {@code ttlSeconds} is intentionally ignored
+     * @throws com.multiclouddb.api.MulticloudDbException category {@code NOT_FOUND} for a
+     *         missing item or required field, {@code INVALID_REQUEST} for a
+     *         nonnumeric increment target or integral-result overflow, or
+     *         {@code CONFLICT} when a concurrent transition prevents classification
+     */
+    @Override
+    public void patch(ResourceAddress address, MulticloudDbKey key, List<PatchOperation> operations,
+            OperationOptions options) {
+        checkOpen(OperationNames.PATCH);
+        validatePatchRequest(operations);
+        try {
+            Map<String, AttributeValue> keyMap = new LinkedHashMap<>();
+            keyMap.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
+            keyMap.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
+                    key.sortKey() != null ? key.sortKey() : key.partitionKey()));
+
+            Map<String, String> names = new LinkedHashMap<>();
+            Map<String, AttributeValue> values = new LinkedHashMap<>();
+            List<String> setClauses = new ArrayList<>();
+            List<String> removeClauses = new ArrayList<>();
+            List<String> conditions = new ArrayList<>();
+            conditions.add("attribute_exists(" + DynamoConstants.ATTR_PARTITION_KEY + ")");
+
+            for (int i = 0; i < operations.size(); i++) {
+                PatchOperation op = operations.get(i);
+                String pathExpr = declarePath(op, i, names);
+                if (op.requiresExistingPath()) {
+                    conditions.add("attribute_exists(" + pathExpr + ")");
+                } else if (op.isNested()) {
+                    conditions.add("attribute_exists(" + parentPath(pathExpr) + ")");
+                }
+                switch (op.type()) {
+                    case SET, REPLACE -> {
+                        String placeholder = ":v" + i;
+                        values.put(placeholder, DynamoItemMapper.objectToAttributeValue(op.value()));
+                        setClauses.add(pathExpr + " = " + placeholder);
+                    }
+                    case INCREMENT -> {
+                        Number delta = PatchNumericDomain.normalize((Number) op.value());
+                        String placeholder = ":v" + i;
+                        values.put(placeholder, DynamoItemMapper.objectToAttributeValue(
+                                delta));
+                        setClauses.add(pathExpr + " = " + pathExpr + " + " + placeholder);
+                        addIntegralResultBounds(pathExpr, delta, values, conditions, i);
+                    }
+                    case REMOVE -> removeClauses.add(pathExpr);
+                }
+            }
+
+            StringBuilder updateExpression = new StringBuilder();
+            if (!setClauses.isEmpty()) {
+                updateExpression.append("SET ").append(String.join(", ", setClauses));
+            }
+            if (!removeClauses.isEmpty()) {
+                if (updateExpression.length() > 0) {
+                    updateExpression.append(' ');
+                }
+                updateExpression.append("REMOVE ").append(String.join(", ", removeClauses));
+            }
+
+            UpdateItemRequest.Builder request = UpdateItemRequest.builder()
+                    .tableName(resolveTableName(address))
+                    .key(keyMap)
+                    .updateExpression(updateExpression.toString())
+                    .conditionExpression(String.join(" AND ", conditions))
+                    .expressionAttributeNames(names)
+                    .returnValuesOnConditionCheckFailure(ReturnValuesOnConditionCheckFailure.ALL_OLD)
+                    .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL);
+            // A REMOVE-only patch has no operands, and DynamoDB rejects an empty
+            // ExpressionAttributeValues map outright.
+            if (!values.isEmpty()) {
+                request.expressionAttributeValues(values);
+            }
+
+            UpdateItemResponse response = dynamoClient.updateItem(request.build());
+            logItemDiagnostics(OperationNames.PATCH, address, response.responseMetadata().requestId(),
+                    response.consumedCapacity());
+        } catch (ConditionalCheckFailedException e) {
+            throw classifyPatchConditionFailure(e, address, key, operations);
+        } catch (DynamoDbException e) {
+            throw DynamoErrorMapper.map(e, OperationNames.PATCH);
+        }
+    }
+
+    private static void addIntegralResultBounds(String pathExpr, Number delta,
+            Map<String, AttributeValue> values, List<String> conditions, int operationIndex) {
+        if (!(delta instanceof Long integralDelta)) {
+            return;
+        }
+        String lowerParameter = ":patchLower" + operationIndex;
+        String upperParameter = ":patchUpper" + operationIndex;
+        values.put(lowerParameter, AttributeValue.fromN(
+                PatchNumericDomain.minimumBaseForIntegralDelta(integralDelta).toString()));
+        values.put(upperParameter, AttributeValue.fromN(
+                PatchNumericDomain.maximumBaseForIntegralDelta(integralDelta).toString()));
+        conditions.add("(" + pathExpr + " BETWEEN " + lowerParameter + " AND " + upperParameter + ")");
+    }
+
+    private MulticloudDbException classifyPatchConditionFailure(ConditionalCheckFailedException original,
+            ResourceAddress address, MulticloudDbKey key, List<PatchOperation> operations) {
+        Map<String, AttributeValue> before = original.hasItem()
+                ? original.item()
+                : readPatchItem(address, key);
+        if (before == null) {
+            return patchConditionFailure(original, MulticloudDbErrorCategory.CONFLICT,
+                    "Unable to classify the rejected patch after a concurrent state change");
+        }
+        if (before.isEmpty()) {
+            return patchConditionFailure(original, MulticloudDbErrorCategory.NOT_FOUND,
+                    "Patch target item does not exist");
+        }
+        if (hasMissingRequiredPatchPath(before, operations)) {
+            return patchConditionFailure(original, MulticloudDbErrorCategory.NOT_FOUND,
+                    "Patch target field does not exist");
+        }
+
+        for (PatchOperation op : operations) {
+            if (op.type() != PatchOperation.Type.INCREMENT
+                    || !PatchNumericDomain.isIntegralDelta((Number) op.value())) {
+                continue;
+            }
+            AttributeValue current = attributeAtPath(before, op.pathSegments());
+            if (current == null) {
+                return patchConditionFailure(original, MulticloudDbErrorCategory.NOT_FOUND,
+                        "Patch target field does not exist");
+            }
+            if (current.n() == null) {
+                return patchConditionFailure(original, MulticloudDbErrorCategory.INVALID_REQUEST,
+                        "INCREMENT target is not numeric");
+            }
+            try {
+                if (PatchNumericDomain.isIntegralResultOutsideRange(
+                        new BigDecimal(current.n()), (Number) op.value())) {
+                    return patchConditionFailure(original, MulticloudDbErrorCategory.INVALID_REQUEST,
+                            "INCREMENT result exceeds the portable signed 64-bit range");
+                }
+            } catch (IllegalArgumentException invalidNumber) {
+                return patchConditionFailure(original, MulticloudDbErrorCategory.INVALID_REQUEST,
+                        "INCREMENT target is not a portable numeric value");
+            }
+        }
+
+        // The atomic condition failed, but the before-image does not prove a
+        // missing target or an out-of-range result. Treat that race as a
+        // conflict rather than claiming a deterministic validation failure.
+        return patchConditionFailure(original, MulticloudDbErrorCategory.CONFLICT,
+                "Patch condition changed concurrently");
+    }
+
+    private Map<String, AttributeValue> readPatchItem(ResourceAddress address, MulticloudDbKey key) {
+        try {
+            Map<String, AttributeValue> keyMap = new LinkedHashMap<>();
+            keyMap.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
+            keyMap.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
+                    key.sortKey() != null ? key.sortKey() : key.partitionKey()));
+            GetItemResponse response = dynamoClient.getItem(GetItemRequest.builder()
+                    .tableName(resolveTableName(address))
+                    .key(keyMap)
+                    .build());
+            return response.hasItem() ? response.item() : Map.of();
+        } catch (DynamoDbException followUpFailure) {
+            // The rejected conditional write remains authoritative. A failed
+            // follow-up read cannot prove a missing document, so callers receive
+            // CONFLICT rather than an invented NOT_FOUND classification.
+            LOG.debug("Unable to classify rejected patch with a follow-up DynamoDB read", followUpFailure);
+            return null;
+        }
+    }
+
+    private static boolean hasMissingRequiredPatchPath(Map<String, AttributeValue> item,
+            List<PatchOperation> operations) {
+        for (PatchOperation op : operations) {
+            int segmentCount = op.requiresExistingPath()
+                    ? op.pathSegments().size()
+                    : op.isNested() ? op.pathSegments().size() - 1 : 0;
+            if (segmentCount > 0
+                    && attributeAtPath(item, op.pathSegments().subList(0, segmentCount)) == null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static AttributeValue attributeAtPath(Map<String, AttributeValue> item, List<String> segments) {
+        if (segments.isEmpty()) {
+            return null;
+        }
+        AttributeValue current = item.get(segments.get(0));
+        for (int index = 1; current != null && index < segments.size(); index++) {
+            if (!current.hasM()) {
+                return null;
+            }
+            current = current.m().get(segments.get(index));
+        }
+        return current;
+    }
+
+    private static MulticloudDbException patchConditionFailure(ConditionalCheckFailedException exception,
+            MulticloudDbErrorCategory category, String message) {
+        Map<String, String> details = new LinkedHashMap<>();
+        if (exception.awsErrorDetails() != null) {
+            details.put("errorCode", exception.awsErrorDetails().errorCode());
+        }
+        return new MulticloudDbException(new MulticloudDbError(
+                category,
+                message + ": " + exception.getMessage(),
+                ProviderId.DYNAMO,
+                OperationNames.PATCH,
+                false,
+                exception.statusCode(),
+                details), exception);
+    }
+
+    /**
+     * Registers each segment of a patch path as an expression attribute name and
+     * returns the resulting document-path expression.
+     * <p>
+     * Placeholders are always used because document fields are caller-supplied and
+     * may collide with DynamoDB's reserved words. They are scoped per operation
+     * ({@code #n0_0}, {@code #n1_0}, ...) so that two operations sharing a prefix
+     * each declare their own names — DynamoDB permits several placeholders to
+     * resolve to the same attribute name, but rejects any declared name that goes
+     * unused.
+     *
+     * @param op    the operation whose path is being compiled
+     * @param index the operation's position in the request, used to scope placeholders
+     * @param names the accumulating expression-attribute-name map, mutated in place
+     * @return the path expression, e.g. {@code #n0_0.#n0_1}
+     */
+    private static String declarePath(PatchOperation op, int index, Map<String, String> names) {
+        List<String> segments = op.pathSegments();
+        StringBuilder expr = new StringBuilder();
+        for (int j = 0; j < segments.size(); j++) {
+            String placeholder = "#n" + index + "_" + j;
+            names.put(placeholder, segments.get(j));
+            if (j > 0) {
+                expr.append('.');
+            }
+            expr.append(placeholder);
+        }
+        return expr.toString();
+    }
+
+    private static String parentPath(String path) {
+        return path.substring(0, path.lastIndexOf('.'));
     }
 
     /**

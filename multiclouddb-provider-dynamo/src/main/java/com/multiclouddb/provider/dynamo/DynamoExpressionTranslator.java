@@ -7,6 +7,7 @@ import com.multiclouddb.api.query.BetweenExpression;
 import com.multiclouddb.api.query.ComparisonExpression;
 import com.multiclouddb.api.query.Expression;
 import com.multiclouddb.api.query.ExpressionTranslator;
+import com.multiclouddb.api.query.ExpressionValidator;
 import com.multiclouddb.api.query.FieldRef;
 import com.multiclouddb.api.query.FunctionCallExpression;
 import com.multiclouddb.api.query.InExpression;
@@ -34,6 +35,7 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
 
     @Override
     public TranslatedQuery translate(Expression expression, Map<String, Object> parameters, String container) {
+        ExpressionValidator.validate(expression, parameters);
         StringBuilder where = new StringBuilder();
         List<Object> positionalParams = new ArrayList<>();
 
@@ -69,6 +71,20 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
             translateFunction(func, sb, srcParams, outParams);
 
         } else if (expr instanceof InExpression in) {
+            if (in.values().isEmpty()) {
+                // Membership in an empty set is unsatisfiable. `InExpression`
+                // already rejects an empty list in its canonical constructor, so
+                // this is defence-in-depth for any AST built around that record;
+                // emitting FALSE keeps the degenerate-IN behaviour identical to
+                // the null-operand branch below and to the Cosmos / Spanner
+                // translators, instead of emitting the invalid `field IN ()`.
+                sb.append("FALSE");
+                return;
+            }
+            if (hasNullOperand(in.values(), srcParams)) {
+                sb.append("FALSE");
+                return;
+            }
             sb.append(in.field().name()).append(" IN (");
             for (int i = 0; i < in.values().size(); i++) {
                 if (i > 0)
@@ -78,6 +94,10 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
             sb.append(')');
 
         } else if (expr instanceof BetweenExpression between) {
+            if (isNullOperand(between.low(), srcParams) || isNullOperand(between.high(), srcParams)) {
+                sb.append("FALSE");
+                return;
+            }
             // Wrap in parentheses for consistency with sibling translators.
             // PartiQL parses the un-parenthesised form correctly (its operator
             // precedence binds BETWEEN tighter than logical AND), so this is
@@ -89,6 +109,22 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
             appendValue(between.high(), sb, srcParams, outParams);
             sb.append(')');
         }
+    }
+
+    private static boolean hasNullOperand(Iterable<Object> operands, Map<String, Object> parameters) {
+        for (Object operand : operands) {
+            if (isNullOperand(operand, parameters)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isNullOperand(Object operand, Map<String, Object> parameters) {
+        if (operand instanceof Parameter parameter) {
+            return parameters == null || parameters.get(parameter.name()) == null;
+        }
+        return operand instanceof Literal literal && literal.value() == null;
     }
 
     private void translateFunction(FunctionCallExpression func, StringBuilder sb,
@@ -106,9 +142,10 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
                 sb.append(')');
             }
             case FIELD_EXISTS -> {
-                // field IS NOT MISSING
+                // A present PartiQL NULL is not a portable existing field.
                 if (!func.arguments().isEmpty() && func.arguments().get(0) instanceof FieldRef field) {
-                    sb.append(field.name()).append(" IS NOT MISSING");
+                    sb.append('(').append(field.name()).append(" IS NOT MISSING AND ")
+                            .append(field.name()).append(" IS NOT NULL)");
                 }
             }
             case STRING_LENGTH -> {

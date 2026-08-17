@@ -8,10 +8,12 @@ import com.multiclouddb.api.DocumentResult;
 import com.multiclouddb.api.MulticloudDbClient;
 import com.multiclouddb.api.MulticloudDbClientFactory;
 import com.multiclouddb.api.MulticloudDbKey;
+import com.multiclouddb.api.PatchOperation;
 import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -120,6 +122,24 @@ public class Main {
         }
         System.out.println();
 
+        // ── PATCH (field-level partial update) ────────────────────────
+        System.out.println("── PATCH (prod-005: price cut, mark on-sale) ──────────────────");
+        patch("prod-005");
+        System.out.println();
+
+        // ── READ (verify patch) ───────────────────────────────────────
+        System.out.println("── READ (verify patch) ────────────────────────────────────────");
+        DocumentResult patchResult = read("prod-005");
+        if (patchResult == null) {
+            throw new AssertionError("Expected document for prod-005 after patch but got null");
+        }
+        if (Math.abs(patchResult.document().path("price").asDouble() - 49.99) > 0.000_001
+                || !patchResult.document().path("onSale").asBoolean()) {
+            throw new AssertionError("Patch did not persist price=49.99 and dynamic onSale=true: "
+                    + patchResult.document());
+        }
+        System.out.println();
+
         // ── LIST (full scan, paged) ───────────────────────────────────
         System.out.println("── LIST (pageSize=3) ──────────────────────────────────────────");
         query(QueryRequest.builder()
@@ -186,6 +206,20 @@ public class Main {
         client.upsert(address, key, doc);
         System.out.printf("    → upserted: %s | %s | $%.2f | inStock=%b%n",
                 id, name, price, inStock);
+    }
+
+    /**
+     * Field-level partial update. Only the two touched fields are sent; every other
+     * field of the document is left alone by the provider, not rewritten by us.
+     */
+    private void patch(String id) {
+        MulticloudDbKey key = MulticloudDbKey.of(id, id);
+
+        System.out.printf("  client.patch(address, key(%s), [replace /price, set /onSale])%n", id);
+        client.patch(address, key, List.of(
+                PatchOperation.replace("/price", 49.99),
+                PatchOperation.set("/onSale", true)));
+        System.out.println("    → patched: price=49.99 | onSale=true");
     }
 
     private DocumentResult read(String id) {

@@ -22,11 +22,11 @@ import java.util.HashSet;
  * Supports all common Spanner column types: STRING, INT64, FLOAT64, BOOL,
  * BYTES, TIMESTAMP, DATE, and JSON.
  * <p>
- * When a {@code data} column is present and contains a JSON array of field
- * names, only those fields (plus the primary key columns) are included in the
- * result. This lets the SDK distinguish between "explicitly set to null" and
- * "empty schema column" — a distinction that Spanner's fixed schema otherwise
- * loses.
+ * When a {@code data} column is present and contains the SDK's JSON document
+ * envelope, the envelope is authoritative and supports arbitrary top-level
+ * fields without a matching DDL column. Legacy rows that contain the former
+ * JSON array of field names continue to use the column projection path, which
+ * distinguishes "explicitly set to null" from "empty schema column".
  * <p>
  * STRING values written by the SDK as JSON-serialised Map/Collection are
  * tagged with {@link SpannerConstants#JSON_VALUE_MARKER} (a control-char
@@ -65,7 +65,26 @@ public final class SpannerRowMapper {
                 break;
             }
         }
-        Set<String> writtenFields = parseFieldMetadata(rs, dataColumnIndex);
+        String dataValue = dataColumnIndex < 0 || rs.isNull(dataColumnIndex)
+                ? null
+                : rs.getString(dataColumnIndex);
+        ObjectNode storedDocument = parseDocumentEnvelopeNode(dataValue);
+        if (storedDocument != null) {
+            for (int i = 0; i < columnCount; i++) {
+                String columnName = type.getStructFields().get(i).getName();
+                if (SpannerConstants.FIELD_PARTITION_KEY.equals(columnName)
+                        || SpannerConstants.FIELD_SORT_KEY.equals(columnName)) {
+                    if (rs.isNull(i)) {
+                        storedDocument.putNull(columnName);
+                    } else {
+                        storedDocument.put(columnName, rs.getString(i));
+                    }
+                }
+            }
+            return storedDocument;
+        }
+
+        Set<String> writtenFields = parseFieldMetadata(dataValue);
 
         for (int i = 0; i < columnCount; i++) {
             if (i == dataColumnIndex) continue; // internal metadata column
@@ -168,21 +187,45 @@ public final class SpannerRowMapper {
     }
 
     /**
-     * Parses the field-name metadata stored at the given index.
+     * Parses the legacy field-name metadata stored in {@code data}.
      *
-     * @param rs              the result set positioned on a row
-     * @param dataColumnIndex the column index of the {@code data} column, or
-     *                        {@code -1} if the table has no data column
+     * @param dataValue raw {@code data} column content
      * @return set of field names that were explicitly written, or {@code null}
-     *         if no metadata is available (legacy row or data column absent)
+     *         if no legacy metadata is available
      */
-    private static Set<String> parseFieldMetadata(ResultSet rs, int dataColumnIndex) {
-        if (dataColumnIndex < 0 || rs.isNull(dataColumnIndex)) return null;
-        String dataValue = rs.getString(dataColumnIndex);
+    private static Set<String> parseFieldMetadata(String dataValue) {
         if (dataValue == null || !dataValue.startsWith("[")) return null;
         try {
             List<String> fields = MAPPER.readValue(dataValue, STRING_LIST_TYPE);
             return new HashSet<>(fields);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Parses the current document envelope stored in {@code data}.
+     *
+     * @param dataValue raw {@code data} column content
+     * @return a detached document map, or {@code null} when this is a legacy
+     *         metadata-array row (or an externally-written value)
+     */
+    static Map<String, Object> parseDocumentEnvelope(String dataValue) {
+        ObjectNode document = parseDocumentEnvelopeNode(dataValue);
+        if (document == null) {
+            return null;
+        }
+        return new LinkedHashMap<>(MAPPER.convertValue(document, MAP_TYPE));
+    }
+
+    private static ObjectNode parseDocumentEnvelopeNode(String dataValue) {
+        if (dataValue == null || dataValue.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode envelope = MAPPER.readTree(dataValue);
+            JsonNode document = envelope.get(SpannerConstants.FIELD_DATA_DOCUMENT);
+            return document instanceof ObjectNode object ? object.deepCopy() : null;
         } catch (Exception e) {
             return null;
         }

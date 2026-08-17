@@ -21,6 +21,17 @@ public class CosmosCapabilitiesTest extends CapabilitiesConformanceTest {
         return ProviderId.COSMOS;
     }
 
+    @Override
+    protected boolean expectedNestedPatchSupport() {
+        return true;
+    }
+
+    @Override
+    protected boolean expectedExactFractionalIncrementSupport() {
+        // Cosmos applies the native patch increment as a JSON binary64 number.
+        return false;
+    }
+
     @Test
     void cosmosExtendedChangeFeedHistorySupported() throws Exception {
         try (var client = com.multiclouddb.conformance.ConformanceHarness.createClient(ProviderId.COSMOS)) {

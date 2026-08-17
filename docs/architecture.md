@@ -42,7 +42,7 @@ All application code depends on `multiclouddb-api`. The core types are:
 
 | Type | Purpose |
 |------|---------|
-| `MulticloudDbClient` | Portable interface: `create`, `read`, `update`, `delete`, `upsert`, `query`, `provisionSchema`, `capabilities` |
+| `MulticloudDbClient` | Portable interface: `create`, `read`, `update`, `delete`, `upsert`, `patch`, `query`, `provisionSchema`, `capabilities` |
 | `MulticloudDbClientFactory` | Creates a `MulticloudDbClient` by discovering providers via `ServiceLoader` |
 | `MulticloudDbClientConfig` | Builder-pattern config: provider selection, connection, auth, feature flags |
 | `ResourceAddress` | `(database, collection)` pair targeting a container/table |
@@ -55,8 +55,16 @@ All application code depends on `multiclouddb-api`. The core types are:
 | `CapabilitySet` / `Capability` | Runtime introspection of provider capabilities |
 | `MulticloudDbException` | Structured error with category, provider, and native code |
 | `PortabilityWarning` | Signals non-portable behavior |
+| `PatchOperation` | A single field-level change (`set` / `replace` / `remove` / `increment`) addressed by JSON Pointer, for `patch()` |
+| `PatchNumericDomain` | Public numeric-domain utility used to describe and normalize the portable `INCREMENT` contract |
 | `OperationOptions` | Per-call timeout, TTL, metadata flag |
 | `OperationDiagnostics` | Latency, request units/charge, request ID, ETag, item count |
+
+`PatchOperation` normalizes accepted mutable operands into detached
+JSON-compatible scalars, maps, and lists at construction. `PatchNumericDomain`
+is intentionally public because callers may validate an increment before
+submitting it. `PatchValidator` is an implementation detail in the
+non-exported `com.multiclouddb.api.internal` package and is not application API.
 
 ### Expression Types
 
@@ -77,7 +85,13 @@ Provider modules implement two SPI contracts without importing each other:
 | SPI Interface | Responsibility |
 |---------------|---------------|
 | `MulticloudDbProviderAdapter` | Factory - creates a `MulticloudDbProviderClient` from config; registered via `META-INF/services` |
-| `MulticloudDbProviderClient` | CRUD + query + provisioning + capabilities - called by `DefaultMulticloudDbClient` |
+| `MulticloudDbProviderClient` | CRUD + query + provisioning + capabilities - called by `DefaultMulticloudDbClient`; provider `patch()` implementations call `validatePatchRequest(...)` before provider SDK work |
+| `DocumentFieldValidator` | SPI-only shared write-boundary helper for provider adapters; validates SDK-reserved document fields and is not application API |
+
+Direct SPI consumers receive the same portable PATCH list, path, overlap,
+reserved-root, numeric-domain, size, and capability checks as facade callers.
+Provider adapters invoke `validatePatchRequest(...)` after their lifecycle
+guard; applications should use `MulticloudDbClient`, not SPI helpers directly.
 
 ---
 

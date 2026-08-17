@@ -12,7 +12,7 @@ Providers / SDKs:
 | Topic | Cosmos DB (`com.azure:azure-cosmos`) | DynamoDB (AWS SDK v2) | Spanner (`google-cloud-spanner`) |
 |---|---|---|---|
 | Read-by-key | `CosmosContainer.readItem(id, new PartitionKey(pk), JsonNode.class)` | `DynamoDbClient.getItem(GetItemRequest.builder().tableName(...).key(keyMap).build())` | `DatabaseClient.singleUse().readRow(table, Key.of(...), columns)` (or SQL with primary key filter) |
-| Upsert / Put | `CosmosContainer.upsertItem(doc, options)` (replace semantics by key) | `DynamoDbClient.putItem(PutItemRequest.builder()...)` (replace-by-key unless conditional) | `DatabaseClient.readWriteTransaction().run(tx -> { tx.buffer(Mutation.newInsertOrUpdateBuilder(table)...); })` |
+| Upsert / Put | `CosmosContainer.upsertItem(doc, options)` (replace semantics by key) | `DynamoDbClient.putItem(PutItemRequest.builder()...)` (replace-by-key unless conditional) | `Mutation.newInsertOrUpdateBuilder(table)` plus an authoritative SDK `data` envelope; compatible physical mirrors are written, while omitted/null/incompatible mirrors are cleared to typed null |
 | Delete-by-key | `CosmosContainer.deleteItem(id, new PartitionKey(pk), options)` (404 when missing) | `DynamoDbClient.deleteItem(DeleteItemRequest.builder()...)` (idempotent when unconditional) | `Mutation.delete(table, KeySet.singleKey(Key.of(...)))` (missing row is effectively idempotent) |
 | Query API shape | SQL string via `CosmosContainer.queryItems(querySpec, options, JsonNode.class)` | Expression-based `QueryRequest` (key condition, filter expressions) / `ScanRequest` | SQL string via `DatabaseClient.singleUse().executeQuery(Statement.of(sql))` |
 | Pagination / continuation | `CosmosPagedFlux.byPage(token, preferredPageSize)` continuation tokens are opaque strings | Responses contain `LastEvaluatedKey`; next page uses `ExclusiveStartKey` (requires adapter-defined token serialization) | SQL result sets are streamed; no user-facing continuation token for query paging (capability-gate as unsupported) |
@@ -32,7 +32,10 @@ Providers / SDKs:
 - **“Upsert” isn’t identical**
   - DynamoDB `put_item` is a full replace-by-key unless you add conditions.
   - Cosmos `upsert_item` replaces the document for the key.
-  - Spanner `insert_or_update` overwrites provided columns and preserves others (different from full replace).
+  - Raw Spanner `insert_or_update` preserves unspecified columns, but the SDK
+    writes a complete authoritative `data` envelope and clears supported
+    physical mirrors that are omitted, null, or runtime-incompatible. SDK
+    reads and portable queries therefore have full-replacement semantics.
 
 - **Delete idempotency differs by default**
   - DynamoDB unconditional deletes are idempotent.
@@ -53,3 +56,5 @@ Providers / SDKs:
 - Treat **continuation** as an opaque `continuation_token` string in the portable API, even if the provider uses a structured key (DynamoDB) or has no native token (Spanner).
 - Make **delete-by-key idempotent** in the portable contract (normalize Cosmos 404-on-delete into success). Callers needing to detect a missing key should use `read()`, which returns `null` on every provider when the key does not exist; an opt-in “strict delete” mode was considered and rejected as unnecessary given that `read()` already provides a portable, non-destructive existence probe.
 - Model **upsert semantics explicitly** (e.g., `UPSERT_REPLACE_ALL` vs `UPSERT_PATCH_COLUMNS`) and capability-gate the stronger semantics for providers that can’t match it.
+- Expose **field-level patch** as a first-class portable operation rather than leaving callers to read-modify-write. Cosmos uses `patchItem`, DynamoDB uses `UpdateItem`, and Spanner applies its `data` document envelope in a retryable transaction. Their existence semantics differ (Cosmos `replace`/`remove` fail on a missing path; DynamoDB `REMOVE` silently no-ops and `UpdateItem` creates a missing item; Spanner checks the envelope in its transaction). The portable contract therefore takes the **strictest** interpretation as the least common denominator and makes the permissive adapters enforce it: Cosmos validates strict/nested state by point read and binds `patchItem` to that ETag for `REPLACE` / `REMOVE` / nested non-increment ops (`INCREMENT` stays unguarded so concurrent increments are not lost), DynamoDB uses a condition expression, and Spanner checks in its transaction. Delivered in US28 / FR-181-FR-192.
+- Capability-gate **nested-path addressing** separately from patch itself. Cosmos and DynamoDB address a document sub-path natively; Spanner stores nested containers in its document envelope and defers nested JSON traversal from the v1 compatibility scope. This asymmetry is declared (`NESTED_PATCH` + `UNSUPPORTED_CAPABILITY`) rather than emulated; the decision is about supported traversal and compatibility scope, not an assertion that a future transactional implementation must have a lost-update window.

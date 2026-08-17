@@ -18,6 +18,10 @@ public abstract class CapabilitiesConformanceTest {
 
     protected abstract ProviderId provider();
 
+    protected abstract boolean expectedNestedPatchSupport();
+
+    protected abstract boolean expectedExactFractionalIncrementSupport();
+
     @Test
     void capabilitiesReturnsNonEmptySet() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
@@ -31,7 +35,7 @@ public abstract class CapabilitiesConformanceTest {
     void allKnownCapabilityNamesPresent() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            // All 17 well-known capability names must be declared
+            // All 20 well-known capability names must be declared
             String[] knownNames = {
                     Capability.CONTINUATION_TOKEN_PAGING,
                     Capability.CROSS_PARTITION_QUERY,
@@ -47,6 +51,9 @@ public abstract class CapabilitiesConformanceTest {
                     Capability.ENDS_WITH,
                     Capability.REGEX_MATCH,
                     Capability.CASE_FUNCTIONS,
+                    Capability.PATCH,
+                    Capability.NESTED_PATCH,
+                    Capability.EXACT_FRACTIONAL_INCREMENT,
                     Capability.RESULT_LIMIT,
                     Capability.ROW_LEVEL_TTL,
                     Capability.WRITE_TIMESTAMP
@@ -59,11 +66,48 @@ public abstract class CapabilitiesConformanceTest {
     }
 
     @Test
-    void capabilityCountIs17() throws Exception {
+    void capabilityCountIs20() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            assertEquals(17, caps.all().size(),
-                    "Provider " + provider().id() + " should declare exactly 17 capabilities");
+            assertEquals(20, caps.all().size(),
+                    "Provider " + provider().id() + " should declare exactly 20 capabilities");
+        }
+    }
+
+    @Test
+    void patchIsSupported() throws Exception {
+        try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
+            assertTrue(client.capabilities().isSupported(Capability.PATCH),
+                    "All providers must support PATCH");
+        }
+    }
+
+    @Test
+    void nestedPatchCapabilityMatchesProviderContract() throws Exception {
+        try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
+            assertEquals(expectedNestedPatchSupport(),
+                    client.capabilities().isSupported(Capability.NESTED_PATCH),
+                    "Provider " + provider().id()
+                            + " must declare the expected NESTED_PATCH capability state");
+        }
+    }
+
+    /**
+     * Fractional INCREMENT accumulates in exact decimal arithmetic on DynamoDB
+     * and in IEEE-754 binary64 on Cosmos and Spanner. The gap is portable only
+     * because it is declared, so every provider must publish the state its
+     * arithmetic actually delivers. The capability is informational — it never
+     * causes a fractional increment to be rejected.
+     */
+    @Test
+    void exactFractionalIncrementCapabilityMatchesProviderArithmetic() throws Exception {
+        try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
+            assertNotNull(client.capabilities().get(Capability.EXACT_FRACTIONAL_INCREMENT),
+                    "EXACT_FRACTIONAL_INCREMENT must be declared either way so callers can branch on it");
+            assertEquals(expectedExactFractionalIncrementSupport(),
+                    client.capabilities().isSupported(Capability.EXACT_FRACTIONAL_INCREMENT),
+                    "Provider " + provider().id()
+                            + " must declare the expected EXACT_FRACTIONAL_INCREMENT capability state");
         }
     }
 

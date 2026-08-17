@@ -26,6 +26,17 @@ public final class CosmosCapabilities {
             Capability.CHANGE_FEED_CAP.withNotes("Change feed processor for real-time changes"),
             Capability.EXTENDED_CHANGE_FEED_HISTORY_CAP.withNotes(
                     "Up to 30 days via Continuous Backup 30d tier; 7d minimum (AVAD requires Continuous Backup)"),
+            Capability.PATCH_CAP.withNotes(
+                    "Native Patch API (patchItem); up to 10 operations applied atomically. "
+                    + "RU cost depends on workload and indexing; patch is a payload-size and "
+                    + "lost-update-safety optimization, not a guaranteed RU saving"),
+            Capability.NESTED_PATCH_CAP.withNotes(
+                    "Patch paths address the JSON document tree directly, so nested fields "
+                    + "are patchable without rewriting the parent object"),
+            Capability.EXACT_FRACTIONAL_INCREMENT_UNSUPPORTED.withNotes(
+                    "fractional INCREMENT is evaluated in IEEE-754 binary64; accumulated results "
+                    + "may differ in the last ulp from DynamoDB's exact decimal arithmetic. "
+                    + "Integral increments remain exact"),
             // Query DSL capabilities
             Capability.PORTABLE_QUERY_EXPRESSION_CAP.withNotes("Portable expression translation to Cosmos SQL"),
             Capability.LIKE_OPERATOR_CAP.withNotes("LIKE operator supported via Cosmos SQL"),

@@ -30,6 +30,9 @@ public final class OperationNames {
     /** Create or replace a document (upsert semantics). */
     public static final String UPSERT = "upsert";
 
+    /** Apply field-level modifications to an existing document (partial update). */
+    public static final String PATCH = "patch";
+
     /** Delete a document by key. */
     public static final String DELETE = "delete";
 

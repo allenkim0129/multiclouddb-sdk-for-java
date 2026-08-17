@@ -315,4 +315,30 @@ class SpannerRowMapperTest {
             assertTrue(node.get("maybe").isNull());
         }
     }
+
+    @Test
+    @DisplayName("document envelopes preserve dynamic fields and override legacy columns")
+    void documentEnvelopeSupportsDynamicFields() {
+        Type rowType = Type.struct(
+                StructField.of("partitionKey", Type.string()),
+                StructField.of("sortKey", Type.string()),
+                StructField.of("data", Type.string()),
+                StructField.of("title", Type.string()));
+        Struct row = Struct.newBuilder()
+                .set("partitionKey").to("p")
+                .set("sortKey").to("s")
+                .set("data").to("{\"" + SpannerConstants.FIELD_DATA_DOCUMENT
+                        + "\":{\"title\":\"from-envelope\",\"onSale\":true,\"nullable\":null}}")
+                .set("title").to("legacy-column-value")
+                .build();
+
+        try (ResultSet rs = singleRow(rowType, row)) {
+            JsonNode node = SpannerRowMapper.toJsonNode(rs);
+            assertEquals("from-envelope", node.get("title").asText());
+            assertTrue(node.get("onSale").asBoolean());
+            assertTrue(node.get("nullable").isNull());
+            assertEquals("p", node.get("partitionKey").asText());
+            assertEquals("s", node.get("sortKey").asText());
+        }
+    }
 }

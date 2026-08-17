@@ -254,3 +254,92 @@ substrates" policy along a narrow, opt-in path:
 ### Spanner upsert flip — rationale
 
 Earlier `Unreleased` builds executed `upsert()` as `Mutation.newReplaceBuilder(...)` to match Cosmos / Dynamo full-document-replace semantics on read. With the change-feed reader in place, that flip became a portability bug: Spanner change streams under `value_capture_type='NEW_ROW'` surfaced an `INSERT` record for every `upsert()` call, regardless of whether the row pre-existed — Cosmos AVAD and Dynamo `NEW_AND_OLD_IMAGES` correctly distinguish CREATE from UPDATE on the same upsert call. The v1 fix flips the mutation back to `Mutation.newInsertOrUpdateBuilder(...)` and keeps the existing `FIELD_DATA` field-set tracking so the read-path full-document-replace contract is preserved without using a destructive replace. The Spanner change-feed reader applies the same `FIELD_DATA` filter to its payload so `ChangeEvent.data()` does not leak stale columns from earlier writes. See `docs/changelog.md` Spanner `[Unreleased]` → *Fixed* for the user-facing note.
+
+---
+
+## Portable Field-Level Patch (US28) — Planning Addendum
+
+Portable `patch` (FR-181..FR-192) uses native partial writes for Cosmos DB and
+DynamoDB, and a retryable document-envelope transaction for Spanner. No adapter
+exposes a non-transactional client-side read-modify-write window.
+
+| Provider | Primitive | How the portable contract is enforced |
+|---|---|---|
+| Cosmos DB | `CosmosContainer.patchItem(...)` | Requests with a strict (`REPLACE` / `REMOVE` / `INCREMENT`) or nested path point-read the document and validate required paths and numeric state. That read's ETag is attached as `If-Match` **only** for `REPLACE`, `REMOVE`, and nested non-increment ops; `INCREMENT` writes unconditionally because the native increment is atomic server-side. A post-read precondition failure on a guarded write is a conflict |
+| DynamoDB | `UpdateItem` with a compiled `UpdateExpression` | `ConditionExpression` asserting `attribute_exists(partitionKey)` plus `attribute_exists(<path>)` per strict op — without it `UpdateItem` creates a missing item and a native `REMOVE` silently no-ops |
+| Spanner | `data` document-envelope mutation | Retryable read-write transaction that preserves legacy-row reads, supports dynamic top-level fields, and keeps existence checks atomic; portable expressions use GoogleSQL JSON functions over the authoritative envelope, with a physical-column fallback only when the row has no valid envelope |
+
+### Design decisions
+
+**Strictest semantics as the least common denominator.** Cosmos's native
+`replace`/`remove` fail on a missing path and cannot be made lenient without an
+extra read. DynamoDB and Spanner are therefore constrained *up* to match, rather
+than Cosmos being relaxed *down*. This is the opposite of the usual LCD
+direction and is deliberate: the permissive behaviours (silent no-op, implicit
+create) are the ones that hide bugs.
+
+**Nested paths are declared, not emulated.** Spanner stores nested containers
+inside its document envelope, and nested JSON traversal is deferred from the v1
+compatibility scope. The gap is declared via `Capability.NESTED_PATCH` +
+`UNSUPPORTED_CAPABILITY`, enforced at the client gate and defended again in the
+Spanner adapter. This scope decision does not claim that a future transactional
+implementation would necessarily have a lost-update window.
+
+**Error normalisation.** Cosmos validates required paths and signed-64
+integral-result bounds from a point read. That read's ETag guards the write
+only for `REPLACE`, `REMOVE`, and nested non-increment operations; `INCREMENT`
+is exempt at every depth so concurrent increments are not converted into
+non-retryable `CONFLICT`s that DynamoDB and Spanner never produce.
+A missing document/path becomes `NOT_FOUND`, and a nonnumeric target or proven
+overflow becomes `INVALID_REQUEST` before the write. A HTTP 412 after an
+ETag-guarded read is `CONFLICT`; it is not reread and reclassified. A
+pure-`INCREMENT` patch still writes unconditionally, so an increment target
+deleted or retyped between the classifying read and the write first surfaces
+as Cosmos's own native increment error. That error is no longer taken at face
+value: the adapter re-reads the document after the failed write and
+reclassifies from the observed state, reporting `NOT_FOUND` when the document
+or the addressed path is gone. A raced increment therefore matches DynamoDB
+and Spanner, and FR-185 holds on all three providers whether or not the write
+raced. The residual that remains is narrower and unavoidable: when the
+post-write re-read cannot determine the cause — for example a concurrent
+writer has already restored a valid numeric target, so the state that caused
+the failure is no longer observable — the adapter keeps Cosmos's own
+classification, which can still be `INVALID_REQUEST`. The exact
+Cosmos emulator 412 behavior remains pending T192. DynamoDB uses the
+conditional failure's old image for the same classification; Spanner checks
+inside its retryable transaction.
+
+**Fractional increment arithmetic is declared, not normalised.** DynamoDB
+evaluates a fractional `INCREMENT` in its exact-decimal `N` type while Cosmos DB
+and Spanner evaluate in IEEE-754 binary64, so accumulated fractional results can
+differ in the last ulp (`0.1 + 0.2` is `0.3` on DynamoDB, `0.30000000000000004`
+elsewhere). Normalising this would require client-side arithmetic and would
+destroy the atomicity that is the whole point of `INCREMENT`. The divergence is
+therefore declared via `Capability.EXACT_FRACTIONAL_INCREMENT` — informational
+only, since no provider rejects a fractional increment because of it. Integral
+increments stay exact everywhere.
+
+**Cost.** Patch is a latency and concurrency optimisation, not a guaranteed
+write-cost reduction. Pricing depends on each provider's account, indexing,
+table configuration, item shape, and workload; no precise cross-operation
+billing equivalence is claimed. The Spanner transaction rewrites the document
+envelope, and a Cosmos patch containing a strict or nested path pays for the
+classifying point read in addition to the write (a top-level `SET`-only patch
+is a single request). This is stated in `docs/guide.md` so applications do not
+adopt it on a false premise.
+
+**Numeric and request bounds.** The API normalizes an accepted integral delta
+to signed 64-bit and atomically requires its resulting value to stay in that
+same interval. An accepted fractional delta is one finite IEEE-754 `double`
+that round-trips from its decimal representation. The complete request-size
+representation contains every operation type, path, and optional value; a
+`REMOVE` has no value but still consumes request bytes.
+
+### Deferred
+
+- Addressable nested paths on Spanner, which would require a JSON-typed column
+  and a schema migration.
+- Array element addressing on any provider (Cosmos inserts and shifts, DynamoDB
+  replaces or appends, Spanner cannot address elements at all).
+- Conditional patch (ETag / version preconditions), which belongs with the
+  `PRECONDITION_FAILED` category tracked in issue #29.

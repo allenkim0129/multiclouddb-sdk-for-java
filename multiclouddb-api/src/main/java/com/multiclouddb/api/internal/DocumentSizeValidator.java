@@ -78,11 +78,23 @@ public final class DocumentSizeValidator {
         }
     }
 
-    /** Overload accepting {@code Map<String, Object>} documents. */
-    public static void validate(Map<String, Object> document, String operation) {
-        if (document == null) {
+    /**
+     * Validates any JSON-serialisable payload using the canonical SDK mapper.
+     * This is used for request envelopes whose wire representation is a list or
+     * another non-document JSON shape.
+     */
+    public static void validate(Object payload, String operation) {
+        if (payload == null) {
             return;
         }
-        validate((JsonNode) MAPPER.valueToTree(document), operation);
+        JsonNode document = payload instanceof JsonNode node
+                ? node
+                : MAPPER.valueToTree(payload);
+        validate(document, operation);
+    }
+
+    /** Overload accepting {@code Map<String, Object>} documents. */
+    public static void validate(Map<String, Object> document, String operation) {
+        validate((Object) document, operation);
     }
 }

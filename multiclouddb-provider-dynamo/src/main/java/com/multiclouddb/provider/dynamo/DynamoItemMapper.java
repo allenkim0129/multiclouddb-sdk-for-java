@@ -152,6 +152,25 @@ public final class DynamoItemMapper {
     }
 
     /**
+     * Convert an arbitrary caller-supplied value — including nested maps and
+     * lists — into an {@link AttributeValue}.
+     * <p>
+     * Unlike {@link #toAttributeValue(Object)}, which is a shallow scalar
+     * converter for query parameters, this routes through Jackson so a patch
+     * operand such as a {@code Map} or {@code List} is stored as a real DynamoDB
+     * {@code M} / {@code L} rather than being flattened to its {@code toString()}.
+     *
+     * @param value the value to convert; {@code null} becomes a NUL attribute
+     * @return the equivalent DynamoDB attribute value
+     */
+    public static AttributeValue objectToAttributeValue(Object value) {
+        if (value == null) {
+            return AttributeValue.fromNul(true);
+        }
+        return jsonNodeToAttributeValue(MAPPER.valueToTree(value));
+    }
+
+    /**
      * Convert a caller-supplied {@code Map<String, Object>} document into a
      * DynamoDB attribute map. Uses Jackson internally to handle nested structures.
      */

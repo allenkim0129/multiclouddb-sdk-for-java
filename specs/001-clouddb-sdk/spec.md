@@ -541,6 +541,25 @@ As an application developer, I can perform portable secondary lookups and, separ
 
 ---
 
+### User Story 28 - Portable Field-Level Patch (Priority: P1)
+
+As an application developer, I can update individual fields of an existing document - including atomically incrementing a counter - without reading, mutating and rewriting the whole document, and the operation behaves identically on every supported provider.
+
+**Why this priority**: Read-modify-write is the single most common source of lost updates in application code, and it is exactly what a portable SDK should make unnecessary. Cosmos DB and DynamoDB expose native partial writes; Spanner applies document-envelope changes in a retryable transaction. The implementations differ enough - in existence semantics, path addressing and operand resolution - that an ungoverned mapping would silently diverge, which makes an explicit portable contract necessary rather than optional.
+
+**Independent Test**: A conformance corpus applies each operation type against a seeded document on every provider and asserts identical outcomes: identical resulting documents, identical error categories for missing documents and missing fields, and all-or-nothing application of a multi-operation call. The one deliberate asymmetry - nested-path addressing - is asserted in both directions against `NESTED_PATCH`.
+
+**Acceptance Scenarios**:
+
+1. **Given** an existing document, **When** an application submits a list of `SET` / `REPLACE` / `REMOVE` / `INCREMENT` operations addressed by JSON Pointer, **Then** every operation is applied atomically in a single native request or retryable transaction, and either all of them take effect or none does.
+2. **Given** a key that does not exist, **When** a patch is submitted, **Then** the SDK raises `NOT_FOUND` on every provider and no document is created.
+3. **Given** an existing document, **When** `REPLACE`, `REMOVE` or `INCREMENT` targets a field that is absent, **Then** the SDK raises `NOT_FOUND` on every provider and no part of the patch is applied.
+4. **Given** concurrent writers incrementing the same numeric field, **When** each uses `INCREMENT`, **Then** the delta is evaluated within the same atomic request or transaction and no update is lost.
+5. **Given** a patch that violates the portable contract - more than the maximum number of operations, overlapping paths, an array-index segment, a JSON Pointer escape, or a key/TTL field name - **When** it is submitted, **Then** the SDK raises `INVALID_REQUEST` before any provider call, identically on every provider.
+6. **Given** a provider that cannot address nested paths, **When** a patch path has more than one segment, **Then** the SDK raises `UNSUPPORTED_CAPABILITY` before execution; it never rewrites the parent field and never silently ignores the operation.
+
+---
+
 ### Edge Cases
 
 - What happens when the key model differs by provider (e.g., partitioned keys vs composite primary keys)?
@@ -599,7 +618,7 @@ Portability is the default mode of the SDK.
 
 The initial SDK version exposes **synchronous (blocking) APIs only**.
 
-- All operations (`read`, `upsert`, `delete`, `query`, `ensureDatabase`, `ensureContainer`, `provisionSchema`) return results synchronously.
+- All operations (`create`, `read`, `update`, `upsert`, `patch`, `delete`, `query`, `listCursors`, `readChanges`, `ensureDatabase`, `ensureContainer`, `provisionSchema`) return results synchronously.
 - **Async APIs are explicitly out of scope for v1.** Reactive or non-blocking variants introduce cross-provider incompatibilities (e.g., Reactor vs. CompletableFuture vs. ListenableFuture) that cannot be abstracted without leaking provider-specific execution models.
 - Applications that require async behavior may wrap SDK calls using their own executor or async framework.
 
@@ -619,7 +638,7 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 - **FR-002**: The SDK MUST expose a single, provider-neutral client abstraction for core operations: read-by-key, upsert/replace-by-key, delete-by-key, and read-query.
 - **FR-003**: The SDK MUST define a portable “resource addressing” scheme that can uniquely identify a logical database/namespace and a logical collection (container/table) for all supported providers.
 - **FR-004**: The SDK MUST define a portable key representation that can express the minimum key material required by each provider, and it MUST validate key completeness before issuing a request.
-- **FR-005**: The SDK MUST support a portable document payload for common operations and MUST preserve user-provided data fields through write/read cycles.
+- **FR-005**: The SDK MUST support a portable document payload for common operations and MUST preserve user-provided, non-reserved data fields through write/read cycles. `update` and `upsert` MUST replace the complete portable document rather than merge it: fields omitted from the supplied payload MUST be absent from later reads and portable queries on every provider.
 - **FR-006**: The SDK MUST support paging for read-queries, including requesting a page size and returning a continuation token (or equivalent) when more results exist.
 - **FR-007**: The SDK MUST provide explicit capability discovery so applications can determine whether an advanced feature or behavior is supported by the selected provider.
 - **FR-008**: When an operation cannot be provided with the same behavior across providers, the SDK MUST clearly flag the difference in a provider-neutral way (documentation and/or structured metadata) before users rely on it.
@@ -672,7 +691,7 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 #### Portable Query Expression Requirements
 
 - **FR-022**: The SDK MUST provide a portable query expression syntax using a SQL-subset WHERE clause that supports the following operators: `=`, `<>`, `<`, `>`, `<=`, `>=`, `AND`, `OR`, `NOT`, `IN`, `BETWEEN`.
-- **FR-023**: The SDK MUST provide portable function names that each provider adapter translates to native equivalents: `starts_with(field, value)`, `contains(field, value)`, `field_exists(field)`, `string_length(field)`, `collection_size(field)`.
+- **FR-023**: The SDK MUST provide portable function names that each provider adapter translates to native equivalents: `starts_with(field, value)`, `contains(field, value)`, `field_exists(field)`, `string_length(field)`, `collection_size(field)`. `field_exists(field)` MUST be true only when the field is present and non-null; missing fields and explicit JSON nulls MUST both evaluate false.
 - **FR-024**: The SDK MUST support named parameters using `@paramName` syntax in portable expressions. Parameters are supplied as a name-to-value map alongside the expression.
 - **FR-025**: Each provider adapter MUST translate portable expressions into the provider's native query format: Cosmos DB SQL, DynamoDB PartiQL, and Spanner GoogleSQL.
 - **FR-026**: The SDK MUST translate field references automatically, adding any required prefixes, aliases, or escaping for the target provider (e.g., `c.` prefix for Cosmos DB, `#name` placeholders for DynamoDB reserved words, double-quoted table names for DynamoDB PartiQL).
@@ -681,6 +700,7 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 - **FR-029**: When a portable expression is empty or null, the SDK MUST return all items in the collection (equivalent to a full scan).
 - **FR-030**: The SDK MUST clearly distinguish between portable expressions and native expressions in the query request, preventing accidental cross-provider execution of native syntax.
 - **FR-031**: The SDK MUST support literal values in expressions: strings (single-quoted), numbers (integer and decimal), booleans (`true`/`false`), and `NULL`.
+- **FR-031a**: Portable scalar comparisons MUST be JSON-type-sensitive for both literals and parameters. Strings MUST NOT be coerced to numbers or booleans; unlike JSON types MUST not satisfy a comparison, `IN`, or `BETWEEN` predicate. All non-null operands in an `IN` list and both non-null `BETWEEN` bounds MUST share one scalar kind (`String`, `Number`, or `Boolean`); mixed kinds MUST fail with `INVALID_REQUEST` before provider translation. `= NULL` matches only an explicitly stored JSON null, missing fields do not match either `= NULL` or `!= NULL`, and relational, `IN`, or `BETWEEN` predicates with a null operand do not match.
 - **FR-032**: The SDK MUST preserve operator precedence: `NOT` binds tightest, then `AND`, then `OR`. Parentheses MUST be supported for explicit grouping.
 
 #### Provider Constants Centralization Requirements
@@ -945,6 +965,23 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 - **FR-179**: `TEXT_SEARCH` MUST support `ALL_TERMS` and `ANY_TERM` over fields configured with canonical analyzer profile `PORTABLE_TEXT_V1`. The profile applies Unicode NFKC normalization and locale-independent Unicode default case folding, retains diacritics, treats each maximal sequence of Unicode letters, combining marks, or decimal digits as one token, and treats all other code points as separators. Matching uses whole tokens and implies no result order. A provider MUST pass the versioned analyzer/result conformance corpus, including punctuation, case, diacritic, combining-mark, and non-Latin cases, before advertising the capability. Cosmos DB full-text indexes and Spanner search indexes are candidate mappings; DynamoDB declares this capability unsupported.
 - **FR-180**: Unsupported search types, analyzer profiles, or operators MUST fail before execution with `UNSUPPORTED_CAPABILITY`; adapters MUST NOT substitute scans, substring matching, or another search type. Scoring/ranking, stemming profiles, fuzzy, phrase/proximity, semantic, and vector search are separately gated extensions.
 
+#### Portable Field-Level Patch Requirements
+
+- **FR-181**: The SDK MUST expose a portable `patch` operation on the public client interface that applies an ordered list of field-level operations - `SET`, `REPLACE`, `REMOVE`, `INCREMENT` - to an existing document, addressed by JSON Pointer paths. Cosmos DB and DynamoDB MUST use their native partial-write primitives (`patchItem`, `UpdateItem`). Spanner MUST apply its internal document-envelope update in one retryable read-write transaction, and its portable-expression queries MUST predicate on that envelope as the authoritative state. The Spanner physical-column fallback applies only to an entire row with no valid envelope; a missing field in a valid envelope MUST remain missing. Full writes and patches MUST preserve a cross-type field value in the envelope, mirror it only when it is runtime-compatible with the physical column type, and clear an omitted/null/incompatible mirror to typed null. No adapter may expose a non-transactional client-side read-modify-write window.
+- **FR-182**: All operations in one `patch` call MUST be applied atomically - either every operation takes effect or none does - in a single native request or a single provider transaction.
+- **FR-183**: `patch` MUST require the target document to already exist and MUST fail with `NOT_FOUND` when it does not. `patch` MUST NOT create a document under any provider; creation remains the responsibility of `create`/`upsert`.
+- **FR-184**: The SDK MUST enforce a uniform maximum number of operations per call (the lowest native limit across providers, exposed as a public constant) and MUST reject an over-limit list with `INVALID_REQUEST` before any provider call, so a patch that succeeds on one provider cannot fail on another.
+- **FR-185**: `REPLACE`, `REMOVE` and `INCREMENT` MUST require the addressed field to exist and MUST fail with `NOT_FOUND` when it does not, on every provider. `SET` MUST create the field or overwrite it if present, and MUST NOT create missing intermediate objects. Adapters whose native primitive is more permissive MUST constrain it - for example with a condition expression or an in-transaction existence check - rather than exposing the divergence.
+- **FR-186**: `INCREMENT` MUST evaluate its delta within the same atomic request or retryable transaction, so concurrent increments do not lose updates. Integral operands and their resulting value MUST fit signed 64-bit range. Fractional operands MUST be finite, have magnitude at most 9,007,199,254,740,991, and round-trip through an IEEE-754 `double` without decimal precision loss. Invalid operands MUST be rejected with `INVALID_REQUEST` before provider dispatch; an integral-result overflow MUST be rejected atomically with the write as `INVALID_REQUEST`, without misclassifying a missing document or field as overflow.
+- **FR-186a**: Providers MUST declare, via a dedicated capability, whether a *fractional* `INCREMENT` accumulates in exact decimal arithmetic or in IEEE-754 binary64. DynamoDB evaluates the addition in its exact-decimal numeric type; Cosmos DB and Spanner evaluate in binary64, so accumulated fractional results can differ in the last unit in the last place (seeding `0.1` and incrementing by `0.2` yields `0.3` on DynamoDB and `0.30000000000000004` elsewhere). Integral results MUST remain exact on every provider. The capability is informational: no provider may reject an in-domain fractional delta because of it, and the SDK MUST NOT emulate exact-decimal accumulation client-side, because doing so would forfeit the server-side atomicity FR-186 requires. The conformance suite MUST assert both branches.
+- **FR-187**: Paths within a single `patch` call MUST be disjoint. Duplicate paths, case-only aliases, and any path that is a prefix of another MUST be rejected with `INVALID_REQUEST`, because providers differ in whether operands resolve against the pre-update or the progressively-updated document and Spanner resolves column names case-insensitively.
+- **FR-188**: The SDK MUST reject, with `INVALID_REQUEST` and before any provider call, path forms whose native interpretations differ or that address SDK-owned state: paths not rooted at `/`, empty path segments, JSON Pointer `~` escapes, array-index segments, and key, TTL or SDK-reserved field names (including the internal `data` document-envelope field).
+- **FR-188a**: The SDK MUST reject a top-level document field named `data`, case-insensitively, with `INVALID_REQUEST` before dispatch from `create`, `update`, and `upsert` on every provider. Patch continues to reject the `/data` root through FR-188. This name is reserved for the SDK document envelope and cannot be used as an ordinary document field.
+- **FR-189**: Nested-path addressing MUST be a separately advertised capability. A provider that cannot address a sub-path MUST declare it unsupported and the SDK MUST fail with `UNSUPPORTED_CAPABILITY` before execution; it MUST NOT rewrite the parent field, apply a partial result, or silently no-op. Portable code targets the top-level field instead.
+- **FR-190**: Per-operation TTL MUST be ignored uniformly by `patch` on every provider, and this MUST be documented; patching never changes document expiry. A deterministic serialized representation of every operation's type, path, and optional value MUST be subject to the same 399 KB (408,576-byte) portable document-size validation as other write operations. `REMOVE` contributes its type and path even though it has no value.
+- **FR-191**: The conformance suite MUST verify every behaviour above against each supported provider, including both branches of the nested-path capability, so the three native primitives cannot drift apart.
+- **FR-192**: The SDK MUST document that `patch` is a latency and concurrency optimisation rather than a guaranteed write-cost reduction, including provider-specific payload and billing behaviour, so applications do not adopt it on a false cost premise.
+
 ### Portable Operator and Function Reference
 
 The following operators and functions form the portable query subset, available on all supported providers:
@@ -1114,7 +1151,7 @@ The following operators and functions form the portable query subset, available 
 - The DynamoDB adapter will use PartiQL (`executeStatement`) as the primary backend for portable query expressions rather than native Scan + FilterExpression. PartiQL provides SQL-like syntax closer to Cosmos DB and Spanner, simplifying translation. Performance is equivalent.
 - Nested property access (e.g., `address.city`) is limited to single-level dot notation in the portable subset. Deeply nested or array-indexed access is provider-specific.
 - The portable query subset targets WHERE-clause filtering only. Projections (SELECT specific fields), aggregations (COUNT, SUM, etc.), and joins are outside the current scope.
-- `field_exists` maps to `IS_DEFINED` on Cosmos DB, `IS NOT MISSING` on DynamoDB PartiQL, and `IS NOT NULL` on Spanner. This is a semantic approximation: on Spanner, a column always exists in the schema, so the check tests for non-null values.
+- `field_exists` maps to a present-and-non-null predicate on every provider: `IS_DEFINED(...) AND NOT IS_NULL(...)` on Cosmos DB, `IS NOT MISSING AND IS NOT NULL` on DynamoDB PartiQL, and a JSON non-null type test on Spanner's authoritative envelope. This is portable semantics, not a schema-existence test.
 - Queries MUST support partition-key-scoped execution. When a partition key value is specified on a query request, the SDK MUST use each provider's native efficient mechanism to scope the query to that partition only (e.g., Cosmos DB `setPartitionKey()` on query options, DynamoDB PartiQL WHERE condition on the partition key column). Queries without a partition key scope may still result in cross-partition scans. Applications SHOULD use `Key.of(partitionKey, sortKey)` to co-locate related documents and then scope queries by partition key for efficient retrieval.
 - `ensureDatabase`, `ensureContainer`, and `provisionSchema` are convenience methods for development and startup scenarios. They create resources with the SDK's standard schema defaults using the provider's data-plane SDK, and are subject to the caller's runtime permissions (e.g., RBAC role assignments). They are not intended for advanced provisioning (e.g., custom throughput, indexing policies, ARM-based control-plane operations). For production provisioning with fine-grained control, developers should use provider SDKs or infrastructure-as-code tools directly. Advanced provisioning support is a future consideration outside v1 scope.
 - The SDK does not introduce a dependency on management or ARM SDKs (e.g., `azure-resourcemanager-cosmos`). Provisioning operations (`ensureDatabase`, `ensureContainer`) use the provider's standard data-plane SDK and succeed only when the caller holds sufficient runtime permissions. When operating in RBAC/`DefaultAzureCredential` mode, `ensureDatabase` requires the caller to hold an appropriate control-plane role (e.g., Cosmos DB Operator). If the required role is not assigned, the SDK returns a clear authorization failure. Advanced provisioning requiring ARM access is a future consideration outside v1 scope.
@@ -1467,3 +1504,13 @@ This checklist is used to accept the feature as “done” at the spec level.
 - [ ] Text search supports `PORTABLE_TEXT_V1` `ALL_TERMS` and `ANY_TERM` matching and has no implicit relevance ordering.
 - [ ] Each advertised capability passes its independent conformance corpus; unsupported types/operators fail before execution without scan or substring fallback.
 - [ ] Scoring, fuzzy, phrase/proximity, semantic, and vector search are separately gated capabilities.
+
+### Portable Field-Level Patch
+
+- [ ] `patch` uses native partial writes where available and an atomic retryable transaction for Spanner's document envelope; no adapter exposes a non-transactional client-side read-modify-write.
+- [ ] All operations in a call apply atomically, and the call fails with `NOT_FOUND` when the document does not exist - it never creates one.
+- [ ] `REPLACE` / `REMOVE` / `INCREMENT` fail with `NOT_FOUND` on a missing field on every provider; `SET` creates-or-overwrites but never creates intermediate objects.
+- [ ] Operation-count, path-disjointness and path-form rules are validated before any provider call and produce `INVALID_REQUEST` identically everywhere.
+- [ ] Nested-path support is a declared capability; an unsupported provider fails with `UNSUPPORTED_CAPABILITY` before execution rather than rewriting the parent or no-opping.
+- [ ] `INCREMENT` is evaluated in the same atomic request or transaction, so concurrent increments do not lose updates.
+- [ ] The cost model (latency/concurrency win, provider-specific payload behaviour, and no guaranteed write-cost reduction) is documented per provider.

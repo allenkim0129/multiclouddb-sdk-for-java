@@ -29,7 +29,7 @@ dependencies {
 
 1. Load configuration (provider selection + connection/auth details).
 2. Construct `MulticloudDbClient` from configuration.
-3. Use portable operations: `create`, `read`, `update`, `upsert`, `delete`, `query`.
+3. Use portable operations: `create`, `read`, `update`, `upsert`, `patch`, `delete`, `query`.
 
 ### Example (illustrative)
 

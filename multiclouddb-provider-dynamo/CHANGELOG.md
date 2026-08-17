@@ -7,6 +7,30 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- Portable `patch(...)` implemented with `UpdateItem`: the operation list is compiled into a single `UpdateExpression` (`SET ... REMOVE ...`) so DynamoDB applies every change atomically in one request. `DynamoCapabilities` declares `PATCH_CAP` and `NESTED_PATCH_CAP` — document paths (`a.b.c`) address nested map attributes directly.
+- The portable contract is enforced with a `ConditionExpression`. `UpdateItem` would otherwise *create* a missing item, permit an arbitrary-precision integral result, and let a native `REMOVE` on a missing attribute silently no-op. The adapter asserts document/path existence and signed-64 integral-result bounds; `ReturnValuesOnConditionCheckFailure.ALL_OLD` classifies missing targets as `NOT_FOUND`, nonnumeric or overflow values as `INVALID_REQUEST`, and a changed state that cannot be proven as `CONFLICT`.
+- Path segments are always compiled to `ExpressionAttributeNames` placeholders (`#n0_0.#n0_1`), so caller-supplied field names that collide with DynamoDB reserved words work unchanged. A `REMOVE`-only patch omits `ExpressionAttributeValues` entirely, since DynamoDB rejects an empty map.
+- `DynamoItemMapper.objectToAttributeValue(Object)` — a Jackson-backed converter so a patch operand that is a `Map` or `List` is stored as a real DynamoDB `M` / `L`. The pre-existing shallow `toAttributeValue(Object)` (used for query parameters) is unchanged.
+- Accepted `INCREMENT` deltas are normalized by the shared portable numeric domain before construction of DynamoDB's numeric attribute, matching the signed-64-bit integral-result and canonical finite IEEE-754 fractional representation used by Cosmos DB and Spanner.
+- `DynamoCapabilities` declares **`EXACT_FRACTIONAL_INCREMENT` as supported** — the only v1 provider that does. DynamoDB evaluates `field = field + :delta` server-side in its `N` type, which is exact decimal arithmetic with 38 significant digits, so accumulated fractional results carry no binary rounding drift (`0.1` incremented by `0.2` stores exactly `0.3`, where Cosmos DB and Spanner store `0.30000000000000004`). The declaration is informational — every provider accepts in-domain fractional deltas; it exists so callers needing bit-identical fractional totals can branch.
+
+### Changed
+
+- **`IN` and `BETWEEN` with a `null` operand now translate to `FALSE`.** A `null` literal — or a named parameter bound to `null` — appearing in an `IN` list or as either `BETWEEN` bound previously reached PartiQL as a live comparand, where the outcome was engine-defined rather than portable. `DynamoExpressionTranslator` now short-circuits the whole predicate to `FALSE`, so "a null operand matches nothing" holds identically on DynamoDB, Cosmos DB, and Spanner. Lists whose members are all non-null are unaffected.
+- A degenerate empty `IN` list also translates to `FALSE` instead of the syntactically invalid `field IN ()`. `InExpression`'s canonical constructor already rejects an empty list, so this is defence-in-depth for an AST built around that record.
+
+### Breaking changes
+
+- **A document field named `data` is now rejected.** `create`, `update`, and `upsert` throw `MulticloudDbException(INVALID_REQUEST)` before `DynamoProviderClient` dispatch when the document carries a top-level `data` key in **any** casing (`data`, `Data`, `DATA`, `dAtA`); `PatchOperation` rejects the `/data` path on the same rule. DynamoDB itself reserves no such attribute — the restriction is portability-driven: `data` is the SDK-managed Spanner document envelope, and Spanner resolves column names case-insensitively, so an item DynamoDB would happily store could not be moved to Spanner.
+  **Migration — do this before upgrading:** rename any application-owned `data` attribute (for example to `payload` or `applicationData`) **and rewrite the affected items with the renamed key**, then upgrade. There is no alias, no compatibility flag, and no opt-out; an item that still carries `data` fails at the client boundary before any DynamoDB request is issued. See [`docs/guide.md` → *Document Field Injection*](../docs/guide.md#document-field-injection).
+- **`field_exists` changed meaning; existing queries can return different rows.** `field_exists(f)` now translates to `(f IS NOT MISSING AND f IS NOT NULL)` — *present **and** non-null* — where it previously translated to a bare `f IS NOT MISSING` and therefore also matched an attribute explicitly stored as the DynamoDB `NULL` type. A filter that relied on the old behaviour now returns fewer items, and `NOT field_exists(f)` returns more. Re-check any filter using `field_exists` on an attribute legitimately stored as null; use an explicit `f = null` comparison to keep matching it.
+
+### Documentation
+
+- `patch()` is documented as a request-payload, latency, and concurrency optimization, not a guaranteed WCU saving. Capacity cost depends on item shape and table/account configuration; no `PutItem` billing-equivalence claim is made.
+
 ## [0.1.0-beta.2] — 2026-06-22
 
 > **Requires `multiclouddb-api` 0.1.0-beta.2 or later** — this release consumes API surface (change-feed cursors, `CLIENT_CLOSED` envelope, `ChangeFeedConfig.extendedRetention(...)` opt-in gating) introduced in API beta.2. The dependency is pinned in the published POM.

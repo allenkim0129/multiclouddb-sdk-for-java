@@ -155,6 +155,8 @@ Key key = Key.of("todo-1", "todo-1");   // partitionKey + sortKey
 client.upsert(todos, key, doc);                  // Create or replace (upsert)
 DocumentResult result = client.read(todos, key); // Point read → returns DocumentResult
 ObjectNode document = result.document();         // The document payload
+client.patch(todos, key, List.of(               // Partial update of an existing doc
+        PatchOperation.replace("/completed", true)));
 client.delete(todos, key);                       // Delete
 
 // Query with portable expressions - automatically translated per provider
@@ -291,7 +293,7 @@ All application code depends on `multiclouddb-api`. The core types are:
 
 | Type | Purpose |
 |------|---------|
-| `MulticloudDbClient` | Portable interface: `create`, `read`, `update`, `delete`, `upsert`, `query`, `provisionSchema`, `capabilities`, `nativeClient` |
+| `MulticloudDbClient` | Portable interface: `create`, `read`, `update`, `delete`, `upsert`, `patch`, `query`, `provisionSchema`, `capabilities`, `nativeClient` |
 | `MulticloudDbClientFactory` | Creates a `MulticloudDbClient` by discovering providers via `ServiceLoader` |
 | `MulticloudDbClientConfig` | Builder-pattern config: provider selection, connection, auth, feature flags |
 | `ResourceAddress` | `(database, collection)` pair targeting a container/table |
@@ -475,8 +477,18 @@ for (Capability cap : caps.all()) {
 | Change feed | ✓ | ✓ | ✓ |
 | **Result limit** (`Top N`) | ✓ | ✓ (per-page) | ✓ |
 | **ORDER BY** | ✓ | ✗ | ✓ |
+| **Patch** (field-level partial update) | ✓ | ✓ | ✓ |
+| **Nested patch** (`/address/city`) | ✓ | ✓ | ✗ |
+| **Exact fractional increment** | ✗ | ✓ | ✗ |
 | **Row-level TTL** | ✓ | ✓ | ✗ |
 | **Write timestamp / metadata** | ✓ | ✗ | ✗ |
+
+`Exact fractional increment` is **informational only** — every provider accepts
+fractional `INCREMENT` deltas, but only DynamoDB accumulates them in exact
+decimal arithmetic; Cosmos DB and Spanner accumulate in IEEE-754 binary64
+(`0.1 + 0.2` stores `0.3` vs `0.30000000000000004`). Integral increments are
+exact everywhere. See
+[docs/compatibility.md](docs/compatibility.md#patch-semantics).
 
 ---
 

@@ -9,6 +9,9 @@ import com.azure.cosmos.models.*;
 import com.azure.identity.DefaultAzureCredentialBuilder;
 import com.multiclouddb.api.*;
 import com.multiclouddb.api.OperationNames;
+import com.multiclouddb.api.PatchOperation;
+import com.multiclouddb.api.PatchNumericDomain;
+import com.multiclouddb.spi.DocumentFieldValidator;
 import com.multiclouddb.api.query.TranslatedQuery;
 import com.multiclouddb.spi.MulticloudDbProviderClient;
 import com.multiclouddb.spi.SdkUserAgent;
@@ -163,6 +166,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     @Override
     public void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.CREATE);
+        DocumentFieldValidator.validateWritableDocument(document, ProviderId.COSMOS, OperationNames.CREATE);
         try {
             CosmosContainer container = getContainer(address);
             ObjectNode doc = toObjectNode(document);
@@ -254,6 +258,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     @Override
     public void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.UPDATE);
+        DocumentFieldValidator.validateWritableDocument(document, ProviderId.COSMOS, OperationNames.UPDATE);
         try {
             CosmosContainer container = getContainer(address);
             ObjectNode doc = toObjectNode(document);
@@ -288,6 +293,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     @Override
     public void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.UPSERT);
+        DocumentFieldValidator.validateWritableDocument(document, ProviderId.COSMOS, OperationNames.UPSERT);
         try {
             CosmosContainer container = getContainer(address);
             ObjectNode doc = toObjectNode(document);
@@ -303,6 +309,414 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             logExceptionDiagnostics(OperationNames.UPSERT, address, e);
             throw CosmosErrorMapper.map(e, OperationNames.UPSERT);
         }
+    }
+
+    /**
+     * Applies field-level modifications using the Cosmos DB Patch API.
+     * <p>
+     * Every operation is translated into a {@link CosmosPatchOperations} entry and
+     * sent as a single request, so Cosmos applies them atomically server-side.
+     * Direct SPI callers are validated before any provider SDK work. For strict
+     * paths and increments, the adapter point-reads the document and validates
+     * required paths, numeric targets, and the portable result domain, so a
+     * missing target or a deterministic numeric failure is reported before the
+     * write.
+     *
+     * <h4>Optimistic concurrency</h4>
+     * The write carries a <em>path-scoped</em>, server-evaluated precondition —
+     * Cosmos's conditional patch
+     * ({@link CosmosPatchItemRequestOptions#setFilterPredicate}) — never an
+     * item-scoped {@code If-Match} ETag. The predicate asserts only what the
+     * portable contract requires, namely that each addressed path already
+     * exists, for the operations whose native Cosmos translation cannot enforce
+     * that by itself:
+     * <ul>
+     *   <li>{@code REPLACE} — translated to a native {@code set}, which would
+     *       otherwise <em>create</em> a target the contract requires to exist.</li>
+     *   <li>{@code REMOVE} — Cosmos rejects a missing path with a
+     *       provider-specific {@code 400} rather than the portable
+     *       {@code NOT_FOUND}.</li>
+     *   <li>a nested non-increment path — native {@code set} must not create
+     *       intermediate objects, so the <em>parent</em> must be defined.</li>
+     * </ul>
+     * An {@code If-Match} ETag would fail on <em>any</em> concurrent mutation of
+     * the item, including one touching a completely unrelated field, so two
+     * threads patching disjoint fields would collide on Cosmos alone: DynamoDB's
+     * {@code attribute_exists(...)} condition and Spanner's auto-retried
+     * read-write transaction both let them through. The filter predicate is
+     * evaluated atomically with the mutation and only over the addressed paths,
+     * so disjoint concurrent patches all land, matching both peers.
+     * <p>
+     * {@code INCREMENT} contributes no predicate term at any depth.
+     * {@link CosmosPatchOperations#increment} is evaluated server-side inside the
+     * atomic write, so N concurrent increments all land, matching DynamoDB's
+     * {@code SET x = x + :v} and Spanner's retryable read-write transaction. A
+     * target deleted or retyped <em>between</em> the validating read and the
+     * write is rejected by Cosmos's own native increment error; that untyped
+     * {@code 400} is not passed through — the adapter re-reads and reclassifies
+     * it from current state, so a raced increment reports {@code NOT_FOUND} for a
+     * vanished target exactly as DynamoDB's before-image re-read does.
+     * <p>
+     * That reclassification is evidence-based and does not claim to eliminate the
+     * race. If the re-read shows the target present and numeric — the {@code 400}
+     * had another cause, or a third writer recreated the field before the re-read
+     * — or if the follow-up read itself fails, the original {@code INVALID_REQUEST}
+     * mapping stands rather than an unsubstantiated {@code NOT_FOUND}. The
+     * residual is bounded to "the cause could not be determined" and no longer
+     * covers the ordinary raced-delete case.
+     *
+     * <h4>Cost</h4>
+     * Patch is not a billing guarantee. Request charge depends on account
+     * configuration, item shape, and indexing; measure it against a full write
+     * for the workload that matters to the application.
+     *
+     * @param address    the logical database + container
+     * @param key        the document key; must identify an existing item
+     * @param operations the validated modifications to apply
+     * @param options    operation options; {@code ttlSeconds} is intentionally ignored
+     * @throws com.multiclouddb.api.MulticloudDbException category {@code NOT_FOUND} for a
+     *         missing item or required field, or {@code INVALID_REQUEST} for a
+     *         nonnumeric increment target or integral-result overflow. Concurrency
+     *         alone never produces {@code CONFLICT}: the precondition is
+     *         path-scoped, so a concurrent write to a field this patch does not
+     *         address cannot fail it
+     */
+    @Override
+    public void patch(ResourceAddress address, MulticloudDbKey key, List<PatchOperation> operations,
+            OperationOptions options) {
+        checkOpen(OperationNames.PATCH);
+        validatePatchRequest(operations);
+        String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
+        PartitionKey pk = resolvePartitionKey(key);
+        // Pure function of the request, so the catch block can tell a failed
+        // path-scoped precondition apart from a native Cosmos rejection.
+        String filterPredicate = patchFilterPredicate(operations);
+        try {
+            CosmosContainer container = getContainer(address);
+            validatePatchState(container, cosmosId, pk, operations);
+
+            CosmosPatchOperations patchOps = CosmosPatchOperations.create();
+            for (PatchOperation op : operations) {
+                switch (op.type()) {
+                    // REPLACE is translated to a native set, which would create a
+                    // missing target; the filter predicate asserts the addressed
+                    // path exists so the portable REPLACE outcome does not rely on
+                    // Cosmos's provider-specific missing-path error shape.
+                    case SET, REPLACE -> patchOps.set(op.path(), op.value());
+                    case REMOVE -> patchOps.remove(op.path());
+                    case INCREMENT -> {
+                        Number delta = PatchNumericDomain.normalize((Number) op.value());
+                        if (delta instanceof Long integralDelta) {
+                            patchOps.increment(op.path(), integralDelta);
+                        } else {
+                            patchOps.increment(op.path(), delta.doubleValue());
+                        }
+                    }
+                }
+            }
+
+            CosmosPatchItemRequestOptions patchOptions = new CosmosPatchItemRequestOptions();
+            if (filterPredicate != null) {
+                patchOptions.setFilterPredicate(filterPredicate);
+            }
+
+            CosmosItemResponse<ObjectNode> response =
+                    container.patchItem(cosmosId, pk, patchOps, patchOptions, ObjectNode.class);
+            logItemDiagnostics(OperationNames.PATCH, address, response);
+        } catch (CosmosException e) {
+            logExceptionDiagnostics(OperationNames.PATCH, address, e);
+            if (filterPredicate != null
+                    && e.getStatusCode() == CosmosConstants.STATUS_PRECONDITION_FAILED) {
+                // No If-Match is ever sent, so the only precondition on the
+                // request is the filter predicate, and every term in it is an
+                // IS_DEFINED existence check over an addressed path. A 412
+                // therefore proves exactly one thing — a required path was absent
+                // when the server evaluated the write — which is the portable
+                // NOT_FOUND that DynamoDB's attribute_exists condition and
+                // Spanner's in-transaction read both report. It is not a
+                // concurrency conflict: an unrelated concurrent write cannot
+                // falsify a path-scoped predicate.
+                throw patchFailure(MulticloudDbErrorCategory.NOT_FOUND,
+                        "Patch target field does not exist", e);
+            }
+            if (e.getStatusCode() == CosmosConstants.STATUS_BAD_REQUEST) {
+                // Cosmos reports a vanished or retyped native target as an untyped
+                // 400. Prove the cause from current state instead of passing it
+                // through, mirroring DynamoDB's before-image re-read.
+                throw classifyRacedPatchRejection(address, cosmosId, pk, operations, e);
+            }
+            throw CosmosErrorMapper.map(e, OperationNames.PATCH);
+        }
+    }
+
+    /**
+     * Whether the adapter must point-read the document before writing.
+     * <p>
+     * Required for every operation that the portable contract says must find an
+     * existing target ({@code REPLACE}, {@code REMOVE}, {@code INCREMENT}) and
+     * for nested paths, whose parent must already exist. Cosmos reports all of
+     * those natively as an untyped {@code 400}, so without this read a missing
+     * {@code INCREMENT} target would surface as {@code INVALID_REQUEST} where
+     * DynamoDB and Spanner both report {@code NOT_FOUND}, and an integral-result
+     * overflow would not be detected at all.
+     */
+    static boolean needsPatchStateValidation(List<PatchOperation> operations) {
+        for (PatchOperation operation : operations) {
+            if (operation.requiresExistingPath() || operation.isNested()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Builds the server-side, path-scoped precondition for the write, or returns
+     * {@code null} when the write needs none.
+     * <p>
+     * Only operations whose native Cosmos translation cannot enforce the portable
+     * contract by itself contribute a term, and every term is an
+     * {@code IS_DEFINED} existence check over exactly the path that operation
+     * addresses ({@code REPLACE} / {@code REMOVE}: the target itself; a nested
+     * {@code SET}: its parent, which patch must not create).
+     * <p>
+     * The predicate is deliberately <em>path-scoped</em> rather than an
+     * item-scoped {@code If-Match} ETag. An ETag fails on any concurrent mutation
+     * of the item, so two threads patching disjoint fields would collide on
+     * Cosmos while DynamoDB's {@code attribute_exists(...)} condition and
+     * Spanner's auto-retried read-write transaction both let them through.
+     * <p>
+     * {@code INCREMENT} contributes no term at any depth:
+     * {@code CosmosPatchOperations.increment} is applied atomically server-side,
+     * and its stricter portable preconditions (numeric target, bounded integral
+     * result) are not expressible as an existence check — they are validated by
+     * the pre-read and, on a race, re-proved by
+     * {@link #classifyRacedPatchRejection}.
+     *
+     * @return a Cosmos conditional-patch predicate of the form
+     *         {@code FROM c WHERE ...}, or {@code null} for an unconditional write
+     */
+    static String patchFilterPredicate(List<PatchOperation> operations) {
+        StringJoiner terms = new StringJoiner(" AND ");
+        for (PatchOperation operation : operations) {
+            if (operation.type() == PatchOperation.Type.INCREMENT) {
+                continue;
+            }
+            int depth = requiredPathDepth(operation);
+            if (depth > 0) {
+                terms.add("IS_DEFINED(" + cosmosPropertyAccessor(operation.pathSegments(), depth) + ")");
+            }
+        }
+        return terms.length() == 0 ? null : "FROM c WHERE " + terms;
+    }
+
+    /**
+     * How many leading segments of an operation's path must already exist for it
+     * to satisfy the portable contract: the whole path when the target itself
+     * must exist, the parent for a nested {@code SET} (patch never creates
+     * intermediate objects), and nothing for a top-level {@code SET}.
+     * <p>
+     * Shared by the pre-read validation and the filter predicate so the
+     * client-side classification and the server-side precondition cannot drift.
+     */
+    private static int requiredPathDepth(PatchOperation operation) {
+        if (operation.requiresExistingPath()) {
+            return operation.pathSegments().size();
+        }
+        return operation.isNested() ? operation.pathSegments().size() - 1 : 0;
+    }
+
+    /**
+     * Renders a document path as a Cosmos SQL quoted property accessor
+     * ({@code c["address"]["city"]}). Quoted rather than dotted because a patch
+     * segment may legally contain characters a bare identifier cannot, and the
+     * segment is escaped so it can never terminate the literal and alter the
+     * predicate.
+     */
+    private static String cosmosPropertyAccessor(List<String> segments, int segmentCount) {
+        StringBuilder accessor = new StringBuilder("c");
+        for (int index = 0; index < segmentCount; index++) {
+            accessor.append("[\"").append(escapeSqlStringLiteral(segments.get(index))).append("\"]");
+        }
+        return accessor.toString();
+    }
+
+    private static String escapeSqlStringLiteral(String value) {
+        StringBuilder escaped = new StringBuilder(value.length());
+        for (int index = 0; index < value.length(); index++) {
+            char character = value.charAt(index);
+            switch (character) {
+                case '"' -> escaped.append("\\\"");
+                case '\\' -> escaped.append("\\\\");
+                case '\b' -> escaped.append("\\b");
+                case '\f' -> escaped.append("\\f");
+                case '\n' -> escaped.append("\\n");
+                case '\r' -> escaped.append("\\r");
+                case '\t' -> escaped.append("\\t");
+                default -> {
+                    if (character < 0x20) {
+                        escaped.append(String.format("\\u%04x", (int) character));
+                    } else {
+                        escaped.append(character);
+                    }
+                }
+            }
+        }
+        return escaped.toString();
+    }
+
+    /**
+     * Point-reads and validates the pre-write state when required. The read is
+     * what lets Cosmos report the same portable category as DynamoDB and Spanner
+     * for the deterministic (non-raced) failures; the filter predicate closes the
+     * window between this read and the write.
+     */
+    private static void validatePatchState(CosmosContainer container,
+            String cosmosId, PartitionKey partitionKey, List<PatchOperation> operations) {
+        if (!needsPatchStateValidation(operations)) {
+            return;
+        }
+        ObjectNode document;
+        try {
+            document = container.readItem(cosmosId, partitionKey,
+                    new CosmosItemRequestOptions(), ObjectNode.class).getItem();
+        } catch (CosmosException e) {
+            throw CosmosErrorMapper.map(e, OperationNames.PATCH);
+        }
+        if (document == null) {
+            throw patchFailure(MulticloudDbErrorCategory.NOT_FOUND,
+                    "Patch target document does not exist");
+        }
+        validatePatchPreconditionState(document, operations);
+    }
+
+    /**
+     * Reclassifies an untyped Cosmos {@code 400} from current state instead of
+     * letting it through as {@code INVALID_REQUEST}.
+     * <p>
+     * A native {@code increment} carries preconditions the filter predicate
+     * cannot express — the target must exist and be numeric — and Cosmos reports
+     * a violation of either as a bare {@code 400}. Passing that through would
+     * report {@code INVALID_REQUEST} where DynamoDB (which re-reads the
+     * before-image) and Spanner (which sees true state inside its transaction)
+     * both report {@code NOT_FOUND} for a target that vanished after the
+     * validating read. The re-read is evidence-based: the portable category is
+     * only changed when the current document actually proves the cause,
+     * otherwise the original mapping stands.
+     */
+    private MulticloudDbException classifyRacedPatchRejection(ResourceAddress address,
+            String cosmosId, PartitionKey partitionKey, List<PatchOperation> operations,
+            CosmosException original) {
+        ObjectNode current;
+        try {
+            current = getContainer(address).readItem(cosmosId, partitionKey,
+                    new CosmosItemRequestOptions(), ObjectNode.class).getItem();
+        } catch (CosmosException followUpFailure) {
+            if (followUpFailure.getStatusCode() == CosmosConstants.STATUS_NOT_FOUND) {
+                return patchFailure(MulticloudDbErrorCategory.NOT_FOUND,
+                        "Patch target document does not exist", original);
+            }
+            // The rejected write remains authoritative. A failed follow-up read
+            // cannot prove a cause, so callers keep the original classification
+            // rather than an invented one.
+            return CosmosErrorMapper.map(original, OperationNames.PATCH);
+        }
+        if (current == null) {
+            return patchFailure(MulticloudDbErrorCategory.NOT_FOUND,
+                    "Patch target document does not exist", original);
+        }
+        try {
+            validatePatchPreconditionState(current, operations);
+        } catch (MulticloudDbException proven) {
+            // Same classifier as the pre-read, so a raced failure and a
+            // deterministic one report the identical portable category.
+            return patchFailure(proven.error().category(), proven.error().message(), original);
+        }
+        // Current state satisfies every portable precondition, so the 400 had
+        // some other cause. Do not invent a NOT_FOUND.
+        return CosmosErrorMapper.map(original, OperationNames.PATCH);
+    }
+
+    /**
+     * Checks the state read before the native mutation. Package-visible so the
+     * classification matrix can be unit-tested without an emulator or a Cosmos
+     * SDK mock.
+     */
+    static void validatePatchPreconditionState(ObjectNode document,
+            List<PatchOperation> operations) {
+        for (PatchOperation op : operations) {
+            int segmentCount = requiredPathDepth(op);
+            if (segmentCount > 0
+                    && jsonPathValue(document, op.pathSegments(), segmentCount) == null) {
+                throw patchFailure(MulticloudDbErrorCategory.NOT_FOUND,
+                        "Patch target field does not exist: '" + op.path() + "'");
+            }
+
+            if (op.type() == PatchOperation.Type.INCREMENT) {
+                JsonNode current = jsonPathValue(document, op.pathSegments(),
+                        op.pathSegments().size());
+                if (current == null) {
+                    throw patchFailure(MulticloudDbErrorCategory.NOT_FOUND,
+                            "Patch target field does not exist: '" + op.path() + "'");
+                }
+                if (!current.isNumber()) {
+                    throw patchFailure(MulticloudDbErrorCategory.INVALID_REQUEST,
+                            "INCREMENT target is not numeric: '" + op.path() + "'");
+                }
+                try {
+                    PatchNumericDomain.add(current.numberValue(), (Number) op.value());
+                } catch (IllegalArgumentException e) {
+                    throw patchFailure(MulticloudDbErrorCategory.INVALID_REQUEST,
+                            "INCREMENT target '" + op.path() + "' is outside the portable numeric "
+                                    + "domain: " + e.getMessage());
+                }
+            }
+        }
+    }
+
+    private static MulticloudDbException patchFailure(MulticloudDbErrorCategory category,
+            String message) {
+        return new MulticloudDbException(new MulticloudDbError(
+                category,
+                message,
+                ProviderId.COSMOS,
+                OperationNames.PATCH,
+                false,
+                Map.of()));
+    }
+
+    /**
+     * Portable classification the adapter proved itself, carrying the rejecting
+     * Cosmos request's diagnostics so the raw status and activity id are not lost
+     * behind the reclassified category. Mirrors DynamoDB's
+     * {@code patchConditionFailure}.
+     */
+    private static MulticloudDbException patchFailure(MulticloudDbErrorCategory category,
+            String message, CosmosException cause) {
+        Map<String, String> details = new LinkedHashMap<>();
+        details.put("subStatusCode", String.valueOf(cause.getSubStatusCode()));
+        if (cause.getActivityId() != null) {
+            details.put("requestId", cause.getActivityId());
+        }
+        details.put("requestCharge", String.valueOf(cause.getRequestCharge()));
+        return new MulticloudDbException(new MulticloudDbError(
+                category,
+                message + ": " + cause.getMessage(),
+                ProviderId.COSMOS,
+                OperationNames.PATCH,
+                false,
+                cause.getStatusCode(),
+                details), cause);
+    }
+
+    private static JsonNode jsonPathValue(JsonNode document, List<String> segments, int segmentCount) {
+        JsonNode current = document;
+        for (int index = 0; index < segmentCount; index++) {
+            if (current == null || !current.isObject()) {
+                return null;
+            }
+            current = current.get(segments.get(index));
+        }
+        return current;
     }
 
     /**
@@ -990,4 +1404,3 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         return MAPPER.convertValue(node, MAP_TYPE);
     }
 }
-
