@@ -61,10 +61,21 @@ multiclouddb.connection.contentResponseOnWriteEnabled=false
 multiclouddb.connection.maxConnections=64
 ```
 
-HTTP/2 is the provider default, so `gatewayHttp2Enabled=false` is now a deliberate opt-out
-required for HTTP/1.1 parity with Dynamo's synchronous client — omitting it compares HTTP/2
-against HTTP/1.1. For a Cosmos-optimised (non-parity) run instead set `gatewayHttp2Enabled=true`
-and `thinClientEnabled=true` to exercise Gateway V2.
+The default Cosmos perf profile is **Gateway V2 (thin client) over HTTP/2** — the fastest
+non-Direct data path — set in `config/cosmos.live.properties.template`:
+
+```properties
+multiclouddb.connection.gatewayHttp2Enabled=true
+multiclouddb.connection.thinClientEnabled=true
+multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize=64
+multiclouddb.connection.gatewayHttp2MinConnectionPoolSize=8
+multiclouddb.connection.gatewayHttp2MaxConcurrentStreams=32
+```
+
+Dynamo's synchronous client is HTTP/1.1-only, so this profile compares each provider's best
+available path rather than an identical transport. For the transport-equivalent comparison set
+`gatewayHttp2Enabled=false` and `thinClientEnabled=false` instead. The `transport_profile`
+column records which profile produced each row, and aggregation refuses to mix them.
 
 `contentResponseOnWriteEnabled=false` suppresses the document body Cosmos otherwise returns on
 every write. DynamoDB's `PutItem` returns no item, so leaving it enabled charges Cosmos for

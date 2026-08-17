@@ -57,11 +57,27 @@ display text.
 
 ### Transport fairness
 
-The primary cross-provider profile uses HTTP/1.1 with an equal connection-pool size:
+Two profiles are supported, and they answer different questions. Reports record the effective
+`transport_profile`, and aggregation refuses to mix profiles for the same provider, so results
+from the two can never be silently combined.
 
-- Cosmos Gateway: `gatewayMaxConnectionPoolSize=64`, `gatewayHttp2Enabled=false`,
+**Default — best available path per provider.** Each provider runs its recommended data path:
+
+- Cosmos Gateway V2 (thin client) over HTTP/2: `thinClientEnabled=true`,
+  `gatewayHttp2Enabled=true`, HTTP/2 pool 64 / min 8 / 32 streams,
   `contentResponseOnWriteEnabled=false`
+- Dynamo synchronous Apache client: `maxConnections=64` (HTTP/1.1 only — the AWS synchronous
+  client offers no HTTP/2 transport, so this asymmetry is inherent, not a configuration choice)
+
+**Alternative — transport-equivalent HTTP/1.1.** Forces both providers onto the same protocol
+and pool size, isolating service behaviour from protocol differences:
+
+- Cosmos Gateway V1: `gatewayMaxConnectionPoolSize=64`, `gatewayHttp2Enabled=false`,
+  `thinClientEnabled=false`, `contentResponseOnWriteEnabled=false`
 - Dynamo synchronous Apache client: `maxConnections=64`
+
+Neither profile is "the fair one" on its own: the default compares what a user would actually
+deploy, the alternative compares the services with the transport held constant.
 
 Cosmos returns the stored document on every write by default while DynamoDB's `PutItem` returns
 no item, so `contentResponseOnWriteEnabled=false` removes a payload asymmetry the portable API
@@ -70,6 +86,9 @@ never exposes to callers.
 Cosmos Gateway HTTP/2 is **on by default** as of the current provider, so the HTTP/1.1
 parity profile must opt out explicitly with `gatewayHttp2Enabled=false`. Omitting it no longer
 yields HTTP/1.1 and would silently compare HTTP/2 against Dynamo's HTTP/1.1 client.
+
+Gateway V2 requires HTTP/2 and is rejected without it, so `thinClientEnabled=true` cannot
+silently degrade to a Gateway V1 run.
 
 Cosmos Gateway HTTP/2 is a separate optimization profile configured with
 `gatewayHttp2Enabled`, `gatewayHttp2MinConnectionPoolSize`,

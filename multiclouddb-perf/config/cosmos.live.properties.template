@@ -3,19 +3,28 @@ multiclouddb.provider=cosmos
 multiclouddb.connection.endpoint=https://<your-account>.documents.azure.com:443/
 multiclouddb.connection.key=<primary-key>
 multiclouddb.connection.connectionMode=gateway
-# Fair HTTP/1.1 transport profile: match Dynamo maxConnections.
+
+# ── Default perf profile: Gateway V2 (thin client) over HTTP/2 ────────────────
+# This is Cosmos DB's fastest non-Direct data path, and the default for perf runs.
+# Gateway V2 routes the data plane through the thin-client proxy instead of the
+# compute gateway; it requires HTTP/2, which the provider now enables by default.
+multiclouddb.connection.gatewayHttp2Enabled=true
+multiclouddb.connection.thinClientEnabled=true
+multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize=64
+multiclouddb.connection.gatewayHttp2MinConnectionPoolSize=8
+multiclouddb.connection.gatewayHttp2MaxConcurrentStreams=32
+# HTTP/1.1 pool size, used only when gatewayHttp2Enabled=false.
 multiclouddb.connection.gatewayMaxConnectionPoolSize=64
-# HTTP/2 is now the provider default; set false explicitly for HTTP/1.1 parity with Dynamo.
-multiclouddb.connection.gatewayHttp2Enabled=false
-# Gateway V2 / thin client. Requires gatewayHttp2Enabled=true, so it is off in the
-# HTTP/1.1 parity profile. Enable both for a Cosmos-optimised run.
-multiclouddb.connection.thinClientEnabled=false
 # Dynamo's PutItem returns no item; suppress the Cosmos write payload to match.
 multiclouddb.connection.contentResponseOnWriteEnabled=false
-# For a separate Cosmos HTTP/2 optimization run, set true and tune these:
-# multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize=8
-# multiclouddb.connection.gatewayHttp2MinConnectionPoolSize=2
-# multiclouddb.connection.gatewayHttp2MaxConcurrentStreams=32
+
+# ── Alternative: transport-equivalent HTTP/1.1 parity profile ─────────────────
+# Dynamo's synchronous client is Apache HTTP/1.1 only. To compare like-for-like
+# transports rather than each provider's best path, swap the two lines above for:
+#   multiclouddb.connection.gatewayHttp2Enabled=false
+#   multiclouddb.connection.thinClientEnabled=false
+# Reports record the effective transport_profile, and aggregation refuses to mix
+# profiles for the same provider, so the two runs can never be silently combined.
 multiclouddb.connection.requestTimeoutSeconds=30
 multiclouddb.database=perfdb
 multiclouddb.collection=perf

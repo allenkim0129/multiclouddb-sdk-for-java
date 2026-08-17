@@ -567,10 +567,15 @@ public final class PerfMain {
             if ("direct".equalsIgnoreCase(mode)) {
                 return "direct (RNTBD)";
             }
+            // Defaults mirror the Cosmos provider: HTTP/2 is on unless explicitly disabled.
+            // A stale "false" default here would label an HTTP/2 run as HTTP/1.1 and let the
+            // aggregation guard merge incomparable runs.
             boolean http2 = Boolean.parseBoolean(
-                    cfg.get("multiclouddb.connection.gatewayHttp2Enabled", "false"));
+                    cfg.get("multiclouddb.connection.gatewayHttp2Enabled", "true"));
+            boolean thinClient = Boolean.parseBoolean(
+                    cfg.get("multiclouddb.connection.thinClientEnabled", "false"));
             if (http2) {
-                return "gateway HTTP/2 pool="
+                return (thinClient ? "gateway-v2/thin-client HTTP/2 pool=" : "gateway HTTP/2 pool=")
                         + valueOrDefault(cfg, "multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize")
                         + " minPool="
                         + valueOrDefault(cfg, "multiclouddb.connection.gatewayHttp2MinConnectionPoolSize")
