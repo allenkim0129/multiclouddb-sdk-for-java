@@ -53,7 +53,12 @@ class ExpressionTranslationTest {
         assertTrue(query.whereClause().contains(
                         "ELSE JSON_QUERY(TO_JSON(r), '" + fieldPath + "') END"),
                 "legacy physical rows must remain queryable through the fallback projection");
-        assertFalse(query.whereClause().contains("COALESCE("),
+        // The accessor itself must never be COALESCE(envelope, physical): that
+        // would let a field absent from an authoritative envelope fall back to a
+        // stale physical column. A COALESCE around a *boolean* is unrelated —
+        // field_exists folds SQL NULL to FALSE so that negation matches Cosmos
+        // and DynamoDB (see SpannerFieldExistsNegationTest).
+        assertFalse(query.whereClause().contains("COALESCE(JSON_QUERY("),
                 "a missing field in an authoritative envelope must not fall back to stale columns");
     }
 

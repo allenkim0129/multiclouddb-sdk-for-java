@@ -638,15 +638,42 @@ Spanner document-envelope retryable transaction). No provider exposes a
 non-transactional client-side read-modify-write window.
 
 ```java
-client.patch(addr, MulticloudDbKey.of("customer-456", "order-123"), List.of(
-        PatchOperation.replace("/status", "SHIPPED"),
-        PatchOperation.set("/trackingNumber", "1Z999"),
-        PatchOperation.increment("/revision", 1),
-        PatchOperation.remove("/holdReason")));
+ResourceAddress addr = new ResourceAddress("shop", "orders");
+
+// Addresses exactly one document: order "order-123", stored in the partition
+// owned by customer "customer-456".
+MulticloudDbKey key = MulticloudDbKey.of(
+        "customer-456",   // partitionKey — which partition holds the document
+        "order-123");     // sortKey      — its identity inside that partition
+
+client.patch(addr, key, List.of(
+        PatchOperation.replace("/status", "SHIPPED"),   // field must already exist
+        PatchOperation.set("/trackingNumber", "1Z999"), // created if absent
+        PatchOperation.increment("/revision", 1),       // atomic counter
+        PatchOperation.remove("/holdReason")));         // field must already exist
 ```
 
 All operations in one call are applied **atomically** — either every operation
 takes effect or none does.
+
+#### Reading the key argument
+
+`MulticloudDbKey.of(...)` takes two positional strings, so it is worth being
+explicit about which is which:
+
+| Argument | Role | Stored as |
+|----------|------|-----------|
+| `"customer-456"` | **partitionKey** (required) — the distribution key that decides which physical partition holds the document. Every read, write, and patch is routed by it. | Cosmos `partitionKey` field; DynamoDB hash key; Spanner primary-key column 1 |
+| `"order-123"` | **sortKey** (optional) — identifies the document *within* that partition, and orders the documents that share one. | Cosmos `id`; DynamoDB sort/range key; Spanner primary-key column 2 |
+
+Using the customer ID as the partition key puts every order for that customer
+in a single partition, so the orders can be listed with a single-partition
+query while each one stays individually addressable by its sort key. With
+`MulticloudDbKey.of("customer-456")` the partition key doubles as the identity
+(the Cosmos `id` falls back to it), which suits one-document-per-entity data.
+
+See [Key & Partition Key](#key--partition-key) for the full model, the
+per-provider storage diagrams, and the partition key strategy guide.
 
 #### When to use it
 
@@ -810,7 +837,7 @@ if (client.capabilities().isSupported(Capability.NESTED_PATCH)) {
 | Missing document | HTTP 404 → `NOT_FOUND` | `attribute_exists(partitionKey)` fails → `NOT_FOUND` | Row read finds nothing → `NOT_FOUND` |
 | Missing required field | Classifying pre-read validation → `NOT_FOUND` | `attribute_exists(path)` fails → `NOT_FOUND` | In-transaction check → `NOT_FOUND` |
 | Nonnumeric increment target or integral-result overflow | Classifying pre-read validation → `INVALID_REQUEST` | Failed-condition old image → `INVALID_REQUEST` | In-transaction numeric/range check → `INVALID_REQUEST` |
-| Concurrent change after Cosmos validation | HTTP 412 on an ETag-guarded patch → `CONFLICT`. A pure-`INCREMENT` patch is not ETag-guarded, so it never produces this | Conditional-write failure classified from the old image | Transaction retry or conflict handling |
+| Concurrent change after Cosmos validation | No `CONFLICT`: the filter predicate is path-scoped, so a concurrent write to an unaddressed field cannot fail the patch. A 412 means an addressed path was absent → `NOT_FOUND` | Conditional-write failure classified from the old image | Transaction retry or conflict handling |
 | Atomicity | Single request | Single request | Single transaction |
 | Return value | None (void) | None (void) | None (void) |
 
@@ -840,21 +867,28 @@ if (client.capabilities().isSupported(Capability.NESTED_PATCH)) {
 > retries. Cosmos DB and DynamoDB do not. No update is ever lost on any
 > provider — but on Spanner a hot single document will serialise.
 
-> **Cosmos concurrency note.** The classifying point read's ETag is attached as
-> an `If-Match` guard **only** for `REPLACE`, `REMOVE`, and nested non-increment
-> operations — the cases where the native Cosmos translation cannot enforce the
-> portable contract by itself. `INCREMENT` is exempt at every depth, because
-> `CosmosPatchOperations.increment` is applied atomically server-side; guarding
-> it would turn concurrent increments into non-retryable `CONFLICT`s that
-> DynamoDB and Spanner never produce. Concurrent increments therefore all land.
-> The bounded trade-off: if an increment target is deleted or retyped *between*
-> the classifying read and the unconditional write, Cosmos's own native error
-> decides the outcome, so a **raced** increment can surface as
+> **Cosmos concurrency note.** The adapter sends **no** `If-Match` ETag guard.
+> For `REPLACE`, `REMOVE`, and nested non-increment operations — the cases
+> where the native Cosmos translation cannot enforce the portable contract by
+> itself — it attaches a server-side **path-scoped filter predicate**
+> instead: an `IS_DEFINED` existence check over each addressed path, evaluated
+> atomically with the mutation. Because the predicate only asserts that the
+> paths this patch addresses exist, a concurrent write to an unaddressed field
+> cannot fail it, and concurrency alone never produces `CONFLICT`. A resulting
+> HTTP 412 proves exactly one thing — a required path was absent when the
+> write was evaluated — and is normalised to `NOT_FOUND`, matching what
+> DynamoDB's `attribute_exists` condition and Spanner's in-transaction read
+> report for the same state. `INCREMENT` carries no predicate at any depth,
+> because `CosmosPatchOperations.increment` is applied atomically server-side,
+> so concurrent increments all land. The bounded trade-off: if an increment
+> target is deleted or retyped *between* the classifying read and the
+> unconditional write, Cosmos reports an untyped `400`; the adapter re-reads to
+> prove the cause, and only a case it cannot substantiate surfaces as
 > `INVALID_REQUEST` where DynamoDB and Spanner report `NOT_FOUND`. Non-raced
 > classification is identical on all three providers.
 
-> **Cosmos emulator status.** The SDK maps a precondition failure after the
-> ETag-validated read to `CONFLICT`; the exact Cosmos emulator HTTP 412 behavior
+> **Cosmos emulator status.** The SDK maps a failed path-scoped filter
+> predicate (HTTP 412) to `NOT_FOUND`; the exact Cosmos emulator HTTP 412 behavior
 > remains unverified until emulator task T192 runs. Do not treat emulator status
 > wording as a completed compatibility certification.
 

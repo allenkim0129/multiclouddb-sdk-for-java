@@ -265,7 +265,7 @@ exposes a non-transactional client-side read-modify-write window.
 
 | Provider | Primitive | How the portable contract is enforced |
 |---|---|---|
-| Cosmos DB | `CosmosContainer.patchItem(...)` | Requests with a strict (`REPLACE` / `REMOVE` / `INCREMENT`) or nested path point-read the document and validate required paths and numeric state. That read's ETag is attached as `If-Match` **only** for `REPLACE`, `REMOVE`, and nested non-increment ops; `INCREMENT` writes unconditionally because the native increment is atomic server-side. A post-read precondition failure on a guarded write is a conflict |
+| Cosmos DB | `CosmosContainer.patchItem(...)` | Requests with a strict (`REPLACE` / `REMOVE` / `INCREMENT`) or nested path point-read the document and validate required paths and numeric state. `REPLACE`, `REMOVE`, and nested non-increment ops carry a path-scoped `IS_DEFINED` filter predicate (no `If-Match` is ever sent); `INCREMENT` writes unconditionally because the native increment is atomic server-side. A failed predicate (HTTP 412) is `NOT_FOUND`, not a conflict |
 | DynamoDB | `UpdateItem` with a compiled `UpdateExpression` | `ConditionExpression` asserting `attribute_exists(partitionKey)` plus `attribute_exists(<path>)` per strict op — without it `UpdateItem` creates a missing item and a native `REMOVE` silently no-ops |
 | Spanner | `data` document-envelope mutation | Retryable read-write transaction that preserves legacy-row reads, supports dynamic top-level fields, and keeps existence checks atomic; portable expressions use GoogleSQL JSON functions over the authoritative envelope, with a physical-column fallback only when the row has no valid envelope |
 
@@ -286,13 +286,15 @@ Spanner adapter. This scope decision does not claim that a future transactional
 implementation would necessarily have a lost-update window.
 
 **Error normalisation.** Cosmos validates required paths and signed-64
-integral-result bounds from a point read. That read's ETag guards the write
-only for `REPLACE`, `REMOVE`, and nested non-increment operations; `INCREMENT`
-is exempt at every depth so concurrent increments are not converted into
-non-retryable `CONFLICT`s that DynamoDB and Spanner never produce.
+integral-result bounds from a point read. A path-scoped `IS_DEFINED` filter
+predicate guards the write for `REPLACE`, `REMOVE`, and nested non-increment
+operations; no `If-Match` is ever sent, and `INCREMENT` is exempt at every
+depth so concurrent increments are not converted into non-retryable
+`CONFLICT`s that DynamoDB and Spanner never produce.
 A missing document/path becomes `NOT_FOUND`, and a nonnumeric target or proven
-overflow becomes `INVALID_REQUEST` before the write. A HTTP 412 after an
-ETag-guarded read is `CONFLICT`; it is not reread and reclassified. A
+overflow becomes `INVALID_REQUEST` before the write. A failed predicate (HTTP
+412) is normalised to `NOT_FOUND`, since an existence check is the only
+precondition the request carries. A
 pure-`INCREMENT` patch still writes unconditionally, so an increment target
 deleted or retyped between the classifying read and the write first surfaces
 as Cosmos's own native increment error. That error is no longer taken at face

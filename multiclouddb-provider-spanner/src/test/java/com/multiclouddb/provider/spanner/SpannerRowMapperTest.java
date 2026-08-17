@@ -341,4 +341,40 @@ class SpannerRowMapperTest {
             assertEquals("s", node.get("sortKey").asText());
         }
     }
+
+    @Test
+    @DisplayName("mixed-case DDL: envelope is found and keys surface under portable names")
+    void mixedCaseEnvelopeColumnsAreResolvedCaseInsensitively() {
+        // Spanner resolves identifiers case-insensitively and the write path
+        // already mirrors columns that way, so a customer-declared
+        // `Data` / `PartitionKey` / `SortKey` shape must read back identically to
+        // the lowercase shape. Matching case-sensitively missed the envelope
+        // entirely and leaked its raw JSON as a `Data` document field.
+        Type rowType = Type.struct(
+                StructField.of("PartitionKey", Type.string()),
+                StructField.of("SortKey", Type.string()),
+                StructField.of("Data", Type.string()),
+                StructField.of("Title", Type.string()));
+        Struct row = Struct.newBuilder()
+                .set("PartitionKey").to("p")
+                .set("SortKey").to("s")
+                .set("Data").to("{\"" + SpannerConstants.FIELD_DATA_DOCUMENT
+                        + "\":{\"title\":\"from-envelope\",\"onSale\":true}}")
+                .set("Title").to("legacy-column-value")
+                .build();
+
+        try (ResultSet rs = singleRow(rowType, row)) {
+            JsonNode node = SpannerRowMapper.toJsonNode(rs);
+            assertEquals("from-envelope", node.get("title").asText(),
+                    "the envelope must be authoritative regardless of column casing");
+            assertTrue(node.get("onSale").asBoolean());
+            assertFalse(node.has("Data"),
+                    "the envelope column must never leak as a document field");
+            assertEquals("p", node.get("partitionKey").asText(),
+                    "keys must surface under the portable name, not the DDL casing");
+            assertEquals("s", node.get("sortKey").asText());
+            assertFalse(node.has("PartitionKey"), "non-portable key casing must not surface");
+            assertFalse(node.has("SortKey"), "non-portable key casing must not surface");
+        }
+    }
 }

@@ -60,7 +60,7 @@ public final class SpannerRowMapper {
         // Single pre-scan: locate the data column (once) and parse its metadata.
         int dataColumnIndex = -1;
         for (int i = 0; i < columnCount; i++) {
-            if (SpannerConstants.FIELD_DATA.equals(type.getStructFields().get(i).getName())) {
+            if (SpannerConstants.FIELD_DATA.equalsIgnoreCase(type.getStructFields().get(i).getName())) {
                 dataColumnIndex = i;
                 break;
             }
@@ -72,12 +72,12 @@ public final class SpannerRowMapper {
         if (storedDocument != null) {
             for (int i = 0; i < columnCount; i++) {
                 String columnName = type.getStructFields().get(i).getName();
-                if (SpannerConstants.FIELD_PARTITION_KEY.equals(columnName)
-                        || SpannerConstants.FIELD_SORT_KEY.equals(columnName)) {
+                String portableName = portableKeyName(columnName);
+                if (portableName != null) {
                     if (rs.isNull(i)) {
-                        storedDocument.putNull(columnName);
+                        storedDocument.putNull(portableName);
                     } else {
-                        storedDocument.put(columnName, rs.getString(i));
+                        storedDocument.put(portableName, rs.getString(i));
                     }
                 }
             }
@@ -109,8 +109,7 @@ public final class SpannerRowMapper {
             // For non-null values, include if no metadata or if field is in metadata.
             if (writtenFields != null
                     && !writtenFields.contains(colName)
-                    && !SpannerConstants.FIELD_PARTITION_KEY.equals(colName)
-                    && !SpannerConstants.FIELD_SORT_KEY.equals(colName)) {
+                    && portableKeyName(colName) == null) {
                 continue;
             }
 
@@ -184,6 +183,26 @@ public final class SpannerRowMapper {
         // schemaless stores like Cosmos / DynamoDB).
         Map<String, Object> raw = MAPPER.convertValue(node, MAP_TYPE);
         return new LinkedHashMap<>(raw);
+    }
+
+    /**
+     * Canonical portable name for a key column, or {@code null} when the
+     * column is not a key column.
+     * <p>
+     * Spanner resolves identifiers case-insensitively, so a customer-declared
+     * {@code PartitionKey} is the same column as {@code partitionKey}. The
+     * write path already mirrors columns case-insensitively, so reads must
+     * match the same way and surface the value under the portable name rather
+     * than the declared DDL casing.
+     */
+    private static String portableKeyName(String columnName) {
+        if (SpannerConstants.FIELD_PARTITION_KEY.equalsIgnoreCase(columnName)) {
+            return SpannerConstants.FIELD_PARTITION_KEY;
+        }
+        if (SpannerConstants.FIELD_SORT_KEY.equalsIgnoreCase(columnName)) {
+            return SpannerConstants.FIELD_SORT_KEY;
+        }
+        return null;
     }
 
     /**
