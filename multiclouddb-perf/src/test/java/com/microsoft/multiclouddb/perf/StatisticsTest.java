@@ -63,6 +63,33 @@ class StatisticsTest {
     }
 
     @Test
+    void aggregateKeepsSinglePartitionAndCrossPartitionQueriesSeparate() {
+        // A partition-scoped query and a cross-partition fan-out are different operations;
+        // averaging them yields a number that describes neither.
+        ResultRow scoped = queryRow("run-q", "scoped", 20.0);
+        ResultRow unscoped = queryRow("run-q", "unscoped", 80.0);
+
+        List<StatRow> stats = Statistics.aggregate(List.of(scoped, unscoped));
+
+        assertEquals(2, stats.size());
+        assertEquals(List.of("scoped", "unscoped"),
+                stats.stream().map(StatRow::variant).sorted().toList());
+        assertEquals(List.of(20.0, 80.0), stats.stream().map(StatRow::p50).sorted().toList());
+    }
+
+    @Test
+    void aggregateIgnoresNonScopeNotesWhenGrouping() {
+        // notes also carries failure text; only the two scope tokens identify a measurement.
+        ResultRow first = withNotes(rowWithTarget("run-n", 50.0), "seeding failed: boom");
+        ResultRow second = withNotes(rowWithTarget("run-n", 50.0), "some other annotation");
+
+        List<StatRow> stats = Statistics.aggregate(List.of(first, second));
+
+        assertEquals(1, stats.size());
+        org.junit.jupiter.api.Assertions.assertNull(stats.get(0).variant());
+    }
+
+    @Test
     void serviceTimeSubtractsRttAndClampsAtZero() {
         assertEquals(24.0, Statistics.serviceTime(62.0, 38.0), 1e-9);
         assertEquals(0.0, Statistics.serviceTime(30.0, 38.0), 1e-9);
@@ -77,6 +104,23 @@ class StatisticsTest {
                 row.errorCategory(), row.costUnit(), row.costValue(), row.retryCount(),
                 row.capacityLimitUnit(), row.capacityLimitValue(), row.billingMode(),
                 row.provisionedCapacity(), row.sdkVersion(), row.targetOpsPerSec(), row.notes());
+    }
+
+    private static ResultRow withNotes(ResultRow row, String notes) {
+        return new ResultRow(row.runId(), row.timestampUtc(), row.provider(), row.region(),
+                row.comparisonRegion(), row.transportProfile(), row.endpointRttMs(), row.hostLabel(),
+                row.jdk(), row.operation(), row.workload(), row.scenario(), row.docSizeBytes(),
+                row.pageSize(), row.threads(), row.iteration(), row.startOffsetMs(), row.endOffsetMs(),
+                row.latencyMs(), row.success(), row.errorCategory(), row.costUnit(), row.costValue(),
+                row.retryCount(), row.capacityLimitUnit(), row.capacityLimitValue(), row.billingMode(),
+                row.provisionedCapacity(), row.sdkVersion(), row.targetOpsPerSec(), notes);
+    }
+
+    private static ResultRow queryRow(String runId, String scope, double latencyMs) {
+        return new ResultRow(runId, "2026-01-01T00:00:00Z", "cosmos", "west us 2", "colo-a",
+                "gateway HTTP/2 pool=64", 5.0, "host", "jdk", "query", "query", "S3", 1024, 100, 4, 0,
+                0.0, latencyMs, latencyMs, true, "", "RU", 3.0, 0,
+                "RU/s", 400.0, "manual", "400 RU/s", "dev", 50.0, scope);
     }
 
     private static ResultRow rowWithTarget(String runId, double targetOpsPerSec) {
