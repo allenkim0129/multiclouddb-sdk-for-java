@@ -65,13 +65,37 @@ final class Scenarios {
         return "\u2014";
     }
 
+    /**
+     * Effective page size for a scenario, derived from the {@code --page-size} baseline.
+     * <p>
+     * Each query scenario varies exactly one dimension so a difference between them has a
+     * single cause. S5 shrinks the page in proportion to its larger documents, keeping bytes
+     * per page close to the baseline: that isolates per-item cost from per-byte cost, and
+     * stops the scenario from consuming several times the provisioned read capacity.
+     */
+    static int pageSizeFor(String scenario, int basePageSize) {
+        return switch (scenario) {
+            case "S4" -> Math.max(1, basePageSize / 4);
+            case "S5" -> Math.max(1, basePageSize / 8);
+            default -> basePageSize;
+        };
+    }
+
+    /** Effective document size for a scenario, derived from the {@code --doc-size} baseline. */
+    static int docSizeFor(String scenario, int baseDocSize) {
+        return "S5".equals(scenario) ? baseDocSize * 8 : baseDocSize;
+    }
+
     /** What the scenario is for, in one sentence. */
     static String purpose(String scenario) {
         return switch (scenario) {
             case "S3" -> "Query latency with the partition key supplied and withheld, so "
                     + "single-partition and cross-partition (fan-out) costs can be told apart.";
-            case "S4", "S5" -> "Cross-partition query latency: the same predicate without a "
-                    + "partition key, forcing the provider to fan out across all partitions.";
+            case "S4" -> "Page-size sensitivity: the same cross-partition query at a quarter of "
+                    + "the baseline page size, isolating per-request overhead from per-item cost.";
+            case "S5" -> "Item-size sensitivity: the same cross-partition query over documents "
+                    + "eight times the baseline size, with the page shrunk to match so bytes per "
+                    + "page stay close to the baseline and only item size varies.";
             case "S7" -> "Change-feed read throughput from the tip of each physical partition.";
             default -> "Point-operation latency and throughput on individually addressed keys.";
         };
@@ -81,7 +105,8 @@ final class Scenarios {
     static String method(String scenario, String workload) {
         if (isQuery(scenario)) {
             return "Seeds max(2 x page size, 200) documents under one partition key, then repeats "
-                    + "`category = @cat` at the configured page size, reading the first page only.";
+                    + "`category = @cat` at this scenario's page size, reading the first page only. "
+                    + "The effective document and page sizes are in the table above.";
         }
         if ("S7".equals(scenario)) {
             return "Seeds documents, opens one cursor per physical partition at the tip, then "

@@ -176,7 +176,9 @@ public final class PerfMain {
                                         + "-" + threads + "t"
                                         + (repeat > 1 ? "-rep" + rep : "");
                                 RunContext ctx = new RunContext(runId, plan.providerId(), scenario, threads,
-                                        warmup, iterations, docSize, pageSize,
+                                        warmup, iterations,
+                                        Scenarios.docSizeFor(scenario, docSize),
+                                        Scenarios.pageSizeFor(scenario, pageSize),
                                         meta.region(), comparisonRegion, transportProfile(plan.providerId(), plan.cfg()),
                                         endpointRttMs, host, jdk,
                                         plan.sdkVersion(), meta.billingMode(), meta.provisionedCapacity(),

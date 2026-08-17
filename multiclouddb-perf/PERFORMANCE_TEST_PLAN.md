@@ -32,7 +32,17 @@ DynamoDB, and Spanner:
 - `mixed` — existing lifecycle-style point workload (create/read/update/delete) for backward compatibility.
 - `read` — seeded point reads; seeding occurs outside the measured interval.
 - `write` — point writes only (create/update/upsert/delete) with independent seeded keysets and cleanup.
-- `query` — query-only scenarios (`S3/S4/S5`).
+- `query` — query-only scenarios (`S3/S4/S5`), each varying exactly one dimension:
+  - `S3` — partition scope: the same query with the partition key supplied (single-partition)
+    and withheld (cross-partition fan-out), at the baseline document and page size.
+  - `S4` — page size: cross-partition at a quarter of the baseline page size, isolating
+    per-request overhead from per-item cost.
+  - `S5` — item size: cross-partition over documents 8x the baseline size, with the page
+    shrunk 8x so bytes per page stay near the baseline. Only item size varies, and the
+    scenario does not consume several times the provisioned read capacity.
+
+  `--doc-size` and `--page-size` set the **baseline**; each scenario derives its effective
+  sizes from it, and the report records the effective values per row.
 - `changefeed` — capability-gated `S7` reporting path.
 
 ## Deterministic provisioning and metadata

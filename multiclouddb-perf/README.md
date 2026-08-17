@@ -14,6 +14,9 @@ Use the same for every provider in a comparison set:
   property file. `--target-ops-per-sec N` overrides all configs. Use `0` only for
   max-throughput sweeps (`--threads 1,8,32`).
 - **Workload profile**: `--workload read|write|mixed|query` selects one profile.
+  The three query scenarios each vary one dimension: `S3` partition scope, `S4` page size
+  (quarter of baseline), `S5` item size (8x baseline, page shrunk 8x to hold bytes per page
+  near baseline). `--doc-size` / `--page-size` set the baseline the scenarios derive from.
   `--workload all` runs the read, write, and query profiles in one batch and one report.
 - **Client placement**: same host/JDK, plus matching `comparison_region` labels. A single client
   cannot be colocated with two clouds at once, so the harness probes each endpoint's TCP RTT at
