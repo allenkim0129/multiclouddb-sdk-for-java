@@ -167,7 +167,11 @@ class ExpressionTranslationTest {
         Expression ast = ExpressionParser.parse("value = null");
 
         assertEquals("c[\"value\"] = null", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
-        assertEquals("\"value\" = NULL", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        // Bare `"value" = NULL` is UNKNOWN under PartiQL three-valued logic and
+        // matches nothing, while Cosmos and Spanner both match the explicit-null
+        // item. DynamoDB now spells out present-and-null so all three agree.
+        assertEquals("(\"value\" IS NOT MISSING AND \"value\" IS NULL)",
+                dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
         assertSpannerEnvelopeField(spanner.translate(ast, EMPTY_PARAMS, TABLE), "value");
     }
 

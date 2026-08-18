@@ -654,6 +654,42 @@ public abstract class CrudConformanceTests {
         assertInvalidRequest(betweenBounds, "query");
     }
 
+    @Test @Order(39)
+    @DisplayName("field = null and field != null select the same rows on every provider")
+    void nullComparisonsAreIdenticalOnEveryProvider() {
+        // Cosmos matches a stored JSON null with `c["f"] = null` and Spanner with
+        // `JSON_TYPE(f) = 'null'`, while a bare PartiQL `"f" = NULL` is UNKNOWN and
+        // matches nothing. Without this assertion the three translators can pin
+        // three different SQL spellings that each look right in isolation.
+        String pk = "null-compare";
+        Map<String, Object> explicitNull = new java.util.HashMap<>();
+        explicitNull.put("name", "explicit-null");
+        explicitNull.put("status", null);
+        client.create(getAddress(), MulticloudDbKey.of(pk, "explicit-null"), explicitNull);
+        client.create(getAddress(), MulticloudDbKey.of(pk, "present"),
+                Map.of("name", "present", "status", "live"));
+        client.create(getAddress(), MulticloudDbKey.of(pk, "absent"),
+                Map.of("name", "absent"));
+
+        QueryPage isNull = client.query(getAddress(), QueryRequest.builder()
+                .partitionKey(pk).expression("status = null").maxPageSize(10).build());
+        assertEquals(List.of("explicit-null"), sortedNames(isNull),
+                "`status = null` must match only the explicitly-null document");
+
+        QueryPage isNotNull = client.query(getAddress(), QueryRequest.builder()
+                .partitionKey(pk).expression("status != null").maxPageSize(10).build());
+        assertEquals(List.of("present"), sortedNames(isNotNull),
+                "`status != null` must match only present, non-null values — an absent "
+                        + "field satisfies neither comparison");
+    }
+
+    private static List<String> sortedNames(QueryPage page) {
+        return page.items().stream()
+                .map(item -> String.valueOf(item.get("name")))
+                .sorted()
+                .toList();
+    }
+
     @Test @Order(32)
     @DisplayName("update replaces omitted fields in reads and portable queries")
     void updateReplacementRemovesOmittedFieldsFromReadsAndQueries() {

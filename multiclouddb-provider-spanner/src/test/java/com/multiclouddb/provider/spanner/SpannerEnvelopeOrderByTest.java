@@ -83,7 +83,8 @@ class SpannerEnvelopeOrderByTest {
         assertTrue(keys.contains("LAX_FLOAT64("), keys);
         assertTrue(keys.contains("LAX_STRING("), keys);
         assertTrue(keys.contains("LAX_BOOL("), keys);
-        assertTrue(keys.contains("WHEN 'boolean' THEN 2 WHEN 'number' THEN 3 WHEN 'string' THEN 4 ELSE 1"),
+        assertTrue(keys.contains("WHEN 'boolean' THEN 2 WHEN 'number' THEN 3 WHEN 'string' THEN 4"
+                + " WHEN 'array' THEN 5 WHEN 'object' THEN 6 ELSE 1"),
                 "JSON kinds must not interleave: " + keys);
         // The rank carries the direction so DESC is the exact reverse of ASC.
         assertEquals(4, keys.split(" ASC", -1).length - 1,
@@ -95,12 +96,12 @@ class SpannerEnvelopeOrderByTest {
     }
 
     @Test
-    @DisplayName("cross-type ORDER BY rank matches Cosmos: null < boolean < number < string")
+    @DisplayName("cross-type ORDER BY rank matches Cosmos across every JSON kind")
     void orderByTypeRankMatchesCosmosTotalOrder() {
         // DynamoDB declares ORDER_BY unsupported, so Cosmos and Spanner are the
         // only two providers on this surface. Cosmos NoSQL's documented total
-        // order is `undefined < null < boolean < number < string`; any other
-        // Spanner rank is an ungated cross-provider divergence.
+        // order is `undefined < null < boolean < number < string < array < object`;
+        // any other Spanner rank is an ungated cross-provider divergence.
         String keys = SpannerExpressionTranslator.orderByExpression("value", null);
         // The accessor itself contains a nested CASE ... END, so slice at the
         // first tie-breaker rather than at the first " END".
@@ -109,6 +110,10 @@ class SpannerEnvelopeOrderByTest {
         assertTrue(rank.indexOf("'boolean' THEN 2") > 0, rank);
         assertTrue(rank.indexOf("'number' THEN 3") > 0, rank);
         assertTrue(rank.indexOf("'string' THEN 4") > 0, rank);
+        // Arrays and objects are Cosmos's two highest kinds. Folding them into
+        // the ELSE arm put them on the lowest rank instead — a silent divergence.
+        assertTrue(rank.indexOf("'array' THEN 5") > 0, rank);
+        assertTrue(rank.indexOf("'object' THEN 6") > 0, rank);
         // JSON `null` and an absent field (JSON_QUERY yields SQL NULL, which
         // matches no WHEN arm) share the lowest rank, as `undefined` and `null`
         // do on Cosmos.

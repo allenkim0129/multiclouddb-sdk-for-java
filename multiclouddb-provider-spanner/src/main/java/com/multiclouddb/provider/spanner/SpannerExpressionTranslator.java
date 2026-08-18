@@ -365,11 +365,18 @@ public final class SpannerExpressionTranslator implements ExpressionTranslator {
     static String orderByExpression(String field, String direction) {
         String accessor = jsonField(field);
         String dir = direction == null || direction.isBlank() ? "" : " " + direction;
-        // The ELSE arm covers JSON `null`, an absent field (JSON_QUERY yields SQL
-        // NULL, which matches no WHEN arm), and any non-scalar kind, keeping them
-        // on the single lowest rank exactly as Cosmos sorts undefined / null first.
+        // Ranks reproduce Cosmos NoSQL's total order in full:
+        //   undefined/null (1) < boolean (2) < number (3) < string (4)
+        //                      < array (5) < object (6)
+        // Arrays and objects must be ranked explicitly. Folding them into the ELSE
+        // arm put Cosmos's two *highest* kinds on Spanner's *lowest* rank, so a
+        // field holding a mix of scalars and arrays sorted differently on the two
+        // providers that declare ORDER_BY — an ungated cross-provider divergence.
+        // The ELSE arm now covers only JSON `null` and an absent field (JSON_QUERY
+        // yields SQL NULL, which matches no WHEN arm).
         return "CASE JSON_TYPE(" + accessor + ")"
-                + " WHEN 'boolean' THEN 2 WHEN 'number' THEN 3 WHEN 'string' THEN 4 ELSE 1 END" + dir
+                + " WHEN 'boolean' THEN 2 WHEN 'number' THEN 3 WHEN 'string' THEN 4"
+                + " WHEN 'array' THEN 5 WHEN 'object' THEN 6 ELSE 1 END" + dir
                 + ", LAX_FLOAT64(" + accessor + ")" + dir
                 + ", LAX_STRING(" + accessor + ")" + dir
                 + ", LAX_BOOL(" + accessor + ")" + dir;

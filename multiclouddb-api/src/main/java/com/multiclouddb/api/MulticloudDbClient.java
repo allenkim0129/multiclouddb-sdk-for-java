@@ -167,7 +167,12 @@ public interface MulticloudDbClient extends AutoCloseable {
      *         not exist; INVALID_REQUEST if the operation list violates the portable
      *         contract; UNSUPPORTED_CAPABILITY if the provider does not declare
      *         {@link Capability#PATCH} or, for nested paths,
-     *         {@link Capability#NESTED_PATCH}
+     *         {@link Capability#NESTED_PATCH}; or CONFLICT when a concurrent writer
+     *         changed an addressed path between validation and the write and the
+     *         resulting state does not prove a deterministic cause. CONFLICT is safe
+     *         to retry: a patch is atomic, so no operation in the list was applied.
+     *         Cosmos DB and DynamoDB surface this race directly; Spanner normally
+     *         resolves it inside its read-write transaction and rarely reports it
      */
     void patch(ResourceAddress address, MulticloudDbKey key, List<PatchOperation> operations,
                OperationOptions options);

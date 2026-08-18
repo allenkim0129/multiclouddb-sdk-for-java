@@ -204,7 +204,7 @@ public final class CosmosExpressionTranslator implements ExpressionTranslator {
      * IDENTIFIER)*}), so each segment is quoted separately: {@code address.city}
      * becomes {@code c["address"]["city"]}, not a single literal key.
      */
-    private static String fieldRef(String name) {
+    static String fieldRef(String name) {
         StringBuilder accessor = new StringBuilder("c");
         for (String segment : name.split("\\.", -1)) {
             accessor.append("[\"")

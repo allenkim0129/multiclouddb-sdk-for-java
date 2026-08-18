@@ -66,8 +66,8 @@ class CosmosResultSetControlTest {
                 .build();
         String result = CosmosProviderClient.applyResultSetControl(
                 "SELECT * FROM c WHERE c.partitionKey = @pk", query);
-        assertTrue(result.contains("ORDER BY c.name DESC"),
-                "Expected explicit ORDER BY c.name DESC, got: " + result);
+        assertTrue(result.contains("ORDER BY c[\"name\"] DESC"),
+                "Expected explicit ORDER BY c[\"name\"] DESC, got: " + result);
         assertFalse(result.contains("ORDER BY c.id ASC"),
                 "Default ORDER BY c.id ASC must not appear when explicit orderBy is set, got: " + result);
     }
@@ -79,8 +79,8 @@ class CosmosResultSetControlTest {
                 .orderBy("createdAt", SortDirection.ASC)
                 .build();
         String result = CosmosProviderClient.applyResultSetControl("SELECT * FROM c", query);
-        assertTrue(result.contains("ORDER BY c.createdAt ASC"),
-                "Expected ORDER BY c.createdAt ASC, got: " + result);
+        assertTrue(result.contains("ORDER BY c[\"createdAt\"] ASC"),
+                "Expected bracket-quoted ORDER BY c[\"createdAt\"] ASC, got: " + result);
     }
 
     // ── TOP N ─────────────────────────────────────────────────────────────────

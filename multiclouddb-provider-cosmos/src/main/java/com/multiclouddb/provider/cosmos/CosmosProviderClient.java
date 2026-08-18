@@ -376,10 +376,16 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      * @param options    operation options; {@code ttlSeconds} is intentionally ignored
      * @throws com.multiclouddb.api.MulticloudDbException category {@code NOT_FOUND} for a
      *         missing item or required field, or {@code INVALID_REQUEST} for a
-     *         nonnumeric increment target or integral-result overflow. Concurrency
-     *         alone never produces {@code CONFLICT}: the precondition is
-     *         path-scoped, so a concurrent write to a field this patch does not
-     *         address cannot fail it
+     *         nonnumeric increment target or integral-result overflow, or
+     *         {@code CONFLICT} when the rejection cannot be attributed to a
+     *         deterministic cause. The filter predicate is path-scoped, so a
+     *         concurrent write to a field this patch does not address cannot fail
+     *         it — but a concurrent write to a field it <em>does</em> address can,
+     *         including one that moves an increment target outside the integral
+     *         range the predicate bounds. Re-read state is classified first
+     *         ({@code classifyRacedPatchRejection}); {@code CONFLICT} is reported
+     *         only when that state satisfies every portable precondition, and is
+     *         safe to retry
      */
     @Override
     public void patch(ResourceAddress address, MulticloudDbKey key, List<PatchOperation> operations,
@@ -1349,7 +1355,12 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             for (int i = 0; i < query.orderBy().size(); i++) {
                 SortOrder so = query.orderBy().get(i);
                 if (i > 0) orderClause.append(", ");
-                orderClause.append("c.").append(so.field()).append(" ").append(so.direction().name());
+                // Reuse the translator's bracket accessor: a bare `c.<name>` collides
+                // with Cosmos NoSQL reserved words, so ORDER BY on a field named
+                // `value` was rejected outright while the same portable query
+                // succeeded on Spanner.
+                orderClause.append(CosmosExpressionTranslator.fieldRef(so.field()))
+                        .append(' ').append(so.direction().name());
             }
             result = result + orderClause;
         } else if (!containsOrderBy(result) && !containsAggregate(result)) {

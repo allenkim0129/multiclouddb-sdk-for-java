@@ -198,6 +198,50 @@ public abstract class ResultSetControlConformanceTest {
 
     // ---------------------------------------------------- helpers
 
+    @Test
+    @DisplayName("ORDER BY ranks mixed JSON types identically on every provider declaring ORDER_BY")
+    void orderByCrossTypeRankIsPortable() {
+        CapabilitySet caps = client.capabilities();
+        assumeCapability(caps, Capability.ORDER_BY, "provider does not declare ORDER_BY");
+
+        // DynamoDB declares ORDER_BY unsupported, leaving Cosmos and Spanner as the
+        // only two providers on this surface — so a rank mismatch between them is an
+        // ungated divergence rather than a capability difference. Cosmos's documented
+        // total order is undefined < null < boolean < number < string < array < object.
+        String pk = "order-by-mixed-kinds";
+        Map<String, Object> absent = new java.util.HashMap<>();
+        absent.put("name", "1-absent");
+        Map<String, Object> jsonNull = new java.util.HashMap<>();
+        jsonNull.put("name", "2-null");
+        jsonNull.put("mixed", null);
+        client.create(getAddress(), MulticloudDbKey.of(pk, "1-absent"), absent);
+        client.create(getAddress(), MulticloudDbKey.of(pk, "2-null"), jsonNull);
+        client.create(getAddress(), MulticloudDbKey.of(pk, "3-bool"),
+                Map.of("name", "3-bool", "mixed", true));
+        client.create(getAddress(), MulticloudDbKey.of(pk, "4-number"),
+                Map.of("name", "4-number", "mixed", 42));
+        client.create(getAddress(), MulticloudDbKey.of(pk, "5-string"),
+                Map.of("name", "5-string", "mixed", "x"));
+        client.create(getAddress(), MulticloudDbKey.of(pk, "6-array"),
+                Map.of("name", "6-array", "mixed", List.of(1)));
+        client.create(getAddress(), MulticloudDbKey.of(pk, "7-object"),
+                Map.of("name", "7-object", "mixed", Map.of("k", 1)));
+
+        QueryPage asc = client.query(getAddress(), QueryRequest.builder()
+                .partitionKey(pk)
+                .orderBy("mixed", SortDirection.ASC)
+                .maxPageSize(10)
+                .build());
+        List<String> names = asc.items().stream()
+                .map(item -> String.valueOf(item.get("name")))
+                .toList();
+
+        // The seed names encode the expected rank, so a plain sort is the oracle.
+        assertEquals(names.stream().sorted().toList(), names,
+                "mixed-type ORDER BY must rank null/absent < boolean < number < string "
+                        + "< array < object on every provider declaring ORDER_BY, got: " + names);
+    }
+
     /**
      * Skips the test (via {@link Assumptions}) when the given capability is not
      * supported by the client under test.

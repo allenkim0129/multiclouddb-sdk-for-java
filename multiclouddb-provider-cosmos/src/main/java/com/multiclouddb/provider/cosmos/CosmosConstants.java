@@ -136,12 +136,20 @@ public final class CosmosConstants {
      * The adapter never sends an {@code If-Match} ETag on a patch. The only
      * precondition it attaches is a path-scoped conditional-patch filter
      * predicate ({@code FROM c WHERE IS_DEFINED(c["field"]) ...}), evaluated
-     * server-side inside the same atomic write. A 412 therefore proves that a
-     * required path was absent when the write was evaluated, and is mapped to the
-     * portable {@code NOT_FOUND} that DynamoDB and Spanner report for the same
-     * state — not to {@code CONFLICT}, because a concurrent write to a field the
-     * patch does not address cannot falsify the predicate. Emulator behavior is
-     * verified separately by the pending T192 conformance run.
+     * server-side inside the same atomic write. A 412 therefore means the
+     * predicate did not hold when the write was evaluated: either a required path
+     * was absent, or an increment target had moved outside the integral range the
+     * predicate bounds.
+     * <p>
+     * {@code CosmosProviderClient#patch} intercepts a 412 before
+     * {@code CosmosErrorMapper} sees it and re-reads to classify the cause,
+     * reporting {@code NOT_FOUND} or {@code INVALID_REQUEST} when current state
+     * proves one, and {@code CONFLICT} only when it proves none. The mapper's
+     * fallback mapping of 412 to {@code NOT_FOUND} therefore applies only to
+     * operations that attach a precondition without classifying it — none today,
+     * since the adapter sends no {@code If-Match} anywhere. Reintroducing an ETag
+     * on any operation must revisit that mapping. Emulator behavior is verified
+     * separately by the pending T192 conformance run.
      */
     public static final int STATUS_PRECONDITION_FAILED = 412;
 

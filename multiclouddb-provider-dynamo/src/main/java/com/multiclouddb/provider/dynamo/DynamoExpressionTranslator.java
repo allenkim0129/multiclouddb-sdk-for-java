@@ -51,6 +51,10 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
             Map<String, Object> srcParams,
             List<Object> outParams) {
         if (expr instanceof ComparisonExpression comp) {
+            if (isNullOperand(comp.operand(), srcParams)) {
+                appendNullComparison(comp, sb);
+                return;
+            }
             sb.append(fieldRef(comp.field().name()));
             sb.append(' ').append(comp.op().symbol()).append(' ');
             appendValue(comp.operand(), sb, srcParams, outParams);
@@ -108,6 +112,33 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
             sb.append(" AND ");
             appendValue(between.high(), sb, srcParams, outParams);
             sb.append(')');
+        }
+    }
+
+    /**
+     * Emits a portable comparison against a {@code null} literal.
+     *
+     * <p>PartiQL evaluates {@code "field" = NULL} under SQL three-valued logic,
+     * which yields UNKNOWN and therefore matches no item — including an item
+     * that genuinely stores an explicit JSON null. Cosmos DB
+     * ({@code c["field"] = null}) and Spanner ({@code JSON_TYPE(...) = 'null'})
+     * both match exactly the explicit-null item, so the bare PartiQL form made
+     * one portable expression return different rows on different providers.
+     *
+     * <p>{@code EQ} therefore matches present-and-null, and {@code NE} matches
+     * present-and-non-null; an absent attribute satisfies neither, which is how
+     * both sibling providers behave. Relational operators have no portable truth
+     * value against null and collapse to {@code FALSE}, matching
+     * {@code SpannerExpressionTranslator#appendNullComparison}.
+     */
+    private static void appendNullComparison(ComparisonExpression comparison, StringBuilder sb) {
+        String accessor = fieldRef(comparison.field().name());
+        switch (comparison.op()) {
+            case EQ -> sb.append('(').append(accessor).append(" IS NOT MISSING AND ")
+                    .append(accessor).append(" IS NULL)");
+            case NE -> sb.append('(').append(accessor).append(" IS NOT MISSING AND ")
+                    .append(accessor).append(" IS NOT NULL)");
+            case LT, GT, LE, GE -> sb.append("FALSE");
         }
     }
 
