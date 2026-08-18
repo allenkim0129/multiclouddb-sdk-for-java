@@ -79,6 +79,15 @@ class CosmosPatchPreconditionTest {
     private static final String COSMOS_ID = "sk";
     private static final String ETAG = "\"etag-1\"";
 
+    /**
+     * The precondition a {@code +1} increment on {@code /value} must carry: the
+     * target must exist and the current value must leave room for the delta
+     * inside the portable signed 64-bit result range.
+     */
+    private static final String INCREMENT_BY_ONE_GUARD =
+            "FROM c WHERE IS_DEFINED(c[\"value\"]) "
+                    + "AND (c[\"value\"] BETWEEN -9223372036854775809 AND 9223372036854775806)";
+
     @Test
     void directSpiPatchRejectsNullListBeforeCallingCosmos() {
         AtomicReference<CosmosClient> sdkClient = new AtomicReference<>();
@@ -116,8 +125,8 @@ class CosmosPatchPreconditionTest {
     // ── write guard selection ───────────────────────────────────────────────
 
     @Test
-    @DisplayName("a pure INCREMENT patch writes unconditionally — no If-Match, no predicate")
-    void pureIncrementPatchWritesUnconditionally() throws Exception {
+    @DisplayName("a pure INCREMENT patch writes under an integral-result bound, never an If-Match")
+    void pureIncrementPatchCarriesAnIntegralResultBound() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
         stubRead(container, MAPPER.createObjectNode().put("value", 4));
         stubPatch(container);
@@ -130,16 +139,27 @@ class CosmosPatchPreconditionTest {
         assertNull(options.getIfMatchETag(),
                 "Cosmos evaluates increment server-side; an If-Match would turn concurrent "
                         + "increments into non-retryable CONFLICTs that Dynamo and Spanner never produce");
-        assertNull(options.getFilterPredicate(),
-                "an existence predicate on the increment target would add nothing the atomic "
-                        + "server-side increment does not already guarantee");
-        assertNull(CosmosProviderClient.patchFilterPredicate(
+        assertEquals(INCREMENT_BY_ONE_GUARD, options.getFilterPredicate(),
+                "the pre-read cannot keep the result in range: a concurrent writer can raise the "
+                        + "counter between that read and the native increment, so the bound DynamoDB "
+                        + "applies atomically must be applied atomically here too");
+        assertEquals(INCREMENT_BY_ONE_GUARD, CosmosProviderClient.patchFilterPredicate(
                 List.of(PatchOperation.increment("/value", 1))));
     }
 
     @Test
-    @DisplayName("a nested INCREMENT patch also writes unconditionally")
-    void nestedIncrementPatchWritesUnconditionally() throws Exception {
+    @DisplayName("a fractional INCREMENT delta carries no result bound")
+    void fractionalIncrementCarriesNoResultBound() {
+        assertEquals("FROM c WHERE IS_DEFINED(c[\"value\"])",
+                CosmosProviderClient.patchFilterPredicate(
+                        List.of(PatchOperation.increment("/value", 1.5d))),
+                "the portable domain only bounds integral results, so a fractional delta must "
+                        + "not inherit a range check DynamoDB does not apply either");
+    }
+
+    @Test
+    @DisplayName("a nested INCREMENT patch carries the same bound at depth")
+    void nestedIncrementPatchCarriesTheSameBound() throws Exception {
         ObjectNode document = MAPPER.createObjectNode();
         document.putObject("counters").put("hits", 7);
         CosmosContainer container = mock(CosmosContainer.class);
@@ -153,8 +173,11 @@ class CosmosPatchPreconditionTest {
         CosmosPatchItemRequestOptions options = capturePatchOptions(container);
         assertNull(options.getIfMatchETag(),
                 "depth does not change the atomicity of the native increment");
-        assertNull(options.getFilterPredicate(),
-                "depth does not change the atomicity of the native increment");
+        assertEquals("FROM c WHERE IS_DEFINED(c[\"counters\"][\"hits\"]) AND "
+                        + "(c[\"counters\"][\"hits\"] BETWEEN -9223372036854775809 "
+                        + "AND 9223372036854775806)",
+                options.getFilterPredicate(),
+                "depth does not change the overflow window either");
     }
 
     @Test
@@ -254,11 +277,14 @@ class CosmosPatchPreconditionTest {
     @Test
     @DisplayName("an INCREMENT mixed with a strict operation stays concurrency-safe")
     void incrementMixedWithAStrictOperationOnlyGuardsTheStrictPath() throws Exception {
-        assertEquals("FROM c WHERE IS_DEFINED(c[\"status\"])",
+        assertEquals("FROM c WHERE IS_DEFINED(c[\"value\"]) "
+                        + "AND (c[\"value\"] BETWEEN -9223372036854775809 AND 9223372036854775806) "
+                        + "AND IS_DEFINED(c[\"status\"])",
                 CosmosProviderClient.patchFilterPredicate(List.of(
                         PatchOperation.increment("/value", 1),
                         PatchOperation.replace("/status", "live"))),
-                "the increment must not inherit a guard; only the strict path is asserted");
+                "each operation contributes only its own terms; the increment adds an existence "
+                        + "check and a result bound, never an item-scoped guard");
 
         CosmosContainer container = mock(CosmosContainer.class);
         stubRead(container, MAPPER.createObjectNode().put("value", 4).put("status", "draft"));
@@ -280,15 +306,59 @@ class CosmosPatchPreconditionTest {
         verify(container, times(2)).patchItem(eq(COSMOS_ID), any(PartitionKey.class),
                 any(CosmosPatchOperations.class), captor.capture(), eq(ObjectNode.class));
         for (CosmosPatchItemRequestOptions options : captor.getAllValues()) {
-            assertNull(options.getIfMatchETag());
-            assertFalse(options.getFilterPredicate().contains("value"),
-                    "the increment target must never appear in the precondition");
+            assertNull(options.getIfMatchETag(),
+                    "an item-scoped ETag would make concurrent increments collide");
+            assertFalse(options.getFilterPredicate().contains("_etag"),
+                    "the precondition stays path-scoped, so a concurrent write to an unrelated "
+                            + "field cannot falsify it");
         }
     }
 
     @Test
-    @DisplayName("a failed filter predicate is NOT_FOUND — the category the peers produce")
-    void failedFilterPredicateIsNotFoundRatherThanConflict() throws Exception {
+    @DisplayName("a failed filter predicate is classified from current state, not assumed")
+    void failedFilterPredicateIsClassifiedFromCurrentState() throws Exception {
+        CosmosContainer container = mock(CosmosContainer.class);
+        stubReads(container, MAPPER.createObjectNode().put("status", "draft"),
+                MAPPER.createObjectNode());
+        stubPatchFailure(container, cosmosException(412));
+
+        withCosmos(container, client -> {
+            MulticloudDbException error = assertThrows(MulticloudDbException.class,
+                    () -> client.patch(ADDRESS, KEY,
+                            List.of(PatchOperation.replace("/status", "live")),
+                            OperationOptions.defaults()));
+            assertEquals(MulticloudDbErrorCategory.NOT_FOUND, error.error().category(),
+                    "the re-read proves the addressed path vanished, the same state Dynamo "
+                            + "reports as NOT_FOUND from its before-image");
+            assertEquals(412, error.error().statusCode(),
+                    "the reclassified envelope keeps the provider's raw status for diagnostics");
+        });
+    }
+
+    @Test
+    @DisplayName("a raced INCREMENT overflow is INVALID_REQUEST, not a silently stored value")
+    void racedIncrementOverflowIsInvalidRequest() throws Exception {
+        CosmosContainer container = mock(CosmosContainer.class);
+        stubReads(container, MAPPER.createObjectNode().put("value", 1L),
+                MAPPER.createObjectNode().put("value", Long.MAX_VALUE));
+        stubPatchFailure(container, cosmosException(412));
+
+        withCosmos(container, client -> {
+            MulticloudDbException error = assertThrows(MulticloudDbException.class,
+                    () -> client.patch(ADDRESS, KEY,
+                            List.of(PatchOperation.increment("/value", 1)),
+                            OperationOptions.defaults()));
+            assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, error.error().category(),
+                    "the validating read saw room for the delta, but a concurrent writer used it "
+                            + "up before the native increment landed. The BETWEEN bound catches "
+                            + "that atomically, so Cosmos rejects exactly what DynamoDB rejects "
+                            + "instead of storing a value outside the portable domain");
+        });
+    }
+
+    @Test
+    @DisplayName("an unprovable precondition failure is CONFLICT, not an invented NOT_FOUND")
+    void unprovablePreconditionFailureIsConflict() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
         stubRead(container, MAPPER.createObjectNode().put("status", "draft"));
         stubPatchFailure(container, cosmosException(412));
@@ -298,13 +368,10 @@ class CosmosPatchPreconditionTest {
                     () -> client.patch(ADDRESS, KEY,
                             List.of(PatchOperation.replace("/status", "live")),
                             OperationOptions.defaults()));
-            assertEquals(MulticloudDbErrorCategory.NOT_FOUND, error.error().category(),
-                    "every predicate term is an IS_DEFINED existence check, so a 412 proves "
-                            + "the addressed path was absent — the same state Dynamo reports as "
-                            + "NOT_FOUND. CONFLICT is not even in the portable patch contract");
-            assertNotEquals(MulticloudDbErrorCategory.CONFLICT, error.error().category());
-            assertEquals(412, error.error().statusCode(),
-                    "the reclassified envelope keeps the provider's raw status for diagnostics");
+            assertEquals(MulticloudDbErrorCategory.CONFLICT, error.error().category(),
+                    "current state satisfies every term, so the adapter cannot name a cause. "
+                            + "DynamoDB reports the same unclassifiable condition failure as "
+                            + "CONFLICT rather than claiming a deterministic validation failure");
         });
     }
 

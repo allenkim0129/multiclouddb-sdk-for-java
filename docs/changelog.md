@@ -68,6 +68,10 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `userAgentSuffix(String)` rejects values longer than 256 characters and
   non-printable US-ASCII, protecting against header injection.
 
+**Fixed:**
+
+- A `null` entry inside a patch operation list is now `INVALID_REQUEST` instead of `PROVIDER_ERROR`. `MulticloudDbClient.patch` snapshotted the caller's list with `List.copyOf`, which rejects a null *element* with a raw `NullPointerException`, so `PatchValidator`'s ``patch operations must not contain null entries`` rule was unreachable. The snapshot now tolerates a null entry and lets the adapter's validator report the portable category.
+
 ---
 
 ## multiclouddb-provider-cosmos
@@ -77,8 +81,8 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 **Added:**
 
 - Portable `patch(...)` implemented with the Cosmos DB Patch API (`CosmosContainer.patchItem`), applying all operations atomically in one request. `CosmosCapabilities` declares `PATCH` and `NESTED_PATCH`; Cosmos patch paths address the JSON document tree directly, so nested fields are patchable without rewriting the parent. Strict (`REPLACE` / `REMOVE` / `INCREMENT`) or nested patches first point-read the document and validate required-path and numeric state.
-- Strict (`REPLACE` / `REMOVE` / nested non-increment) operations carry a server-side **path-scoped filter predicate** (an `IS_DEFINED` existence check over each addressed path) rather than an `If-Match` ETag guard, so a concurrent write to an unaddressed field cannot fail the patch and concurrency alone never produces `CONFLICT`. `INCREMENT` carries no predicate at any depth because `CosmosPatchOperations.increment` is atomic server-side, so concurrent increments all land. Residual, documented trade-off: if an increment target is deleted or retyped between the classifying read and the unconditional write, Cosmos reports an untyped `400` and the adapter re-reads to prove the cause, so a *raced* increment it cannot substantiate can surface as `INVALID_REQUEST` rather than `NOT_FOUND`. Non-raced classification is identical on all three providers.
-- Patch-specific error normalisation: the classifying pre-read returns `NOT_FOUND` for a missing document/path and `INVALID_REQUEST` for a nonnumeric target or proven overflow. A failed path-scoped predicate (HTTP 412) is normalised to `NOT_FOUND`, since an existence check is the only precondition any Cosmos request carries. The exact Cosmos emulator status behavior remains unverified pending T192. Patch billing is workload- and indexing-dependent; no replace-equivalent or reduced-RU claim is made.
+- Strict (`REPLACE` / `REMOVE` / nested non-increment) operations carry a server-side **path-scoped filter predicate** (an `IS_DEFINED` existence check over each addressed path) rather than an `If-Match` ETag guard, so a concurrent write to an unaddressed field cannot fail the patch and concurrency alone never produces `CONFLICT`. `INCREMENT` carries an existence term plus, for an integral delta, a `BETWEEN` bound on the current value — the Cosmos spelling of the condition DynamoDB attaches to its own increment — so the portable signed-64 result range is enforced atomically with the write rather than only at the validating read. Both terms are path-scoped, so `CosmosPatchOperations.increment` stays atomic server-side and concurrent increments of an in-range counter all land. Residual, documented trade-off: a rejection whose cause current state cannot prove falls back to `INVALID_REQUEST` for an untyped `400` and to `CONFLICT` for a `412`, rather than inventing a `NOT_FOUND`. Non-raced classification is identical on all three providers.
+- Patch-specific error normalisation: the classifying pre-read returns `NOT_FOUND` for a missing document/path and `INVALID_REQUEST` for a nonnumeric target or proven overflow. A failed path-scoped predicate (HTTP 412) is classified from a re-read of current state, so it yields the same `NOT_FOUND` / `INVALID_REQUEST` / `CONFLICT` categories DynamoDB derives from its before-image. The exact Cosmos emulator status behavior remains unverified pending T192. Patch billing is workload- and indexing-dependent; no replace-equivalent or reduced-RU claim is made.
 - `CosmosCapabilities` declares `EXACT_FRACTIONAL_INCREMENT` as **unsupported** — Cosmos evaluates a fractional `INCREMENT` in IEEE-754 binary64, so `0.1` incremented by `0.2` stores `0.30000000000000004` (DynamoDB's exact-decimal `N` arithmetic stores `0.3`). Integral increments remain exact, and the declaration is informational: no fractional increment is ever rejected.
 
 - Change-feed reader backed by `CosmosContainer.queryChangeFeed(...)` and `getFeedRanges()`. `listCursors` mints one cursor per feed range at the live tip via a one-item warmup query that captures a real continuation token (with a `@@PIT:<epoch-millis>` fallback for older SDKs). `readChanges` drains one page per call, rotates the partition list across ranges so multi-range cursors are not starved, and uses All-Versions-and-Deletes (AVAD) mode so `ChangeEvent.type()` distinguishes `CREATE` / `UPDATE` / `DELETE`. The target container must be provisioned with an AVAD `ChangeFeedPolicy`. HTTP 410 GONE on `queryChangeFeed` is mapped to `CursorExpiredException(reason=PROVIDER_TRIMMED)`.
@@ -89,7 +93,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 **Changed:**
 
 - Removed the hardcoded `ConsistencyLevel.SESSION` override from `CosmosClientBuilder`. Accounts with a default of `STRONG` or `BOUNDED_STALENESS` will now serve reads at their configured level. To restore the previous behaviour, set `multiclouddb.connection.consistencyLevel=SESSION`.
-- `BETWEEN` translation now wraps in parentheses (`(c.field BETWEEN @lo AND @hi)`) to avoid a Cosmos NoSQL parser ambiguity with trailing `AND`.
+- `BETWEEN` translation now wraps in parentheses (`(c["field"] BETWEEN @lo AND @hi)`) to avoid a Cosmos NoSQL parser ambiguity with trailing `AND`.
 
 **Breaking changes:**
 
@@ -120,6 +124,10 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Native SQL passthrough
 - Cross-partition query support (capability-gated)
 - Schema provisioning (database + container creation)
+
+**Fixed:**
+
+- Query fields named after Cosmos NoSQL reserved words no longer fail with a syntax error. Every field reference is emitted as a quoted property accessor (`c["value"]`, `c["address"]["city"]`) instead of a dotted one, so a document field called `value` behaves the same here as on Spanner.
 
 ---
 
@@ -167,6 +175,10 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Portable expression translation to PartiQL
 - Native PartiQL passthrough
 - Schema provisioning (table creation with ACTIVE-wait)
+
+**Fixed:**
+
+- Query fields named after PartiQL reserved words no longer fail the statement. Every field reference is double-quoted (`"value"`, `"address"."city"`) instead of bare, so a document field called `value` or `size` behaves the same here as on Spanner.
 
 ---
 

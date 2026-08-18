@@ -27,6 +27,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   **Migration — do this before upgrading:** rename any application-owned `data` attribute (for example to `payload` or `applicationData`) **and rewrite the affected items with the renamed key**, then upgrade. There is no alias, no compatibility flag, and no opt-out; an item that still carries `data` fails at the client boundary before any DynamoDB request is issued. See [`docs/guide.md` → *Document Field Injection*](../docs/guide.md#document-field-injection).
 - **`field_exists` changed meaning; existing queries can return different rows.** `field_exists(f)` now translates to `(f IS NOT MISSING AND f IS NOT NULL)` — *present **and** non-null* — where it previously translated to a bare `f IS NOT MISSING` and therefore also matched an attribute explicitly stored as the DynamoDB `NULL` type. A filter that relied on the old behaviour now returns fewer items, and `NOT field_exists(f)` returns more. Re-check any filter using `field_exists` on an attribute legitimately stored as null; use an explicit `f = null` comparison to keep matching it.
 
+### Fixed
+
+- **Query fields named after PartiQL reserved words no longer fail the statement.** `DynamoExpressionTranslator` emitted bare identifiers, so a document field called `value`, `status`, `size`, or any other PartiQL reserved word was rejected with ``Statement wasn't well formed`` while the identical portable expression succeeded on Spanner, which routes every field through a quoted JSON path. Every field reference is now double-quoted (`"value"`, and `"address"."city"` for a nested path), with each dotted segment quoted separately so nesting is preserved and an embedded `"` doubled per the PartiQL quoting rule.
+
 ### Documentation
 
 - `patch()` is documented as a request-payload, latency, and concurrency optimization, not a guaranteed WCU saving. Capacity cost depends on item shape and table/account configuration; no `PutItem` billing-equivalence claim is made.

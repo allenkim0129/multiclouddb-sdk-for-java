@@ -88,14 +88,14 @@ class ExpressionTranslationTest {
         Map<String, Object> params = Map.of("status", "active");
 
         TranslatedQuery cosmosResult = cosmos.translate(ast, params, TABLE);
-        assertEquals("SELECT * FROM c WHERE c.status = @status", cosmosResult.queryString());
-        assertEquals("c.status = @status", cosmosResult.whereClause());
+        assertEquals("SELECT * FROM c WHERE c[\"status\"] = @status", cosmosResult.queryString());
+        assertEquals("c[\"status\"] = @status", cosmosResult.whereClause());
         assertEquals(Map.of("@status", "active"), cosmosResult.namedParameters());
         assertTrue(cosmosResult.positionalParameters().isEmpty());
 
         TranslatedQuery dynamoResult = dynamo.translate(ast, params, TABLE);
-        assertEquals("SELECT * FROM \"items\" WHERE status = ?", dynamoResult.queryString());
-        assertEquals("status = ?", dynamoResult.whereClause());
+        assertEquals("SELECT * FROM \"items\" WHERE \"status\" = ?", dynamoResult.queryString());
+        assertEquals("\"status\" = ?", dynamoResult.whereClause());
         assertEquals(List.of("active"), dynamoResult.positionalParameters());
         assertTrue(dynamoResult.namedParameters().isEmpty());
 
@@ -136,8 +136,8 @@ class ExpressionTranslationTest {
     void stringLiteral() {
         Expression ast = ExpressionParser.parse("name = 'hello'");
 
-        assertEquals("c.name = 'hello'", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
-        assertEquals("name = 'hello'", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("c[\"name\"] = 'hello'", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("\"name\" = 'hello'", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
         assertSpannerEnvelopeField(spanner.translate(ast, EMPTY_PARAMS, TABLE), "name");
     }
 
@@ -146,8 +146,8 @@ class ExpressionTranslationTest {
     void numericLiteral() {
         Expression ast = ExpressionParser.parse("count = 42");
 
-        assertEquals("c.count = 42", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
-        assertEquals("count = 42", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("c[\"count\"] = 42", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("\"count\" = 42", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
         assertSpannerEnvelopeField(spanner.translate(ast, EMPTY_PARAMS, TABLE), "count");
     }
 
@@ -156,8 +156,8 @@ class ExpressionTranslationTest {
     void booleanLiteral() {
         Expression ast = ExpressionParser.parse("active = true");
 
-        assertEquals("c.active = true", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
-        assertEquals("active = true", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("c[\"active\"] = true", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("\"active\" = true", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
         assertSpannerEnvelopeField(spanner.translate(ast, EMPTY_PARAMS, TABLE), "active");
     }
 
@@ -166,8 +166,8 @@ class ExpressionTranslationTest {
     void nullLiteral() {
         Expression ast = ExpressionParser.parse("value = null");
 
-        assertEquals("c.value = null", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
-        assertEquals("value = NULL", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("c[\"value\"] = null", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("\"value\" = NULL", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
         assertSpannerEnvelopeField(spanner.translate(ast, EMPTY_PARAMS, TABLE), "value");
     }
 
@@ -180,10 +180,10 @@ class ExpressionTranslationTest {
         Map<String, Object> params = Map.of("a", 1, "b", 2);
 
         TranslatedQuery cosRes = cosmos.translate(ast, params, TABLE);
-        assertEquals("(c.a = @a AND c.b = @b)", cosRes.whereClause());
+        assertEquals("(c[\"a\"] = @a AND c[\"b\"] = @b)", cosRes.whereClause());
 
         TranslatedQuery dynRes = dynamo.translate(ast, params, TABLE);
-        assertEquals("(a = ? AND b = ?)", dynRes.whereClause());
+        assertEquals("(\"a\" = ? AND \"b\" = ?)", dynRes.whereClause());
         assertEquals(List.of(1, 2), dynRes.positionalParameters());
 
         TranslatedQuery spnRes = spanner.translate(ast, params, TABLE);
@@ -197,10 +197,8 @@ class ExpressionTranslationTest {
         Expression ast = ExpressionParser.parse("a = @a OR b = @b");
         Map<String, Object> params = Map.of("a", 1, "b", 2);
 
-        assertEquals("(c.a = @a OR c.b = @b)",
-                cosmos.translate(ast, params, TABLE).whereClause());
-        assertEquals("(a = ? OR b = ?)",
-                dynamo.translate(ast, params, TABLE).whereClause());
+        assertEquals("(c[\"a\"] = @a OR c[\"b\"] = @b)", cosmos.translate(ast, params, TABLE).whereClause());
+        assertEquals("(\"a\" = ? OR \"b\" = ?)", dynamo.translate(ast, params, TABLE).whereClause());
         TranslatedQuery spannerResult = spanner.translate(ast, params, TABLE);
         assertSpannerEnvelopeField(spannerResult, "a");
         assertSpannerEnvelopeField(spannerResult, "b");
@@ -211,10 +209,8 @@ class ExpressionTranslationTest {
     void notExpression() {
         Expression ast = ExpressionParser.parse("NOT active = true");
 
-        assertEquals("NOT (c.active = true)",
-                cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
-        assertEquals("NOT (active = true)",
-                dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("NOT (c[\"active\"] = true)", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("NOT (\"active\" = true)", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
         assertSpannerEnvelopeField(spanner.translate(ast, EMPTY_PARAMS, TABLE), "active");
     }
 
@@ -228,7 +224,7 @@ class ExpressionTranslationTest {
         // Parser: a=1 OR (b=2 AND c=3) → LogicalExpression(OR, a=1,
         // LogicalExpression(AND, b=2, c=3))
         String cosWhere = cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause();
-        assertEquals("(c.a = 1 OR (c.b = 2 AND c.c = 3))", cosWhere);
+        assertEquals("(c[\"a\"] = 1 OR (c[\"b\"] = 2 AND c[\"c\"] = 3))", cosWhere);
     }
 
     // ---- Function calls ----
@@ -239,10 +235,8 @@ class ExpressionTranslationTest {
         Expression ast = ExpressionParser.parse("starts_with(name, @prefix)");
         Map<String, Object> params = Map.of("prefix", "abc");
 
-        assertEquals("STARTSWITH(c.name, @prefix)",
-                cosmos.translate(ast, params, TABLE).whereClause());
-        assertEquals("begins_with(name, ?)",
-                dynamo.translate(ast, params, TABLE).whereClause());
+        assertEquals("STARTSWITH(c[\"name\"], @prefix)", cosmos.translate(ast, params, TABLE).whereClause());
+        assertEquals("begins_with(\"name\", ?)", dynamo.translate(ast, params, TABLE).whereClause());
         assertSpannerEnvelopeField(spanner.translate(ast, params, TABLE), "name");
     }
 
@@ -252,10 +246,8 @@ class ExpressionTranslationTest {
         Expression ast = ExpressionParser.parse("contains(description, @kw)");
         Map<String, Object> params = Map.of("kw", "test");
 
-        assertEquals("CONTAINS(c.description, @kw)",
-                cosmos.translate(ast, params, TABLE).whereClause());
-        assertEquals("contains(description, ?)",
-                dynamo.translate(ast, params, TABLE).whereClause());
+        assertEquals("CONTAINS(c[\"description\"], @kw)", cosmos.translate(ast, params, TABLE).whereClause());
+        assertEquals("contains(\"description\", ?)", dynamo.translate(ast, params, TABLE).whereClause());
         assertSpannerEnvelopeField(spanner.translate(ast, params, TABLE), "description");
     }
 
@@ -264,10 +256,8 @@ class ExpressionTranslationTest {
     void fieldExistsFunction() {
         Expression ast = ExpressionParser.parse("field_exists(metadata)");
 
-        assertEquals("(IS_DEFINED(c.metadata) AND NOT IS_NULL(c.metadata))",
-                cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
-        assertEquals("(metadata IS NOT MISSING AND metadata IS NOT NULL)",
-                dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("(IS_DEFINED(c[\"metadata\"]) AND NOT IS_NULL(c[\"metadata\"]))", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("(\"metadata\" IS NOT MISSING AND \"metadata\" IS NOT NULL)", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
         assertSpannerEnvelopeField(spanner.translate(ast, EMPTY_PARAMS, TABLE), "metadata");
     }
 
@@ -375,10 +365,8 @@ class ExpressionTranslationTest {
     void stringLengthFunction() {
         Expression ast = ExpressionParser.parse("string_length(name)");
 
-        assertEquals("LENGTH(c.name)",
-                cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
-        assertEquals("char_length(name)",
-                dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("LENGTH(c[\"name\"])", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("char_length(\"name\")", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
         assertSpannerEnvelopeField(spanner.translate(ast, EMPTY_PARAMS, TABLE), "name");
     }
 
@@ -387,10 +375,8 @@ class ExpressionTranslationTest {
     void collectionSizeFunction() {
         Expression ast = ExpressionParser.parse("collection_size(tags)");
 
-        assertEquals("ARRAY_LENGTH(c.tags)",
-                cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
-        assertEquals("size(tags)",
-                dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("ARRAY_LENGTH(c[\"tags\"])", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("size(\"tags\")", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
         assertSpannerEnvelopeField(spanner.translate(ast, EMPTY_PARAMS, TABLE), "tags");
     }
 
@@ -403,11 +389,11 @@ class ExpressionTranslationTest {
         Map<String, Object> params = Map.of("a", "open", "b", "closed");
 
         TranslatedQuery cosRes = cosmos.translate(ast, params, TABLE);
-        assertEquals("c.status IN (@a, @b)", cosRes.whereClause());
+        assertEquals("c[\"status\"] IN (@a, @b)", cosRes.whereClause());
         assertEquals(Map.of("@a", "open", "@b", "closed"), cosRes.namedParameters());
 
         TranslatedQuery dynRes = dynamo.translate(ast, params, TABLE);
-        assertEquals("status IN (?, ?)", dynRes.whereClause());
+        assertEquals("\"status\" IN (?, ?)", dynRes.whereClause());
         assertEquals(List.of("open", "closed"), dynRes.positionalParameters());
 
         TranslatedQuery spnRes = spanner.translate(ast, params, TABLE);
@@ -419,10 +405,8 @@ class ExpressionTranslationTest {
     void inWithLiterals() {
         Expression ast = ExpressionParser.parse("category IN ('X', 'Y')");
 
-        assertEquals("c.category IN ('X', 'Y')",
-                cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
-        assertEquals("category IN ('X', 'Y')",
-                dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("c[\"category\"] IN ('X', 'Y')", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("\"category\" IN ('X', 'Y')", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
         assertSpannerEnvelopeField(spanner.translate(ast, EMPTY_PARAMS, TABLE), "category");
     }
 
@@ -444,10 +428,10 @@ class ExpressionTranslationTest {
         Map<String, Object> params = Map.of("min", 18, "max", 65);
 
         TranslatedQuery cosRes = cosmos.translate(ast, params, TABLE);
-        assertEquals("(c.age BETWEEN @min AND @max)", cosRes.whereClause());
+        assertEquals("(c[\"age\"] BETWEEN @min AND @max)", cosRes.whereClause());
 
         TranslatedQuery dynRes = dynamo.translate(ast, params, TABLE);
-        assertEquals("(age BETWEEN ? AND ?)", dynRes.whereClause());
+        assertEquals("(\"age\" BETWEEN ? AND ?)", dynRes.whereClause());
         assertEquals(List.of(18, 65), dynRes.positionalParameters());
 
         TranslatedQuery spnRes = spanner.translate(ast, params, TABLE);
@@ -459,10 +443,8 @@ class ExpressionTranslationTest {
     void betweenWithLiterals() {
         Expression ast = ExpressionParser.parse("price BETWEEN 10 AND 100");
 
-        assertEquals("(c.price BETWEEN 10 AND 100)",
-                cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
-        assertEquals("(price BETWEEN 10 AND 100)",
-                dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("(c[\"price\"] BETWEEN 10 AND 100)", cosmos.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
+        assertEquals("(\"price\" BETWEEN 10 AND 100)", dynamo.translate(ast, EMPTY_PARAMS, TABLE).whereClause());
         assertSpannerEnvelopeField(spanner.translate(ast, EMPTY_PARAMS, TABLE), "price");
     }
 
@@ -493,10 +475,8 @@ class ExpressionTranslationTest {
         // around every binary AND expression. The inner (BETWEEN ...) parens are
         // what this test pins: without them, Cosmos NoSQL's parser greedily
         // binds BETWEEN's inner AND with the trailing logical AND.
-        assertEquals("((c.age BETWEEN @lo AND @hi) AND c.marker = @m)",
-                cosmos.translate(ast, params, TABLE).whereClause());
-        assertEquals("((age BETWEEN ? AND ?) AND marker = ?)",
-                dynamo.translate(ast, params, TABLE).whereClause());
+        assertEquals("((c[\"age\"] BETWEEN @lo AND @hi) AND c[\"marker\"] = @m)", cosmos.translate(ast, params, TABLE).whereClause());
+        assertEquals("((\"age\" BETWEEN ? AND ?) AND \"marker\" = ?)", dynamo.translate(ast, params, TABLE).whereClause());
         TranslatedQuery spannerResult = spanner.translate(ast, params, TABLE);
         assertSpannerEnvelopeField(spannerResult, "age");
         assertSpannerEnvelopeField(spannerResult, "marker");
@@ -510,11 +490,26 @@ class ExpressionTranslationTest {
         Expression ast = ExpressionParser.parse("address.city = @city");
         Map<String, Object> params = Map.of("city", "Amsterdam");
 
-        assertEquals("c.address.city = @city",
-                cosmos.translate(ast, params, TABLE).whereClause());
-        assertEquals("address.city = ?",
-                dynamo.translate(ast, params, TABLE).whereClause());
+        assertEquals("c[\"address\"][\"city\"] = @city", cosmos.translate(ast, params, TABLE).whereClause());
+        assertEquals("\"address\".\"city\" = ?", dynamo.translate(ast, params, TABLE).whereClause());
         assertSpannerEnvelopeField(spanner.translate(ast, params, TABLE), "address.city");
+    }
+
+    // ---- Reserved words ----
+
+    @Test
+    @DisplayName("reserved words: keyword-named fields stay escaped on every provider")
+    void reservedWordFieldsAreEscaped() {
+        Expression ast = ExpressionParser.parse("value = @v AND status.value = @nested");
+        Map<String, Object> params = Map.of("v", "a", "nested", "b");
+
+        assertEquals("(c[\"value\"] = @v AND c[\"status\"][\"value\"] = @nested)",
+                cosmos.translate(ast, params, TABLE).whereClause());
+        assertEquals("(\"value\" = ? AND \"status\".\"value\" = ?)",
+                dynamo.translate(ast, params, TABLE).whereClause());
+        TranslatedQuery spannerResult = spanner.translate(ast, params, TABLE);
+        assertSpannerEnvelopeField(spannerResult, "value");
+        assertSpannerEnvelopeField(spannerResult, "status.value");
     }
 
     // ---- Full query string format ----
@@ -575,10 +570,10 @@ class ExpressionTranslationTest {
         Map<String, Object> params = Map.of("prefix", "abc", "status", "active");
 
         TranslatedQuery cosRes = cosmos.translate(ast, params, TABLE);
-        assertEquals("(STARTSWITH(c.name, @prefix) AND c.status = @status)", cosRes.whereClause());
+        assertEquals("(STARTSWITH(c[\"name\"], @prefix) AND c[\"status\"] = @status)", cosRes.whereClause());
 
         TranslatedQuery dynRes = dynamo.translate(ast, params, TABLE);
-        assertEquals("(begins_with(name, ?) AND status = ?)", dynRes.whereClause());
+        assertEquals("(begins_with(\"name\", ?) AND \"status\" = ?)", dynRes.whereClause());
         assertEquals(List.of("abc", "active"), dynRes.positionalParameters());
 
         TranslatedQuery spnRes = spanner.translate(ast, params, TABLE);

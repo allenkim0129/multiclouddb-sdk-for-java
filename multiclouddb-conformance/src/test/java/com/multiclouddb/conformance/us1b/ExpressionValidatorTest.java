@@ -82,4 +82,72 @@ class ExpressionValidatorTest {
         Map<String, Object> params = Map.of("min", 1, "max", 100);
         assertDoesNotThrow(() -> ExpressionValidator.validate(ast, params));
     }
+
+    // ---- Homogeneous scalar operands ----
+    //
+    // Spanner must pick one JSON coercion for the whole IN/BETWEEN predicate,
+    // while Cosmos and DynamoDB compare each operand in its native kind. A mixed
+    // predicate would therefore return different rows per provider, so the
+    // portable contract rejects it up front rather than letting it diverge.
+
+    @Test
+    @DisplayName("mixed scalar kinds in an IN list are rejected")
+    void mixedScalarKindsInListAreRejected() {
+        Expression ast = ExpressionParser.parse("status IN (@a, @b)");
+        ExpressionValidationException ex = assertThrows(ExpressionValidationException.class,
+                () -> ExpressionValidator.validate(ast, Map.of("a", "open", "b", 2)));
+        assertTrue(ex.getErrors().stream()
+                        .anyMatch(e -> e.contains("IN operands must use one scalar kind")),
+                () -> "expected a scalar-kind error, got " + ex.getErrors());
+    }
+
+    @Test
+    @DisplayName("mixed scalar kinds in BETWEEN bounds are rejected")
+    void mixedScalarKindsInBetweenBoundsAreRejected() {
+        Expression ast = ExpressionParser.parse("age BETWEEN @min AND @max");
+        ExpressionValidationException ex = assertThrows(ExpressionValidationException.class,
+                () -> ExpressionValidator.validate(ast, Map.of("min", 1, "max", "ten")));
+        assertTrue(ex.getErrors().stream()
+                        .anyMatch(e -> e.contains("BETWEEN operands must use one scalar kind")),
+                () -> "expected a scalar-kind error, got " + ex.getErrors());
+    }
+
+    @Test
+    @DisplayName("mixed literal kinds are rejected the same way as parameters")
+    void mixedLiteralKindsAreRejected() {
+        Expression ast = ExpressionParser.parse("status IN ('open', 2)");
+        assertThrows(ExpressionValidationException.class,
+                () -> ExpressionValidator.validate(ast, Map.of()));
+    }
+
+    @Test
+    @DisplayName("an unsupported operand kind is rejected")
+    void unsupportedOperandKindIsRejected() {
+        Expression ast = ExpressionParser.parse("status IN (@a, @b)");
+        ExpressionValidationException ex = assertThrows(ExpressionValidationException.class,
+                () -> ExpressionValidator.validate(ast,
+                        Map.of("a", "open", "b", java.util.List.of("nested"))));
+        assertTrue(ex.getErrors().stream()
+                        .anyMatch(e -> e.contains("must be String, Number, Boolean, or null")),
+                () -> "expected an unsupported-kind error, got " + ex.getErrors());
+    }
+
+    @Test
+    @DisplayName("a null operand does not trip the scalar-kind rule")
+    void nullOperandIsCompatibleWithAnyKind() {
+        Expression ast = ExpressionParser.parse("status IN (@a, @b)");
+        Map<String, Object> params = new java.util.HashMap<>();
+        params.put("a", "open");
+        params.put("b", null);
+        assertDoesNotThrow(() -> ExpressionValidator.validate(ast, params),
+                "null keeps the portable never-matches semantics; it is not a competing kind");
+    }
+
+    @Test
+    @DisplayName("boolean operands are a kind of their own")
+    void booleanAndStringOperandsAreRejected() {
+        Expression ast = ExpressionParser.parse("flag IN (@a, @b)");
+        assertThrows(ExpressionValidationException.class,
+                () -> ExpressionValidator.validate(ast, Map.of("a", true, "b", "true")));
+    }
 }

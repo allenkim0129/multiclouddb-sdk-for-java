@@ -428,22 +428,20 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             if (filterPredicate != null
                     && e.getStatusCode() == CosmosConstants.STATUS_PRECONDITION_FAILED) {
                 // No If-Match is ever sent, so the only precondition on the
-                // request is the filter predicate, and every term in it is an
-                // IS_DEFINED existence check over an addressed path. A 412
-                // therefore proves exactly one thing — a required path was absent
-                // when the server evaluated the write — which is the portable
-                // NOT_FOUND that DynamoDB's attribute_exists condition and
-                // Spanner's in-transaction read both report. It is not a
-                // concurrency conflict: an unrelated concurrent write cannot
-                // falsify a path-scoped predicate.
-                throw patchFailure(MulticloudDbErrorCategory.NOT_FOUND,
-                        "Patch target field does not exist", e);
+                // request is the filter predicate. Most terms are IS_DEFINED
+                // existence checks, but an INCREMENT also contributes a BETWEEN
+                // bound, so a 412 no longer proves a single cause. Re-read and
+                // let current state name it, exactly as DynamoDB classifies its
+                // own ConditionalCheckFailedException from the before-image.
+                // An unprovable 412 is a genuine race, so it reports CONFLICT
+                // rather than an invented NOT_FOUND.
+                throw classifyRacedPatchRejection(address, cosmosId, pk, operations, e, true);
             }
             if (e.getStatusCode() == CosmosConstants.STATUS_BAD_REQUEST) {
                 // Cosmos reports a vanished or retyped native target as an untyped
                 // 400. Prove the cause from current state instead of passing it
                 // through, mirroring DynamoDB's before-image re-read.
-                throw classifyRacedPatchRejection(address, cosmosId, pk, operations, e);
+                throw classifyRacedPatchRejection(address, cosmosId, pk, operations, e, false);
             }
             throw CosmosErrorMapper.map(e, OperationNames.PATCH);
         }
@@ -485,12 +483,17 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      * Cosmos while DynamoDB's {@code attribute_exists(...)} condition and
      * Spanner's auto-retried read-write transaction both let them through.
      * <p>
-     * {@code INCREMENT} contributes no term at any depth:
-     * {@code CosmosPatchOperations.increment} is applied atomically server-side,
-     * and its stricter portable preconditions (numeric target, bounded integral
-     * result) are not expressible as an existence check — they are validated by
-     * the pre-read and, on a race, re-proved by
-     * {@link #classifyRacedPatchRejection}.
+     * {@code INCREMENT} contributes an existence term plus, for an integral
+     * delta, a {@code BETWEEN} bound on the current value. The bound is the
+     * Cosmos spelling of the {@code BETWEEN} condition DynamoDB attaches to its
+     * own increment: it keeps the portable signed 64-bit result range enforced
+     * atomically with the write, because a concurrent writer can raise the
+     * counter between the validating pre-read and the native increment and make
+     * the same delta overflow. Without it Cosmos would silently store a value
+     * DynamoDB rejects. A fractional delta contributes no bound, matching
+     * {@link PatchNumericDomain#isIntegralResultOutsideRange}, which only
+     * constrains integral results. A term that fails is re-proved from current
+     * state by {@link #classifyRacedPatchRejection}.
      *
      * @return a Cosmos conditional-patch predicate of the form
      *         {@code FROM c WHERE ...}, or {@code null} for an unconditional write
@@ -498,15 +501,36 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     static String patchFilterPredicate(List<PatchOperation> operations) {
         StringJoiner terms = new StringJoiner(" AND ");
         for (PatchOperation operation : operations) {
-            if (operation.type() == PatchOperation.Type.INCREMENT) {
-                continue;
-            }
             int depth = requiredPathDepth(operation);
             if (depth > 0) {
                 terms.add("IS_DEFINED(" + cosmosPropertyAccessor(operation.pathSegments(), depth) + ")");
             }
+            if (operation.type() == PatchOperation.Type.INCREMENT) {
+                addIntegralResultBounds(operation, terms);
+            }
         }
         return terms.length() == 0 ? null : "FROM c WHERE " + terms;
+    }
+
+    /**
+     * Adds the {@code BETWEEN} bound that keeps an {@code INCREMENT} result inside
+     * the portable signed 64-bit domain, mirroring the condition
+     * {@code DynamoProviderClient.addIntegralResultBounds} attaches to its own
+     * update. The bounds are computed from the delta alone, so the check is a
+     * pure function of the request and stays valid however the counter moves.
+     * A fractional delta adds nothing: the portable domain only bounds integral
+     * results.
+     */
+    private static void addIntegralResultBounds(PatchOperation operation, StringJoiner terms) {
+        Number delta = PatchNumericDomain.normalize((Number) operation.value());
+        if (!(delta instanceof Long integralDelta)) {
+            return;
+        }
+        String accessor = cosmosPropertyAccessor(operation.pathSegments(),
+                operation.pathSegments().size());
+        terms.add("(" + accessor + " BETWEEN "
+                + PatchNumericDomain.minimumBaseForIntegralDelta(integralDelta) + " AND "
+                + PatchNumericDomain.maximumBaseForIntegralDelta(integralDelta) + ")");
     }
 
     /**
@@ -605,7 +629,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     private MulticloudDbException classifyRacedPatchRejection(ResourceAddress address,
             String cosmosId, PartitionKey partitionKey, List<PatchOperation> operations,
-            CosmosException original) {
+            CosmosException original, boolean conditionFailure) {
         ObjectNode current;
         try {
             current = getContainer(address).readItem(cosmosId, partitionKey,
@@ -618,7 +642,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             // The rejected write remains authoritative. A failed follow-up read
             // cannot prove a cause, so callers keep the original classification
             // rather than an invented one.
-            return CosmosErrorMapper.map(original, OperationNames.PATCH);
+            return unprovenPatchRejection(original, conditionFailure);
         }
         if (current == null) {
             return patchFailure(MulticloudDbErrorCategory.NOT_FOUND,
@@ -631,9 +655,25 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             // deterministic one report the identical portable category.
             return patchFailure(proven.error().category(), proven.error().message(), original);
         }
-        // Current state satisfies every portable precondition, so the 400 had
-        // some other cause. Do not invent a NOT_FOUND.
-        return CosmosErrorMapper.map(original, OperationNames.PATCH);
+        // Current state satisfies every portable precondition, so the rejection
+        // had some other cause. Do not invent a NOT_FOUND.
+        return unprovenPatchRejection(original, conditionFailure);
+    }
+
+    /**
+     * Classification for a rejection whose cause current state does not prove.
+     * <p>
+     * A failed filter predicate had a real precondition falsified server-side, so
+     * state that now satisfies every term means the request lost a race — the same
+     * CONFLICT DynamoDB reports when its before-image explains nothing. Any other
+     * rejection keeps the provider mapping rather than an invented category.
+     */
+    private static MulticloudDbException unprovenPatchRejection(CosmosException original,
+            boolean conditionFailure) {
+        return conditionFailure
+                ? patchFailure(MulticloudDbErrorCategory.CONFLICT,
+                        "Patch condition changed concurrently", original)
+                : CosmosErrorMapper.map(original, OperationNames.PATCH);
     }
 
     /**

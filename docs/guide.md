@@ -724,10 +724,16 @@ The portable patch contract is deliberately narrow. Each restriction exists
 because the providers would otherwise disagree:
 
 These are validated **before any provider SDK call**, so they fail identically
-everywhere. The public facade and every direct
-`MulticloudDbProviderClient.patch(...)` implementation invoke the same guard;
-SPI adapter authors must call `validatePatchRequest(...)` after their lifecycle
-guard and before translating a request.
+everywhere. The guard lives in the *adapter*, not the facade: the SPI contract
+(`MulticloudDbProviderClient.patch`) requires every implementation to call
+`validatePatchRequest(...)` immediately after its lifecycle guard and before
+translating a request, and all three adapters do. `MulticloudDbClient`
+deliberately does **not** re-run it — that would serialize an operand graph
+approaching the 399 KB ceiling twice on every call — so a direct SPI caller
+sees exactly the same errors as a facade caller. SPI adapter authors writing a
+new provider must therefore call `validatePatchRequest(...)` themselves; the
+SPI default implementation rejects the request with `UNSUPPORTED_CAPABILITY`
+without touching a provider SDK.
 
 | Restriction | Error | Why |
 |-------------|-------|-----|
@@ -868,29 +874,30 @@ if (client.capabilities().isSupported(Capability.NESTED_PATCH)) {
 > provider — but on Spanner a hot single document will serialise.
 
 > **Cosmos concurrency note.** The adapter sends **no** `If-Match` ETag guard.
-> For `REPLACE`, `REMOVE`, and nested non-increment operations — the cases
-> where the native Cosmos translation cannot enforce the portable contract by
-> itself — it attaches a server-side **path-scoped filter predicate**
-> instead: an `IS_DEFINED` existence check over each addressed path, evaluated
-> atomically with the mutation. Because the predicate only asserts that the
-> paths this patch addresses exist, a concurrent write to an unaddressed field
-> cannot fail it, and concurrency alone never produces `CONFLICT`. A resulting
-> HTTP 412 proves exactly one thing — a required path was absent when the
-> write was evaluated — and is normalised to `NOT_FOUND`, matching what
-> DynamoDB's `attribute_exists` condition and Spanner's in-transaction read
-> report for the same state. `INCREMENT` carries no predicate at any depth,
-> because `CosmosPatchOperations.increment` is applied atomically server-side,
-> so concurrent increments all land. The bounded trade-off: if an increment
-> target is deleted or retyped *between* the classifying read and the
-> unconditional write, Cosmos reports an untyped `400`; the adapter re-reads to
-> prove the cause, and only a case it cannot substantiate surfaces as
-> `INVALID_REQUEST` where DynamoDB and Spanner report `NOT_FOUND`. Non-raced
-> classification is identical on all three providers.
+> Because the native Cosmos translation cannot enforce the portable contract by
+> itself, it attaches a server-side **path-scoped filter predicate** instead: an
+> `IS_DEFINED` existence check over each addressed path, plus — for an
+> `INCREMENT` with an integral delta — a `BETWEEN` bound on the current
+> value, the Cosmos spelling of the condition DynamoDB attaches to its own
+> increment. Every term is evaluated atomically with the mutation, so the
+> portable signed-64 result range is enforced at write time rather than only at
+> the validating read. Because the predicate asserts only facts about the paths
+> this patch addresses, a concurrent write to an unaddressed field cannot fail
+> it, concurrency alone never produces `CONFLICT`, and
+> `CosmosPatchOperations.increment` stays atomic server-side so concurrent
+> increments of an in-range counter all land. A resulting HTTP 412 is classified
+> from a re-read of current state rather than assumed: a vanished document or
+> path reports `NOT_FOUND`, a retyped target or an out-of-range increment result
+> reports `INVALID_REQUEST`, and only a rejection that current state cannot
+> explain reports `CONFLICT` — the same categories DynamoDB derives from its
+> before-image and Spanner from its in-transaction read. An untyped `400` is
+> classified the same way and falls back to `INVALID_REQUEST` when unprovable.
+> Non-raced classification is identical on all three providers.
 
-> **Cosmos emulator status.** The SDK maps a failed path-scoped filter
-> predicate (HTTP 412) to `NOT_FOUND`; the exact Cosmos emulator HTTP 412 behavior
-> remains unverified until emulator task T192 runs. Do not treat emulator status
-> wording as a completed compatibility certification.
+> **Cosmos emulator status.** The SDK classifies a failed path-scoped filter
+> predicate (HTTP 412) from a re-read of current state; the exact Cosmos emulator
+> HTTP 412 behavior remains unverified until emulator task T192 runs. Do not treat
+> emulator status wording as a completed compatibility certification.
 
 ### Document Field Injection
 

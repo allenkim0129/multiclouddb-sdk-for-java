@@ -51,7 +51,7 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
             Map<String, Object> srcParams,
             List<Object> outParams) {
         if (expr instanceof ComparisonExpression comp) {
-            sb.append(comp.field().name());
+            sb.append(fieldRef(comp.field().name()));
             sb.append(' ').append(comp.op().symbol()).append(' ');
             appendValue(comp.operand(), sb, srcParams, outParams);
 
@@ -85,7 +85,7 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
                 sb.append("FALSE");
                 return;
             }
-            sb.append(in.field().name()).append(" IN (");
+            sb.append(fieldRef(in.field().name())).append(" IN (");
             for (int i = 0; i < in.values().size(); i++) {
                 if (i > 0)
                     sb.append(", ");
@@ -103,7 +103,7 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
             // precedence binds BETWEEN tighter than logical AND), so this is
             // not strictly required here — but uniform output across providers
             // simplifies cross-provider debugging and query stitching.
-            sb.append('(').append(between.field().name()).append(" BETWEEN ");
+            sb.append('(').append(fieldRef(between.field().name())).append(" BETWEEN ");
             appendValue(between.low(), sb, srcParams, outParams);
             sb.append(" AND ");
             appendValue(between.high(), sb, srcParams, outParams);
@@ -144,8 +144,9 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
             case FIELD_EXISTS -> {
                 // A present PartiQL NULL is not a portable existing field.
                 if (!func.arguments().isEmpty() && func.arguments().get(0) instanceof FieldRef field) {
-                    sb.append('(').append(field.name()).append(" IS NOT MISSING AND ")
-                            .append(field.name()).append(" IS NOT NULL)");
+                    String accessor = fieldRef(field.name());
+                    sb.append('(').append(accessor).append(" IS NOT MISSING AND ")
+                            .append(accessor).append(" IS NOT NULL)");
                 }
             }
             case STRING_LENGTH -> {
@@ -161,6 +162,33 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
         }
     }
 
+    /**
+     * Renders a portable field reference as a quoted PartiQL identifier.
+     * <p>
+     * A bare identifier collides with PartiQL reserved words: a document field
+     * named {@code value} emits {@code value > ?} and DynamoDB rejects the
+     * statement with {@code Statement wasn't well formed}. This adapter already
+     * quotes its own partition key ({@link DynamoConstants#PARTIQL_PARTITION_KEY})
+     * and compiles patch paths to {@code ExpressionAttributeNames} placeholders for
+     * exactly this reason, so leaving caller-supplied query fields bare meant a
+     * field could be patched but never queried.
+     * <p>
+     * Dotted names are nested references ({@code fieldRef ::= IDENTIFIER ('.'
+     * IDENTIFIER)*}), so each segment is quoted separately: {@code address.city}
+     * becomes {@code "address"."city"}, not a single literal attribute name.
+     */
+    private static String fieldRef(String name) {
+        StringBuilder accessor = new StringBuilder();
+        String[] segments = name.split("\\.", -1);
+        for (int i = 0; i < segments.length; i++) {
+            if (i > 0) {
+                accessor.append('.');
+            }
+            accessor.append('"').append(segments[i].replace("\"", "\"\"")).append('"');
+        }
+        return accessor.toString();
+    }
+
     private void appendFunctionArgs(FunctionCallExpression func, StringBuilder sb,
             Map<String, Object> srcParams,
             List<Object> outParams) {
@@ -169,7 +197,7 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
                 sb.append(", ");
             Object arg = func.arguments().get(i);
             if (arg instanceof FieldRef field) {
-                sb.append(field.name());
+                sb.append(fieldRef(field.name()));
             } else {
                 appendValue(arg, sb, srcParams, outParams);
             }

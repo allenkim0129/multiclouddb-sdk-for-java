@@ -41,6 +41,8 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -163,11 +165,17 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
             // carries those operations is not: the provider re-reads it after
             // PatchValidator has approved it, so a caller mutating the list
             // concurrently could slip an unvalidated operation past every check
-            // (TOCTOU). A null list is passed through untouched instead of being
-            // rejected here, so the provider's validatePatchRequest still reports
-            // it as the portable INVALID_REQUEST rather than a raw
-            // NullPointerException normalised to PROVIDER_ERROR.
-            List<PatchOperation> snapshot = operations == null ? null : List.copyOf(operations);
+            // (TOCTOU). The copy must tolerate nulls: List.copyOf rejects both a
+            // null list and a null element with a raw NullPointerException, which
+            // the catch-all below normalises to PROVIDER_ERROR. The portable
+            // contract makes both cases INVALID_REQUEST, so a null list is passed
+            // through untouched and a null element is preserved in the snapshot,
+            // leaving the provider's validatePatchRequest free to report either as
+            // INVALID_REQUEST. unmodifiableList over an ArrayList copy keeps the
+            // TOCTOU guarantee while permitting null entries.
+            List<PatchOperation> snapshot = operations == null
+                    ? null
+                    : Collections.unmodifiableList(new ArrayList<>(operations));
             // No validatePatchRequest call here on purpose. The SPI contract
             // (MulticloudDbProviderClient#patch) requires every implementation to
             // invoke it immediately after its lifecycle guard, and all three

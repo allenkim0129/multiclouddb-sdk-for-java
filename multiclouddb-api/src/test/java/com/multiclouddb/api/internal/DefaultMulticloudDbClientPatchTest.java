@@ -320,4 +320,29 @@ class DefaultMulticloudDbClientPatchTest {
             assertNull(pc.received, "the adapter must not apply operations for a null request");
         }
     }
+
+    /**
+     * {@code List.copyOf} rejects a null <em>element</em> for the same reason it
+     * rejects a null list, so the snapshot must tolerate both. Without this the
+     * {@link NullPointerException} escapes to the facade's catch-all and is
+     * reported as {@code PROVIDER_ERROR}, leaving
+     * {@code PatchValidator}'s "must not contain null entries" rule unreachable.
+     */
+    @Test
+    @DisplayName("a null operation entry is INVALID_REQUEST, not a wrapped NullPointerException")
+    void nullOperationEntryRemainsInvalidRequest() throws Exception {
+        RecordingProviderClient pc = new RecordingProviderClient(
+                Capability.PATCH_CAP, Capability.NESTED_PATCH_CAP);
+        try (MulticloudDbClient client = clientFor(pc)) {
+            List<PatchOperation> operations = new ArrayList<>();
+            operations.add(PatchOperation.set("/status", "new"));
+            operations.add(null);
+
+            MulticloudDbException e = assertThrows(MulticloudDbException.class,
+                    () -> client.patch(ADDRESS, KEY, operations));
+            assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, e.error().category());
+            assertEquals(OperationNames.PATCH, e.error().operation());
+            assertNull(pc.received, "the adapter must not apply operations for a null entry");
+        }
+    }
 }

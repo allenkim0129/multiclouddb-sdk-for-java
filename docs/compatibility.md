@@ -90,7 +90,7 @@ The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 | `AUTHORIZATION_FAILED`  | HTTP 403  | AccessDeniedException  | PERMISSION_DENIED  |
 | `NOT_FOUND`  | HTTP 404  | ResourceNotFoundException, HTTP 404  | NOT_FOUND  |
 | `CONFLICT` (409 - duplicate key)  | HTTP 409  | `ConditionalCheckFailedException` from `create()` - `attribute_not_exists` guard fails when the item already exists  | ALREADY_EXISTS  |
-| `CONFLICT` (precondition)  | Not produced — the adapter sends no `If-Match`, and a patch's path-scoped HTTP 412 maps to `NOT_FOUND`²  | `ConditionalCheckFailedException` from `update()`/`upsert()` with a condition expression¹  | ABORTED  |
+| `CONFLICT` (precondition)  | Only from a patch whose path-scoped HTTP 412 current state cannot explain—the adapter sends no `If-Match`, so a 412 is re-read and classified, and an unprovable one reports `CONFLICT`²  | `ConditionalCheckFailedException` from `update()`/`upsert()` with a condition expression¹  | ABORTED  |
 | `NOT_FOUND` (missing patch target field)  | Classifying pre-read validation²  | `ConditionalCheckFailedException` with a missing field in its old image | In-transaction field-presence check  |
 | `INVALID_REQUEST` (patch numeric target or integral-result overflow) | Classifying pre-read validation² | `ConditionalCheckFailedException` with a nonnumeric or out-of-range old value | In-transaction numeric validation |
 | `THROTTLED`  | HTTP 429  | ProvisionedThroughputExceededException, ThrottlingException  | RESOURCE_EXHAUSTED  |
@@ -111,20 +111,20 @@ The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 > path, the SDK point-reads the required state and validates it before the
 > write. A missing document/path becomes `NOT_FOUND`, and a nonnumeric target or
 > proven integral-result overflow becomes `INVALID_REQUEST`. The adapter sends
-> no `If-Match` ETag guard anywhere. For `REPLACE`, `REMOVE`, and nested
-> non-increment operations, whose native Cosmos translation cannot enforce the
-> portable contract alone, it attaches a path-scoped filter predicate instead
-> (an `IS_DEFINED` existence check over each addressed path); `INCREMENT` is
-> exempt at every depth because `CosmosPatchOperations.increment` is atomic
-> server-side. A resulting HTTP 412 therefore proves only that a required path
-> was absent when the write was evaluated, and is normalised to `NOT_FOUND`,
-> not `CONFLICT` — a concurrent write to a field the patch does not address
-> cannot falsify a path-scoped predicate, so concurrency alone never fails a
-> patch. Because a pure-`INCREMENT` patch writes unconditionally, an increment
-> target deleted or retyped *between* the classifying read and the write is
-> reported by Cosmos as an untyped `400`; the adapter re-reads to prove the
-> cause, and only a case it cannot substantiate stays
-> `INVALID_REQUEST` where DynamoDB and Spanner report `NOT_FOUND`; non-raced
+> no `If-Match` ETag guard anywhere. It attaches a path-scoped filter predicate
+> instead: an `IS_DEFINED` existence check over each addressed path, plus — for
+> an `INCREMENT` with an integral delta — a `BETWEEN` bound on the current value,
+> the Cosmos spelling of the condition DynamoDB attaches to its own increment.
+> That keeps the portable signed-64 result range enforced atomically with the
+> write rather than only at the validating read. Because every term is
+> path-scoped, a concurrent write to a field the patch does not address cannot
+> falsify the predicate, so concurrency alone never fails a patch and
+> `CosmosPatchOperations.increment` stays atomic server-side. A resulting HTTP
+> 412 is classified from a re-read of current state rather than assumed: a
+> vanished path reports `NOT_FOUND`, a retyped target or an out-of-range
+> increment result reports `INVALID_REQUEST`, and only a rejection current
+> state cannot explain reports `CONFLICT`. An untyped `400` is classified the
+> same way, falling back to `INVALID_REQUEST` when unprovable. Non-raced
 > classification is identical on all three providers. The exact emulator status
 > behavior remains unverified pending T192. DynamoDB follows the same categories
 > from its conditional-failure old image.
@@ -189,12 +189,13 @@ nonnumeric increment target, and a nested-parent violation as an untyped HTTP
 whenever the request contains a `REPLACE`, `REMOVE`, `INCREMENT`, or nested
 path — that read is billed in addition to the patch. A patch made only of
 top-level `SET` operations skips the read entirely and costs a single request.
-Requests with a `REPLACE`, `REMOVE`, or nested non-increment operation carry a
+Requests with a `REPLACE`, `REMOVE`, `INCREMENT`, or nested operation carry a
 path-scoped filter predicate (an `IS_DEFINED` existence check over each
-addressed path) rather than an `If-Match` ETag guard, so the precondition rides
-along on the write at no extra request; a pure-`INCREMENT` patch still pays for
-the classifying read but writes unconditionally, so concurrent increments all
-land instead of failing as non-retryable `CONFLICT`s.
+addressed path, plus a `BETWEEN` result bound for an integral `INCREMENT`)
+rather than an `If-Match` ETag guard, so the precondition rides along on the
+write at no extra request; because every term is path-scoped, a concurrent
+write to an unaddressed field cannot falsify it and concurrent increments of an
+in-range counter all land instead of failing as non-retryable `CONFLICT`s.
 
 On every provider, `patch()` is the only portable way to express an atomic
 counter: `PatchOperation.increment(...)` is evaluated in the same atomic native

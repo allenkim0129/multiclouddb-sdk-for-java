@@ -625,6 +625,35 @@ public abstract class CrudConformanceTests {
         }
     }
 
+    @Test @Order(38)
+    @DisplayName("mixed scalar kinds in IN and BETWEEN are rejected identically on every provider")
+    void mixedScalarKindsAreRejectedPortably() {
+        // Spanner must pick a single JSON coercion for the whole predicate while
+        // Cosmos and DynamoDB compare each operand in its native kind, so a mixed
+        // predicate would return a different row set per provider. The portable
+        // contract rejects it before translation, which is why every provider
+        // must produce the same INVALID_REQUEST rather than three answers.
+        MulticloudDbException inList = assertThrows(MulticloudDbException.class,
+                () -> client.query(getAddress(), QueryRequest.builder()
+                        .partitionKey("mixed-scalar")
+                        .expression("age IN (@a, @b)")
+                        .parameter("a", 10)
+                        .parameter("b", "ten")
+                        .maxPageSize(10)
+                        .build()));
+        assertInvalidRequest(inList, "query");
+
+        MulticloudDbException betweenBounds = assertThrows(MulticloudDbException.class,
+                () -> client.query(getAddress(), QueryRequest.builder()
+                        .partitionKey("mixed-scalar")
+                        .expression("age BETWEEN @lo AND @hi")
+                        .parameter("lo", 10)
+                        .parameter("hi", "fifty")
+                        .maxPageSize(10)
+                        .build()));
+        assertInvalidRequest(betweenBounds, "query");
+    }
+
     @Test @Order(32)
     @DisplayName("update replaces omitted fields in reads and portable queries")
     void updateReplacementRemovesOmittedFieldsFromReadsAndQueries() {
