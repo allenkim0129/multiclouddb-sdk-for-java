@@ -118,7 +118,7 @@ class StatisticsTest {
 
     private static ResultRow queryRow(String runId, String scope, double latencyMs) {
         return new ResultRow(runId, "2026-01-01T00:00:00Z", "cosmos", "west us 2", "colo-a",
-                "gateway HTTP/2 pool=64", 5.0, "host", "jdk", "query", "query", "S3", 1024, 100, 4, 0,
+                "gateway HTTP/2 pool=64", 5.0, "host", "jdk", "query", "query", "S4", 1024, 100, 4, 0,
                 0.0, latencyMs, latencyMs, true, "", "RU", 3.0, 0,
                 "RU/s", 400.0, "manual", "400 RU/s", "dev", 50.0, scope);
     }

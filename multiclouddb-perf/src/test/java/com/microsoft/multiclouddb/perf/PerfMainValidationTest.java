@@ -11,20 +11,37 @@ import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PerfMainValidationTest {
 
     @Test
     void workloadParsingAndScenarioDefaultsAreStable() {
         assertEquals("query", PerfMain.workloadOpt("query"));
-        assertEquals(List.of("S3", "S4", "S5"), PerfMain.resolveScenarios(new LinkedHashMap<>(), "query"));
-        assertEquals(List.of("S1", "S6"), PerfMain.resolveScenarios(new LinkedHashMap<>(), "read"));
+        assertEquals(List.of("S4", "S5", "S6"), PerfMain.resolveScenarios(new LinkedHashMap<>(), "query"));
+        assertEquals(List.of("S1", "S2", "S3"), PerfMain.resolveScenarios(new LinkedHashMap<>(), "read"));
         assertEquals("all", PerfMain.workloadOpt("all"));
-        assertEquals(List.of("S1", "S6", "S3", "S4", "S5"),
+        assertEquals(List.of("S1", "S2", "S3", "S4", "S5", "S6"),
                 PerfMain.resolveScenarios(new LinkedHashMap<>(), "all"));
         assertEquals(List.of("read", "write"), PerfMain.scenarioWorkloads("S1", "all"));
-        assertEquals(List.of("query"), PerfMain.scenarioWorkloads("S3", "all"));
+        assertEquals(List.of("query"), PerfMain.scenarioWorkloads("S4", "all"));
         assertThrows(IllegalArgumentException.class, () -> PerfMain.workloadOpt("bogus"));
+    }
+
+    @Test
+    void effectiveDocSizeIsRejectedAboveTheDynamoItemLimit() {
+        // S3 multiplies --doc-size by 64, so a baseline that looks harmless can put the
+        // scenario past DynamoDB's 400 KB item limit. The run must fail before it writes.
+        assertEquals(65_536, Scenarios.docSizeFor("S3", 1024));
+        PerfMain.validateEffectiveDocSizes(List.of("S1", "S2", "S3"), 1024);
+
+        IllegalArgumentException tooBig = assertThrows(IllegalArgumentException.class,
+                () -> PerfMain.validateEffectiveDocSizes(List.of("S1", "S2", "S3"), 8192));
+        assertTrue(tooBig.getMessage().contains("S3"), tooBig.getMessage());
+        assertTrue(tooBig.getMessage().contains("400000"), tooBig.getMessage());
+
+        // The baseline scenario stays legal at a document size that only S3 cannot carry.
+        PerfMain.validateEffectiveDocSizes(List.of("S1"), 8192);
     }
 
     @Test

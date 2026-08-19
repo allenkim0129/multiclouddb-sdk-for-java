@@ -58,7 +58,7 @@ class HtmlReportTest {
     }
 
     private static StatRow query(String provider, String variant, double p99) {
-        return new StatRow(provider, "query", "query", "S3", variant, 8, 1024, 100,
+        return new StatRow(provider, "query", "query", "S4", variant, 8, 1024, 100,
                 1, 100, 100, p99 / 2, p99, p99, p99, p99 / 2, 1.0,
                 10.0, p99 / 2 - 10.0, p99 - 10.0, 80.0, 80.0, 80.0, 1.0,
                 "RU", 3.0, 3.0, 240.0, "RU/s", 4000.0, 6.0,
