@@ -58,7 +58,7 @@
         <multiclouddb-provider-spanner.version>0.1.0-beta.1</multiclouddb-provider-spanner.version>
 
         <!-- Dependency versions -->
-        <jackson.version>2.22.0</jackson.version>
+        <jackson.version>2.22.1</jackson.version>
         <slf4j.version>2.0.12</slf4j.version>
         <azure-cosmos.version>4.81.0</azure-cosmos.version>
         <azure-core.version>1.57.1</azure-core.version>
