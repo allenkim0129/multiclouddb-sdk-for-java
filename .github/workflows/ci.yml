@@ -328,7 +328,7 @@ jobs:
 
       - name: Start Spanner Emulator
         run: |
-          IMAGE="gcr.io/cloud-spanner-emulator/emulator:1.5.29"
+          IMAGE="gcr.io/cloud-spanner-emulator/emulator:1.5.56"
           for i in 1 2 3 4 5; do
             echo "Attempt $i: pulling $IMAGE..."
             if docker pull "$IMAGE" 2>&1; then
