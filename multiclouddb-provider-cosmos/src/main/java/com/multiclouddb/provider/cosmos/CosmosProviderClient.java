@@ -575,34 +575,12 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
 
             SqlQuerySpec sqlQuery = new SqlQuerySpec(expression, sqlParams);
             int pageSize = query.maxPageSize() != null ? query.maxPageSize() : CosmosConstants.PAGE_SIZE_DEFAULT;
-            List<Map<String, Object>> items = new ArrayList<>();
-            String continuationToken = null;
             java.time.Instant queryStart = java.time.Instant.now();
 
-            Iterable<FeedResponse<JsonNode>> pages;
-            if (query.continuationToken() != null) {
-                pages = container.queryItems(sqlQuery, queryOptions, JsonNode.class)
-                        .iterableByPage(query.continuationToken(), pageSize);
-            } else {
-                pages = container.queryItems(sqlQuery, queryOptions, JsonNode.class)
-                        .iterableByPage(pageSize);
-            }
-
-            for (FeedResponse<JsonNode> page : pages) {
-                for (JsonNode item : page.getResults()) {
-                    items.add(toMap(item));
-                }
-                continuationToken = page.getContinuationToken();
-                OperationDiagnostics diag = buildFeedDiagnostics(OperationNames.QUERY, address, page,
-                        items.size(), java.time.Duration.between(queryStart, java.time.Instant.now()));
-                return new QueryPage(items, continuationToken, diag);
-            }
-
-            OperationDiagnostics emptyDiag = OperationDiagnostics
-                    .builder(ProviderId.COSMOS, OperationNames.QUERY,
-                            java.time.Duration.between(queryStart, java.time.Instant.now()))
-                    .itemCount(0).build();
-            return new QueryPage(items, continuationToken, emptyDiag);
+            FeedResponse<JsonNode> page = CosmosPagedReader.firstPage(
+                    container.queryItems(sqlQuery, queryOptions, JsonNode.class),
+                    query.continuationToken(), pageSize);
+            return toQueryPage(page, OperationNames.QUERY, address, queryStart);
         } catch (CosmosException e) {
             logExceptionDiagnostics(OperationNames.QUERY, address, e);
             throw CosmosErrorMapper.map(e, OperationNames.QUERY);
@@ -652,34 +630,12 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             String sql = applyResultSetControl(translated.queryString(), query);
             SqlQuerySpec sqlQuery = new SqlQuerySpec(sql, sqlParams);
             int pageSize = query.maxPageSize() != null ? query.maxPageSize() : CosmosConstants.PAGE_SIZE_DEFAULT;
-            List<Map<String, Object>> items = new ArrayList<>();
-            String continuationToken = null;
             java.time.Instant queryStart = java.time.Instant.now();
 
-            Iterable<FeedResponse<JsonNode>> pages;
-            if (query.continuationToken() != null) {
-                pages = container.queryItems(sqlQuery, queryOptions, JsonNode.class)
-                        .iterableByPage(query.continuationToken(), pageSize);
-            } else {
-                pages = container.queryItems(sqlQuery, queryOptions, JsonNode.class)
-                        .iterableByPage(pageSize);
-            }
-
-            for (FeedResponse<JsonNode> page : pages) {
-                for (JsonNode item : page.getResults()) {
-                    items.add(toMap(item));
-                }
-                continuationToken = page.getContinuationToken();
-                OperationDiagnostics diag = buildFeedDiagnostics(OperationNames.QUERY_WITH_TRANSLATION, address,
-                        page, items.size(), java.time.Duration.between(queryStart, java.time.Instant.now()));
-                return new QueryPage(items, continuationToken, diag);
-            }
-
-            OperationDiagnostics emptyDiag = OperationDiagnostics
-                    .builder(ProviderId.COSMOS, OperationNames.QUERY,
-                            java.time.Duration.between(queryStart, java.time.Instant.now()))
-                    .itemCount(0).build();
-            return new QueryPage(items, continuationToken, emptyDiag);
+            FeedResponse<JsonNode> page = CosmosPagedReader.firstPage(
+                    container.queryItems(sqlQuery, queryOptions, JsonNode.class),
+                    query.continuationToken(), pageSize);
+            return toQueryPage(page, OperationNames.QUERY_WITH_TRANSLATION, address, queryStart);
         } catch (CosmosException e) {
             logExceptionDiagnostics(OperationNames.QUERY_WITH_TRANSLATION, address, e);
             throw CosmosErrorMapper.map(e, OperationNames.QUERY);
@@ -1115,6 +1071,35 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      * Builds {@link OperationDiagnostics} from a {@link FeedResponse}, logs them
      * at DEBUG level, and logs full native diagnostics when opted-in via config.
      */
+    /**
+     * Converts the single Cosmos feed page returned by {@link CosmosPagedReader} into the portable
+     * {@link QueryPage}. A {@code null} page means the result set was empty, which is reported as
+     * an empty page with no continuation token — the portable signal for "no more results".
+     *
+     * @param page       the page Cosmos returned, or {@code null} when the result set was empty
+     * @param operation  the operation name to stamp on the diagnostics
+     * @param address    the logical database + container that was queried
+     * @param queryStart the instant the query was issued, used to measure elapsed time
+     * @return the portable page
+     */
+    private QueryPage toQueryPage(FeedResponse<JsonNode> page, String operation, ResourceAddress address,
+            java.time.Instant queryStart) {
+        if (page == null) {
+            OperationDiagnostics emptyDiag = OperationDiagnostics
+                    .builder(ProviderId.COSMOS, operation,
+                            java.time.Duration.between(queryStart, java.time.Instant.now()))
+                    .itemCount(0).build();
+            return new QueryPage(new ArrayList<>(), null, emptyDiag);
+        }
+        List<Map<String, Object>> items = new ArrayList<>(page.getResults().size());
+        for (JsonNode item : page.getResults()) {
+            items.add(toMap(item));
+        }
+        OperationDiagnostics diag = buildFeedDiagnostics(operation, address, page, items.size(),
+                java.time.Duration.between(queryStart, java.time.Instant.now()));
+        return new QueryPage(items, page.getContinuationToken(), diag);
+    }
+
     private OperationDiagnostics buildFeedDiagnostics(String operation, ResourceAddress address,
             FeedResponse<?> page, int itemCount, java.time.Duration duration) {
         OperationDiagnostics diag = OperationDiagnostics

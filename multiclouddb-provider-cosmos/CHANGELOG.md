@@ -24,6 +24,26 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   status code) are still populated, and reads are unaffected. `false` is the transport-equivalent
   setting when benchmarking against DynamoDB, whose `PutItem` returns no item by default.
 
+### Fixed
+
+- **Queries and change-feed reads no longer leave a Cosmos query pipeline running after the page
+  they return.** `query`, `queryWithTranslation`, and the pull-mode change-feed drain each read
+  one page and then abandoned the iterator from `CosmosPagedIterable.iterableByPage(...)`. That
+  iterator is backed by a reactive subscription which is cancelled only when it is drained, so
+  every call leaked a live pipeline that kept prefetching pages no caller could ever reach — the
+  next call rebuilds the paged result from the continuation token, so the prefetched pages are
+  unreachable by construction. Under sustained load the leaked pipelines accumulated: a
+  large-document query workload climbed from 16 ms to 165 ms mean latency across a single run
+  while server-side RU per page stayed flat at 4.83, and the post-GC live set grew from 191 MB to
+  549 MB. Reads now take the page through `streamByPage(...)` and close the stream, which cancels
+  the subscription. Results, continuation tokens, and diagnostics are unchanged; this is a
+  resource-lifetime and cost fix. DynamoDB (`lastEvaluatedKey`) and Spanner (`LIMIT`/`OFFSET`)
+  page with a single stateless request and never had the equivalent exposure, so this restores
+  cost parity across providers rather than changing the portable contract.
+- Empty-result diagnostics from `queryWithTranslation` are now stamped with
+  `OperationNames.QUERY_WITH_TRANSLATION` instead of `OperationNames.QUERY`, matching the
+  operation name already used for its non-empty pages.
+
 ### Changed
 
 - **Gateway HTTP/2 is now enabled by default.** Previously Gateway mode used HTTP/1.1 unless
