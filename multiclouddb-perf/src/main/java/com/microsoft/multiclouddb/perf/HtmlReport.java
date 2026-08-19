@@ -32,8 +32,13 @@ final class HtmlReport {
         b.append("<p><strong>").append(Reports.esc(meta.title())).append("</strong><br>")
                 .append("Generated ").append(Reports.esc(meta.generatedUtc())).append("<br>")
                 .append("Source <code>").append(Reports.esc(meta.sourceLabel())).append("</code><br>")
-                .append("Invalid if throttled-op rate exceeds ")
+                .append("A row is invalid when its throttled-op rate exceeds ")
                 .append(String.format(Locale.ROOT, "%.3f%%", meta.invalidThrottleRate() * 100.0))
+                .append(", or it sustained less than ")
+                .append(String.format(Locale.ROOT, "%.0f%%", Reports.MIN_ATTAINED_TARGET_RATIO * 100.0))
+                .append(" of its target throughput. The second rule is the provider-neutral one: an SDK "
+                        + "that retries a rejection internally reports no throttling while still running "
+                        + "at a capacity ceiling.")
                 .append("</p>");
         b.append("<p class=\"note\">Fair comparisons require the same offered load, workload profile, client placement, and deterministic capacity. Provider capacity units are not equivalent.</p>");
 
@@ -343,14 +348,28 @@ final class HtmlReport {
         b.append("</tbody></table>");
     }
 
+    /**
+     * Three-state parity verdict. An invalid measurement is never rendered as a pass or as a
+     * regression, because neither claim is supported by the data behind it.
+     */
+    private static String parityVerdict(ThreadAnalysis.ParityRow row) {
+        if (!row.measurementValid()) {
+            return "INVALID";
+        }
+        return row.pass() ? "PASS" : "CHECK";
+    }
+
     private static void parityAndScaling(StringBuilder b, List<StatRow> stats,
                                          List<String> providers, ReportMeta meta) {
         b.append("<h2>6. Thread-scaling &amp; migration parity</h2>");
-        List<ThreadAnalysis.ParityRow> parity = ThreadAnalysis.parity(stats, providers, meta.baseline());
+        List<ThreadAnalysis.ParityRow> parity = ThreadAnalysis.parity(stats, providers, meta.baseline(),
+                meta.invalidThrottleRate());
         if (!parity.isEmpty()) {
             b.append("<h3>Migration parity vs baseline <code>").append(Reports.esc(meta.baseline())).append("</code></h3>");
             b.append("<table><thead><tr><th>Workload</th><th>Operation</th><th>Scenario</th><th>Scope</th><th>Threads</th><th>Baseline ops/s</th><th>Baseline p99</th><th>Verdict</th></tr></thead><tbody>");
+            boolean anyUnmeasured = false;
             for (ThreadAnalysis.ParityRow row : parity) {
+                anyUnmeasured = anyUnmeasured || !row.measurementValid();
                 b.append("<tr><td>").append(Reports.esc(row.workload()))
                         .append("</td><td>").append(Reports.esc(row.operation()))
                         .append("</td><td>").append(Reports.esc(row.scenario()))
@@ -358,10 +377,18 @@ final class HtmlReport {
                         .append("</td><td>").append(row.threads())
                         .append("</td><td>").append(Reports.num(row.baseTput()))
                         .append("</td><td>").append(Reports.num(row.baseP99()))
-                        .append("</td><td>").append(row.pass() ? "PASS" : "CHECK")
+                        .append("</td><td>").append(parityVerdict(row))
                         .append("</td></tr>");
             }
             b.append("</tbody></table>");
+            if (anyUnmeasured) {
+                b.append("<p class=\"note\">INVALID marks a comparison in which the baseline or a "
+                        + "target row was itself an invalid measurement — see the Valid column above "
+                        + "for which rule it failed. A provider cannot be shown to keep up with a "
+                        + "measurement that is not usable — a baseline that collapsed hands out "
+                        + "passing verdicts to everything — so no verdict is given. Raise the "
+                        + "provisioned capacity for that item size and re-run.</p>");
+            }
         }
         List<ThreadAnalysis.ScalingRow> scaling = ThreadAnalysis.scaling(stats, providers);
         if (scaling.isEmpty()) {

@@ -14,9 +14,14 @@ Use the same for every provider in a comparison set:
   property file. `--target-ops-per-sec N` overrides all configs. Use `0` only for
   max-throughput sweeps (`--threads 1,8,32`).
 - **Workload profile**: `--workload read|write|mixed|query` selects one profile.
-  The three query scenarios each vary one dimension: `S3` partition scope, `S4` page size
-  (quarter of baseline), `S5` item size (8x baseline, page shrunk 8x to hold bytes per page
+  The three point scenarios vary only document size: `S1` baseline, `S2` 8x baseline (`S6`'s
+  item size, so point and query costs can be read at the same document size), `S3` 64x baseline
+  for the large documents customers actually store.
+  The three query scenarios each vary one dimension: `S4` partition scope, `S5` page size
+  (quarter of baseline), `S6` item size (8x baseline, page shrunk 8x to hold bytes per page
   near baseline). `--doc-size` / `--page-size` set the baseline the scenarios derive from.
+  Since `S2`/`S3`/`S6` multiply `--doc-size`, the harness refuses a baseline whose effective
+  size would pass DynamoDB's 400 KB item limit, and fails before writing anything.
   `--workload all` runs the read, write, and query profiles in one batch and one report.
 - **Client placement**: same host/JDK, plus matching `comparison_region` labels. A single client
   cannot be colocated with two clouds at once, so the harness probes each endpoint's TCP RTT at
@@ -32,8 +37,14 @@ Use the same for every provider in a comparison set:
 - **Separate metrics**: compare latency, throughput, and provider-native cost separately.
   **Do not compare Cosmos RU directly with Dynamo RCU/WCU.**
 
-Default validity rule: a row is reported **invalid** when throttled operations exceed **0.1%**.
-Override with `--invalid-throttle-rate-pct` when re-rendering reports.
+Validity rules: a row is reported **invalid** when throttled operations exceed **0.1%**
+(override with `--invalid-throttle-rate-pct`) **or** when it sustained less than **95%** of its
+target throughput. The second rule is the provider-neutral one — throttled counts only include
+operations that *fail*, so an SDK that retries a rejection internally reports `0.000%` throttled
+while still running at a capacity ceiling. The `Valid` column names which rule failed. The
+migration-parity table applies both rules to both sides of each comparison and reports `⛔`
+(`INVALID` in HTML) when either side is invalid — a collapsed baseline would otherwise hand out
+passing verdicts.
 
 ## Configure live accounts (never committed)
 
@@ -89,7 +100,7 @@ CLI capacity and offered-load options override these properties for one-off expe
 multiclouddb-perf/perf.sh run \
   --providers cosmos,dynamo \
   --workload all \
-  --scenarios S1,S3,S4,S5 \
+  --scenarios S1,S4,S5,S6 \
   --threads 8 \
   --target-ops-per-sec 80 \
   --iterations 500 \
@@ -117,6 +128,31 @@ multiclouddb-perf/perf.sh run \
   --cosmos-ru 20000 \
   --split-wait-seconds 480
 ```
+
+### Large-document point operations
+
+```bash
+multiclouddb-perf/perf.sh run \
+  --providers cosmos,dynamo \
+  --workload all \
+  --scenarios S1,S2,S3 \
+  --threads 8 \
+  --target-ops-per-sec 80 \
+  --iterations 500
+```
+
+Reads and writes 1 KB, 8 KB, and 64 KB documents over the same profile, so the per-byte cost of
+each provider can be separated from its per-operation cost.
+
+**Provision for the largest item, not the smallest.** Write cost scales with item size, so S3
+needs roughly 64x the write capacity of S1 at the same offered load. A run at
+`--target-ops-per-sec 80` measured 64.6 WCU per S3 write on DynamoDB, i.e. ~5,170 WCU sustained —
+a table provisioned at 200 WCU throttles hard (observed: p99 ~50 s, throughput collapsing to
+2.5 ops/s). Cosmos shows the same scaling in its own units: 10.6 RU per update at S1 rising to
+52.1 RU at S3. Size the table or container for the S3 row before the run, or the large-document
+rows measure the capacity ceiling rather than the provider. Rows that throttle past the validity
+threshold are reported `invalid`, and the migration-parity table marks the comparison `⛔` rather
+than issuing a verdict.
 
 ### Query-only comparison
 

@@ -25,9 +25,13 @@ final class MarkdownReport {
         b.append("- **Run:** ").append(meta.title()).append('\n');
         b.append("- **Generated:** ").append(meta.generatedUtc()).append('\n');
         b.append("- **Source:** `").append(meta.sourceLabel()).append("`\n");
-        b.append("- **Invalid if throttled-op rate exceeds:** ")
+        b.append("- **A row is invalid when:** its throttled-op rate exceeds ")
                 .append(String.format(Locale.ROOT, "%.3f%%", meta.invalidThrottleRate() * 100.0))
-                .append("\n\n");
+                .append(", **or** it sustained less than ")
+                .append(String.format(Locale.ROOT, "%.0f%%", Reports.MIN_ATTAINED_TARGET_RATIO * 100.0))
+                .append(" of its target throughput. The second rule is the provider-neutral one: an SDK that")
+                .append(" retries a rejection internally reports no throttling while still running at a")
+                .append(" capacity ceiling.\n\n");
         b.append("> Fair comparisons require the same offered load, workload profile, client placement, and deterministic capacity. "
                 + "Provider capacity units are **not equivalent** (Cosmos RU vs Dynamo RCU/WCU).\n\n");
 
@@ -215,15 +219,29 @@ final class MarkdownReport {
         b.append('\n');
     }
 
+    /**
+     * Three-state parity verdict. An invalid measurement is never rendered as a pass or as a
+     * regression, because neither claim is supported by the data behind it.
+     */
+    private static String parityVerdict(ThreadAnalysis.ParityRow row) {
+        if (!row.measurementValid()) {
+            return "⛔";
+        }
+        return row.pass() ? "✅" : "⚠️";
+    }
+
     private static void parityAndScaling(StringBuilder b, List<StatRow> stats,
                                          List<String> providers, ReportMeta meta) {
         b.append("## 5. Thread-scaling & migration parity\n\n");
-        List<ThreadAnalysis.ParityRow> parity = ThreadAnalysis.parity(stats, providers, meta.baseline());
+        List<ThreadAnalysis.ParityRow> parity = ThreadAnalysis.parity(stats, providers, meta.baseline(),
+                meta.invalidThrottleRate());
         if (!parity.isEmpty()) {
             b.append("### Migration parity vs baseline `").append(meta.baseline()).append("`\n\n");
             b.append("| Workload | Operation | Scenario | Scope | Threads | Baseline ops/s | Baseline p99 | Verdict |\n");
             b.append("|---|---|---|---|---|---|---|---|\n");
+            boolean anyUnmeasured = false;
             for (ThreadAnalysis.ParityRow row : parity) {
+                anyUnmeasured = anyUnmeasured || !row.measurementValid();
                 b.append("| ").append(row.workload())
                         .append(" | ").append(row.operation())
                         .append(" | ").append(row.scenario())
@@ -231,9 +249,17 @@ final class MarkdownReport {
                         .append(" | ").append(row.threads())
                         .append(" | ").append(Reports.num(row.baseTput()))
                         .append(" | ").append(Reports.num(row.baseP99()))
-                        .append(" | ").append(row.pass() ? "✅" : "⚠️").append(" |\n");
+                        .append(" | ").append(parityVerdict(row)).append(" |\n");
             }
             b.append('\n');
+            if (anyUnmeasured) {
+                b.append("⛔ marks a comparison in which the baseline or a target row was itself an ")
+                        .append("invalid measurement — see the `Valid` column above for which rule it ")
+                        .append("failed. A provider cannot be shown to keep up with a measurement that ")
+                        .append("is not usable — a baseline that collapsed hands out passing verdicts ")
+                        .append("to everything — so no verdict is given. Raise the provisioned capacity ")
+                        .append("for that item size and re-run.\n\n");
+            }
         }
         List<ThreadAnalysis.ScalingRow> scaling = ThreadAnalysis.scaling(stats, providers);
         if (scaling.isEmpty()) {

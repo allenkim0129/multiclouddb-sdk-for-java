@@ -32,12 +32,23 @@ DynamoDB, and Spanner:
 - `mixed` — existing lifecycle-style point workload (create/read/update/delete) for backward compatibility.
 - `read` — seeded point reads; seeding occurs outside the measured interval.
 - `write` — point writes only (create/update/upsert/delete) with independent seeded keysets and cleanup.
-- `query` — query-only scenarios (`S3/S4/S5`), each varying exactly one dimension:
-  - `S3` — partition scope: the same query with the partition key supplied (single-partition)
+  Point workloads run the `S1/S2/S3` scenarios, an item-size ladder over one profile in which
+  only document size varies:
+  - `S1` — baseline document size.
+  - `S2` — 8x the baseline. This is also `S6`'s item size, so a point cost and a query cost can
+    be read at the same document size.
+  - `S3` — 64x the baseline: the large documents customers store, rather than the small items
+    synthetic benchmarks favour.
+
+  Because these multiply `--doc-size`, the harness rejects a baseline whose effective size would
+  exceed DynamoDB's 400 KB item limit, and fails before any live write rather than part-way
+  through a comparison.
+- `query` — query-only scenarios (`S4/S5/S6`), each varying exactly one dimension:
+  - `S4` — partition scope: the same query with the partition key supplied (single-partition)
     and withheld (cross-partition fan-out), at the baseline document and page size.
-  - `S4` — page size: cross-partition at a quarter of the baseline page size, isolating
+  - `S5` — page size: cross-partition at a quarter of the baseline page size, isolating
     per-request overhead from per-item cost.
-  - `S5` — item size: cross-partition over documents 8x the baseline size, with the page
+  - `S6` — item size: cross-partition over documents 8x the baseline size, with the page
     shrunk 8x so bytes per page stay near the baseline. Only item size varies, and the
     scenario does not consume several times the provisioned read capacity.
 
@@ -125,8 +136,32 @@ and environment metadata needed to derive:
 
 ## Validity rule
 
-Default rule: a result row is **invalid** when throttled operations exceed **0.1%**.
-The reporting CLI can override this with `--invalid-throttle-rate-pct`.
+A result row is **invalid** when either of these holds:
+
+1. **Throttled** — throttled operations exceed **0.1%**. The reporting CLI can override this
+   threshold with `--invalid-throttle-rate-pct`.
+2. **Under target** — the row sustained less than **95%** of its target throughput. Rows that
+   hold their offered load land within a fraction of a percent of target, so nothing healthy
+   sits near this bar. Max-throughput sweeps set no target and are never judged by this rule.
+
+Rule 2 exists because **throttled counts are not comparable across providers**. Only operations
+that *fail* with a throttling error are counted, so a client SDK that retries a rejection
+internally and eventually succeeds reports `0.000%` throttled while sitting on a capacity
+ceiling, whereas one that surfaces the rejection is marked invalid for the identical underlying
+condition. This was observed directly: at 64 KB items, DynamoDB writes surfaced 1.6–2.8%
+throttling, while Cosmos writes reported no throttling at all yet reached only 61–71 of the
+80 ops/s they set out to measure at 80–93% of provisioned RU/s. Asking every provider whether it
+held the offered load asks the same question regardless of where its retries happen.
+
+The `Valid` column names which rule failed — `invalid (throttled)` or `invalid (under target)` —
+so a row marked invalid with `0.000%` throttling is not mistaken for a reporting bug.
+
+The same rule gates the migration-parity verdict. Parity compares a target row against the
+baseline row, so it needs both to be valid: a throttled baseline collapses to a low throughput
+and a high p99, which every target beats trivially, and the table would otherwise report that
+as a pass. When either side is invalid the verdict is `⛔` (`INVALID` in HTML) instead of
+`✅`/`⚠️` — the comparison is unmeasured, not passing and not regressing. Raise the provisioned
+capacity for that item size and re-run.
 
 ## Example commands
 
@@ -137,7 +172,7 @@ multiclouddb-perf/perf.sh run --providers cosmos,dynamo,spanner --workload read 
 
 # Max-throughput saturation sweep
 multiclouddb-perf/perf.sh run --providers cosmos,dynamo --workload mixed \
-  --scenarios S1,S6 --threads 1,8,32 --iterations 500
+  --scenarios S1,S3 --threads 1,8,32 --iterations 500
 
 # Deterministic Dynamo capacity
 multiclouddb-perf/perf.sh run --providers dynamo --workload write \

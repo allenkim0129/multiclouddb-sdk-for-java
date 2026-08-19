@@ -74,6 +74,7 @@ public final class PerfMain {
         int iterations = intOpt(opt, "iterations", 500);
         int docSize = intOpt(opt, "doc-size", 1024);
         int pageSize = intOpt(opt, "page-size", 100);
+        validateEffectiveDocSizes(scenarios, docSize);
         int repeat = Math.max(1, intOpt(opt, "repeat", 1));
         int cliCosmosRu = intOpt(opt, "cosmos-ru", 0);
         int cliDynamoRcu = optionalPositiveInt(opt, "dynamo-rcu");
@@ -428,15 +429,15 @@ public final class PerfMain {
             return splitCsv(opt.get("scenarios"));
         }
         if ("query".equals(workload)) {
-            return List.of("S3", "S4", "S5");
+            return List.of("S4", "S5", "S6");
         }
         if ("all".equals(workload)) {
-            return List.of("S1", "S6", "S3", "S4", "S5");
+            return List.of("S1", "S2", "S3", "S4", "S5", "S6");
         }
         if ("read".equals(workload) || "write".equals(workload) || "mixed".equals(workload)) {
-            return List.of("S1", "S6");
+            return List.of("S1", "S2", "S3");
         }
-        return splitCsv("S1,S3,S4,S5,S6");
+        return splitCsv("S1,S2,S3,S4,S5,S6");
     }
 
     static String workloadOpt(String raw) {
@@ -466,16 +467,43 @@ public final class PerfMain {
             if ("query".equals(workload)) {
                 if (!isQueryScenario(scenario)) {
                     throw new IllegalArgumentException(
-                            "--workload=query only supports query scenarios (S3/S4/S5), not '" + scenario + "'");
+                            "--workload=query only supports query scenarios (S4/S5/S6), not '" + scenario + "'");
                 }
             } else if (!isPointScenario(scenario)) {
                 throw new IllegalArgumentException(
-                        "--workload=" + workload + " only supports point-operation scenarios (S1/S2/S6), not '"
+                        "--workload=" + workload + " only supports point-operation scenarios (S1/S2/S3), not '"
                                 + scenario + "'");
             }
         }
     }
 
+    /**
+     * Tightest document-size ceiling across the supported providers: DynamoDB rejects items
+     * larger than 400 KB. Cosmos allows 2 MB, but a run only some providers can complete is not
+     * a comparison, so the ceiling is enforced for every provider.
+     */
+    static final int MAX_DOC_SIZE_BYTES = 400_000;
+
+    /**
+     * Fails before any live work when a scenario's effective document size would exceed
+     * {@link #MAX_DOC_SIZE_BYTES}. The item-size scenarios multiply {@code --doc-size}, so a
+     * baseline that looks harmless can put S3 past the limit; discovering that through write
+     * failures mid-run would leave a half-measured comparison that has to be thrown away.
+     */
+    static void validateEffectiveDocSizes(List<String> scenarios, int baseDocSize) {
+        for (String scenario : scenarios) {
+            int effective = Scenarios.docSizeFor(scenario, baseDocSize);
+            if (effective > MAX_DOC_SIZE_BYTES) {
+                int multiplier = Math.max(1, effective / Math.max(1, baseDocSize));
+                throw new IllegalArgumentException(String.format(Locale.ROOT,
+                        "--doc-size %d makes scenario %s write %d B documents, above the %d B "
+                                + "DynamoDB item limit. Lower --doc-size to at most %d, or drop "
+                                + "%s from --scenarios.",
+                        baseDocSize, scenario, effective, MAX_DOC_SIZE_BYTES,
+                        MAX_DOC_SIZE_BYTES / multiplier, scenario));
+            }
+        }
+    }
     static List<String> scenarioWorkloads(String scenario, String workload) {
         if (isQueryScenario(scenario)) {
             return List.of("query");
@@ -490,7 +518,7 @@ public final class PerfMain {
     }
 
     private static boolean isQueryScenario(String scenario) {
-        return "S3".equals(scenario) || "S4".equals(scenario) || "S5".equals(scenario);
+        return "S4".equals(scenario) || "S5".equals(scenario) || "S6".equals(scenario);
     }
 
     private static boolean isPointScenario(String scenario) {
@@ -639,7 +667,7 @@ public final class PerfMain {
 
             Usage:
               run     [--config-dir DIR] [--providers cosmos,dynamo,spanner]
-                      [--scenarios S1,S3,S4,S5,S6] [--workload read|write|mixed|query|all]
+                      [--scenarios S1,S2,S3,S4,S5,S6] [--workload read|write|mixed|query|all]
                       [--threads 1,8,32] [--target-ops-per-sec N]
                       [--warmup N] [--iterations N] [--doc-size BYTES] [--page-size N]
                       [--repeat N] [--cosmos-ru RU] [--dynamo-rcu N --dynamo-wcu N]
@@ -656,6 +684,9 @@ public final class PerfMain {
             actual operation starts. Leave it unset or 0 for existing max-throughput mode.
             --workload read|write|mixed|query selects one explicit workload profile.
             --workload all runs read, write, and query profiles in one batch and writes one report.
+            Point scenarios are an item-size ladder derived from --doc-size: S1 baseline, S2 8x,
+            S3 64x. Query scenarios vary one dimension each: S4 partition scope, S5 quarter page
+            size, S6 8x item size. Effective sizes are recorded per row in the report.
             --cosmos-ru RU raises Cosmos to manual throughput before running — COSTS MONEY.
             --dynamo-rcu/--dynamo-wcu switches the Dynamo table to PROVISIONED and waits for ACTIVE — COSTS MONEY.
             --enable-dynamo-streams turns on a NEW_AND_OLD_IMAGES stream for Dynamo change-feed runs — COSTS MONEY.

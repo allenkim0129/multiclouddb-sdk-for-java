@@ -37,7 +37,7 @@ final class ThreadAnalysis {
     record ParityRow(String operation, String workload, String scenario, String variant, int threads,
                      String baseline, double baseTput, double baseP99,
                      Map<String, Double> targetTput, Map<String, Double> targetP99,
-                     boolean pass) {
+                     boolean pass, boolean measurementValid) {
     }
 
     /** Throughput of one provider/operation across the swept thread levels. */
@@ -78,7 +78,17 @@ final class ThreadAnalysis {
         return providers.isEmpty() ? null : providers.get(0);
     }
 
-    static List<ParityRow> parity(List<StatRow> stats, List<String> providers, String baseline) {
+    /**
+     * Matched-concurrency parity of every target provider against the baseline.
+     * <p>
+     * A comparison is only reported as a verdict when both sides are valid measurements.
+     * A throttled baseline collapses to a throughput any target beats trivially — a provider
+     * held to 2.5 ops/s by throttling would hand every target a passing verdict — so rows
+     * whose baseline or target exceeds {@code invalidThrottleRate} are marked
+     * {@code measurementValid == false} and rendered as unmeasured rather than as a pass.
+     */
+    static List<ParityRow> parity(List<StatRow> stats, List<String> providers, String baseline,
+                                  double invalidThrottleRate) {
         if (baseline == null || providers.size() < 2) {
             return List.of();
         }
@@ -101,6 +111,7 @@ final class ThreadAnalysis {
             Map<String, Double> tgtP99 = new LinkedHashMap<>();
             boolean pass = true;
             boolean anyTarget = false;
+            boolean measurementValid = Reports.valid(base, invalidThrottleRate);
             for (String p : providers) {
                 if (p.equals(baseline)) {
                     continue;
@@ -115,13 +126,15 @@ final class ThreadAnalysis {
                 boolean tputOk = t.throughputOpsSec() >= base.throughputOpsSec() * (1 - TOLERANCE);
                 boolean latOk = base.p99() <= 0 || t.p99() <= base.p99() * (1 + TOLERANCE);
                 pass = pass && tputOk && latOk;
+                measurementValid = measurementValid && Reports.valid(t, invalidThrottleRate);
             }
             if (!anyTarget) {
                 continue;
             }
             out.add(new ParityRow(base.operation(), base.workload(), base.scenario(), base.variant(),
                     base.threads(),
-                    baseline, base.throughputOpsSec(), base.p99(), tgtTput, tgtP99, pass));
+                    baseline, base.throughputOpsSec(), base.p99(), tgtTput, tgtP99,
+                    pass, measurementValid));
         }
         return out;
     }

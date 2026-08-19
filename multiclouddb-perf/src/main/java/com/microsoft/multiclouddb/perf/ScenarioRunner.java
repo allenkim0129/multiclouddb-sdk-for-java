@@ -54,11 +54,11 @@ final class ScenarioRunner {
 
     void run() {
         switch (ctx.scenario()) {
-            case "S3" -> {
+            case "S4" -> {
                 queryPhase(true);
                 queryPhase(false);
             }
-            case "S4", "S5" -> queryPhase(false);
+            case "S5", "S6" -> queryPhase(false);
             case "S7" -> changeFeedPhase();
             default -> pointOpsPhase();
         }

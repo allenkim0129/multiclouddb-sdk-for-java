@@ -69,31 +69,49 @@ final class Scenarios {
      * Effective page size for a scenario, derived from the {@code --page-size} baseline.
      * <p>
      * Each query scenario varies exactly one dimension so a difference between them has a
-     * single cause. S5 shrinks the page in proportion to its larger documents, keeping bytes
+     * single cause. S6 shrinks the page in proportion to its larger documents, keeping bytes
      * per page close to the baseline: that isolates per-item cost from per-byte cost, and
      * stops the scenario from consuming several times the provisioned read capacity.
      */
     static int pageSizeFor(String scenario, int basePageSize) {
         return switch (scenario) {
-            case "S4" -> Math.max(1, basePageSize / 4);
-            case "S5" -> Math.max(1, basePageSize / 8);
+            case "S5" -> Math.max(1, basePageSize / 4);
+            case "S6" -> Math.max(1, basePageSize / 8);
             default -> basePageSize;
         };
     }
 
-    /** Effective document size for a scenario, derived from the {@code --doc-size} baseline. */
+    /**
+     * Effective document size for a scenario, derived from the {@code --doc-size} baseline.
+     * <p>
+     * The point scenarios form an item-size ladder over one profile, so a difference between
+     * them has a single cause: S1 measures the baseline, S2 the same operations at eight times
+     * the baseline — S6's item size, so a point cost and a query cost can be read at the same
+     * document size — and S3 at sixty-four times, the large-document case customers actually
+     * store. Only document size varies across the three.
+     */
     static int docSizeFor(String scenario, int baseDocSize) {
-        return "S5".equals(scenario) ? baseDocSize * 8 : baseDocSize;
+        return switch (scenario) {
+            case "S2", "S6" -> baseDocSize * 8;
+            case "S3" -> baseDocSize * 64;
+            default -> baseDocSize;
+        };
     }
 
     /** What the scenario is for, in one sentence. */
     static String purpose(String scenario) {
         return switch (scenario) {
-            case "S3" -> "Query latency with the partition key supplied and withheld, so "
+            case "S2" -> "Item-size sensitivity for point operations: the S1 profile over "
+                    + "documents eight times the baseline size, which is also S6's item size, so "
+                    + "point and query costs can be read at the same document size.";
+            case "S3" -> "Large-document point operations: the S1 profile over documents "
+                    + "sixty-four times the baseline size, covering the payloads customers store "
+                    + "rather than the small items synthetic benchmarks favour.";
+            case "S4" -> "Query latency with the partition key supplied and withheld, so "
                     + "single-partition and cross-partition (fan-out) costs can be told apart.";
-            case "S4" -> "Page-size sensitivity: the same cross-partition query at a quarter of "
+            case "S5" -> "Page-size sensitivity: the same cross-partition query at a quarter of "
                     + "the baseline page size, isolating per-request overhead from per-item cost.";
-            case "S5" -> "Item-size sensitivity: the same cross-partition query over documents "
+            case "S6" -> "Item-size sensitivity: the same cross-partition query over documents "
                     + "eight times the baseline size, with the page shrunk to match so bytes per "
                     + "page stay close to the baseline and only item size varies.";
             case "S7" -> "Change-feed read throughput from the tip of each physical partition.";
@@ -125,7 +143,7 @@ final class Scenarios {
     }
 
     static boolean isQuery(String scenario) {
-        return "S3".equals(scenario) || "S4".equals(scenario) || "S5".equals(scenario);
+        return "S4".equals(scenario) || "S5".equals(scenario) || "S6".equals(scenario);
     }
 
     /** Method notes that apply to every run, rendered as a bullet list. */
