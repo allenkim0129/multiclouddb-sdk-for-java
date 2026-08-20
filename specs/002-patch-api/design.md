@@ -26,6 +26,11 @@ PATCH unsupported in this release and can implement the same API later.
 | DynamoDB | One conditional `UpdateItem` |
 | Spanner | `UNSUPPORTED_CAPABILITY` before provider I/O |
 
+![Portable PATCH request workflow](images/patch-request-workflow.png)
+
+*Figure 1. Shared validation routes the request to one native write or rejects
+an unsupported provider before I/O.*
+
 ## 2. Portable contract
 
 All operations in one call are atomic: either all changes are applied or none
@@ -129,6 +134,11 @@ If `ALL_OLD` is absent, the adapter uses one strongly consistent point read.
   `EXACT_FRACTIONAL_INCREMENT` is supported.
 - PATCH does not write `ttlExpiry`, so the existing absolute expiry is
   preserved.
+
+![Rejected PATCH classification workflow](images/patch-rejection-workflow.png)
+
+*Figure 2. Cosmos and DynamoDB use different provider evidence but normalize
+the rejection to the same portable error categories.*
 
 ## 5. Capability matrix
 
