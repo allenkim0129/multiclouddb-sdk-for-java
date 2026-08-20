@@ -130,8 +130,19 @@ special characters remain safe.
 
 ### Failure classification
 
-The request asks for `ALL_OLD` on condition failure. The returned old image
-normally identifies the portable error:
+The request sets
+`ReturnValuesOnConditionCheckFailure.ALL_OLD`. When the condition rejects the
+update, DynamoDB attaches the item as it existed immediately before the
+attempted write to the `ConditionalCheckFailedException`.
+
+`ALL_OLD` is failure evidence, not a successful-update response or a history
+lookup. Because the condition failed, no mutation occurred, so this image is
+also the current unchanged item at the time of rejection. It normally avoids a
+separate `GetItem`.
+
+This matters because one `ConditionExpression` checks several rules, while the
+native exception only reports that the overall condition failed. The SDK
+inspects the returned image to identify the portable error:
 
 | State | Error |
 |---|---|
@@ -139,7 +150,9 @@ normally identifies the portable error:
 | Nonnumeric target or integral overflow | `INVALID_REQUEST` |
 | Condition failed but the image proves no cause | `CONFLICT` |
 
-If `ALL_OLD` is absent, the adapter uses one strongly consistent point read.
+If the service, emulator, or exception does not include the `ALL_OLD` image,
+the adapter uses one strongly consistent `GetItem` as a rejection-only
+fallback. A successful PATCH never performs this read.
 
 ### Provider differences
 
@@ -151,7 +164,8 @@ If `ALL_OLD` is absent, the adapter uses one strongly consistent point read.
 ![Rejected PATCH classification workflow](images/patch-rejection-workflow.png)
 
 *Figure 2. Cosmos and DynamoDB use different provider evidence but normalize
-the rejection to the same portable error categories.*
+the rejection to the same portable error categories. DynamoDB's `ALL_OLD` is
+the pre-write item attached to the failed conditional request.*
 
 ## 5. Capability matrix
 
