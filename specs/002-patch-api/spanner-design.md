@@ -5,10 +5,14 @@
 | Status | Proposed design for a separate Spanner pull request |
 | Updated | 2026-08-20 |
 | Current PATCH PR | `feat/patch-api` / PR #95 |
+| Canonical PATCH design | [`design.md`](design.md) |
 | Preserved Spanner branch | `spanner/patch` |
 | Audience | SDK maintainers, Spanner provider owners, and reviewers |
 
 ## 1. Executive decision
+
+This document supplements the canonical provider-neutral design in
+[`design.md`](design.md). It covers only the deferred Spanner implementation.
 
 PR #95 ships the provider-neutral PATCH API with native implementations for
 Cosmos DB and DynamoDB. Spanner explicitly declares these capabilities
