@@ -42,6 +42,11 @@ two drawbacks:
 The prototype is a fallback and test reference, not the preferred release
 architecture.
 
+![Spanner prototype and target architecture](images/spanner-prototype-vs-target.png)
+
+*Figure 1. The public PATCH contract stays unchanged; only the Spanner
+provider's success path changes.*
+
 ## 3. Target architecture
 
 Keep `data` as `STRING(MAX)` for the first Spanner PATCH release and transform
@@ -92,6 +97,11 @@ same transaction:
 | Document or required path missing | `NOT_FOUND` |
 | Nonnumeric target or integral overflow | `INVALID_REQUEST` |
 | State no longer proves a deterministic cause | `CONFLICT` |
+
+![Proposed Spanner DML workflow](images/spanner-target-dml-workflow.png)
+
+*Figure 2. A successful update has no point read; rejected state is read only
+when the conditional DML affects zero rows.*
 
 ## 5. Storage and migration
 
