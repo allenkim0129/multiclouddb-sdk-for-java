@@ -51,9 +51,22 @@ Shared validation applies before provider dispatch:
 - no duplicate, case-only alias, or overlapping paths;
 - no key, TTL, `data`, or `_`-prefixed fields;
 - signed 64-bit integral deltas and results;
-- portable fractional deltas from `1E-130` through
-  9,007,199,254,740,991 in magnitude;
-- maximum 399 KB serialized request envelope.
+- portable fractional deltas within the range described below;
+- maximum 399 KB (408,576-byte) serialized request envelope.
+
+### Why these limits?
+
+| Limit | Readable rule | Reason |
+|---|---|---|
+| Fractional `INCREMENT` | `delta = 0`, or a non-zero magnitude from `1E-130` to about `9.007E15` | `1E-130` is DynamoDB's minimum non-zero numeric magnitude. The exact upper value is `2^53 - 1`, or `9.007199254740991E15`. It is the largest safe integer: every integer through that magnitude is exactly representable in IEEE-754 binary64. This lets Cosmos DB and DynamoDB receive the same normalized delta. |
+| PATCH request envelope | At most 399 KB (`408,576` bytes) | DynamoDB's 400 KB item limit is the lowest provider limit. The SDK subtracts 1 KB for provider-injected fields and representation overhead, then reuses that portable ceiling for the serialized PATCH operation list. |
+
+The size calculation is `400 * 1024 - 1 * 1024 = 408,576` bytes.
+
+For PATCH, the 399 KB check measures each operation's type, path, and optional
+value; a `REMOVE` still contributes its type and path. It bounds the request,
+not the resulting document. A patch can still be rejected if its post-image
+exceeds a provider's native item limit.
 
 `OperationOptions.ttlSeconds()` is ignored. PATCH never creates or resets an
 expiry.
