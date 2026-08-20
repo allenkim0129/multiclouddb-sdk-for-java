@@ -1,401 +1,613 @@
-# Patch API — Design Review
+# Spanner PATCH - Deferred Implementation Design
 
-**Status:** for team discussion
-**Scope:** the portable `patch()` surface added on `feat/patch-api` (PR #95)
-**Audience:** SDK maintainers and provider owners
-
-This document describes how the portable patch API is implemented today
-across Cosmos DB, DynamoDB, and Spanner, and answers three design
-questions raised in review:
-
-1. Read-modify-write vs. server-side patch.
-2. How transient errors are retried, given that several patch
-   instructions are not idempotent.
-3. Whether an ETag precondition option exists.
-
-Every claim below cites the code it came from. Statements about
-*provider SDK default behaviour* that this repo does not itself
-configure are marked **[unverified]** — they are the highest-value items
-to confirm before the discussion.
-
----
-
-## 1. TL;DR
-
-| Question | Answer today |
+| Metadata | Value |
 |---|---|
-| RMW or server-side patch? | **Mixed.** Cosmos and DynamoDB use native server-side partial writes. Spanner uses a read-modify-write, but *inside a Spanner read-write transaction*, so no non-transactional window is exposed. |
-| Retry of non-idempotent ops? | **No SDK retry layer exists at all.** There is no retry/backoff code in the repo. Retries come only from the underlying provider SDKs' defaults, which this SDK never configures. `INCREMENT` is server-evaluated on Cosmos and DynamoDB, so a transport-level retry after a lost response **double-applies**. |
-| ETag precondition option? | **No.** `OperationOptions` has no precondition field, and the Cosmos adapter deliberately sends no `If-Match` anywhere. `DocumentMetadata.version()` exposes an ETag on read, but only Cosmos populates it, and nothing can send it back. |
+| Status | Proposed design for a separate Spanner pull request |
+| Updated | 2026-08-20 |
+| Current PATCH PR | `feat/patch-api` / PR #95 |
+| Preserved Spanner branch | `spanner/patch` |
+| Audience | SDK maintainers, Spanner provider owners, and reviewers |
 
-There is no `MOVE` operation in the portable contract — see §5.4.
+## 1. Executive decision
 
----
+PR #95 ships the provider-neutral PATCH API with native implementations for
+Cosmos DB and DynamoDB. Spanner explicitly declares these capabilities
+unsupported in that PR:
 
-## 2. The portable contract
+- `PATCH`
+- `NESTED_PATCH`
+- `EXACT_FRACTIONAL_INCREMENT`
+- `PATCH_PRESERVES_TTL`
 
-`PatchOperation.Type` has exactly four members
-(`PatchOperation.java:92-101`):
+The experimental Spanner implementation is preserved on `spanner/patch` and
+will be delivered, if approved, through a separate PR and release.
 
-| Type | Target must exist | Effect |
-|---|---|---|
-| `SET` | no | Create the field, or overwrite it if present |
-| `REPLACE` | yes | Overwrite; `NOT_FOUND` if absent |
-| `REMOVE` | yes | Delete; `NOT_FOUND` if absent |
-| `INCREMENT` | yes | Add a numeric delta; `NOT_FOUND` if absent, `INVALID_REQUEST` if non-numeric |
+The final Spanner implementation should **not** ship the preserved Java
+read-modify-write implementation unchanged. The target is a server-side
+GoogleSQL DML update over the SDK document envelope:
 
-Paths are JSON Pointers rooted at the document. Array indices, `~`
-escapes, empty segments, and key/reserved fields are rejected. A
-multi-segment path is *nested* and requires `Capability.NESTED_PATCH`,
-which Spanner does not declare
-(`SpannerCapabilities.java:36` — `NESTED_PATCH_UNSUPPORTED`). Patch never
-creates intermediate objects on any provider.
-
-Overlapping paths within a single patch are rejected as
-`INVALID_REQUEST` (`PatchConformanceTest.java:460`). **This matters for
-the idempotency analysis below:** no two operations in one request can
-address the same field, so the only ordering hazard is *between*
-requests, not within one.
-
----
-
-## 3. Design aspect 1 — RMW vs. server-side patch
-
-### 3.1 Summary
-
-| Provider | Mechanism | Server-side mutation? | Round trips (happy path) | Write amplification |
-|---|---|---|---|---|
-| **Cosmos DB** | `CosmosPatchOperations` + `container.patchItem` | **Yes**, native partial write | **2** when any op requires an existing path or is nested; **1** for a top-level `SET`-only patch | Patch-sized |
-| **DynamoDB** | `UpdateItem` with `UpdateExpression` + `ConditionExpression` | **Yes**, native partial write | **1** (a second read happens only on condition failure) | Patch-sized |
-| **Spanner** | `readWriteTransaction()` → `readRow` → rewrite envelope | **No** — RMW, but transactional | **1 transaction** (read + buffered mutation + commit) | **Whole-document** |
-
-### 3.2 Cosmos DB — server-side, with a validating pre-read
-
-`CosmosProviderClient.patch` (line 391) translates every operation into a
-single `CosmosPatchOperations` batch that Cosmos applies atomically.
-
-Before the write, `validatePatchState` (line ~600) issues a **point read**
-when `needsPatchStateValidation(operations)` is true — that is, whenever
-any operation is `REPLACE`, `REMOVE`, `INCREMENT`, or nested:
-
-```java
-document = container.readItem(cosmosId, partitionKey,
-        new CosmosItemRequestOptions(), ObjectNode.class).getItem();
+```sql
+UPDATE <table>
+SET data = TO_JSON_STRING(<JSON_SET / JSON_REMOVE expression>)
+WHERE partitionKey = @partitionKey
+  AND sortKey = @sortKey
+  AND <portable path/type/range predicates>
 ```
 
-The read exists because Cosmos reports a missing patch target as an
-untyped `400`, which would surface as `INVALID_REQUEST` where DynamoDB
-and Spanner both report `NOT_FOUND`; it also detects integral-result
-overflow, which Cosmos would not detect at all.
-
-**This is not a read-modify-write.** The document read is used only to
-*validate*; the mutation itself is still computed server-side. But it
-does mean most real patches cost **two round trips on Cosmos and one on
-DynamoDB** — an asymmetry worth acknowledging explicitly, since a
-`SET`-only top-level patch is the only single-RTT shape.
-
-### 3.3 DynamoDB — server-side, single request
-
-`DynamoProviderClient.patch` (line 443) compiles the operation list into
-one `UpdateExpression` (`SET ... REMOVE ...`) guarded by a
-`ConditionExpression`. The condition always asserts
-`attribute_exists(partitionKey)` — because a bare `UpdateItem` would
-otherwise *create* the item — plus an `attribute_exists(path)` term per
-operation that requires its target, plus a `BETWEEN` bound per integral
-increment to catch overflow.
-
-On `ConditionalCheckFailedException` the adapter requests an `ALL_OLD`
-image (`returnValuesOnConditionCheckFailure`) and classifies the failure
-from that before-image, so a missing target reports `NOT_FOUND` rather
-than a bare `CONFLICT`. The extra read is paid **only on failure**.
-
-### 3.4 Spanner — transactional read-modify-write
-
-`SpannerProviderClient.patch` (line 374) is the outlier. It runs a
-`readWriteTransaction()`, reads the `data` envelope, applies the
-operations to an in-memory map, and buffers an update mutation:
-
-```java
-mutation.set(SpannerConstants.FIELD_DATA).to(
-        serialiseDocument(documentFields(fields), OperationNames.PATCH));
-```
-
-Two consequences the team should weigh:
-
-- **Correctness: this is safe.** The read and the write are in the same
-  transaction, and the transaction runner re-executes the whole closure
-  on `ABORTED`. There is no non-transactional RMW window. This is why
-  `PatchOperation`'s javadoc can claim "no client-side read-modify-write
-  window is exposed" (`PatchOperation.java:31-33`).
-- **Cost: this is the expensive one.** The entire `data` envelope is
-  re-serialised and rewritten on every patch, regardless of how small the
-  patch is. Patch on Spanner therefore has roughly the same write cost as
-  a full `update()` — the saving is in *round trips and conflict scope*,
-  not bytes written. Both adapters' javadoc already warns "Patch is not a
-  billing guarantee", but the Spanner case is structural, not
-  configuration-dependent.
-
-> **Open question 1.** Should `Capability` or the docs state the
-> per-provider cost shape explicitly, so callers do not assume patch is
-> universally cheaper than update? Today the warning is generic on all
-> three.
-
----
-
-## 4. Design aspect 2 — transient errors and non-idempotent instructions
-
-This is the weakest area of the current design and deserves the most
-discussion time.
-
-### 4.1 There is no retry layer in this SDK
-
-A search of the repository finds **no retry or backoff implementation**
-anywhere in `main` sources — no retry policy class, no backoff helper, no
-attempt loop around any provider call.
-
-`MulticloudDbError` carries a `retryable` boolean
-(`MulticloudDbError.java:23,59`), and each mapper computes it:
-
-- Cosmos: `429, 449, 500, 502, 503 → true` (`CosmosErrorMapper.java:76-81`)
-- DynamoDB: throttling exceptions, or any 5xx (`DynamoErrorMapper.java`)
-- Spanner: delegates to `SpannerException.isRetryable()` (`SpannerErrorMapper.java:33`)
-
-**But nothing in the SDK consumes that flag.** It is advisory metadata
-handed to the caller. All actual retrying is done by the underlying
-provider SDK, using its own defaults, which this repo never configures.
-
-> **Open question 2.** Is "no retry layer, provider defaults only" the
-> intended design? If yes it should be stated in the docs, because the
-> safety of a patch depends entirely on behaviour the SDK does not
-> control.
-
-### 4.2 Idempotency of each operation
-
-| Op | Idempotent effect? | Idempotent *reported outcome*? | Why |
-|---|---|---|---|
-| `SET` | ✅ yes | ✅ yes | Absolute value; re-applying is a no-op |
-| `REPLACE` | ✅ yes | ⚠️ no | Absolute value, but a retry after success still sees the field present, so it succeeds — safe *unless* a concurrent writer removed it |
-| `REMOVE` | ✅ yes | ❌ **no** | After a successful first attempt the field is gone, so the retry's existence precondition fails and the caller is told `NOT_FOUND` for an operation that actually succeeded |
-| `INCREMENT` | ❌ **no** | ❌ no | Relative delta; re-applying adds twice |
-
-### 4.3 Where the delta is computed decides retry safety
-
-This is the crux:
-
-| Provider | Increment evaluated | Retry of the same request |
-|---|---|---|
-| Cosmos | **Server-side** — `patchOps.increment(path, delta)` (`CosmosProviderClient.java:416-418`) | **Double-applies** |
-| DynamoDB | **Server-side** — `SET x = x + :v` (`DynamoProviderClient.java`, `setClauses.add(pathExpr + " = " + pathExpr + " + " + placeholder)`) | **Double-applies** |
-| Spanner | **Client-side, inside the transaction** — `addDelta(base, op.value())` where `base` was read in the same transaction | **Safe** — the runner re-executes the closure, re-reads, and recomputes |
-
-Spanner is idempotent *by construction*: its automatic `ABORTED` retry
-re-derives the result from freshly read state. Cosmos and DynamoDB are
-not, because the delta is applied by the server to whatever value it
-finds at the time.
-
-Note that DynamoDB's `BETWEEN` overflow bound does **not** protect
-against this. It is computed to leave room for one successful
-application, so a duplicate application usually still satisfies it and
-commits.
-
-### 4.4 Three distinct retry sources, with different risk
-
-It helps to separate them:
-
-1. **Intra-transaction retry (Spanner `ABORTED`).** Handled by the
-   transaction runner, re-reads state, invisible to the caller.
-   **Safe today.**
-2. **Transport-level retry inside the provider SDK** — a retry issued
-   after a request was sent but the response was lost (timeout,
-   connection reset, 5xx). The write may already have committed.
-   **This is the dangerous one for `INCREMENT` on Cosmos and DynamoDB**,
-   and the SDK neither configures nor disables it. **[unverified]** The
-   exact default retry conditions for the Azure Cosmos Java SDK and AWS
-   SDK v2 `UpdateItem` should be confirmed before the discussion — the
-   risk is real in principle but its likelihood depends on those
-   defaults.
-3. **Caller-level retry** — an application seeing `THROTTLED` or
-   `TRANSIENT_FAILURE` and calling `patch()` again. Unsafe for
-   `INCREMENT` on all three providers, and turns an already-successful
-   `REMOVE` into a spurious `NOT_FOUND` on all three.
-
-### 4.5 Options to discuss
-
-**A. Document it and do nothing.** Declare patch *at-least-once* for
-`INCREMENT`, and tell callers to prefer `SET` with a
-caller-computed value when exactly-once matters.
-*Cheapest; leaves a real correctness trap in the public API.*
-
-**B. Make `INCREMENT` conditional on the observed value (opt-in CAS).**
-Cosmos already sends a filter predicate — adding a
-`c["counter"] = <observed>` term is nearly free there, DynamoDB can add
-the same to its `ConditionExpression`, and Spanner already reads the
-value. A retry then fails cleanly as `CONFLICT` instead of
-double-applying.
-*Cost: it directly contradicts the current, deliberate design goal that
-"N concurrent increments all land" (documented at
-`CosmosProviderClient.java:352-358`). It would have to be opt-in per
-request, which means a new option field and a new capability.*
-
-**C. Suppress transport retries for increment-bearing patches.** Set an
-explicit zero/one-attempt policy on the provider SDK call when the
-operation list contains an `INCREMENT`, and surface the failure as
-`TRANSIENT_FAILURE` with `retryable = false`.
-*Keeps concurrent increments working; converts a silent double-count
-into a visible "you decide" failure. Requires per-call retry
-configuration on two provider SDKs.*
-
-**D. Idempotency token.** None of the three providers offers a native
-dedupe token for these operations, so the SDK would have to maintain its
-own applied-request record — a stored side table and a format change.
-*Highest cost; probably out of scope.*
-
-**E. Fix the `REMOVE`-retry outcome separately.** Regardless of which
-option is chosen for `INCREMENT`, consider whether a `REMOVE` whose
-target is already absent should be `NOT_FOUND` or a success. The current
-choice is defensible and consistent across all three providers, but it
-makes `REMOVE` unsafe to retry blindly.
-
-> **Open question 3.** Which of A–E, and is exactly-once `INCREMENT` a
-> requirement or a nice-to-have for the first release?
-
-### 4.6 Conformance gap
-
-`PatchConformanceTest` has 40+ scenarios covering semantics, validation,
-and error mapping — but **no concurrency or retry test**. Nothing asserts
-what happens when the same patch is applied twice, and nothing exercises
-a raced patch. The classification logic
-(`classifyRacedPatchRejection` on Cosmos, `classifyPatchConditionFailure`
-on DynamoDB) is therefore only unit-tested against synthesised
-exceptions, never against a real race.
-
-> **Open question 4.** Add a conformance test that applies the same
-> `INCREMENT` twice and asserts the documented semantics — whichever
-> semantics we choose in §4.5.
-
----
-
-## 5. Design aspect 3 — ETag precondition
-
-### 5.1 There is no precondition option
-
-`OperationOptions` exposes exactly three fields
-(`OperationOptions.java:20-24`):
-
-```java
-private final Duration timeout;
-private final Integer ttlSeconds;
-private final boolean includeMetadata;
-```
-
-There is no `ifMatch`, no `etag`, no `precondition`. `patch()` takes no
-other parameter that could carry one.
-
-### 5.2 Cosmos deliberately does not send `If-Match`
-
-This is an explicit, documented decision rather than an oversight
-(`CosmosProviderClient.java:340-349`):
-
-> An `If-Match` ETag would fail on *any* concurrent mutation of the item,
-> including one touching a completely unrelated field, so two threads
-> patching disjoint fields would collide on Cosmos alone: DynamoDB's
-> `attribute_exists(...)` condition and Spanner's auto-retried read-write
-> transaction both let them through.
-
-Instead Cosmos sends a **path-scoped** filter predicate
-(`setFilterPredicate`) asserting only that the addressed paths exist.
-`CosmosConstants.STATUS_PRECONDITION_FAILED` records the same rationale
-and warns against reintroducing an ETag.
-
-The reasoning is sound: an item-scoped ETag would have made Cosmos the
-odd one out and broken the portability invariant. **But note what this
-implies** — the SDK currently has *no* mechanism for item-scoped
-optimistic concurrency on any operation, not just patch.
-
-### 5.3 The read half exists; the write half does not
-
-`DocumentMetadata.version()` is documented as the "provider-native
-ETag/version string" (`DocumentMetadata.java:47-49`). Only **Cosmos**
-populates it:
-
-```
-CosmosProviderClient.java:224:  metaBuilder.version(response.getETag());
-```
-
-DynamoDB and Spanner leave it `null`. So a caller can observe a version
-on one provider, cannot observe it on the other two, and cannot send it
-back anywhere. Half of an optimistic-concurrency primitive is exposed.
-
-> **Open question 5.** Either finish it or hide it. Leaving
-> `version()` populated on exactly one provider is itself a portability
-> wart — a caller who builds on it silently gets no protection on
-> DynamoDB and Spanner.
-
-### 5.4 What a portable conditional write would cost
-
-If the team wants `patch(..., ifMatch = version)`:
-
-| Provider | Native support | Work required |
-|---|---|---|
-| Cosmos | ✅ native `If-Match` on item requests | Small — plumb an option through `CosmosItemRequestOptions` |
-| DynamoDB | ❌ none | Maintain a synthetic version attribute: `ConditionExpression #v = :v` plus `SET #v = :v + 1` on **every** write path, not just patch |
-| Spanner | ❌ none | A version column or commit timestamp maintained inside the existing read-write transaction — tractable, since patch is already transactional |
-
-Two of the three need a **stored format change affecting every write
-path**, which is breaking for existing data. Per this repo's portability
-rules, a partial rollout is not an option: a conditional-write feature
-supported on one provider and silently ignored on another is exactly the
-silent divergence the conformance contract forbids. It would have to be
-gated by a new capability (e.g. `CONDITIONAL_WRITE`) returning
-`UNSUPPORTED_CAPABILITY` where unimplemented.
-
-> **Open question 6.** Is item-scoped optimistic concurrency a roadmap
-> item at all? If yes it is a cross-cutting feature in its own right, not
-> a patch option — and §4.5 option B (path-scoped CAS) may deliver most
-> of the practical value at a fraction of the cost.
-
----
-
-## 6. Consolidated open questions
-
-1. Should per-provider patch cost shape (Spanner rewrites the whole
-   document; Cosmos usually costs 2 RTT) be documented or declared?
-2. Is "no SDK retry layer, provider SDK defaults only" intentional and
-   documented?
-3. Which mitigation for non-idempotent `INCREMENT` — A (document),
-   B (opt-in CAS), C (suppress transport retry), D (idempotency token),
-   E (revisit `REMOVE` retry outcome)? Is exactly-once required for v1?
-4. Add a concurrency/double-apply conformance test.
-5. Finish or hide `DocumentMetadata.version()`, which only Cosmos
-   populates.
-6. Is item-scoped optimistic concurrency (`CONDITIONAL_WRITE`) on the
-   roadmap, and is it a patch feature or a cross-cutting one?
-
-Item to verify before the meeting: the default transport-retry behaviour
-of the Azure Cosmos Java SDK and AWS SDK v2 for `patchItem` / `UpdateItem`
-(§4.4 item 2). It determines whether question 3 is urgent or theoretical.
-
----
-
-## 7. Evidence index
-
-| Claim | Source |
+This is a server-side mutation in the behavioral sense: Spanner evaluates the
+existing value, applies the field changes, and commits atomically without the
+SDK first reading the document into Java. It is **not** the Spanner Mutation API
+and Spanner does not expose a dedicated native PATCH API comparable to Cosmos
+`patchItem`.
+
+## 2. Why the Spanner work was separated
+
+The split is intentional, not a loss of functionality.
+
+1. The public PATCH contract is already provider-neutral. A future provider can
+   implement `MulticloudDbProviderClient.patch(...)` and change its capability
+   declarations without changing application code.
+2. Cosmos DB and DynamoDB already have native partial-write primitives that fit
+   the contract.
+3. The preserved Spanner prototype changes the storage, query, row-mapping, and
+   change-feed interpretation of the internal `data` column. That is a larger
+   Spanner-specific change than the API addition itself.
+4. Spanner is not currently releasable with PR #95. Keeping it in the same PR
+   would couple two independently releasable changes and increase risk for the
+   existing Cosmos and DynamoDB providers.
+
+No Spanner-specific option, type, or behavior should be added to
+`multiclouddb-api`. The future Spanner PR should be confined primarily to:
+
+- `multiclouddb-provider-spanner`
+- the Spanner conformance subclasses and test schema
+- capability expectations
+- Spanner-specific documentation and changelog entries
+
+Cosmos DB and DynamoDB behavior must remain unchanged.
+
+## 3. Current branch state
+
+| Branch | State |
 |---|---|
-| Four operation types | `multiclouddb-api/.../PatchOperation.java:92-101` |
-| Overlapping paths rejected | `multiclouddb-conformance/.../us28/PatchConformanceTest.java:460` |
-| Cosmos server-side patch | `multiclouddb-provider-cosmos/.../CosmosProviderClient.java:391-452` |
-| Cosmos validating pre-read | `CosmosProviderClient.java` — `validatePatchState`, `needsPatchStateValidation` |
-| Cosmos filter predicate, not `If-Match` | `CosmosProviderClient.java:325-349`; `CosmosConstants.java:133-152` |
-| Cosmos server-side increment | `CosmosProviderClient.java:414-419` |
-| DynamoDB `UpdateItem` + condition | `DynamoProviderClient.java:443-520` |
-| DynamoDB server-side increment | `DynamoProviderClient.java` — `SET x = x + :v` |
-| DynamoDB overflow bound | `DynamoProviderClient.java` — `addIntegralResultBounds` |
-| DynamoDB before-image classification | `DynamoProviderClient.java` — `classifyPatchConditionFailure` |
-| Spanner transactional RMW | `SpannerProviderClient.java:374-460` |
-| Spanner client-side increment | `SpannerProviderClient.java` — `addDelta(base, op.value())` |
-| Spanner whole-envelope rewrite | `SpannerProviderClient.java` — `mutation.set(FIELD_DATA)` |
-| Spanner no `NESTED_PATCH` | `SpannerCapabilities.java:36` |
-| `retryable` flag exists but unused | `MulticloudDbError.java:23,59`; no retry class in repo |
-| Cosmos retryable status codes | `CosmosErrorMapper.java:76-81` |
-| No precondition in options | `OperationOptions.java:20-24` |
-| `version()` populated only by Cosmos | `DocumentMetadata.java:47-49`; `CosmosProviderClient.java:224` |
+| `feat/patch-api` | Ships Cosmos and DynamoDB PATCH. Spanner fails fast with `UNSUPPORTED_CAPABILITY` before provider I/O. |
+| `spanner/patch` | Preserves the complete experimental Spanner implementation and this design document. |
+| `test/spanner-emulator-1.5.56` | Preserves the emulator-version experiment used during validation. |
+
+Relevant preserved commits:
+
+- `3bc9f3e` - final PR #95 portability hardening on `feat/patch-api`
+- `21fa0f8` - preserved Spanner implementation and design review
+- `cd23603` - Spanner emulator `1.5.56` test branch
+
+Before implementation resumes, rebase `spanner/patch` onto the merged PR #95
+commit. Keep Spanner capabilities unsupported during the rebase and only flip
+them after the new implementation passes all release gates.
+
+## 4. What the preserved prototype does
+
+The preserved prototype is useful evidence, but it is not the recommended
+release architecture.
+
+### 4.1 Storage model
+
+The prototype turns the existing `data STRING(MAX)` column into an
+authoritative JSON document envelope:
+
+```json
+{
+  "_mcdbDocument": {
+    "title": "example",
+    "count": 4
+  }
+}
+```
+
+Physical Spanner columns are treated as optional mirrors for query and
+interoperability purposes. The envelope is authoritative when the two disagree.
+
+### 4.2 PATCH execution
+
+The prototype:
+
+1. starts a Spanner read-write transaction;
+2. reads the `data` envelope;
+3. deserializes it into a Java map;
+4. applies `SET`, `REPLACE`, `REMOVE`, or `INCREMENT` in Java;
+5. rewrites the complete envelope and compatible physical-column mirrors;
+6. commits the transaction.
+
+### 4.3 Correctness properties
+
+The prototype is atomic. The read and write occur in one Spanner read-write
+transaction, and an `ABORTED` transaction retry re-runs the closure against a
+fresh transaction snapshot. It does not expose a non-transactional lost-update
+window.
+
+The prototype passed the Spanner emulator run that was performed during the
+experiment:
+
+- 119 tests
+- 0 failures
+- 3 skipped
+- `SpannerPatchConformanceTest`: 47/47
+
+That result validates the prototype only. It does not certify the server-side
+DML design proposed in this document.
+
+### 4.4 Why the prototype should not ship unchanged
+
+| Concern | Prototype behavior |
+|---|---|
+| Success-path reads | Reads the document before every patch. |
+| Client CPU and allocation | Parses and reconstructs the complete document in Java. |
+| Write shape | Rewrites the complete JSON envelope even for one small field. |
+| Query/storage scope | Requires broad changes to row mapping, expression translation, and change feeds. |
+| Nested paths | Declared unsupported in the prototype. |
+| Portability review | More expensive than the native server-side paths and materially broader than PR #95. |
+
+The prototype remains a valid fallback if server-side DML cannot satisfy the
+portable contract, but it should not be the first choice.
+
+## 5. Why Spanner did not use a native PATCH API
+
+Cloud Spanner does not provide a dedicated item/document patch operation.
+
+The Spanner Mutation API writes values supplied by the client:
+
+```java
+Mutation.newUpdateBuilder(table)
+        .set("data").to(newValue);
+```
+
+It cannot, by itself, express:
+
+- read the current JSON value;
+- increment one value within it;
+- require an addressed field to exist;
+- remove one JSON path;
+- calculate the new value from the stored value.
+
+GoogleSQL DML can express those operations on the server. Spanner currently
+documents `JSON_SET`, `JSON_REMOVE`, `JSON_QUERY`, `JSON_TYPE`, `INT64`,
+`FLOAT64`, `PARSE_JSON`, and `TO_JSON_STRING` for transforming JSON values.
+
+References:
+
+- [GoogleSQL JSON functions for Spanner](https://cloud.google.com/spanner/docs/reference/standard-sql/json_functions)
+- [GoogleSQL DML syntax for Spanner](https://cloud.google.com/spanner/docs/reference/standard-sql/dml-syntax)
+- [Working with JSON in Spanner](https://cloud.google.com/spanner/docs/working-with-json)
+
+Therefore the recommended primitive is GoogleSQL `UPDATE`, executed in a
+read-write transaction, rather than `Mutation.newUpdateBuilder(...)`.
+
+## 6. Target architecture
+
+### 6.1 Keep the portable API unchanged
+
+The future implementation must use the API delivered by PR #95:
+
+```java
+client.patch(address, key, List.of(
+        PatchOperation.set("/status", "active"),
+        PatchOperation.increment("/count", 1)));
+```
+
+Do not add:
+
+- a Spanner-only patch method;
+- a Spanner-only operation type;
+- a provider selector inside `PatchOperation`;
+- a provider-specific option in `OperationOptions`;
+- a fallback that silently weakens the portable contract.
+
+### 6.2 Keep `data` as `STRING(MAX)` for the first Spanner PATCH release
+
+The recommended first release keeps the existing physical type:
+
+```sql
+data STRING(MAX)
+```
+
+The DML expression can transform it server-side:
+
+```sql
+TO_JSON_STRING(
+  JSON_SET(
+    SAFE.PARSE_JSON(data),
+    '$."_mcdbDocument"."status"',
+    PARSE_JSON(@statusJson)
+  )
+)
+```
+
+This avoids coupling PATCH delivery to a `STRING(MAX)` to `JSON` schema
+migration. Moving `data` to the native `JSON` type may be considered later as
+a separate storage-format change.
+
+Spanner's native JSON type is attractive, but it has independent migration,
+normalization, indexing, and compatibility consequences. It should not be
+required merely to add PATCH.
+
+### 6.3 Compile one atomic DML statement
+
+The adapter should compile the validated operation list into one `UPDATE`
+statement. Conceptually:
+
+```sql
+UPDATE <table>
+SET data = TO_JSON_STRING(
+    <expression produced by applying every operation to SAFE.PARSE_JSON(data)>
+)
+WHERE partitionKey = @partitionKey
+  AND sortKey = @sortKey
+  AND <all portable preconditions>
+```
+
+Properties:
+
+- no pre-write point read on the normal success path;
+- all operations are evaluated by Spanner;
+- all operations commit or none commits;
+- concurrent updates to the same row use normal Spanner transaction conflict
+  detection;
+- an aborted transaction re-evaluates the expression against the retried
+  transaction snapshot;
+- a missing or invalid precondition produces zero updated rows and is
+  classified before the transaction returns.
+
+The implementation may use `readWriteTransaction().run(...)`, but the closure
+should execute DML rather than read and deserialize the document.
+
+### 6.4 Operation translation
+
+All user paths have already passed the shared `PatchValidator`. Convert the
+JSON Pointer to a safely escaped JSONPath under `_mcdbDocument`.
+
+| Portable operation | Spanner expression |
+|---|---|
+| `SET` | `JSON_SET(..., path, value)` |
+| `REPLACE` | existence predicate plus `JSON_SET(...)` |
+| `REMOVE` | existence predicate plus `JSON_REMOVE(...)` |
+| `INCREMENT` | numeric predicate and range predicate plus `JSON_SET(..., path, current + delta)` |
+
+`JSON_SET` creates missing paths by default. The portable contract is narrower:
+
+- top-level `SET` may create its target;
+- nested `SET` may create only the final field;
+- every intermediate parent must already exist and be an object;
+- `REPLACE`, `REMOVE`, and `INCREMENT` require the complete target path;
+- array-index paths remain invalid.
+
+The `WHERE` predicates must enforce those rules before the JSON function is
+allowed to mutate the row.
+
+### 6.5 Mixed operation lists
+
+`JSON_SET` and `JSON_REMOVE` accept multiple paths, but a patch may mix all four
+operation types. Build a nested expression from the validated operations:
+
+```text
+base envelope
+  -> SET/REPLACE expression
+  -> REMOVE expression
+  -> INCREMENT expression
+```
+
+The shared validator rejects duplicate, aliasing, and ancestor/descendant path
+overlap, so the operations are disjoint. Their expression order cannot change
+the portable result.
+
+### 6.6 Server-side increment
+
+`INCREMENT` must be calculated from the stored JSON number inside the DML
+statement. The Java client sends only the delta and portable bounds.
+
+Required behavior:
+
+- missing path -> `NOT_FOUND`;
+- JSON value is not numeric -> `INVALID_REQUEST`;
+- integral result outside signed 64-bit range -> `INVALID_REQUEST`;
+- fractional delta outside `PatchNumericDomain` -> rejected before provider
+  dispatch by shared validation;
+- no lost updates under concurrent increments.
+
+For concurrent increments on the same row, Spanner may abort one transaction.
+The transaction runner retries the DML, which re-evaluates the current stored
+value. This preserves the portable "all increments land" behavior.
+
+Fractional accumulation should initially use Spanner's JSON/FLOAT64 behavior.
+Spanner should therefore declare `EXACT_FRACTIONAL_INCREMENT` unsupported,
+matching Cosmos rather than claiming DynamoDB's exact-decimal semantics.
+
+## 7. Preconditions and error normalization
+
+A successful DML update returns one affected row. Zero affected rows means
+either the key did not exist or a portable precondition was false.
+
+The transaction should classify that failure with a point read **only after**
+the rejected DML:
+
+| Stored state | Portable category |
+|---|---|
+| Row missing | `NOT_FOUND` |
+| Required target or nested parent missing | `NOT_FOUND` |
+| Increment target not numeric | `INVALID_REQUEST` |
+| Integral increment would overflow | `INVALID_REQUEST` |
+| Envelope is legacy, malformed, or not migrated | explicit migration error; do not silently reinterpret it |
+| State now satisfies every predicate | `CONFLICT` |
+
+This mirrors the finalized PR #95 approach:
+
+- Cosmos: one conditional `patchItem` on success, classifying rejection with a
+  session-token point read;
+- DynamoDB: one conditional `UpdateItem` on success, normally classifying from
+  `ALL_OLD`;
+- Spanner target: one conditional DML update on success, classifying a
+  zero-row result inside the transaction.
+
+Do not perform an authoritative pre-read and then issue an unguarded update.
+The predicates must be evaluated atomically with the write.
+
+## 8. Physical-column mirrors, queries, and change feeds
+
+The `data` envelope and physical columns must never silently disagree.
+
+### 8.1 Authority
+
+The JSON envelope is the portable SDK document. Physical columns are optional
+mirrors for typed access, indexing, and interoperability.
+
+### 8.2 Mirror rule
+
+For every top-level root touched by PATCH, the same DML statement must do one
+of the following:
+
+1. update the compatible physical column to the same value;
+2. recompute its serialized top-level value; or
+3. set the physical column to a correctly typed SQL `NULL`.
+
+Leaving an old physical value in place is not allowed.
+
+For nested patches, recomputing or clearing the top-level mirror is required.
+
+### 8.3 Query behavior
+
+Portable query translation must read the authoritative envelope whenever a
+physical mirror might be absent or cleared. A query must not return a stale
+physical-column value after PATCH.
+
+If maintaining this invariant makes the SQL compiler too broad for the first
+Spanner PATCH release, keep `PATCH` unsupported rather than shipping partial
+semantics.
+
+### 8.4 Change-feed behavior
+
+Spanner change-stream mapping must expose the same post-image that `read()`
+returns. The internal envelope must not leak as an application field, and stale
+physical mirrors must not reappear in `ChangeEvent.data()`.
+
+## 9. Storage migration
+
+The upstream Spanner provider historically used `data` as a JSON array of field
+names. The preserved prototype uses an object envelope containing
+`_mcdbDocument`. These formats must be distinguished explicitly.
+
+### 9.1 Required compatibility states
+
+The row mapper should recognize:
+
+| `data` state | Meaning |
+|---|---|
+| envelope object with `_mcdbDocument` | PATCH-capable row |
+| legacy field-name array | legacy row |
+| SQL `NULL` | legacy/uninitialized row |
+| malformed JSON or unknown object | corrupted/unsupported format |
+
+### 9.2 Recommended migration policy
+
+1. New SDK writes use the envelope format.
+2. Reads remain dual-format during a documented compatibility window.
+3. Existing rows are migrated explicitly before PATCH is enabled for that
+   deployment.
+4. PATCH must not advertise support and then silently produce different
+   behavior for legacy rows.
+5. Malformed or unknown formats fail with a structured portable error and a
+   Spanner-specific `providerDetails.reason`.
+
+Because the current Spanner user base is small, a Spanner-only migration is
+acceptable. It must not require a breaking change to the public API or either
+other provider.
+
+## 10. Capability plan
+
+Capabilities remain unsupported until their behavior is proven.
+
+| Capability | Target declaration | Condition |
+|---|---|---|
+| `PATCH` | Supported | Server-side DML implementation passes the full patch conformance suite. |
+| `NESTED_PATCH` | Prefer supported | JSONPath parents, quoted names, missing-parent behavior, and nested mirrors pass conformance. Otherwise leave unsupported for the first release. |
+| `EXACT_FRACTIONAL_INCREMENT` | Unsupported | Initial design uses JSON/FLOAT64 accumulation, not exact decimal arithmetic. |
+| `PATCH_PRESERVES_TTL` | Unsupported / not applicable | Spanner currently declares `ROW_LEVEL_TTL` unsupported. TTL-preservation conformance must be gated by row-level TTL support. |
+
+`PATCH_PRESERVES_TTL` must be added when `spanner/patch` is rebased onto the
+final PR #95 contract. Ordinary non-TTL Spanner rows must not be rejected merely
+because this capability is unsupported.
+
+## 11. Cross-provider impact
+
+The future Spanner PR should not alter the behavior already released for Cosmos
+DB or DynamoDB.
+
+| Surface | Expected future change |
+|---|---|
+| Public API | None |
+| `PatchOperation` and shared validation | None unless a proven provider-neutral bug is found |
+| Cosmos provider | None |
+| DynamoDB provider | None |
+| Spanner provider | DML compiler, envelope/mirror handling, migration, capability declarations |
+| Conformance | Add Spanner implementation subclass and Spanner-specific setup; keep shared assertions unchanged |
+| Documentation | Update compatibility matrix, guide, architecture, and Spanner changelog |
+
+If the Spanner implementation requires changing portable semantics to make the
+provider pass, the implementation is not ready. Keep the capability unsupported
+and revise the design instead.
+
+## 12. Implementation sequence
+
+### Step 0 - Rebase without enabling PATCH
+
+Rebase `spanner/patch` onto merged PR #95. Resolve the prototype against:
+
+- the final numeric floor (`1E-130`);
+- wide-integer read behavior;
+- `PATCH_PRESERVES_TTL`;
+- the final Cosmos/Dynamo error categories;
+- the request-envelope size rule;
+- Spanner's unsupported declarations.
+
+At the end of this step, Spanner must still fail fast as unsupported.
+
+### Step 1 - Prove emulator and service SQL support
+
+Create focused tests for:
+
+- `JSON_SET`;
+- `JSON_REMOVE`;
+- `SAFE.PARSE_JSON`;
+- `TO_JSON_STRING`;
+- quoted JSONPath property names;
+- numeric extraction and overflow predicates;
+- one DML statement updating both `data` and a physical mirror.
+
+Run them against Spanner emulator `1.5.56` and a real Spanner test database
+before selecting the final SQL shape. Emulator success alone is not sufficient.
+
+### Step 2 - Implement the DML compiler
+
+Add a Spanner-internal compiler from validated `PatchOperation` values to:
+
+- SQL expression;
+- bound parameters;
+- portable precondition predicates;
+- physical-mirror assignments.
+
+No SQL fragment may contain an unescaped caller field name.
+
+### Step 3 - Implement rejection classification
+
+When DML affects zero rows, classify the row in the same read-write transaction.
+Return the portable category with Spanner diagnostics and a stable
+`providerDetails.reason`.
+
+### Step 4 - Complete migration and dual-format reads
+
+Document and test legacy-array, envelope, null, and malformed `data` states.
+Provide the selected migration mechanism before advertising PATCH.
+
+### Step 5 - Restore Spanner conformance
+
+Restore a Spanner PATCH conformance subclass and run all shared scenarios,
+including:
+
+- all operation types;
+- all-or-nothing multi-operation patches;
+- missing document and missing paths;
+- nested behavior matching the capability declaration;
+- numeric floor and signed-64 bounds;
+- wide integer read-back;
+- explicit JSON null vs. remove;
+- concurrent increments;
+- legacy-row behavior;
+- no pre-write read on a normal envelope-row success.
+
+### Step 6 - Flip capabilities and document the release
+
+Only after every gate passes:
+
+- declare `PATCH` supported;
+- declare `NESTED_PATCH` according to tested behavior;
+- keep `EXACT_FRACTIONAL_INCREMENT` truthful;
+- keep TTL capability aligned with actual row-TTL support;
+- update all required docs and changelogs.
+
+## 13. Release gates
+
+The separate Spanner PR is not merge-ready until all of these are true:
+
+- shared unit profile passes;
+- Spanner provider tests pass;
+- full Spanner emulator conformance passes;
+- real-service JSON DML smoke tests pass;
+- success path proves no client point read;
+- concurrent increments lose no updates;
+- legacy and malformed rows have explicit behavior;
+- physical mirrors cannot remain stale;
+- change feed and point read return the same document;
+- capability declarations match implementation;
+- no Cosmos or DynamoDB files change without a separately justified
+  provider-neutral fix;
+- compatibility docs, guide, architecture, API reference, specification, tasks,
+  and Spanner changelog are aligned.
+
+## 14. Cost and performance expectations
+
+The server-side DML design removes the client read and Java document
+reconstruction from the success path. It does **not** guarantee that Spanner
+writes only the changed JSON bytes internally.
+
+The entire `data` column receives a new value, so:
+
+- write cost may still scale with the JSON document;
+- indexes or generated columns can add write work;
+- change streams may emit a large post-image;
+- DML transaction and lock cost must be measured.
+
+The correct claim is:
+
+> Spanner PATCH is a server-side atomic field-mutation interface with one
+> success-path DML statement, not a guaranteed byte-level or billing reduction.
+
+Benchmarks should compare:
+
+- current full `update()`;
+- preserved transactional Java RMW prototype;
+- proposed server-side JSON DML;
+- small and near-limit documents;
+- one and ten operations;
+- low and high contention.
+
+## 15. Remaining decisions
+
+1. **Nested PATCH in the first release:** recommended if the JSONPath and mirror
+   rules pass conformance; otherwise keep `NESTED_PATCH` unsupported.
+2. **Migration mechanism:** explicit migration command/job, deployment flag, or
+   another deterministic Spanner-only process.
+3. **Physical mirrors:** recompute or clear per touched root; never leave stale
+   values.
+4. **Native JSON column:** defer unless performance evidence justifies a separate
+   schema migration.
+5. **Real-service validation:** confirm that the selected functions and
+   transaction behavior match the emulator before release.
+
+## 16. Final recommendation
+
+Keep PR #95 as shipped:
+
+- Cosmos DB: native `patchItem`;
+- DynamoDB: native `UpdateItem`;
+- Spanner: explicit `UNSUPPORTED_CAPABILITY`.
+
+For the separate Spanner PR:
+
+1. rebase the preserved branch;
+2. retain the provider-neutral API;
+3. replace the Java envelope read-modify-write success path with one
+   server-side GoogleSQL DML update;
+4. preserve atomic predicates and portable error categories;
+5. solve envelope migration, physical mirrors, query behavior, and change-feed
+   behavior as one Spanner storage change;
+6. advertise capabilities only after emulator and real-service conformance.
+
+This gives Spanner server-side mutation semantics without creating a breaking
+change for Cosmos DB or DynamoDB.
