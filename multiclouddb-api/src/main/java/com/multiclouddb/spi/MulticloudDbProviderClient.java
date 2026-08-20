@@ -68,11 +68,11 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      * Validate a PATCH request before an SPI implementation performs any
      * provider SDK work.
      * <p>
-     * Provider implementations must invoke this method immediately after their
-     * lifecycle guard in {@link #patch(ResourceAddress, MulticloudDbKey, List,
-     * OperationOptions)}. This applies the same portable list, path, overlap,
-     * reserved-root, numeric-domain, and request-size validation used by the
-     * public client, then checks {@link Capability#PATCH} and (when needed)
+     * Provider adapters that override {@link #patch(ResourceAddress,
+     * MulticloudDbKey, List, OperationOptions)} must invoke this method
+     * immediately after their lifecycle guard. This applies portable list,
+     * path, overlap, reserved-root, numeric-domain, and request-size validation,
+     * then checks {@link Capability#PATCH} and (when needed)
      * {@link Capability#NESTED_PATCH}. It is required because callers can
      * invoke a provider SPI implementation directly without passing through
      * {@code DefaultMulticloudDbClient}.
@@ -116,10 +116,11 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      * Apply field-level modifications to an existing document using a
      * provider-native primitive or an equivalent atomic provider transaction.
      * <p>
-     * Implementations must invoke {@link #validatePatchRequest(List)} before
-     * translating or executing this operation. That requirement makes direct
-     * SPI calls observe the same portable validation and capability checks as
-     * the public facade.
+     * Implementations that override this method must invoke
+     * {@link #validatePatchRequest(List)} before translating or executing the
+     * operation. That requirement makes direct SPI calls observe the same
+     * portable validation and capability checks as facade calls to a supported
+     * provider.
      * <p>
      * Default implementation throws {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}
      * so that adapters predating this operation continue to compile and fail
@@ -130,7 +131,8 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      * @param operations validated, non-empty, disjoint-path operations
      * @param options    operation options; {@code ttlSeconds} is ignored
      * @throws MulticloudDbException with category NOT_FOUND if the document or a
-     *         required field does not exist
+     *         required field does not exist, or UNSUPPORTED_CAPABILITY when the
+     *         provider cannot preserve an existing SDK-managed TTL
      */
     default void patch(ResourceAddress address, MulticloudDbKey key,
                        List<PatchOperation> operations, OperationOptions options) {

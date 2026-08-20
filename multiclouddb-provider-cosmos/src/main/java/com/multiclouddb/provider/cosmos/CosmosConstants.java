@@ -130,35 +130,37 @@ public final class CosmosConstants {
 
     // ── Patch ─────────────────────────────────────────────────────────────────
 
+    /** Response header carrying the partition session token for a failed request. */
+    public static final String HEADER_SESSION_TOKEN = "x-ms-session-token";
+
     /**
      * HTTP status Cosmos uses for a failed patch precondition.
      * <p>
      * The adapter never sends an {@code If-Match} ETag on a patch. The only
-     * precondition it attaches is a path-scoped conditional-patch filter
-     * predicate ({@code FROM c WHERE IS_DEFINED(c["field"]) ...}), evaluated
-     * server-side inside the same atomic write. A 412 therefore means the
-     * predicate did not hold when the write was evaluated: either a required path
-     * was absent, or an increment target had moved outside the integral range the
-     * predicate bounds.
+     * precondition it attaches is a conditional-patch filter predicate,
+     * evaluated server-side inside the same atomic write. A 412 means the
+     * predicate did not hold when the write was evaluated: an SDK-managed TTL
+     * was present, a required path was absent, an increment target was not
+     * numeric, or an integral increment target was outside the allowed range.
      * <p>
      * {@code CosmosProviderClient#patch} intercepts a 412 before
      * {@code CosmosErrorMapper} sees it and re-reads to classify the cause,
-     * reporting {@code NOT_FOUND} or {@code INVALID_REQUEST} when current state
-     * proves one, and {@code CONFLICT} only when it proves none. The mapper's
-     * fallback mapping of 412 to {@code NOT_FOUND} therefore applies only to
-     * operations that attach a precondition without classifying it — none today,
-     * since the adapter sends no {@code If-Match} anywhere. Reintroducing an ETag
-     * on any operation must revisit that mapping. Emulator behavior is verified
-     * separately by the pending T192 conformance run.
+     * reporting {@code NOT_FOUND}, {@code INVALID_REQUEST}, or
+     * {@code UNSUPPORTED_CAPABILITY} when current state proves one, and
+     * {@code CONFLICT} only when it proves none. The generic mapper also treats
+     * an otherwise unclassified 412 as {@code CONFLICT}; it never invents a
+     * missing path without operation-specific evidence.
+     * Emulator behavior is verified separately by the pending T192 conformance
+     * run.
      */
     public static final int STATUS_PRECONDITION_FAILED = 412;
 
     /**
      * HTTP status Cosmos uses for a natively rejected patch operation, such as an
-     * {@code increment} whose target vanished or stopped being numeric after the
-     * adapter's validating read. It is untyped, so the adapter re-reads and
-     * reclassifies it from current state rather than reporting
-     * {@code INVALID_REQUEST} where the peer providers report {@code NOT_FOUND}.
+     * {@code increment} whose target changed immediately before evaluation. It is
+     * untyped, so the adapter re-reads and reclassifies it from current state
+     * rather than reporting {@code INVALID_REQUEST} where the peer providers
+     * report {@code NOT_FOUND}.
      */
     public static final int STATUS_BAD_REQUEST = 400;
 

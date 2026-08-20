@@ -54,22 +54,9 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * Proves the split between the two jobs the pre-write point read used to do at
- * once: <em>classifying</em> the state (always needed for strict paths and
- * increments, so Cosmos reports the same portable category as DynamoDB and
- * Spanner) and <em>guarding</em> the write (needed only where the native Cosmos
- * operation cannot enforce the portable contract).
- * <p>
- * The guard is Cosmos's server-side conditional patch — a <em>path-scoped</em>
- * filter predicate — never an item-scoped {@code If-Match} ETag. An ETag fails on
- * any concurrent mutation of the item, so two threads patching disjoint fields
- * would collide on Cosmos alone while DynamoDB's {@code attribute_exists(...)}
- * condition and Spanner's auto-retried read-write transaction let them through.
- * <p>
- * {@code INCREMENT} contributes no predicate term, because it is server-side
- * atomic on Cosmos, and its untyped {@code 400} rejection is re-read and
- * reclassified so a raced increment reports {@code NOT_FOUND} exactly as
- * DynamoDB's before-image re-read does.
+ * Verifies Cosmos's atomic conditional-patch guard and failure classification.
+ * Stored-state requirements are evaluated by the server-side filter predicate;
+ * no potentially stale pre-write read can reject an otherwise valid patch.
  */
 class CosmosPatchPreconditionTest {
 
@@ -78,6 +65,7 @@ class CosmosPatchPreconditionTest {
     private static final MulticloudDbKey KEY = MulticloudDbKey.of("pk", "sk");
     private static final String COSMOS_ID = "sk";
     private static final String ETAG = "\"etag-1\"";
+    private static final String TTL_GUARD = "NOT IS_DEFINED(c[\"ttl\"])";
 
     /**
      * The precondition a {@code +1} increment on {@code /value} must carry: the
@@ -85,7 +73,8 @@ class CosmosPatchPreconditionTest {
      * inside the portable signed 64-bit result range.
      */
     private static final String INCREMENT_BY_ONE_GUARD =
-            "FROM c WHERE IS_DEFINED(c[\"value\"]) "
+            "FROM c WHERE " + TTL_GUARD + " AND IS_DEFINED(c[\"value\"]) "
+                    + "AND IS_NUMBER(c[\"value\"]) "
                     + "AND (c[\"value\"] BETWEEN -9223372036854775809 AND 9223372036854775806)";
 
     @Test
@@ -138,19 +127,20 @@ class CosmosPatchPreconditionTest {
         CosmosPatchItemRequestOptions options = capturePatchOptions(container);
         assertNull(options.getIfMatchETag(),
                 "Cosmos evaluates increment server-side; an If-Match would turn concurrent "
-                        + "increments into non-retryable CONFLICTs that Dynamo and Spanner never produce");
+                        + "increments into avoidable CONFLICTs");
         assertEquals(INCREMENT_BY_ONE_GUARD, options.getFilterPredicate(),
-                "the pre-read cannot keep the result in range: a concurrent writer can raise the "
-                        + "counter between that read and the native increment, so the bound DynamoDB "
-                        + "applies atomically must be applied atomically here too");
+                "the range and numeric type must be checked atomically with the increment");
         assertEquals(INCREMENT_BY_ONE_GUARD, CosmosProviderClient.patchFilterPredicate(
                 List.of(PatchOperation.increment("/value", 1))));
+        verify(container, never()).readItem(anyString(), any(PartitionKey.class),
+                any(CosmosItemRequestOptions.class), eq(ObjectNode.class));
     }
 
     @Test
-    @DisplayName("a fractional INCREMENT delta carries no result bound")
+    @DisplayName("a fractional INCREMENT carries type checking but no result bound")
     void fractionalIncrementCarriesNoResultBound() {
-        assertEquals("FROM c WHERE IS_DEFINED(c[\"value\"])",
+        assertEquals("FROM c WHERE " + TTL_GUARD
+                        + " AND IS_DEFINED(c[\"value\"]) AND IS_NUMBER(c[\"value\"])",
                 CosmosProviderClient.patchFilterPredicate(
                         List.of(PatchOperation.increment("/value", 1.5d))),
                 "the portable domain only bounds integral results, so a fractional delta must "
@@ -173,7 +163,9 @@ class CosmosPatchPreconditionTest {
         CosmosPatchItemRequestOptions options = capturePatchOptions(container);
         assertNull(options.getIfMatchETag(),
                 "depth does not change the atomicity of the native increment");
-        assertEquals("FROM c WHERE IS_DEFINED(c[\"counters\"][\"hits\"]) AND "
+        assertEquals("FROM c WHERE " + TTL_GUARD
+                        + " AND IS_DEFINED(c[\"counters\"][\"hits\"])"
+                        + " AND IS_NUMBER(c[\"counters\"][\"hits\"]) AND "
                         + "(c[\"counters\"][\"hits\"] BETWEEN -9223372036854775809 "
                         + "AND 9223372036854775806)",
                 options.getFilterPredicate(),
@@ -181,32 +173,35 @@ class CosmosPatchPreconditionTest {
     }
 
     @Test
-    @DisplayName("REPLACE, REMOVE, and nested SET write under a path-scoped filter predicate")
+    @DisplayName("REPLACE, REMOVE, and nested SET use path terms plus the TTL guard")
     void strictAndNestedNonIncrementPatchesCarryAPathScopedPredicate() throws Exception {
-        assertEquals("FROM c WHERE IS_DEFINED(c[\"status\"])",
+        assertEquals("FROM c WHERE " + TTL_GUARD + " AND IS_DEFINED(c[\"status\"])",
                 CosmosProviderClient.patchFilterPredicate(
                         List.of(PatchOperation.replace("/status", "live"))),
                 "REPLACE is translated to a native set that would create a missing target");
-        assertEquals("FROM c WHERE IS_DEFINED(c[\"status\"])",
+        assertEquals("FROM c WHERE " + TTL_GUARD + " AND IS_DEFINED(c[\"status\"])",
                 CosmosProviderClient.patchFilterPredicate(
                         List.of(PatchOperation.remove("/status"))),
                 "Cosmos rejects a missing remove path with an untyped 400, not NOT_FOUND");
-        assertEquals("FROM c WHERE IS_DEFINED(c[\"address\"])",
+        assertEquals("FROM c WHERE " + TTL_GUARD + " AND IS_DEFINED(c[\"address\"])",
                 CosmosProviderClient.patchFilterPredicate(
                         List.of(PatchOperation.set("/address/city", "Redmond"))),
                 "a nested set must not create intermediate objects, so the parent is asserted");
-        assertEquals("FROM c WHERE IS_DEFINED(c[\"address\"][\"city\"])",
+        assertEquals("FROM c WHERE " + TTL_GUARD
+                        + " AND IS_DEFINED(c[\"address\"][\"city\"])",
                 CosmosProviderClient.patchFilterPredicate(
                         List.of(PatchOperation.replace("/address/city", "Redmond"))),
                 "a nested strict path asserts the target itself");
-        assertEquals("FROM c WHERE IS_DEFINED(c[\"status\"]) AND IS_DEFINED(c[\"owner\"])",
+        assertEquals("FROM c WHERE " + TTL_GUARD
+                        + " AND IS_DEFINED(c[\"status\"]) AND IS_DEFINED(c[\"owner\"])",
                 CosmosProviderClient.patchFilterPredicate(List.of(
                         PatchOperation.replace("/status", "live"),
                         PatchOperation.remove("/owner"))),
                 "every strict path in the request contributes its own term");
-        assertNull(CosmosProviderClient.patchFilterPredicate(
-                List.of(PatchOperation.set("/status", "live"))),
-                "a top-level SET creates the field, so it asserts nothing");
+        assertEquals("FROM c WHERE " + TTL_GUARD,
+                CosmosProviderClient.patchFilterPredicate(
+                        List.of(PatchOperation.set("/status", "live"))),
+                "a top-level SET needs only the item-TTL portability guard");
 
         CosmosContainer container = mock(CosmosContainer.class);
         stubRead(container, MAPPER.createObjectNode().put("status", "draft"));
@@ -217,34 +212,33 @@ class CosmosPatchPreconditionTest {
                         OperationOptions.defaults()));
 
         CosmosPatchItemRequestOptions options = capturePatchOptions(container);
-        assertEquals("FROM c WHERE IS_DEFINED(c[\"status\"])", options.getFilterPredicate());
+        assertEquals("FROM c WHERE " + TTL_GUARD
+                + " AND IS_DEFINED(c[\"status\"])", options.getFilterPredicate());
         assertNull(options.getIfMatchETag(),
-                "the precondition must be path-scoped; an item-scoped ETag would fail on a "
-                        + "concurrent write to an unrelated field");
+                "application-field preconditions must stay path-scoped; an item-scoped ETag "
+                        + "would fail on a concurrent write to an unrelated field");
     }
 
     @Test
     @DisplayName("a path segment cannot terminate the predicate's string literal")
     void predicatePathSegmentsAreEscaped() {
-        assertEquals("FROM c WHERE IS_DEFINED(c[\"we\\\"ird\"])",
+        assertEquals("FROM c WHERE " + TTL_GUARD + " AND IS_DEFINED(c[\"we\\\"ird\"])",
                 CosmosProviderClient.patchFilterPredicate(
                         List.of(PatchOperation.replace("/we\"ird", "live"))));
-        assertEquals("FROM c WHERE IS_DEFINED(c[\"back\\\\slash\"])",
+        assertEquals("FROM c WHERE " + TTL_GUARD + " AND IS_DEFINED(c[\"back\\\\slash\"])",
                 CosmosProviderClient.patchFilterPredicate(
                         List.of(PatchOperation.remove("/back\\slash"))));
-        assertEquals("FROM c WHERE IS_DEFINED(c[\"line\\nbreak\"])",
+        assertEquals("FROM c WHERE " + TTL_GUARD + " AND IS_DEFINED(c[\"line\\nbreak\"])",
                 CosmosProviderClient.patchFilterPredicate(
                         List.of(PatchOperation.remove("/line\nbreak"))));
     }
 
-    // ── Finding 1: disjoint concurrent patches must not collide ─────────────
+    // ── disjoint concurrent patches must not collide ────────────────────────
 
     @Test
     @DisplayName("two concurrent patches of disjoint fields both land — neither is a CONFLICT")
     void concurrentDisjointFieldPatchesBothLand() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
-        // Both writers see the same snapshot, as two racing threads would.
-        stubRead(container, MAPPER.createObjectNode().put("status", "draft").put("owner", "ada"));
         // Models Cosmos: an item-scoped If-Match fails once any writer has bumped
         // the ETag, whatever field that writer touched. A path-scoped filter
         // predicate is unaffected by a write to a field it does not name.
@@ -257,8 +251,7 @@ class CosmosPatchPreconditionTest {
                     List.of(PatchOperation.replace("/owner", "grace")),
                     OperationOptions.defaults()),
                     "a concurrent write to /status must not fail a patch addressing /owner; "
-                            + "Dynamo's attribute_exists condition and Spanner's retried "
-                            + "transaction both let this through");
+                            + "Dynamo's attribute_exists condition also lets this through");
         });
 
         ArgumentCaptor<CosmosPatchItemRequestOptions> captor =
@@ -269,7 +262,7 @@ class CosmosPatchPreconditionTest {
             assertNull(options.getIfMatchETag(),
                     "an item-scoped ETag is what made disjoint concurrent patches collide");
         }
-        assertEquals("FROM c WHERE IS_DEFINED(c[\"owner\"])",
+        assertEquals("FROM c WHERE " + TTL_GUARD + " AND IS_DEFINED(c[\"owner\"])",
                 captor.getAllValues().get(1).getFilterPredicate(),
                 "the second patch's precondition names only the field it addresses");
     }
@@ -277,7 +270,8 @@ class CosmosPatchPreconditionTest {
     @Test
     @DisplayName("an INCREMENT mixed with a strict operation stays concurrency-safe")
     void incrementMixedWithAStrictOperationOnlyGuardsTheStrictPath() throws Exception {
-        assertEquals("FROM c WHERE IS_DEFINED(c[\"value\"]) "
+        assertEquals("FROM c WHERE " + TTL_GUARD
+                        + " AND IS_DEFINED(c[\"value\"]) AND IS_NUMBER(c[\"value\"]) "
                         + "AND (c[\"value\"] BETWEEN -9223372036854775809 AND 9223372036854775806) "
                         + "AND IS_DEFINED(c[\"status\"])",
                 CosmosProviderClient.patchFilterPredicate(List.of(
@@ -287,7 +281,6 @@ class CosmosPatchPreconditionTest {
                         + "check and a result bound, never an item-scoped guard");
 
         CosmosContainer container = mock(CosmosContainer.class);
-        stubRead(container, MAPPER.createObjectNode().put("value", 4).put("status", "draft"));
         stubServerPatch(container, new AtomicReference<>(ETAG));
 
         withCosmos(container, client -> {
@@ -318,8 +311,7 @@ class CosmosPatchPreconditionTest {
     @DisplayName("a failed filter predicate is classified from current state, not assumed")
     void failedFilterPredicateIsClassifiedFromCurrentState() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
-        stubReads(container, MAPPER.createObjectNode().put("status", "draft"),
-                MAPPER.createObjectNode());
+        stubRead(container, MAPPER.createObjectNode());
         stubPatchFailure(container, cosmosException(412));
 
         withCosmos(container, client -> {
@@ -339,8 +331,7 @@ class CosmosPatchPreconditionTest {
     @DisplayName("a raced INCREMENT overflow is INVALID_REQUEST, not a silently stored value")
     void racedIncrementOverflowIsInvalidRequest() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
-        stubReads(container, MAPPER.createObjectNode().put("value", 1L),
-                MAPPER.createObjectNode().put("value", Long.MAX_VALUE));
+        stubRead(container, MAPPER.createObjectNode().put("value", Long.MAX_VALUE));
         stubPatchFailure(container, cosmosException(412));
 
         withCosmos(container, client -> {
@@ -349,10 +340,8 @@ class CosmosPatchPreconditionTest {
                             List.of(PatchOperation.increment("/value", 1)),
                             OperationOptions.defaults()));
             assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, error.error().category(),
-                    "the validating read saw room for the delta, but a concurrent writer used it "
-                            + "up before the native increment landed. The BETWEEN bound catches "
-                            + "that atomically, so Cosmos rejects exactly what DynamoDB rejects "
-                            + "instead of storing a value outside the portable domain");
+                    "the BETWEEN bound catches the overflow atomically, so Cosmos rejects "
+                            + "exactly what DynamoDB rejects");
         });
     }
 
@@ -375,16 +364,13 @@ class CosmosPatchPreconditionTest {
         });
     }
 
-    // ── error categories preserved without a write guard ────────────────────
+    // ── error categories classified after atomic rejection ─────────────────
 
     @Test
     @DisplayName("a missing document is NOT_FOUND for a pure INCREMENT patch")
     void missingDocumentIsNotFoundForAPureIncrementPatch() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
-        CosmosException notFound = cosmosException(404);
-        when(container.readItem(eq(COSMOS_ID), any(PartitionKey.class),
-                any(CosmosItemRequestOptions.class), eq(ObjectNode.class)))
-                .thenThrow(notFound);
+        stubPatchFailure(container, cosmosException(404));
 
         withCosmos(container, client -> {
             MulticloudDbException error = assertThrows(MulticloudDbException.class,
@@ -394,16 +380,17 @@ class CosmosPatchPreconditionTest {
             assertEquals(MulticloudDbErrorCategory.NOT_FOUND, error.error().category());
         });
 
-        verify(container, never()).patchItem(anyString(), any(PartitionKey.class),
+        verify(container).patchItem(anyString(), any(PartitionKey.class),
                 any(CosmosPatchOperations.class), any(CosmosPatchItemRequestOptions.class),
                 eq(ObjectNode.class));
     }
 
     @Test
-    @DisplayName("a missing INCREMENT target is NOT_FOUND, matching Dynamo and Spanner")
+    @DisplayName("a missing INCREMENT target is NOT_FOUND")
     void missingIncrementTargetIsNotFound() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
         stubRead(container, MAPPER.createObjectNode().put("title", "present"));
+        stubPatchFailure(container, cosmosException(412));
 
         withCosmos(container, client -> {
             MulticloudDbException error = assertThrows(MulticloudDbException.class,
@@ -411,16 +398,16 @@ class CosmosPatchPreconditionTest {
                             List.of(PatchOperation.increment("/value", 1)),
                             OperationOptions.defaults()));
             assertEquals(MulticloudDbErrorCategory.NOT_FOUND, error.error().category(),
-                    "Cosmos reports a missing increment path as an untyped 400; the classifying "
-                            + "read is what keeps the portable category identical across providers");
+                    "the failed atomic predicate is classified from current state");
         });
     }
 
     @Test
     @DisplayName("a nonnumeric target and an integral overflow stay INVALID_REQUEST")
-    void nonNumericTargetAndOverflowStayInvalidRequestWithoutAGuard() throws Exception {
+    void nonNumericTargetAndOverflowAreClassifiedAfterAtomicRejection() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
         stubRead(container, MAPPER.createObjectNode().put("value", "not-a-number"));
+        stubPatchFailure(container, cosmosException(412));
         withCosmos(container, client -> {
             MulticloudDbException error = assertThrows(MulticloudDbException.class,
                     () -> client.patch(ADDRESS, KEY,
@@ -431,19 +418,20 @@ class CosmosPatchPreconditionTest {
 
         CosmosContainer overflowContainer = mock(CosmosContainer.class);
         stubRead(overflowContainer, MAPPER.createObjectNode().put("value", Long.MAX_VALUE));
+        stubPatchFailure(overflowContainer, cosmosException(412));
         withCosmos(overflowContainer, client -> {
             MulticloudDbException error = assertThrows(MulticloudDbException.class,
                     () -> client.patch(ADDRESS, KEY,
                             List.of(PatchOperation.increment("/value", 1)),
                             OperationOptions.defaults()));
             assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, error.error().category(),
-                    "the classifying read is the only place Cosmos can bound the integral result");
+                    "the atomic range predicate keeps the result inside the portable domain");
         });
     }
 
     @Test
-    @DisplayName("an unguarded patch never relabels a mid-flight delete as a CONFLICT")
-    void unguardedIncrementDoesNotSynthesiseAConflict() throws Exception {
+    @DisplayName("a mid-flight document delete remains NOT_FOUND")
+    void deletedDocumentDoesNotSynthesizeAConflict() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
         stubRead(container, MAPPER.createObjectNode().put("value", 4));
         CosmosException deletedMidFlight = cosmosException(404);
@@ -458,21 +446,18 @@ class CosmosPatchPreconditionTest {
                             List.of(PatchOperation.increment("/value", 1)),
                             OperationOptions.defaults()));
             assertEquals(MulticloudDbErrorCategory.NOT_FOUND, error.error().category(),
-                    "a document deleted between the classifying read and the unconditional "
-                            + "write is still NOT_FOUND, not an invented CONFLICT");
+                    "a missing document is still NOT_FOUND, not an invented CONFLICT");
         });
     }
 
-    // ── Finding 2: a raced INCREMENT must classify like the peers ───────────
+    // ── raced INCREMENT classification ──────────────────────────────────────
 
     @Test
     @DisplayName("a raced INCREMENT whose target vanished is NOT_FOUND, not INVALID_REQUEST")
     void racedIncrementOnAVanishedTargetIsNotFound() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
-        // The validating read sees the field; a concurrent writer removes it
-        // before the unconditional write, so Cosmos rejects it with an untyped 400.
-        stubReads(container, MAPPER.createObjectNode().put("value", 4),
-                MAPPER.createObjectNode().put("title", "still here"));
+        // Cosmos rejects a target that vanished at evaluation time.
+        stubRead(container, MAPPER.createObjectNode().put("title", "still here"));
         stubPatchFailure(container, cosmosException(400));
 
         withCosmos(container, client -> {
@@ -481,14 +466,12 @@ class CosmosPatchPreconditionTest {
                             List.of(PatchOperation.increment("/value", 1)),
                             OperationOptions.defaults()));
             assertEquals(MulticloudDbErrorCategory.NOT_FOUND, error.error().category(),
-                    "Dynamo re-reads the before-image and reports NOT_FOUND, and Spanner sees "
-                            + "true state inside its transaction; Cosmos must not be the only "
-                            + "provider that reports INVALID_REQUEST for a vanished target");
+                    "Cosmos must not report INVALID_REQUEST for a vanished target");
             assertEquals(400, error.error().statusCode(),
                     "the reclassified envelope keeps the provider's raw status for diagnostics");
         });
 
-        verify(container, times(2)).readItem(eq(COSMOS_ID), any(PartitionKey.class),
+        verify(container).readItem(eq(COSMOS_ID), any(PartitionKey.class),
                 any(CosmosItemRequestOptions.class), eq(ObjectNode.class));
     }
 
@@ -496,11 +479,10 @@ class CosmosPatchPreconditionTest {
     @DisplayName("a raced INCREMENT on a deleted document is NOT_FOUND")
     void racedIncrementOnADeletedDocumentIsNotFound() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
-        CosmosItemResponse<ObjectNode> first = itemResponse(MAPPER.createObjectNode().put("value", 4));
+        CosmosException notFound = cosmosException(404);
         when(container.readItem(eq(COSMOS_ID), any(PartitionKey.class),
                 any(CosmosItemRequestOptions.class), eq(ObjectNode.class)))
-                .thenReturn(first)
-                .thenThrow(cosmosException(404));
+                .thenThrow(notFound);
         stubPatchFailure(container, cosmosException(400));
 
         withCosmos(container, client -> {
@@ -516,8 +498,7 @@ class CosmosPatchPreconditionTest {
     @DisplayName("a raced INCREMENT on a retyped target stays INVALID_REQUEST — now proven")
     void racedIncrementOnARetypedTargetIsInvalidRequest() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
-        stubReads(container, MAPPER.createObjectNode().put("value", 4),
-                MAPPER.createObjectNode().put("value", "not-a-number"));
+        stubRead(container, MAPPER.createObjectNode().put("value", "not-a-number"));
         stubPatchFailure(container, cosmosException(400));
 
         withCosmos(container, client -> {
@@ -536,8 +517,7 @@ class CosmosPatchPreconditionTest {
         CosmosContainer container = mock(CosmosContainer.class);
         // Current state satisfies every portable precondition, so the 400 had
         // some other cause and no NOT_FOUND may be invented.
-        stubReads(container, MAPPER.createObjectNode().put("value", 4),
-                MAPPER.createObjectNode().put("value", 4));
+        stubRead(container, MAPPER.createObjectNode().put("value", 4));
         stubPatchFailure(container, cosmosException(400));
 
         withCosmos(container, client -> {
@@ -553,11 +533,10 @@ class CosmosPatchPreconditionTest {
     @DisplayName("a failed follow-up read leaves the original classification authoritative")
     void failedFollowUpReadDoesNotInventAClassification() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
-        CosmosItemResponse<ObjectNode> first = itemResponse(MAPPER.createObjectNode().put("value", 4));
+        CosmosException unavailable = cosmosException(503);
         when(container.readItem(eq(COSMOS_ID), any(PartitionKey.class),
                 any(CosmosItemRequestOptions.class), eq(ObjectNode.class)))
-                .thenReturn(first)
-                .thenThrow(cosmosException(503));
+                .thenThrow(unavailable);
         stubPatchFailure(container, cosmosException(400));
 
         withCosmos(container, client -> {
@@ -577,6 +556,7 @@ class CosmosPatchPreconditionTest {
     void missingAddressedFieldIsNotFoundForEveryStrictOperation() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
         stubRead(container, MAPPER.createObjectNode().put("title", "present"));
+        stubPatchFailure(container, cosmosException(412));
 
         withCosmos(container, client -> {
             for (PatchOperation operation : List.of(
@@ -593,17 +573,56 @@ class CosmosPatchPreconditionTest {
             }
         });
 
-        // The deterministic case is settled before any mutation is attempted, so
-        // Cosmos never gets the chance to report its untyped 400 instead.
-        verify(container, never()).patchItem(anyString(), any(PartitionKey.class),
+        verify(container, times(3)).patchItem(anyString(), any(PartitionKey.class),
                 any(CosmosPatchOperations.class), any(CosmosPatchItemRequestOptions.class),
                 eq(ObjectNode.class));
+    }
+
+    @Test
+    @DisplayName("an SDK-managed TTL item is rejected without mutation")
+    void itemTtlIsRejectedAsUnsupportedCapability() throws Exception {
+        CosmosContainer container = mock(CosmosContainer.class);
+        stubRead(container, MAPPER.createObjectNode().put("title", "before").put("ttl", 3600));
+        stubPatchFailure(container, cosmosException(412));
+
+        withCosmos(container, client -> {
+            MulticloudDbException error = assertThrows(MulticloudDbException.class,
+                    () -> client.patch(ADDRESS, KEY,
+                            List.of(PatchOperation.set("/status", "after")),
+                            OperationOptions.defaults()));
+            assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    error.error().category());
+            assertEquals(com.multiclouddb.api.Capability.PATCH_PRESERVES_TTL,
+                    error.error().providerDetails().get("capability"));
+        });
+    }
+
+    @Test
+    @DisplayName("failure classification reuses the rejecting request's session token")
+    void rejectionSessionTokenIsUsedForClassificationRead() throws Exception {
+        CosmosContainer container = mock(CosmosContainer.class);
+        CosmosException rejected = cosmosException(412);
+        when(rejected.getResponseHeaders()).thenReturn(Map.of(
+                CosmosConstants.HEADER_SESSION_TOKEN, "session-token"));
+        stubRead(container, MAPPER.createObjectNode());
+        stubPatchFailure(container, rejected);
+
+        withCosmos(container, client -> assertThrows(MulticloudDbException.class,
+                () -> client.patch(ADDRESS, KEY,
+                        List.of(PatchOperation.replace("/status", "after")),
+                        OperationOptions.defaults())));
+
+        ArgumentCaptor<CosmosItemRequestOptions> options =
+                ArgumentCaptor.forClass(CosmosItemRequestOptions.class);
+        verify(container).readItem(eq(COSMOS_ID), any(PartitionKey.class),
+                options.capture(), eq(ObjectNode.class));
+        assertEquals("session-token", options.getValue().getSessionToken());
     }
 
     // ── state classification (no Cosmos SDK involved) ───────────────────────
 
     @Test
-    void strictMissingPathIsClassifiedBeforeTheGuardedWrite() {
+    void strictMissingPathIsClassifiedFromRejectedState() {
         ObjectNode document = MAPPER.createObjectNode().put("title", "present");
 
         MulticloudDbException error = assertThrows(MulticloudDbException.class,
@@ -614,7 +633,7 @@ class CosmosPatchPreconditionTest {
     }
 
     @Test
-    void invalidIncrementTargetAndOverflowAreClassifiedBeforeTheWrite() {
+    void invalidIncrementTargetAndOverflowAreClassifiedFromRejectedState() {
         ObjectNode stringDocument = MAPPER.createObjectNode().put("value", "not-a-number");
         MulticloudDbException typeError = assertThrows(MulticloudDbException.class,
                 () -> CosmosProviderClient.validatePatchPreconditionState(stringDocument,
@@ -629,7 +648,7 @@ class CosmosPatchPreconditionTest {
     }
 
     @Test
-    void validStrictStateCanProceedToTheGuardedWrite() {
+    void validStrictStateDoesNotExplainARejectedWrite() {
         ObjectNode document = MAPPER.createObjectNode().put("value", 4);
 
         assertDoesNotThrow(() -> CosmosProviderClient.validatePatchPreconditionState(document,
@@ -696,19 +715,6 @@ class CosmosPatchPreconditionTest {
                 .thenReturn(response);
     }
 
-    /**
-     * Stubs the validating read followed by the re-read the adapter performs to
-     * classify an untyped Cosmos 400, so a state change between the two can be
-     * modelled without an emulator.
-     */
-    private static void stubReads(CosmosContainer container, ObjectNode first, ObjectNode second) {
-        CosmosItemResponse<ObjectNode> firstResponse = itemResponse(first);
-        CosmosItemResponse<ObjectNode> secondResponse = itemResponse(second);
-        when(container.readItem(eq(COSMOS_ID), any(PartitionKey.class),
-                any(CosmosItemRequestOptions.class), eq(ObjectNode.class)))
-                .thenReturn(firstResponse, secondResponse);
-    }
-
     @SuppressWarnings("unchecked")
     private static void stubPatch(CosmosContainer container) {
         CosmosItemResponse<ObjectNode> response = mock(CosmosItemResponse.class);
@@ -728,7 +734,8 @@ class CosmosPatchPreconditionTest {
      * item-scoped {@code If-Match} fails with 412 once <em>any</em> writer has
      * bumped the item ETag, while a path-scoped filter predicate is unaffected by
      * a write to a field it does not name. Each successful write bumps the ETag,
-     * so a second patch of a disjoint field is the exact race Finding 1 describes.
+     * so a second patch of a disjoint field exercises the concurrency behavior
+     * this test protects.
      */
     @SuppressWarnings("unchecked")
     private static void stubServerPatch(CosmosContainer container, AtomicReference<String> serverEtag) {

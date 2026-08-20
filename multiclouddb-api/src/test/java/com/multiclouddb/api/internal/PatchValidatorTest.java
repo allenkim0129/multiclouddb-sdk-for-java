@@ -28,10 +28,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Locks the portable patch contract enforced by {@link PatchValidator}.
  * <p>
- * Every rule here exists to prevent a request that behaves differently on
- * Cosmos DB, DynamoDB and Spanner from reaching a provider adapter at all. If
- * one of these assertions is relaxed, at least one provider silently diverges —
- * so each test names the divergence it is preventing.
+ * Every rule here exists to prevent provider-native patch dialects from
+ * producing different outcomes. If one of these assertions is relaxed, a
+ * current or future provider may silently diverge.
  */
 class PatchValidatorTest {
 
@@ -132,7 +131,7 @@ class PatchValidatorTest {
 
     /**
      * Array indexes are not portable: Cosmos inserts and shifts, DynamoDB
-     * replaces or appends, and Spanner cannot address an element at all.
+     * replaces or appends, and future providers may expose neither behavior.
      */
     @Test
     @DisplayName("rejects numeric path segments (array indexes)")
@@ -161,10 +160,8 @@ class PatchValidatorTest {
     }
 
     /**
-     * Spanner resolves column names without regard to case, so "/PartitionKey"
-     * would collide with the real key column there while Cosmos and DynamoDB
-     * created a stray second field. Matching case-sensitively would let that
-     * divergence through the one guard whose whole job is portability.
+     * A case-insensitive provider could resolve "/PartitionKey" to the real key
+     * field while a case-sensitive provider creates a stray second field.
      */
     @Test
     @DisplayName("reserved field names are rejected in every casing")
@@ -178,9 +175,8 @@ class PatchValidatorTest {
     }
 
     /**
-     * Cosmos and Spanner apply operations sequentially; DynamoDB resolves every
-     * operand against the pre-update item. Overlapping paths would therefore
-     * produce different documents per provider.
+     * Native engines can resolve operands against different document versions,
+     * so overlapping paths could produce provider-dependent documents.
      */
     @Test
     @DisplayName("rejects duplicate and prefix-overlapping paths")

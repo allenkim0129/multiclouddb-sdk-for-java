@@ -18,9 +18,15 @@ public abstract class CapabilitiesConformanceTest {
 
     protected abstract ProviderId provider();
 
+    protected boolean expectedPatchSupport() {
+        return true;
+    }
+
     protected abstract boolean expectedNestedPatchSupport();
 
     protected abstract boolean expectedExactFractionalIncrementSupport();
+
+    protected abstract boolean expectedPatchPreservesTtlSupport();
 
     @Test
     void capabilitiesReturnsNonEmptySet() throws Exception {
@@ -35,7 +41,7 @@ public abstract class CapabilitiesConformanceTest {
     void allKnownCapabilityNamesPresent() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            // All 20 well-known capability names must be declared
+            // All 21 well-known capability names must be declared
             String[] knownNames = {
                     Capability.CONTINUATION_TOKEN_PAGING,
                     Capability.CROSS_PARTITION_QUERY,
@@ -54,6 +60,7 @@ public abstract class CapabilitiesConformanceTest {
                     Capability.PATCH,
                     Capability.NESTED_PATCH,
                     Capability.EXACT_FRACTIONAL_INCREMENT,
+                    Capability.PATCH_PRESERVES_TTL,
                     Capability.RESULT_LIMIT,
                     Capability.ROW_LEVEL_TTL,
                     Capability.WRITE_TIMESTAMP
@@ -66,19 +73,21 @@ public abstract class CapabilitiesConformanceTest {
     }
 
     @Test
-    void capabilityCountIs20() throws Exception {
+    void capabilityCountIs21() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            assertEquals(20, caps.all().size(),
-                    "Provider " + provider().id() + " should declare exactly 20 capabilities");
+            assertEquals(21, caps.all().size(),
+                    "Provider " + provider().id() + " should declare exactly 21 capabilities");
         }
     }
 
     @Test
-    void patchIsSupported() throws Exception {
+    void patchCapabilityMatchesProviderContract() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
-            assertTrue(client.capabilities().isSupported(Capability.PATCH),
-                    "All providers must support PATCH");
+            assertEquals(expectedPatchSupport(),
+                    client.capabilities().isSupported(Capability.PATCH),
+                    "Provider " + provider().id()
+                            + " must declare the expected PATCH capability state");
         }
     }
 
@@ -94,10 +103,11 @@ public abstract class CapabilitiesConformanceTest {
 
     /**
      * Fractional INCREMENT accumulates in exact decimal arithmetic on DynamoDB
-     * and in IEEE-754 binary64 on Cosmos and Spanner. The gap is portable only
-     * because it is declared, so every provider must publish the state its
-     * arithmetic actually delivers. The capability is informational — it never
-     * causes a fractional increment to be rejected.
+     * and in IEEE-754 binary64 on Cosmos DB. Spanner declares this capability
+     * unsupported while PATCH itself is unavailable. Every provider publishes
+     * an explicit state so callers never infer arithmetic from provider identity.
+     * For providers supporting PATCH, this capability is informational and does
+     * not itself reject an in-domain fractional increment.
      */
     @Test
     void exactFractionalIncrementCapabilityMatchesProviderArithmetic() throws Exception {
@@ -108,6 +118,18 @@ public abstract class CapabilitiesConformanceTest {
                     client.capabilities().isSupported(Capability.EXACT_FRACTIONAL_INCREMENT),
                     "Provider " + provider().id()
                             + " must declare the expected EXACT_FRACTIONAL_INCREMENT capability state");
+        }
+    }
+
+    @Test
+    void patchPreservesTtlCapabilityMatchesProviderContract() throws Exception {
+        try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
+            assertNotNull(client.capabilities().get(Capability.PATCH_PRESERVES_TTL),
+                    "PATCH_PRESERVES_TTL must be declared either way so callers can branch on it");
+            assertEquals(expectedPatchPreservesTtlSupport(),
+                    client.capabilities().isSupported(Capability.PATCH_PRESERVES_TTL),
+                    "Provider " + provider().id()
+                            + " must declare the expected PATCH_PRESERVES_TTL capability state");
         }
     }
 

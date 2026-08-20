@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.*;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
+import java.math.BigInteger;
 import java.util.*;
 
 /**
@@ -95,7 +96,11 @@ public final class DynamoItemMapper {
             try {
                 return new IntNode(Integer.parseInt(numStr));
             } catch (NumberFormatException e) {
-                return new LongNode(Long.parseLong(numStr));
+                try {
+                    return new LongNode(Long.parseLong(numStr));
+                } catch (NumberFormatException widerThanLong) {
+                    return BigIntegerNode.valueOf(new BigInteger(numStr));
+                }
             }
         }
         if (av.type() == AttributeValue.Type.BOOL) {

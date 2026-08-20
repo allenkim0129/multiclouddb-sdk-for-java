@@ -24,7 +24,7 @@ contract.
 | `DocumentResult` | Read result: document payload and optional metadata |
 | `DocumentMetadata` | Write timestamps, TTL expiry, and version/ETag |
 | `PatchOperation` | A single field-level change for `patch()` - `set` / `replace` / `remove` / `increment`, addressed by JSON Pointer. Immutable; operands are normalised to a detached JSON-compatible snapshot at construction. |
-| `PatchNumericDomain` | Public helper describing the portable `INCREMENT` numeric domain. `normalize(Number)` validates and canonicalises a delta (signed 64-bit for integral, finite `double` for fractional) so callers can pre-validate before submitting; `MAX_FRACTIONAL_MAGNITUDE` is the 9,007,199,254,740,991 fractional bound. |
+| `PatchNumericDomain` | Public helper describing the portable `INCREMENT` numeric domain. `normalize(Number)` validates and canonicalises a delta (signed 64-bit for integral, finite `double` for fractional) so callers can pre-validate before submitting; fractional magnitudes run from `MIN_NONZERO_FRACTIONAL_MAGNITUDE` (`1E-130`) through `MAX_FRACTIONAL_MAGNITUDE` (9,007,199,254,740,991). |
 | `CapabilitySet` | Runtime introspection of supported provider capabilities |
 | `MulticloudDbException` | Structured error with portable error category |
 | `OperationOptions` | Per-operation timeout, TTL, and metadata controls |
@@ -36,8 +36,12 @@ Patch behaviour is capability-gated: `Capability.PATCH` and
 `Capability.NESTED_PATCH` gate the operation itself, while
 `Capability.EXACT_FRACTIONAL_INCREMENT` is **informational only** — it reports
 whether a provider accumulates fractional increments in exact decimal
-(DynamoDB) or IEEE-754 binary64 (Cosmos DB, Spanner) and never causes a
-rejection. See [compatibility.md - Patch Semantics](compatibility.md#patch-semantics)
+(DynamoDB) or IEEE-754 binary64 (Cosmos DB). Spanner declares the capability
+unsupported while PATCH itself is unavailable.
+`Capability.PATCH_PRESERVES_TTL` separately reports whether PATCH can retain an
+existing SDK-managed expiry; Cosmos rejects TTL-bearing items instead of
+silently extending them. See
+[compatibility.md - Patch Semantics](compatibility.md#patch-semantics)
 for the per-provider capability matrix.
 
 ### Query Expression Types
@@ -94,5 +98,4 @@ import from this package.
 |------|-------------|
 | `MulticloudDbProviderAdapter` | Factory SPI - creates a provider client from config |
 | `MulticloudDbProviderClient` | Implementation SPI - CRUD + query + provisioning; `patch()` implementations must call `validatePatchRequest(...)` before provider SDK work |
-| `DocumentFieldValidator` | **SPI-only, not application API** - shared write-boundary helper that rejects SDK-reserved document fields (`data`, in any casing) for `create` / `update` / `upsert` |
 | `SdkUserAgent` | Builds the canonical user-agent header token |

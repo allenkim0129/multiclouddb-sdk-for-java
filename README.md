@@ -155,8 +155,10 @@ Key key = Key.of("todo-1", "todo-1");   // partitionKey + sortKey
 client.upsert(todos, key, doc);                  // Create or replace (upsert)
 DocumentResult result = client.read(todos, key); // Point read → returns DocumentResult
 ObjectNode document = result.document();         // The document payload
-client.patch(todos, key, List.of(               // Partial update of an existing doc
-        PatchOperation.replace("/completed", true)));
+if (client.capabilities().isSupported(Capability.PATCH)) {
+    client.patch(todos, key, List.of(           // Partial update of an existing doc
+            PatchOperation.replace("/completed", true)));
+}
 client.delete(todos, key);                       // Delete
 
 // Query with portable expressions - automatically translated per provider
@@ -477,18 +479,24 @@ for (Capability cap : caps.all()) {
 | Change feed | ✓ | ✓ | ✓ |
 | **Result limit** (`Top N`) | ✓ | ✓ (per-page) | ✓ |
 | **ORDER BY** | ✓ | ✗ | ✓ |
-| **Patch** (field-level partial update) | ✓ | ✓ | ✓ |
+| **Patch** (field-level partial update) | ✓ | ✓ | ✗ (planned) |
 | **Nested patch** (`/address/city`) | ✓ | ✓ | ✗ |
 | **Exact fractional increment** | ✗ | ✓ | ✗ |
+| **Patch preserves SDK-managed TTL** | ✗ | ✓ | ✗ |
 | **Row-level TTL** | ✓ | ✓ | ✗ |
 | **Write timestamp / metadata** | ✓ | ✗ | ✗ |
 
-`Exact fractional increment` is **informational only** — every provider accepts
-fractional `INCREMENT` deltas, but only DynamoDB accumulates them in exact
-decimal arithmetic; Cosmos DB and Spanner accumulate in IEEE-754 binary64
+`Exact fractional increment` is **informational only** for providers that
+declare `PATCH` supported. DynamoDB accumulates fractional deltas in exact
+decimal arithmetic; Cosmos DB uses IEEE-754 binary64
 (`0.1 + 0.2` stores `0.3` vs `0.30000000000000004`). Integral increments are
-exact everywhere. See
+exact on both current implementations. See
 [docs/compatibility.md](docs/compatibility.md#patch-semantics).
+
+`Patch preserves SDK-managed TTL` is enforced rather than advisory. DynamoDB
+leaves its absolute `ttlExpiry` unchanged. Cosmos native patch advances `_ts`,
+so an item carrying the SDK-managed `ttl` field is rejected with
+`UNSUPPORTED_CAPABILITY` instead of having its expiry silently extended.
 
 ---
 
@@ -534,6 +542,9 @@ client.update(address, key, updatedDoc, opts);
 TTL requires collection-level configuration first (enable "Default TTL" on the
 Cosmos DB container; enable TTL on the DynamoDB table using `ttlExpiry` as the
 attribute name). Spanner ignores `ttlSeconds` (`ROW_LEVEL_TTL=false`).
+Before patching an item created with `ttlSeconds`, check
+`Capability.PATCH_PRESERVES_TTL`; Cosmos rejects that combination, while
+DynamoDB preserves the original absolute expiry.
 
 ---
 

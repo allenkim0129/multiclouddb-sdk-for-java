@@ -1,11 +1,9 @@
 # Portable API Surface
 
-The Multicloud DB SDK's portable API surface covers capabilities that work
-identically across all three providers. The features listed below require no
-runtime capability checks - they are guaranteed to work on Azure Cosmos DB,
-Amazon DynamoDB, and Google Cloud Spanner. Some providers offer additional
-capabilities (e.g., `CROSS_PARTITION_QUERY`, `ORDER_BY`, `LIKE`); use
-`client.capabilities()` to discover what the current provider supports.
+The Multicloud DB SDK's baseline API surface covers capabilities that work
+identically across all three providers. The features in **What Works
+Everywhere** require no runtime capability checks. Capability-gated features,
+including PATCH, are documented separately with explicit provider matrices.
 
 ---
 
@@ -23,7 +21,10 @@ no asterisks, no provider-specific caveats, and no runtime checks required.
 | **Update** | Replace an existing document (fails if not found) |
 | **Upsert** | Create or replace - always succeeds |
 | **Delete** | Remove by key (idempotent — silent on missing; use `read()` to detect a missing key, since `read()` returns `null` on every provider) |
-| **Patch** | Field-level partial update of an existing document, applied atomically — see [Patch Semantics](#patch-semantics) for the nested-path caveat and cost model |
+
+`patch()` is not in the universal table: Cosmos DB and DynamoDB implement it,
+while Spanner declares `Capability.PATCH` unsupported. See
+[Patch Semantics](#patch-semantics).
 
 ### Query - Portable Expression DSL
 
@@ -90,13 +91,13 @@ The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 | `AUTHORIZATION_FAILED`  | HTTP 403  | AccessDeniedException  | PERMISSION_DENIED  |
 | `NOT_FOUND`  | HTTP 404  | ResourceNotFoundException, HTTP 404  | NOT_FOUND  |
 | `CONFLICT` (409 - duplicate key)  | HTTP 409  | `ConditionalCheckFailedException` from `create()` - `attribute_not_exists` guard fails when the item already exists  | ALREADY_EXISTS  |
-| `CONFLICT` (precondition)  | Only from a patch whose path-scoped HTTP 412 current state cannot explain—the adapter sends no `If-Match`, so a 412 is re-read and classified, and an unprovable one reports `CONFLICT`²  | `ConditionalCheckFailedException` from `update()`/`upsert()` with a condition expression¹  | ABORTED  |
-| `NOT_FOUND` (missing patch target field)  | Classifying pre-read validation²  | `ConditionalCheckFailedException` with a missing field in its old image | In-transaction field-presence check  |
-| `INVALID_REQUEST` (patch numeric target or integral-result overflow) | Classifying pre-read validation² | `ConditionalCheckFailedException` with a nonnumeric or out-of-range old value | In-transaction numeric validation |
+| `CONFLICT` (precondition)  | Only from a patch whose conditional HTTP 412 current state cannot explain—the adapter sends no `If-Match`, so a 412 is re-read and classified, and an unprovable one reports `CONFLICT`²  | `ConditionalCheckFailedException` from `update()`/`upsert()` with a condition expression¹  | ABORTED  |
+| `NOT_FOUND` (missing patch target field)  | Atomic filter rejection classified from a session-token read²  | `ConditionalCheckFailedException` with a missing field in its old image | Not applicable — PATCH unsupported  |
+| `INVALID_REQUEST` (patch numeric target or integral-result overflow) | Atomic filter rejection classified from a session-token read² | `ConditionalCheckFailedException` with a nonnumeric or out-of-range old value | Not applicable — PATCH unsupported |
 | `THROTTLED`  | HTTP 429  | ProvisionedThroughputExceededException, ThrottlingException  | RESOURCE_EXHAUSTED  |
 | `TRANSIENT_FAILURE`  | HTTP 449, 500, 502, 503  | HTTP 500–5xx  | UNAVAILABLE  |
 | `PERMANENT_FAILURE`  | -  | ItemCollectionSizeLimitExceededException  | -  |
-| `UNSUPPORTED_CAPABILITY`  | HTTP 400 with AVAD-not-enabled fingerprint (`providerDetails.reason="avad_not_enabled"`)  | `InvalidArgumentException` / `ResourceNotFoundException` for streams not enabled (`reason="stream_not_enabled"`)  | UNIMPLEMENTED, plus change-stream-not-provisioned (`reason="stream_not_enabled"`)  |
+| `UNSUPPORTED_CAPABILITY`  | PATCH on an item carrying SDK-managed `ttl` (`providerDetails.capability="patch_preserves_ttl"`); HTTP 400 with AVAD-not-enabled fingerprint (`reason="avad_not_enabled"`)  | `InvalidArgumentException` / `ResourceNotFoundException` for streams not enabled (`reason="stream_not_enabled"`)  | SPI default for PATCH; UNIMPLEMENTED and change-stream-not-provisioned (`reason="stream_not_enabled"`) for other features  |
 | `CURSOR_EXPIRED` (change-feed) | HTTP 410 GONE (`reason="PROVIDER_TRIMMED"`)  | `TrimmedDataAccessException` (`reason="PROVIDER_TRIMMED"`), `ExpiredIteratorException` (`reason="ITERATOR_EXPIRED"`)  | `INVALID_ARGUMENT` / `OUT_OF_RANGE` / `NOT_FOUND` for partition outside retention (`reason="PROVIDER_TRIMMED"`)  |
 | `PROVIDER_ERROR`  | Other  | Other  | INTERNAL, Other  |
 
@@ -107,33 +108,25 @@ The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 > not yet expose caller-supplied ETag-based conditional updates; a future
 > precondition API may add a dedicated category (tracked in issue #29).
 
-> ² For Cosmos patches containing a `REPLACE`, `REMOVE`, `INCREMENT`, or nested
-> path, the SDK point-reads the required state and validates it before the
-> write. A missing document/path becomes `NOT_FOUND`, and a nonnumeric target or
-> proven integral-result overflow becomes `INVALID_REQUEST`. The adapter sends
-> no `If-Match` ETag guard anywhere. It attaches a path-scoped filter predicate
-> instead: an `IS_DEFINED` existence check over each addressed path, plus — for
-> an `INCREMENT` with an integral delta — a `BETWEEN` bound on the current value,
-> the Cosmos spelling of the condition DynamoDB attaches to its own increment.
-> That keeps the portable signed-64 result range enforced atomically with the
-> write rather than only at the validating read. Because every term is
-> path-scoped, a concurrent write to a field the patch does not address cannot
-> falsify the predicate, so concurrency alone never fails a patch and
-> `CosmosPatchOperations.increment` stays atomic server-side. A resulting HTTP
-> 412 is classified from a re-read of current state rather than assumed: a
-> vanished path reports `NOT_FOUND`, a retyped target or an out-of-range
-> increment result reports `INVALID_REQUEST`, and only a rejection current
-> state cannot explain reports `CONFLICT`. An untyped `400` is classified the
-> same way, falling back to `INVALID_REQUEST` when unprovable. Non-raced
-> classification is identical on all three providers. The exact emulator status
-> behavior remains unverified pending T192. DynamoDB follows the same categories
-> from its conditional-failure old image.
+> ² Cosmos performs no pre-write classification read. Its conditional-patch
+> predicate atomically requires addressed-path existence, numeric increment
+> targets, signed-64 integral-result bounds, and absence of the SDK-managed
+> `ttl` field. A resulting HTTP 412 (or an untyped 400 from a native transition)
+> is classified from a point read carrying the rejecting request's session
+> token: a vanished path reports `NOT_FOUND`, a retyped or out-of-range
+> increment reports `INVALID_REQUEST`, a TTL-bearing item reports
+> `UNSUPPORTED_CAPABILITY`, and only an unexplained rejection reports
+> `CONFLICT` (or retains the native 400 mapping). DynamoDB derives the equivalent
+> state categories from its conditional-failure old image, with a strongly
+> consistent point-read fallback if that image is absent. Exact emulator status
+> behavior remains unverified pending T192.
 
 ## Patch Semantics
 
-`patch()` applies field-level changes to an **existing** document atomically:
-Cosmos DB and DynamoDB use native partial writes, while Spanner updates its
-standard `data` document envelope in a retryable transaction. See
+`patch()` applies field-level changes to an **existing** document atomically on
+providers that declare `Capability.PATCH`. Cosmos DB and DynamoDB use native
+partial writes. Spanner currently declares PATCH unsupported and fails before
+issuing a provider request. See
 [guide.md - patch](guide.md#patch---field-level-partial-update) for the full
 contract and examples.
 
@@ -141,23 +134,23 @@ contract and examples.
 
 | Capability | Cosmos DB | DynamoDB | Spanner |
 |------------|-----------|----------|---------|
-| `PATCH` | ✅ Native `patchItem()` — max 10 operations natively | ✅ Native `UpdateItem` with a compiled `UpdateExpression` | ✅ Equivalent atomic retryable `data` document-envelope transaction |
-| `NESTED_PATCH` | ✅ Patch paths address the JSON tree directly | ✅ Document paths (`a.b.c`) address nested map attributes | ❌ Nested JSON traversal is deferred from the v1 compatibility scope; a nested path fails fast with `UNSUPPORTED_CAPABILITY` |
-| `EXACT_FRACTIONAL_INCREMENT` | ❌ Fractional `INCREMENT` is evaluated in IEEE-754 binary64 | ✅ Fractional `INCREMENT` is evaluated in the DynamoDB `N` type — exact decimal, 38 significant digits | ❌ Fractional `INCREMENT` is evaluated in IEEE-754 binary64 |
+| `PATCH` | ✅ Native `patchItem()` — max 10 operations natively | ✅ Native `UpdateItem` with a compiled `UpdateExpression` | ❌ Planned follow-up; calls fail with `UNSUPPORTED_CAPABILITY` |
+| `NESTED_PATCH` | ✅ Patch paths address the JSON tree directly | ✅ Document paths (`a.b.c`) address nested map attributes | ❌ Depends on the future PATCH implementation |
+| `EXACT_FRACTIONAL_INCREMENT` | ❌ Fractional `INCREMENT` is evaluated in IEEE-754 binary64 | ✅ Fractional `INCREMENT` is evaluated in the DynamoDB `N` type — exact decimal, 38 significant digits | ❌ Declared for capability completeness while PATCH is unsupported |
+| `PATCH_PRESERVES_TTL` | ❌ A native patch advances `_ts`; items carrying SDK-managed `ttl` are rejected | ✅ Absolute `ttlExpiry` is left unchanged | ❌ PATCH unavailable |
 
-Spanner rejects a nested path with `UNSUPPORTED_CAPABILITY` rather than
-silently rewriting the parent or doing nothing. Portable code checks
-`client.capabilities().isSupported(Capability.NESTED_PATCH)` or patches the
-top-level field instead.
+Portable code checks `Capability.PATCH` before calling the operation and checks
+`Capability.NESTED_PATCH` before using a sub-document path. Unsupported calls
+fail explicitly rather than silently falling back to read-modify-write.
+Code patching an item created with `OperationOptions.ttlSeconds(...)` also
+checks `Capability.PATCH_PRESERVES_TTL`; Cosmos rejects that combination rather
+than silently extending the expiry.
 
-`EXACT_FRACTIONAL_INCREMENT` is **informational only**. Every provider accepts
-every in-domain fractional delta, and nothing is ever rejected because of this
-capability — it exists so callers that need bit-identical fractional totals can
-branch. It reports how a fractional increment *accumulates*: seeding
+`EXACT_FRACTIONAL_INCREMENT` is **informational only** for providers that
+support PATCH. It reports how a fractional increment accumulates: seeding
 `{"v": 0.1}` and incrementing by `0.2` stores exactly `0.3` on DynamoDB and
-`0.30000000000000004` on Cosmos DB and Spanner, and the divergence compounds
-across repeated fractional increments. **Integral** increments are exact on all
-three providers (the portable domain bounds them to signed 64-bit range).
+`0.30000000000000004` on Cosmos DB. **Integral** increments are exact on both
+current implementations.
 
 ```java
 if (!client.capabilities().isSupported(Capability.EXACT_FRACTIONAL_INCREMENT)) {
@@ -169,61 +162,33 @@ if (!client.capabilities().isSupported(Capability.EXACT_FRACTIONAL_INCREMENT)) {
 ### Cost model
 
 `patch()` is a latency and concurrency optimisation — **not** a guaranteed
-write-cost reduction. Cosmos DB and DynamoDB also reduce request payload; all
-providers validate patch requests against the portable 399 KB (408,576-byte)
-limit. The byte count is the deterministic serialized operation list, including
-every operation's type, path, and optional value; a `REMOVE` contributes its
-verb and path even though it has no value. Billing depends on provider pricing,
-account configuration, indexes, item shape, and workload; use the provider's
-current pricing documentation rather than assuming an equivalence:
+write-cost reduction. Cosmos DB and DynamoDB also reduce request payload and
+validate patch requests against the portable 399 KB (408,576-byte) limit. The
+byte count is the deterministic serialized operation list, including every
+operation's type, path, and optional value; a `REMOVE` contributes its verb and
+path even though it has no value. This bounds the request envelope only: the
+resulting item is still subject to each provider's native item-size limit, so a
+patch that grows an already-large document can be accepted by Cosmos and
+rejected by DynamoDB. Billing depends on provider pricing, account
+configuration, indexes, item shape, and workload:
 
 | Provider | Write cost | What you actually save |
 |----------|-----------|------------------------|
-| Cosmos DB | Workload- and indexing-dependent; no replace-equivalence is promised. **A patch containing any `REPLACE`, `REMOVE`, `INCREMENT`, or nested path also costs one point read** (see below) | Request payload, one round trip, and the lost-update window of read-modify-write |
-| DynamoDB | Item- and configuration-dependent; no `PutItem`-equivalence is promised. A single `UpdateItem` — no extra read | Request payload, one round trip, and the lost-update window |
-| Spanner | The retryable transaction reads and writes the `data` envelope; evaluate it with current Spanner pricing | Serializable atomicity, dynamic top-level fields without DDL, and retry-safe increments |
+| Cosmos DB | Workload- and indexing-dependent; no replace-equivalence is promised. Successful PATCH is one `patchItem`; a rejected condition adds one classifying point read | Request payload and the lost-update window of read-modify-write |
+| DynamoDB | Item- and configuration-dependent; no `PutItem`-equivalence is promised. Success is one `UpdateItem`; rejected conditions normally classify from `ALL_OLD`, with one point-read fallback only if the response omits that image | Request payload, one success-path round trip, and the lost-update window |
+| Spanner | No write cost: PATCH is rejected before provider dispatch | Explicit capability failure rather than an unsafe or expensive emulation |
 
-**Cosmos patch is not always one request.** Cosmos reports a missing path, a
-nonnumeric increment target, and a nested-parent violation as an untyped HTTP
-`400`, so the adapter point-reads and classifies the document before the write
-whenever the request contains a `REPLACE`, `REMOVE`, `INCREMENT`, or nested
-path — that read is billed in addition to the patch. A patch made only of
-top-level `SET` operations skips the read entirely and costs a single request.
-Requests with a `REPLACE`, `REMOVE`, `INCREMENT`, or nested operation carry a
-path-scoped filter predicate (an `IS_DEFINED` existence check over each
-addressed path, plus a `BETWEEN` result bound for an integral `INCREMENT`)
-rather than an `If-Match` ETag guard, so the precondition rides along on the
-write at no extra request; because every term is path-scoped, a concurrent
-write to an unaddressed field cannot falsify it and concurrent increments of an
-in-range counter all land instead of failing as non-retryable `CONFLICT`s.
+**A successful Cosmos patch is one request.** Required-path existence,
+increment numeric type and integral bounds, and the item-TTL guard ride on the
+write as a conditional filter predicate. A rejected predicate adds one point
+read to classify the portable error. No `If-Match` ETag is sent, so a
+concurrent write to an unaddressed field cannot falsify the path terms and
+concurrent increments of an in-range counter all land.
 
-On every provider, `patch()` is the only portable way to express an atomic
-counter: `PatchOperation.increment(...)` is evaluated in the same atomic native
-write or retryable transaction, so concurrent increments do not lose updates.
-
-Spanner does its existence check and envelope update in **one retryable
-read-write transaction over the row**, so concurrent patches to *disjoint*
-fields of the same document contend and one transparently retries — Cosmos DB
-and DynamoDB do not. A fractional finite increment of an integral value is
-represented in the envelope as a floating-point value, matching the
-schemaless providers; because that value no longer fits an `INT64` physical
-mirror, the mirror is explicitly written as a **typed NULL** rather than left
-stale. (Every incompatible, null, or omitted mirror is cleared the same way,
-which is exactly why portable `ORDER BY` now sorts through the authoritative
-envelope instead of the physical column.) Integral deltas and their resulting
-values must fit signed 64-bit
-range; fractional deltas must
-round-trip through a finite IEEE-754 `double` without decimal precision loss
-and have magnitude no greater than 9,007,199,254,740,991. Values outside that
-portable domain are rejected as `INVALID_REQUEST`: invalid deltas before
-dispatch, and result overflow atomically with the provider write.
-
-Portable Spanner expressions choose the authoritative `data` envelope or the
-physical-column JSON projection once per row. A valid envelope never falls back
-per missing field, so stale physical columns cannot reappear after a
-replacement or removal; malformed and legacy metadata safely use the physical
-projection. Consequently, patched fractional and dynamic fields participate in
-the same predicates as values returned by `read()`.
+On providers that support PATCH, `PatchOperation.increment(...)` is the
+portable atomic-counter primitive. Concurrent increments are evaluated inside
+the provider's atomic write. A future Spanner implementation must satisfy the
+same conformance contract before declaring PATCH supported.
 
 ## Change-Feed History Retention
 

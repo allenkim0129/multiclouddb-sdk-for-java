@@ -422,12 +422,7 @@ WHERE IFNULL(status, 'unknown') = 'active'
 WHERE CAST(age AS STRING) = '30'
 ```
 
-Raw Spanner tables are strongly typed, but the SDK's portable document model is
-not a direct physical-column query. The current implementation evaluates a
-valid SDK `data` envelope as authoritative and uses a physical-column JSON
-projection only for a missing or malformed envelope. It therefore uses JSON
-type guards before `LAX_*` conversion so a string `"1"` cannot match numeric
-`1`, and so explicit null and an absent field remain distinct.
+Spanner is strongly typed (schema-defined columns), so type-checking functions like Cosmos's `IS_DEFINED` or DynamoDB's `attribute_exists` are not needed — columns always exist (may be NULL if nullable).
 
 ### 3.7 Parameterized Queries
 
@@ -462,20 +457,7 @@ try (ResultSet resultSet = dbClient.singleUse().executeQuery(statement)) {
 
 ### 3.9 Current SDK Implementation
 
-`SpannerProviderClient` and `SpannerExpressionTranslator` are implemented.
-The standard schema stores the portable document in the SDK-owned `data`
-envelope. A valid envelope is authoritative for `read()` and portable query
-translation, even when it omits a physical-column name; the translator falls
-back to a physical-column JSON projection only for a missing or malformed
-envelope. Each scalar comparison uses a JSON type guard before `LAX_STRING`,
-`LAX_INT64`, `LAX_FLOAT64`, or `LAX_BOOL` conversion, preventing coercive
-matches. Full writes preserve cross-type values in the envelope and clear only
-the incompatible physical mirror to typed null.
-
-`IN` and `BETWEEN` share a pre-dispatch portable rule across Cosmos, DynamoDB,
-and Spanner: all non-null operands must be one scalar kind (`String`, `Number`,
-or `Boolean`). Mixed kinds are `INVALID_REQUEST`, rather than selecting a
-Spanner parameter type from the first operand or relying on GoogleSQL coercion.
+The Spanner provider is a stub (`SpannerProviderClient`) that throws `UnsupportedOperationException` for all operations. When implemented, the natural approach is to pass the SQL expression directly to `executeQuery(Statement)`, similar to the Cosmos provider.
 
 ---
 
@@ -659,10 +641,10 @@ if (nextToken != null) {
 | String length | `LENGTH(c.f)` | `size(f)` | `size(f)` | `LENGTH(f)` | **✅** (different names) |
 | Lowercase | `LOWER(c.f)` | ❌ | ❌ | `LOWER(f)` | ❌ (DynamoDB lacks) |
 | Uppercase | `UPPER(c.f)` | ❌ | ❌ | `UPPER(f)` | ❌ (DynamoDB lacks) |
-| Portable field exists (present and non-null) | `IS_DEFINED(c.f) AND NOT IS_NULL(c.f)` | `attribute_exists(f)` plus a non-NULL type check | `f IS NOT MISSING AND f IS NOT NULL` | JSON non-null type test on the authoritative envelope | **✅** (different syntax) |
+| Attribute exists | `IS_DEFINED(c.f)` | `attribute_exists(f)` | `f IS NOT MISSING` | `f IS NOT NULL` | **✅** (different syntax) |
 | Attribute absent | `NOT IS_DEFINED(c.f)` | `attribute_not_exists(f)` | `f IS MISSING` | `f IS NULL` | ⚠️ Semantic gap: NULL vs absent |
 | Regex match | `RegexMatch(c.f, p)` | ❌ | ❌ | `REGEXP_CONTAINS(f, p)` | ❌ (DynamoDB lacks) |
-| Type checking | `IS_STRING`, `IS_NUMBER`, etc. | `attribute_type(f, t)` | `attribute_type(f, t)` | Authoritative-envelope `JSON_TYPE` guards before `LAX_*` conversion | **✅** for portable scalar comparisons |
+| Type checking | `IS_STRING`, `IS_NUMBER`, etc. | `attribute_type(f, t)` | `attribute_type(f, t)` | Not needed (schema-typed) | ⚠️ Semantic gap |
 | Size (collection) | `ARRAY_LENGTH(c.f)` | `size(f)` | `size(f)` | Requires `ARRAY_LENGTH(f)` | **✅** (different names) |
 
 ### 5.3 SQL Syntax Compatibility
@@ -681,7 +663,7 @@ if (nextToken != null) {
 
 2. **Property/column reference syntax**: Cosmos SQL requires container alias prefix (`c.fieldName`). Spanner SQL uses bare column names. DynamoDB native uses `#name` placeholders for reserved words. **Resolution**: The portable DSL should use bare field names and the adapter adds the necessary prefix/placeholder.
 
-3. **Document vs. relational model**: Cosmos DB and DynamoDB are schemaless (documents), while Spanner uses an SDK-owned JSON document envelope over physical columns. **Resolution**: evaluate portable `field_exists` from the same authoritative document state on every provider, requiring both presence and non-nullness. Spanner uses its envelope's JSON type and falls back to physical projection only for a row with no valid envelope.
+3. **Document vs. relational model**: Cosmos DB and DynamoDB are schemaless (documents); Spanner is schema-defined (relational). Functions like `IS_DEFINED` (Cosmos), `attribute_exists` (Dynamo) have no Spanner equivalent because columns always exist. **Resolution**: Map `attribute_exists` to `IS NOT NULL` on Spanner (semantic approximation).
 
 4. **Nested property access**: Cosmos uses `c.address.city`; DynamoDB uses `address.city`; Spanner requires JSON functions or struct access. **Resolution**: Support single-level properties in the portable DSL; nested access is provider-specific/capability-gated.
 
@@ -702,19 +684,13 @@ if (nextToken != null) {
 - Logical: `AND`, `OR`, `NOT`
 - Range: `IN (...)`, `BETWEEN ... AND ...`
 
-Portable scalar comparisons are JSON-type-sensitive: strings are not coerced
-to numbers or booleans, and unlike JSON types do not satisfy comparisons,
-`IN`, or `BETWEEN`. Additionally, all non-null `IN` members and both non-null
-`BETWEEN` bounds must be the same scalar kind (`String`, `Number`, or
-`Boolean`); mixed kinds are rejected before any translator emits provider SQL.
-
 **Functions (universal, with name translation):**
 
 | Portable Name | Cosmos DB | DynamoDB (native) | DynamoDB (PartiQL) | Spanner |
 |---------------|-----------|-------|---------|---------|
 | `starts_with(field, value)` | `STARTSWITH(c.field, value)` | `begins_with(field, value)` | `begins_with(field, value)` | `STARTS_WITH(field, value)` |
 | `contains(field, value)` | `CONTAINS(c.field, value)` | `contains(field, value)` | `contains(field, value)` | `STRPOS(field, value) > 0` |
-| `field_exists(field)` | `IS_DEFINED(c.field) AND NOT IS_NULL(c.field)` | `attribute_exists(field)` plus non-NULL type check | `field IS NOT MISSING AND field IS NOT NULL` | JSON non-null type test on the authoritative envelope |
+| `field_exists(field)` | `IS_DEFINED(c.field)` | `attribute_exists(field)` | `field IS NOT MISSING` | `field IS NOT NULL` |
 | `string_length(field)` | `LENGTH(c.field)` | `size(field)` | `size(field)` | `LENGTH(field)` |
 | `collection_size(field)` | `ARRAY_LENGTH(c.field)` | `size(field)` | `size(field)` | `ARRAY_LENGTH(field)` |
 
@@ -786,7 +762,7 @@ Each adapter translates the portable expression to the native form:
 | **Cosmos DB** | Wrap in `SELECT * FROM c WHERE ...`; prefix field refs with `c.`; map function names; pass `@param` through |
 | **DynamoDB (PartiQL)** | Wrap in `SELECT * FROM "tableName" WHERE ...`; map function names; replace `@param` with `?` and build positional parameter list |
 | **DynamoDB (Native)** | Parse to expression tree; emit `FilterExpression` with `#name`/`:value` placeholders; build `ExpressionAttributeNames` and `ExpressionAttributeValues` maps |
-| **Spanner** | Wrap in `SELECT * FROM tableName WHERE ...`; build values from the authoritative `data` envelope (or physical projection only for legacy/malformed envelopes), add JSON type guards before `LAX_*` conversion, map function names, and bind `@param` values |
+| **Spanner** | Wrap in `SELECT * FROM tableName WHERE ...`; map function names; pass `@param` through |
 
 ### 6.4 Expression Representation in QueryRequest
 
@@ -840,7 +816,7 @@ status = @status
 | **Cosmos DB** | `SELECT * FROM c WHERE c.status = @status` with `SqlParameter("@status", "active")` |
 | **DynamoDB PartiQL** | `SELECT * FROM "TodoItems" WHERE status = ?` with `[AttributeValue.fromS("active")]` |
 | **DynamoDB Native** | FilterExpression: `#status = :status`, Names: `{"#status": "status"}`, Values: `{":status": {S: "active"}}` |
-| **Spanner** | `SELECT * FROM TodoItems WHERE <authoritative-envelope status string> = @status`, guarded by `JSON_TYPE` before `LAX_STRING` conversion |
+| **Spanner** | `SELECT * FROM TodoItems WHERE status = @status` with `.bind("status").to("active")` |
 
 ### 7.2 Multiple Conditions
 
@@ -855,7 +831,7 @@ status = @status AND priority >= @minPriority AND starts_with(title, @prefix)
 | **Cosmos DB** | `SELECT * FROM c WHERE c.status = @status AND c.priority >= @minPriority AND STARTSWITH(c.title, @prefix)` |
 | **DynamoDB PartiQL** | `SELECT * FROM "TodoItems" WHERE status = ? AND priority >= ? AND begins_with(title, ?)` |
 | **DynamoDB Native** | FilterExpression: `#status = :status AND priority >= :minPriority AND begins_with(title, :prefix)` |
-| **Spanner** | Envelope-derived values with per-operand JSON type guards before `LAX_STRING` / numeric conversion |
+| **Spanner** | `SELECT * FROM TodoItems WHERE status = @status AND priority >= @minPriority AND STARTS_WITH(title, @prefix)` |
 
 ### 7.3 IN Operator
 
@@ -870,7 +846,7 @@ status IN (@s1, @s2, @s3)
 | **Cosmos DB** | `SELECT * FROM c WHERE c.status IN (@s1, @s2, @s3)` |
 | **DynamoDB PartiQL** | `SELECT * FROM "TodoItems" WHERE status IN (?, ?, ?)` |
 | **DynamoDB Native** | FilterExpression: `#status IN (:s1, :s2, :s3)` |
-| **Spanner** | Envelope-derived string value with a JSON type guard; all non-null `IN` operands are prevalidated as strings |
+| **Spanner** | `SELECT * FROM TodoItems WHERE status IN (@s1, @s2, @s3)` |
 
 ### 7.4 BETWEEN Operator
 
@@ -885,7 +861,7 @@ age BETWEEN @lo AND @hi
 | **Cosmos DB** | `SELECT * FROM c WHERE c.age BETWEEN @lo AND @hi` |
 | **DynamoDB PartiQL** | `SELECT * FROM "Users" WHERE age BETWEEN ? AND ?` |
 | **DynamoDB Native** | FilterExpression: `age BETWEEN :lo AND :hi` |
-| **Spanner** | Envelope-derived numeric value with a JSON number guard; both non-null bounds are prevalidated as numeric |
+| **Spanner** | `SELECT * FROM Users WHERE age BETWEEN @lo AND @hi` |
 
 ### 7.5 Contains (Substring Match)
 
@@ -900,7 +876,7 @@ contains(description, @term)
 | **Cosmos DB** | `SELECT * FROM c WHERE CONTAINS(c.description, @term)` |
 | **DynamoDB PartiQL** | `SELECT * FROM "Tasks" WHERE contains(description, ?)` |
 | **DynamoDB Native** | FilterExpression: `contains(description, :term)` |
-| **Spanner** | Envelope-derived string value with a JSON string guard, then `STRPOS(..., @term) > 0` |
+| **Spanner** | `SELECT * FROM Tasks WHERE STRPOS(description, @term) > 0` |
 
 ### 7.6 Field Exists Check
 
@@ -912,10 +888,10 @@ field_exists(email)
 
 | Provider | Translated Expression |
 |----------|----------------------|
-| **Cosmos DB** | `SELECT * FROM c WHERE IS_DEFINED(c.email) AND NOT IS_NULL(c.email)` |
-| **DynamoDB PartiQL** | `SELECT * FROM "Users" WHERE email IS NOT MISSING AND email IS NOT NULL` |
-| **DynamoDB Native** | FilterExpression: `attribute_exists(email)` plus a non-NULL type check |
-| **Spanner** | Authoritative-envelope presence and non-null JSON type test, with physical projection only for a missing or malformed envelope |
+| **Cosmos DB** | `SELECT * FROM c WHERE IS_DEFINED(c.email)` |
+| **DynamoDB PartiQL** | `SELECT * FROM "Users" WHERE email IS NOT MISSING` |
+| **DynamoDB Native** | FilterExpression: `attribute_exists(email)` |
+| **Spanner** | `SELECT * FROM Users WHERE email IS NOT NULL` |
 
 ### 7.7 Complex Boolean Logic
 
@@ -930,7 +906,7 @@ field_exists(email)
 | **Cosmos DB** | `SELECT * FROM c WHERE (c.status = @active OR c.status = @pending) AND c.priority > @minP AND NOT CONTAINS(c.title, @excluded)` |
 | **DynamoDB PartiQL** | `SELECT * FROM "Tasks" WHERE (status = ? OR status = ?) AND priority > ? AND NOT contains(title, ?)` |
 | **DynamoDB Native** | FilterExpression: `(#status = :active OR #status = :pending) AND priority > :minP AND NOT contains(title, :excluded)` |
-| **Spanner** | Envelope-derived values with JSON type guards for each scalar operand and `STRPOS` only after a string guard |
+| **Spanner** | `SELECT * FROM Tasks WHERE (status = @active OR status = @pending) AND priority > @minP AND NOT STRPOS(title, @excluded) > 0` |
 
 ### 7.8 Select All (No Filter)
 

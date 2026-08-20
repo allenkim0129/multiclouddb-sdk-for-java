@@ -26,14 +26,11 @@ import java.util.concurrent.ExecutionException;
  */
 public final class SpannerTestSchema {
 
-    /** Emulator host shared by every Spanner conformance suite, including sub-packages. */
-    public static final String EMULATOR_HOST = ConformanceConfig.resolve(
+    static final String EMULATOR_HOST = ConformanceConfig.resolve(
             "spanner.emulatorHost", "SPANNER_EMULATOR_HOST", "localhost:9010");
-    /** Project the schema is provisioned in; public so per-user-story suites can build a matching client. */
-    public static final String PROJECT_ID = ConformanceConfig.resolve(
+    static final String PROJECT_ID = ConformanceConfig.resolve(
             "spanner.projectId", "SPANNER_PROJECT_ID", "test-project");
-    /** Instance the schema is provisioned in; public so per-user-story suites can build a matching client. */
-    public static final String INSTANCE_ID = ConformanceConfig.resolve(
+    static final String INSTANCE_ID = ConformanceConfig.resolve(
             "spanner.instanceId", "SPANNER_INSTANCE_ID", "test-instance");
 
     /**

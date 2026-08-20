@@ -57,22 +57,17 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * (FR-181 … FR-192).
  * <p>
  * Like {@link com.multiclouddb.conformance.CrudConformanceTests}, every
- * behaviour asserted here MUST hold identically on Cosmos DB, DynamoDB and
- * Spanner. Patch is implemented with three completely different native
- * primitives — ETag-bound {@code patchItem}, {@code UpdateItem} with a condition
- * expression, and a document-envelope update inside a retryable read-write
- * transaction — so these tests are what keep the three from drifting apart. The
- * one deliberate asymmetry, nested-path support, is gated on
- * {@link Capability#NESTED_PATCH} and asserted in <em>both</em> directions: it
- * works where declared, and fails with {@code UNSUPPORTED_CAPABILITY} where not.
+ * behaviour asserted here MUST hold identically on every provider that declares
+ * {@link Capability#PATCH} supported. Providers may defer the implementation
+ * only by declaring PATCH unsupported and failing fast with
+ * {@code UNSUPPORTED_CAPABILITY}; the capability conformance suite covers that
+ * branch. Provider implementations can use different native primitives, so this
+ * suite is what prevents their observable behaviour from drifting apart.
+ * Nested-path support is independently gated on {@link Capability#NESTED_PATCH}
+ * and asserted in both directions.
  * <p>
  * Subclass and implement {@link #createClient()} and {@link #getAddress()} to
  * run the suite against a provider.
- * <p>
- * <b>Schema note.</b> The shared Spanner schema supplies typed physical columns
- * for type-fidelity checks. Its standard {@code data} envelope also supports
- * dynamic top-level fields without DDL, which this suite verifies with
- * {@code /onSale}.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 public abstract class PatchConformanceTest {
@@ -133,8 +128,14 @@ public abstract class PatchConformanceTest {
 
     /** Seed a document and return its key. */
     private MulticloudDbKey seed(String prefix, Map<String, Object> document) {
+        return seed(prefix, document, OperationOptions.defaults());
+    }
+
+    /** Seed a document with explicit write options and return its key. */
+    private MulticloudDbKey seed(String prefix, Map<String, Object> document,
+            OperationOptions options) {
         MulticloudDbKey key = ConformanceHarness.uniqueKey(prefix);
-        client.create(getAddress(), key, document, OperationOptions.defaults());
+        client.create(getAddress(), key, document, options);
         seededKeys.add(key);
         return key;
     }
@@ -190,28 +191,33 @@ public abstract class PatchConformanceTest {
     }
 
     /**
-     * Mirrors {@link #supportsNestedPatch()}. Declared SUPPORTED where the provider
-     * evaluates {@code field = field + delta} server-side in exact decimal
-     * (DynamoDB, 38 significant digits) and UNSUPPORTED where the addition is done
-     * in IEEE-754 binary64 (Cosmos, Spanner). Purely informational — a fractional
-     * increment is accepted everywhere; only the resulting number differs.
+     * Providers declare this supported when fractional increments use
+     * exact-decimal arithmetic and unsupported when they use IEEE-754 binary64.
+     * It is informational: every provider that supports PATCH still accepts an
+     * in-domain fractional increment.
      */
     private boolean supportsExactFractionalIncrement() {
         return client.capabilities().isSupported(Capability.EXACT_FRACTIONAL_INCREMENT);
+    }
+
+    private boolean supportsPatchPreservesTtl() {
+        return client.capabilities().isSupported(Capability.PATCH_PRESERVES_TTL);
     }
 
     // ── capability declaration ───────────────────────────────────────────────
 
     @Test
     @Order(1)
-    @DisplayName("PATCH is declared supported by every provider")
+    @DisplayName("PATCH is declared supported by each provider running this suite")
     void patchCapabilityIsDeclared() {
         assertTrue(client.capabilities().isSupported(Capability.PATCH),
-                "every v1 provider must implement the portable patch operation");
+                "providers running patch conformance must declare PATCH supported");
         assertNotNull(client.capabilities().get(Capability.NESTED_PATCH),
                 "NESTED_PATCH must be declared either way so callers can branch on it");
         assertNotNull(client.capabilities().get(Capability.EXACT_FRACTIONAL_INCREMENT),
                 "EXACT_FRACTIONAL_INCREMENT must be declared either way so callers can branch on it");
+        assertNotNull(client.capabilities().get(Capability.PATCH_PRESERVES_TTL),
+                "PATCH_PRESERVES_TTL must be declared either way so callers can branch on it");
     }
 
     @Test
@@ -237,7 +243,7 @@ public abstract class PatchConformanceTest {
         ObjectNode doc = read(key);
         assertEquals("active", doc.get("status").asText());
         assertTrue(doc.get("onSale").asBoolean(),
-                "a dynamic top-level SET must not require a Spanner DDL column");
+                "a dynamic top-level SET must not require predeclaring the field");
         assertEquals("original", doc.get("title").asText(), "patch must not rewrite untouched fields");
         assertEquals("keep", doc.get("extra").asText(), "patch must not rewrite untouched fields");
     }
@@ -451,10 +457,7 @@ public abstract class PatchConformanceTest {
         assertInvalidAndUnchanged(key, ops);
     }
 
-    /**
-     * Cosmos and Spanner apply operations sequentially; DynamoDB resolves operands
-     * against the pre-update item. Overlapping paths would therefore diverge.
-     */
+    /** Native engines disagree on overlapping-path evaluation, so it is rejected portably. */
     @Test
     @Order(16)
     @DisplayName("overlapping paths in one patch are INVALID_REQUEST")
@@ -567,7 +570,7 @@ public abstract class PatchConformanceTest {
         // document from an interrupted run would break the exact-count assertion for
         // every later run. Scope by partition key plus a per-run marker.
         String marker = "patch-query-" + UUID.randomUUID();
-        MulticloudDbKey key = seed("patch-query-envelope", Map.of("value", 1, "marker", marker));
+        MulticloudDbKey key = seed("patch-query-dynamic", Map.of("value", 1, "marker", marker));
         client.patch(getAddress(), key, List.of(
                 PatchOperation.increment("/value", 0.5d),
                 PatchOperation.set("/onSale", true)));
@@ -590,14 +593,8 @@ public abstract class PatchConformanceTest {
     }
 
     /**
-     * ORDER BY on a field that only a patch created — so it exists solely inside
-     * the document envelope and has no physical column anywhere.
-     * <p>
-     * Before dynamic-field ordering existed, a non-key {@code orderBy} on Spanner
-     * resolved to a bare typed column, so a patched field could not be ordered on
-     * at all and the only coverage was provider-local. Ordering a JSON-resident
-     * field is the case where providers most easily drift apart, because the
-     * obvious implementation sorts the field's *textual* JSON form: that ranks
+     * ORDER BY on a field that only a patch created. Dynamic-field ordering is a
+     * seam where provider implementations can drift: a textual implementation ranks
      * {@code 1, 10, 2} instead of {@code 1, 2, 10} and would silently return a
      * different result set per provider for the same portable query.
      * <p>
@@ -626,8 +623,7 @@ public abstract class PatchConformanceTest {
 
         for (Map.Entry<String, Integer> entry : ranks.entrySet()) {
             MulticloudDbKey key = seedInPartition(partition, entry.getKey(), Map.of("marker", marker));
-            // rankValue exists only because of this patch: it is absent from the
-            // seeded document and from every provider's physical schema.
+            // rankValue exists only because of this patch.
             client.patch(getAddress(), key, List.of(PatchOperation.set("/rankValue", entry.getValue())));
         }
 
@@ -684,6 +680,35 @@ public abstract class PatchConformanceTest {
                 BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE))));
         assertInvalidAndUnchanged(key, List.of(PatchOperation.increment("/value",
                 new BigDecimal("0.1234567890123456789"))));
+    }
+
+    @Test
+    @Order(48)
+    @DisplayName("fractional increment floor is accepted and smaller deltas are INVALID_REQUEST")
+    void fractionalIncrementFloorIsPortable() {
+        MulticloudDbKey key = seed("patch-fractional-floor",
+                Map.of("title", "before", "value", 0));
+
+        client.patch(getAddress(), key,
+                List.of(PatchOperation.increment("/value", new BigDecimal("1E-130"))));
+        assertEquals(1e-130d, read(key).get("value").asDouble());
+
+        assertInvalidAndUnchanged(key,
+                List.of(PatchOperation.increment("/value", new BigDecimal("1E-131"))));
+        assertEquals(1e-130d, read(key).get("value").asDouble(),
+                "a rejected sub-floor delta must not alter the boundary value");
+    }
+
+    @Test
+    @Order(49)
+    @DisplayName("SET integers wider than long remain readable")
+    void setWideIntegerRemainsReadable() {
+        BigInteger value = BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE);
+        MulticloudDbKey key = seed("patch-wide-integer", Map.of("title", "before"));
+
+        client.patch(getAddress(), key, List.of(PatchOperation.set("/wide", value)));
+
+        assertEquals(value, read(key).get("wide").bigIntegerValue());
     }
 
     @Test
@@ -808,12 +833,7 @@ public abstract class PatchConformanceTest {
         assertEquals("12345", stored.get("zip").asText(), "sibling sub-fields must be preserved");
     }
 
-    /**
-     * The declared asymmetry. Spanner stores nested containers as a single
-     * serialised column value, so there is no addressable sub-path — it must fail
-     * loudly with {@code UNSUPPORTED_CAPABILITY} rather than silently rewriting
-     * the parent or doing nothing.
-     */
+    /** Unsupported nested paths must fail loudly rather than being rewritten or ignored. */
     @Test
     @Order(20)
     @DisplayName("nested path is UNSUPPORTED_CAPABILITY where NESTED_PATCH is not declared")
@@ -835,11 +855,7 @@ public abstract class PatchConformanceTest {
 
     // ── documented uniform behaviour ─────────────────────────────────────────
 
-    /**
-     * {@code ttlSeconds} is ignored by patch on every provider. This is uniform
-     * documented behaviour, not divergence: Cosmos's 10-operation cap leaves no
-     * headroom to smuggle a TTL write in, so no provider re-stamps expiry.
-     */
+    /** {@code ttlSeconds} on the patch request itself never creates a new expiry. */
     @Test
     @Order(21)
     @DisplayName("ttlSeconds is accepted and ignored on every provider")
@@ -864,14 +880,45 @@ public abstract class PatchConformanceTest {
         }
     }
 
+    @Test
+    @Order(50)
+    @DisplayName("existing SDK-managed TTL is preserved or rejected by capability")
+    void existingTtlMatchesPatchPreservationCapability() {
+        OperationOptions ttl = OperationOptions.builder().ttlSeconds(3600).build();
+        MulticloudDbKey key = seed("patch-existing-ttl", Map.of("title", "before"), ttl);
+
+        if (!supportsPatchPreservesTtl()) {
+            assertCategory(patchExpectingFailure(key,
+                    List.of(PatchOperation.set("/status", "after"))),
+                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY);
+            assertFalse(read(key).has("status"),
+                    "a provider unable to preserve expiry must reject before mutation");
+            return;
+        }
+
+        OperationOptions metadata = OperationOptions.builder().includeMetadata(true).build();
+        DocumentResult before = client.read(getAddress(), key, metadata);
+        assertNotNull(before);
+        assertNotNull(before.metadata());
+        assertNotNull(before.metadata().ttlExpiry(),
+                "a provider declaring PATCH_PRESERVES_TTL must expose the seeded expiry");
+
+        client.patch(getAddress(), key, List.of(PatchOperation.set("/status", "after")));
+
+        DocumentResult after = client.read(getAddress(), key, metadata);
+        assertNotNull(after);
+        assertNotNull(after.metadata());
+        assertEquals(before.metadata().ttlExpiry(), after.metadata().ttlExpiry(),
+                "patch must preserve the existing absolute expiry");
+    }
+
     // ── numeric representation parity ────────────────────────────────────────
 
     /**
      * {@code increment("/value", 1.0)} and {@code increment("/value", 1)} are the
      * same portable request and must land the same stored number. Keying the
      * integer-vs-floating decision off the boxed Java type rather than the value
-     * made the former write a floating-point number, which the schemaless providers
-     * accepted and a Spanner {@code INT64} column rejected.
+     * can make the former write a floating-point number on a typed backend.
      */
     @Test
     @Order(22)
@@ -901,10 +948,9 @@ public abstract class PatchConformanceTest {
     }
 
     /**
-     * The documented, capability-gated numeric divergence. DynamoDB evaluates
-     * {@code field = field + delta} server-side in exact decimal, so
-     * {@code 0.1 + 0.2} is exactly {@code 0.3}. Cosmos and Spanner evaluate the
-     * same addition in IEEE-754 binary64 and land on {@code 0.30000000000000004}.
+     * The documented, capability-gated numeric divergence. An exact-decimal
+     * implementation produces {@code 0.3}; an IEEE-754 binary64 implementation
+     * produces {@code 0.30000000000000004}.
      * <p>
      * The other fractional cases in this suite use {@code 1 + 0.5} and
      * {@code 1.5 + 0.25} — both exactly representable in binary64 — and compare
@@ -969,12 +1015,7 @@ public abstract class PatchConformanceTest {
 
     // ── value fidelity ───────────────────────────────────────────────────────
 
-    /**
-     * Each provider stores a complex value through a different seam - Cosmos writes
-     * the JSON subtree directly, DynamoDB maps it to {@code M}/{@code L}, Spanner
-     * stores it in the document envelope - so a top-level object value is the seam
-     * most likely to drift.
-     */
+    /** Complex-value encoding differs by provider, so object round-tripping is pinned here. */
     @Test
     @Order(25)
     @DisplayName("SET with an object value round-trips identically on every provider")
@@ -992,11 +1033,7 @@ public abstract class PatchConformanceTest {
         assertEquals("98052", doc.get("nestedObj").get("zip").asText());
     }
 
-    /**
-     * {@code SET} to null stores a present-but-null field, which is observably
-     * different from {@code REMOVE}. Spanner preserves the distinction in its
-     * document envelope, so this pins the one place it could be lost.
-     */
+    /** {@code SET} null must remain observably different from {@code REMOVE}. */
     @Test
     @Order(26)
     @DisplayName("SET null stores an explicit null, distinct from REMOVE")

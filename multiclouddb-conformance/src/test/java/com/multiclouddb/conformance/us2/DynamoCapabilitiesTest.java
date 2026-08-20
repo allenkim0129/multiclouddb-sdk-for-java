@@ -33,6 +33,11 @@ public class DynamoCapabilitiesTest extends CapabilitiesConformanceTest {
         return true;
     }
 
+    @Override
+    protected boolean expectedPatchPreservesTtlSupport() {
+        return true;
+    }
+
     @Test
     void dynamoLikeNotSupported() throws Exception {
         try (var client = com.multiclouddb.conformance.ConformanceHarness.createClient(ProviderId.DYNAMO)) {

@@ -25,7 +25,6 @@ import com.multiclouddb.api.changefeed.ChangeFeedPage;
 import com.multiclouddb.api.changefeed.CursorExpiredException;
 import com.multiclouddb.api.changefeed.internal.CursorToken;
 import com.multiclouddb.api.changefeed.internal.CursorTokenCodec;
-import com.multiclouddb.spi.DocumentFieldValidator;
 import com.multiclouddb.api.query.Expression;
 import com.multiclouddb.api.query.ExpressionParseException;
 import com.multiclouddb.api.query.ExpressionParser;
@@ -177,9 +176,10 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
                     ? null
                     : Collections.unmodifiableList(new ArrayList<>(operations));
             // No validatePatchRequest call here on purpose. The SPI contract
-            // (MulticloudDbProviderClient#patch) requires every implementation to
-            // invoke it immediately after its lifecycle guard, and all three
-            // adapters do; the SPI default implementation rejects the request
+            // (MulticloudDbProviderClient#patch) requires every overriding
+            // implementation to invoke it immediately after its lifecycle guard.
+            // Cosmos DB and DynamoDB do; the SPI default implementation rejects
+            // unsupported providers
             // outright with UNSUPPORTED_CAPABILITY without touching a provider
             // SDK. Validating here as well would re-run the whole request-size
             // check — a full serialization of an operand graph that may approach

@@ -28,7 +28,7 @@ class CosmosErrorMappingTest {
             "403, AUTHORIZATION_FAILED",
             "404, NOT_FOUND",
             "409, CONFLICT",
-            "412, NOT_FOUND",
+            "412, CONFLICT",
             "429, THROTTLED",
             "449, TRANSIENT_FAILURE",
             "500, TRANSIENT_FAILURE",
@@ -114,22 +114,21 @@ class CosmosErrorMappingTest {
     }
 
     @Test
-    @DisplayName("Only a genuine 409 maps to CONFLICT; a failed precondition does not")
-    void onlyResourceConflictMapsToConflict() {
-        // The adapter attaches no If-Match on any operation, so its only
-        // precondition is patch's path-scoped existence predicate. Routing 412 to
-        // CONFLICT would resurrect a category the portable patch contract does not
-        // document, and would do so only on Cosmos.
-        assertEquals(MulticloudDbErrorCategory.NOT_FOUND,
-                CosmosErrorMapper.map(mockCosmosException(412, 0), OperationNames.PATCH)
+    @DisplayName("Generic failed precondition maps to conflict")
+    void genericFailedPreconditionMapsToConflict() {
+        // PATCH intercepts 412 and proves its portable category from current
+        // state. The generic mapper must not invent NOT_FOUND when no such
+        // operation-specific evidence is available.
+        assertEquals(MulticloudDbErrorCategory.CONFLICT,
+                CosmosErrorMapper.map(mockCosmosException(412, 0), OperationNames.READ)
                         .error().category(),
-                "412 proves a required path was absent, which the peers report as NOT_FOUND");
+                "an unclassified 412 proves only that a condition failed");
 
-        for (int statusCode : new int[] { 400, 401, 403, 404, 412, 429, 449, 500, 502, 503, 418 }) {
+        for (int statusCode : new int[] { 400, 401, 403, 404, 429, 449, 500, 502, 503, 418 }) {
             MulticloudDbException mapped =
                     CosmosErrorMapper.map(mockCosmosException(statusCode, 0), OperationNames.PATCH);
             assertNotEquals(MulticloudDbErrorCategory.CONFLICT, mapped.error().category(),
-                    () -> "only 409 may map to CONFLICT, but " + statusCode + " did");
+                    () -> "status " + statusCode + " must not map to CONFLICT");
         }
 
         assertEquals(MulticloudDbErrorCategory.CONFLICT,

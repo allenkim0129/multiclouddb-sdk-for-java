@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-package com.multiclouddb.spi;
+package com.multiclouddb.api.internal;
 
 import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
@@ -11,21 +11,18 @@ import com.multiclouddb.api.ProviderId;
 import java.util.Map;
 
 /**
- * SPI utility that validates document field names owned by the portable SDK
- * contract.
+ * Validates document field names owned by the portable SDK contract.
  * <p>
- * The standard Spanner schema stores the SDK's authoritative document envelope
- * in {@code data}. Spanner resolves column names case-insensitively, while
- * Cosmos DB and DynamoDB would otherwise accept a user field of that name.
- * Rejecting it at the shared client boundary keeps all write paths portable.
- * Provider adapters that expose direct SPI write methods use this utility as
- * defence in depth; application code should use {@code MulticloudDbClient}
- * rather than calling this helper.
+ * The standard Spanner schema uses {@code data} for SDK-owned document metadata
+ * and resolves column names case-insensitively, while document providers would
+ * otherwise accept a user field of that name. Rejecting it at the shared client
+ * boundary keeps writes portable and preserves the name for future provider
+ * implementations without requiring provider-specific validation.
  */
-public final class DocumentFieldValidator {
+final class DocumentFieldValidator {
 
-    /** Internal SDK document-envelope field, reserved across all providers. */
-    public static final String RESERVED_DATA_FIELD = "data";
+    /** Internal SDK metadata field, reserved across all providers. */
+    static final String RESERVED_DATA_FIELD = "data";
 
     private DocumentFieldValidator() {
     }
@@ -40,7 +37,7 @@ public final class DocumentFieldValidator {
      * @throws MulticloudDbException {@code INVALID_REQUEST} when a reserved
      *         field is present
      */
-    public static void validateWritableDocument(Map<String, Object> document, ProviderId provider,
+    static void validateWritableDocument(Map<String, Object> document, ProviderId provider,
             String operation) {
         if (document == null) {
             return;

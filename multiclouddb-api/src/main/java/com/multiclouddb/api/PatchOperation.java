@@ -27,15 +27,15 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>
  * Unlike {@code upsert()} / {@code update()} — which replace the whole stored
  * document — a patch sends only the fields being changed and lets the provider
- * apply them atomically. Cosmos DB and DynamoDB use provider-native partial
- * writes; Spanner applies an equivalent atomic change inside a retryable read-write
- * transaction over its internal document envelope, so no non-transactional
- * client-side read-modify-write window is exposed.
+ * apply them atomically. Providers may use native partial writes or another
+ * equivalent atomic primitive. A provider without a safe implementation must
+ * declare {@link Capability#PATCH} unsupported rather than emulate patch through
+ * a non-transactional client-side read-modify-write.
  *
  * <h3>Paths</h3>
  * {@link #path()} is a <b>JSON Pointer</b> rooted at the document: {@code /status},
- * {@code /address/city}. Restrictions that keep the contract portable across all
- * three providers:
+ * {@code /address/city}. Restrictions that keep the contract portable across
+ * current and future providers:
  * <ul>
  *   <li>The path must be absolute (start with {@code /}) and must not be the
  *       document root.</li>
@@ -43,8 +43,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *       escapes are not supported), and must not be purely numeric — array
  *       element addressing is not portable and is rejected.</li>
  *   <li>A path with more than one segment is a <em>nested</em> path and
- *       requires {@link Capability#NESTED_PATCH}. Spanner does not support it,
- *       because its document envelope has no native addressable sub-path.</li>
+ *       requires {@link Capability#NESTED_PATCH}.</li>
  *   <li>Key and provider-reserved field names ({@code id}, {@code partitionKey},
  *       {@code sortKey}, {@code ttl}, {@code ttlExpiry}, {@code data}, and any
  *       name starting with {@code _}) are rejected.</li>
@@ -62,7 +61,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>
  * For a nested path, every <em>parent</em> object must already exist on every
  * operation type including {@code SET}; patch never creates intermediate
- * objects, because the three providers disagree on recursive path creation.
+ * objects, because provider-native recursive path creation is not portable.
  * <p>
  * Instances are immutable and safe to share across threads. Values are
  * normalised at construction into detached JSON-compatible scalars, maps, and
@@ -149,20 +148,22 @@ public final class PatchOperation {
      * <p>
      * The addition is evaluated by the provider inside the same atomic write, so
      * concurrent increments do not lose updates.
-     * Integral deltas must fit signed 64-bit range. Fractional deltas must be
-     * finite, have magnitude at most 9,007,199,254,740,991, and round-trip
-     * through an IEEE-754 {@code double} without decimal precision loss.
+     * Integral deltas must fit signed 64-bit range. Non-zero fractional deltas
+     * must have magnitude from {@code 1E-130} through
+     * 9,007,199,254,740,991, be finite, and round-trip through an IEEE-754
+     * {@code double} without decimal precision loss.
      * <p>
-     * Integral results are exact on every provider. Accumulated <em>fractional</em>
-     * results are not: DynamoDB adds in exact decimal arithmetic while Cosmos and
-     * Spanner add in IEEE-754 binary64, so repeated fractional increments can
-     * drift apart in the last ulp. Providers declare this via
+     * Integral results are exact on every provider that advertises PATCH.
+     * Accumulated <em>fractional</em> results are not bit-identical across the
+     * current implementations: DynamoDB adds in exact decimal arithmetic while
+     * Cosmos DB uses IEEE-754 binary64. Providers declare this via
      * {@link Capability#EXACT_FRACTIONAL_INCREMENT}; see {@link PatchNumericDomain}.
      *
      * @param path  JSON Pointer to the target field
      * @param delta the amount to add; may be negative; values outside the
-     *              portable numeric domain fail with {@code INVALID_REQUEST}
-     *              when the patch is submitted
+     *              portable numeric domain (including non-zero fractional
+     *              magnitudes below {@code 1E-130}) fail with
+     *              {@code INVALID_REQUEST} when the patch is submitted
      * @return the operation
      */
     public static PatchOperation increment(String path, Number delta) {

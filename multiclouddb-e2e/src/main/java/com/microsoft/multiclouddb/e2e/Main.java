@@ -122,23 +122,29 @@ public class Main {
         }
         System.out.println();
 
-        // ── PATCH (field-level partial update) ────────────────────────
-        System.out.println("── PATCH (prod-005: price cut, mark on-sale) ──────────────────");
-        patch("prod-005");
-        System.out.println();
+        if (client.capabilities().isSupported(Capability.PATCH)) {
+            // ── PATCH (field-level partial update) ────────────────────
+            System.out.println("── PATCH (prod-005: price cut, mark on-sale) ──────────────────");
+            patch("prod-005");
+            System.out.println();
 
-        // ── READ (verify patch) ───────────────────────────────────────
-        System.out.println("── READ (verify patch) ────────────────────────────────────────");
-        DocumentResult patchResult = read("prod-005");
-        if (patchResult == null) {
-            throw new AssertionError("Expected document for prod-005 after patch but got null");
+            // ── READ (verify patch) ───────────────────────────────────
+            System.out.println("── READ (verify patch) ────────────────────────────────────────");
+            DocumentResult patchResult = read("prod-005");
+            if (patchResult == null) {
+                throw new AssertionError("Expected document for prod-005 after patch but got null");
+            }
+            if (Math.abs(patchResult.document().path("price").asDouble() - 49.99) > 0.000_001
+                    || !patchResult.document().path("onSale").asBoolean()) {
+                throw new AssertionError("Patch did not persist price=49.99 and dynamic onSale=true: "
+                        + patchResult.document());
+            }
+            System.out.println();
+        } else {
+            System.out.println("── PATCH ──────────────────────────────────────────────────────");
+            System.out.println("  Skipped: provider declares PATCH unsupported.");
+            System.out.println();
         }
-        if (Math.abs(patchResult.document().path("price").asDouble() - 49.99) > 0.000_001
-                || !patchResult.document().path("onSale").asBoolean()) {
-            throw new AssertionError("Patch did not persist price=49.99 and dynamic onSale=true: "
-                    + patchResult.document());
-        }
-        System.out.println();
 
         // ── LIST (full scan, paged) ───────────────────────────────────
         System.out.println("── LIST (pageSize=3) ──────────────────────────────────────────");

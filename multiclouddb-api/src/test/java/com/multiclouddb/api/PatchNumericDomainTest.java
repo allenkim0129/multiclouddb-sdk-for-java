@@ -39,20 +39,20 @@ class PatchNumericDomainTest {
     /**
      * Locks the divergence that {@link com.multiclouddb.api.Capability#EXACT_FRACTIONAL_INCREMENT}
      * declares: the delta is portable, the accumulated fractional result is not.
-     * Cosmos and Spanner evaluate in binary64 (this method), while DynamoDB adds
-     * in the exact-decimal {@code N} type and would store {@code 0.3}.
+     * Cosmos DB evaluates in binary64 (this method), while DynamoDB adds in the
+     * exact-decimal {@code N} type and would store {@code 0.3}.
      */
     @Test
     void fractionalResultsAccumulateInBinary64NotExactDecimal() {
         assertEquals(0.2d, PatchNumericDomain.normalize(new java.math.BigDecimal("0.2")),
-                "the normalized delta itself is the same IEEE-754 value on every provider");
+                "the normalized delta itself is the same value on current PATCH providers");
 
         assertEquals(0.30000000000000004d, (Double) PatchNumericDomain.add(0.1d, 0.2d),
                 "binary64 accumulation, not DynamoDB's exact decimal 0.3");
         assertNotEquals(0.3d, PatchNumericDomain.add(0.1d, 0.2d));
 
         assertEquals(1.5d, (Double) PatchNumericDomain.add(1, 0.5d),
-                "exactly representable fractions stay identical on all three providers");
+                "exactly representable fractions stay identical on current PATCH providers");
     }
 
     /**
@@ -101,5 +101,17 @@ class PatchNumericDomainTest {
                 () -> PatchNumericDomain.isIntegralResultOutsideRange(null, 1));
         assertThrows(IllegalArgumentException.class,
                 () -> PatchNumericDomain.isIntegralResultOutsideRange(null, 1.5d));
+    }
+
+    @Test
+    void fractionalDeltasRespectTheDynamoDbMinimumMagnitude() {
+        assertEquals(1e-130d, PatchNumericDomain.normalize(1e-130d));
+        assertEquals(-1e-130d, PatchNumericDomain.normalize(-1e-130d));
+        assertEquals(0L, PatchNumericDomain.normalize(0.0d));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> PatchNumericDomain.normalize(1e-131d));
+        assertThrows(IllegalArgumentException.class,
+                () -> PatchNumericDomain.normalize(new java.math.BigDecimal("1E-131")));
     }
 }

@@ -9,26 +9,27 @@ import java.math.BigInteger;
 /**
  * Defines the portable numeric domain for {@code PatchOperation.INCREMENT}.
  * <p>
- * Integral deltas are normalised to signed 64-bit values, the common exact
- * integer domain of Cosmos, DynamoDB, and Spanner. Fractional deltas are
- * normalised to finite {@code double}s. The magnitude and round-trip checks
- * apply to the <em>delta</em> only: they guarantee that the decimal
- * representation sent to DynamoDB is the same IEEE-754 value used by Cosmos and
- * Spanner.
+ * Integral deltas are normalised to signed 64-bit values, the portable exact
+ * integer domain required of every provider that advertises PATCH. Fractional
+ * deltas are normalised to finite {@code double}s. The lower magnitude bound
+ * reflects DynamoDB's smallest non-zero number; the upper magnitude and
+ * round-trip checks guarantee that the decimal representation sent to DynamoDB
+ * represents the same value supplied to Cosmos DB.
  * <p>
  * <b>They do not extend to the accumulated result.</b> DynamoDB evaluates
  * {@code x = x + :delta} in its {@code N} type, which is exact decimal
  * arithmetic, while Cosmos evaluates the native patch increment as a JSON
- * binary64 number and Spanner adds through {@link #add(Number, Number)} in
- * binary64. Seeding {@code 0.1} and incrementing by {@code 0.2} therefore
- * stores exactly {@code 0.3} on DynamoDB and {@code 0.30000000000000004} on
- * Cosmos and Spanner, and the divergence compounds across repeated fractional
- * increments. Integral results are unaffected — they stay exact on all three
- * providers because {@link #add(Number, Number)} bounds them to signed 64-bit
- * range. The gap is declared, not silent: providers publish
+ * binary64 number. Seeding {@code 0.1} and incrementing by {@code 0.2}
+ * therefore stores exactly {@code 0.3} on DynamoDB and
+ * {@code 0.30000000000000004} on Cosmos DB, and the divergence compounds across
+ * repeated fractional increments. Integral results are unaffected — they stay
+ * exact because {@link #add(Number, Number)} bounds them to signed 64-bit range.
+ * The gap is declared, not silent: providers publish
  * {@link Capability#EXACT_FRACTIONAL_INCREMENT} so callers that need
- * bit-identical fractional totals can branch on it. The capability is
- * informational — no provider rejects a fractional increment because of it.
+ * bit-identical fractional totals can branch on it. For a provider that
+ * advertises PATCH, the capability is informational and does not itself reject
+ * an in-domain fractional increment. Spanner currently advertises PATCH
+ * unsupported and makes no fractional-arithmetic claim.
  *
  * <h2>Which result bound applies is decided by the <em>normalized</em> delta,
  * not by the Java type you passed</h2>
@@ -38,13 +39,14 @@ import java.math.BigInteger;
  * <ul>
  *   <li><b>Integral normalized delta</b> — the result must fit the signed
  *       64-bit interval {@code [Long.MIN_VALUE, Long.MAX_VALUE]}. An integral
- *       result has to round-trip as a {@code Long} on all three providers, so
- *       anything wider is rejected as {@code INVALID_REQUEST}.</li>
+ *       result has to round-trip as a {@code Long} on every provider advertising
+ *       PATCH, so anything wider is rejected as {@code INVALID_REQUEST}.</li>
  *   <li><b>Fractional normalized delta</b> — the result only has to stay
  *       finite. A fractional result is never promised to round-trip as a
  *       {@code Long}, so no 64-bit bound is imposed on it; the portable
- *       magnitude ceiling ({@link #MAX_FRACTIONAL_MAGNITUDE}) constrains the
- *       <em>delta</em>, not the sum.</li>
+ *       magnitude floor ({@link #MIN_NONZERO_FRACTIONAL_MAGNITUDE}) and ceiling
+ *       ({@link #MAX_FRACTIONAL_MAGNITUDE}) constrain the <em>delta</em>, not
+ *       the sum.</li>
  * </ul>
  *
  * The subtlety is that {@link #normalize(Number)} folds <em>any</em>
@@ -61,8 +63,8 @@ import java.math.BigInteger;
  *
  * A larger delta being accepted where a smaller one is rejected is surprising,
  * but it is deliberate and stable: the accepted case produces a {@code Double}
- * that no provider has to narrow, while the rejected cases would produce an
- * integral value that cannot survive a {@code Long} round-trip. Callers that
+ * that no conforming provider has to narrow, while the rejected cases would
+ * produce an integral value that cannot survive a {@code Long} round-trip. Callers that
  * need to know which rule will apply before dispatch can ask
  * {@link #isIntegralDelta(Number)}, and callers that want to pre-check the
  * bound can use {@link #isIntegralResultOutsideRange(Number, Number)} or
@@ -75,6 +77,9 @@ public final class PatchNumericDomain {
 
     /** Largest magnitude at which a fractional IEEE-754 double is portable. */
     public static final double MAX_FRACTIONAL_MAGNITUDE = 9_007_199_254_740_991d;
+
+    /** Smallest non-zero magnitude accepted by DynamoDB's numeric type. */
+    public static final double MIN_NONZERO_FRACTIONAL_MAGNITUDE = 1e-130d;
 
     private static final BigInteger MIN_INTEGRAL_RESULT = BigInteger.valueOf(Long.MIN_VALUE);
     private static final BigInteger MAX_INTEGRAL_RESULT = BigInteger.valueOf(Long.MAX_VALUE);
@@ -160,6 +165,11 @@ public final class PatchNumericDomain {
             throw new IllegalArgumentException("fractional deltas must not exceed "
                     + (long) MAX_FRACTIONAL_MAGNITUDE
                     + " in magnitude so all providers preserve their IEEE-754 value");
+        }
+        if (value != 0.0d && Math.abs(value) < MIN_NONZERO_FRACTIONAL_MAGNITUDE) {
+            throw new IllegalArgumentException("non-zero fractional deltas must be at least "
+                    + MIN_NONZERO_FRACTIONAL_MAGNITUDE
+                    + " in magnitude so DynamoDB can represent them");
         }
     }
 

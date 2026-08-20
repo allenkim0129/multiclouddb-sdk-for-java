@@ -7,7 +7,6 @@ import com.multiclouddb.api.query.BetweenExpression;
 import com.multiclouddb.api.query.ComparisonExpression;
 import com.multiclouddb.api.query.Expression;
 import com.multiclouddb.api.query.ExpressionTranslator;
-import com.multiclouddb.api.query.ExpressionValidator;
 import com.multiclouddb.api.query.FieldRef;
 import com.multiclouddb.api.query.FunctionCallExpression;
 import com.multiclouddb.api.query.InExpression;
@@ -35,7 +34,6 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
 
     @Override
     public TranslatedQuery translate(Expression expression, Map<String, Object> parameters, String container) {
-        ExpressionValidator.validate(expression, parameters);
         StringBuilder where = new StringBuilder();
         List<Object> positionalParams = new ArrayList<>();
 
@@ -51,11 +49,7 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
             Map<String, Object> srcParams,
             List<Object> outParams) {
         if (expr instanceof ComparisonExpression comp) {
-            if (isNullOperand(comp.operand(), srcParams)) {
-                appendNullComparison(comp, sb);
-                return;
-            }
-            sb.append(fieldRef(comp.field().name()));
+            sb.append(comp.field().name());
             sb.append(' ').append(comp.op().symbol()).append(' ');
             appendValue(comp.operand(), sb, srcParams, outParams);
 
@@ -75,21 +69,7 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
             translateFunction(func, sb, srcParams, outParams);
 
         } else if (expr instanceof InExpression in) {
-            if (in.values().isEmpty()) {
-                // Membership in an empty set is unsatisfiable. `InExpression`
-                // already rejects an empty list in its canonical constructor, so
-                // this is defence-in-depth for any AST built around that record;
-                // emitting FALSE keeps the degenerate-IN behaviour identical to
-                // the null-operand branch below and to the Cosmos / Spanner
-                // translators, instead of emitting the invalid `field IN ()`.
-                sb.append("FALSE");
-                return;
-            }
-            if (hasNullOperand(in.values(), srcParams)) {
-                sb.append("FALSE");
-                return;
-            }
-            sb.append(fieldRef(in.field().name())).append(" IN (");
+            sb.append(in.field().name()).append(" IN (");
             for (int i = 0; i < in.values().size(); i++) {
                 if (i > 0)
                     sb.append(", ");
@@ -98,64 +78,17 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
             sb.append(')');
 
         } else if (expr instanceof BetweenExpression between) {
-            if (isNullOperand(between.low(), srcParams) || isNullOperand(between.high(), srcParams)) {
-                sb.append("FALSE");
-                return;
-            }
             // Wrap in parentheses for consistency with sibling translators.
             // PartiQL parses the un-parenthesised form correctly (its operator
             // precedence binds BETWEEN tighter than logical AND), so this is
             // not strictly required here — but uniform output across providers
             // simplifies cross-provider debugging and query stitching.
-            sb.append('(').append(fieldRef(between.field().name())).append(" BETWEEN ");
+            sb.append('(').append(between.field().name()).append(" BETWEEN ");
             appendValue(between.low(), sb, srcParams, outParams);
             sb.append(" AND ");
             appendValue(between.high(), sb, srcParams, outParams);
             sb.append(')');
         }
-    }
-
-    /**
-     * Emits a portable comparison against a {@code null} literal.
-     *
-     * <p>PartiQL evaluates {@code "field" = NULL} under SQL three-valued logic,
-     * which yields UNKNOWN and therefore matches no item — including an item
-     * that genuinely stores an explicit JSON null. Cosmos DB
-     * ({@code c["field"] = null}) and Spanner ({@code JSON_TYPE(...) = 'null'})
-     * both match exactly the explicit-null item, so the bare PartiQL form made
-     * one portable expression return different rows on different providers.
-     *
-     * <p>{@code EQ} therefore matches present-and-null, and {@code NE} matches
-     * present-and-non-null; an absent attribute satisfies neither, which is how
-     * both sibling providers behave. Relational operators have no portable truth
-     * value against null and collapse to {@code FALSE}, matching
-     * {@code SpannerExpressionTranslator#appendNullComparison}.
-     */
-    private static void appendNullComparison(ComparisonExpression comparison, StringBuilder sb) {
-        String accessor = fieldRef(comparison.field().name());
-        switch (comparison.op()) {
-            case EQ -> sb.append('(').append(accessor).append(" IS NOT MISSING AND ")
-                    .append(accessor).append(" IS NULL)");
-            case NE -> sb.append('(').append(accessor).append(" IS NOT MISSING AND ")
-                    .append(accessor).append(" IS NOT NULL)");
-            case LT, GT, LE, GE -> sb.append("FALSE");
-        }
-    }
-
-    private static boolean hasNullOperand(Iterable<Object> operands, Map<String, Object> parameters) {
-        for (Object operand : operands) {
-            if (isNullOperand(operand, parameters)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean isNullOperand(Object operand, Map<String, Object> parameters) {
-        if (operand instanceof Parameter parameter) {
-            return parameters == null || parameters.get(parameter.name()) == null;
-        }
-        return operand instanceof Literal literal && literal.value() == null;
     }
 
     private void translateFunction(FunctionCallExpression func, StringBuilder sb,
@@ -173,11 +106,9 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
                 sb.append(')');
             }
             case FIELD_EXISTS -> {
-                // A present PartiQL NULL is not a portable existing field.
+                // field IS NOT MISSING
                 if (!func.arguments().isEmpty() && func.arguments().get(0) instanceof FieldRef field) {
-                    String accessor = fieldRef(field.name());
-                    sb.append('(').append(accessor).append(" IS NOT MISSING AND ")
-                            .append(accessor).append(" IS NOT NULL)");
+                    sb.append(field.name()).append(" IS NOT MISSING");
                 }
             }
             case STRING_LENGTH -> {
@@ -193,33 +124,6 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
         }
     }
 
-    /**
-     * Renders a portable field reference as a quoted PartiQL identifier.
-     * <p>
-     * A bare identifier collides with PartiQL reserved words: a document field
-     * named {@code value} emits {@code value > ?} and DynamoDB rejects the
-     * statement with {@code Statement wasn't well formed}. This adapter already
-     * quotes its own partition key ({@link DynamoConstants#PARTIQL_PARTITION_KEY})
-     * and compiles patch paths to {@code ExpressionAttributeNames} placeholders for
-     * exactly this reason, so leaving caller-supplied query fields bare meant a
-     * field could be patched but never queried.
-     * <p>
-     * Dotted names are nested references ({@code fieldRef ::= IDENTIFIER ('.'
-     * IDENTIFIER)*}), so each segment is quoted separately: {@code address.city}
-     * becomes {@code "address"."city"}, not a single literal attribute name.
-     */
-    private static String fieldRef(String name) {
-        StringBuilder accessor = new StringBuilder();
-        String[] segments = name.split("\\.", -1);
-        for (int i = 0; i < segments.length; i++) {
-            if (i > 0) {
-                accessor.append('.');
-            }
-            accessor.append('"').append(segments[i].replace("\"", "\"\"")).append('"');
-        }
-        return accessor.toString();
-    }
-
     private void appendFunctionArgs(FunctionCallExpression func, StringBuilder sb,
             Map<String, Object> srcParams,
             List<Object> outParams) {
@@ -228,7 +132,7 @@ public final class DynamoExpressionTranslator implements ExpressionTranslator {
                 sb.append(", ");
             Object arg = func.arguments().get(i);
             if (arg instanceof FieldRef field) {
-                sb.append(fieldRef(field.name()));
+                sb.append(field.name());
             } else {
                 appendValue(arg, sb, srcParams, outParams);
             }

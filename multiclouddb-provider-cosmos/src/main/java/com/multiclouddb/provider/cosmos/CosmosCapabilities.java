@@ -37,6 +37,10 @@ public final class CosmosCapabilities {
                     "fractional INCREMENT is evaluated in IEEE-754 binary64; accumulated results "
                     + "may differ in the last ulp from DynamoDB's exact decimal arithmetic. "
                     + "Integral increments remain exact"),
+            Capability.PATCH_PRESERVES_TTL_UNSUPPORTED.withNotes(
+                    "Cosmos advances _ts on every patch, which restarts relative item TTL. "
+                    + "PATCH rejects items carrying the SDK-managed ttl field instead of "
+                    + "silently extending their expiry"),
             // Query DSL capabilities
             Capability.PORTABLE_QUERY_EXPRESSION_CAP.withNotes("Portable expression translation to Cosmos SQL"),
             Capability.LIKE_OPERATOR_CAP.withNotes("LIKE operator supported via Cosmos SQL"),
@@ -46,7 +50,7 @@ public final class CosmosCapabilities {
             Capability.CASE_FUNCTIONS_CAP.withNotes("UPPER/LOWER functions available in Cosmos SQL"),
             Capability.of(Capability.RESULT_LIMIT, true, "TOP N supported in Cosmos SQL (SELECT TOP N)"),
             Capability.of(Capability.ROW_LEVEL_TTL, true,
-                    "Document-level TTL via _ttl field; requires the container to have TTL enabled "
+                    "Document-level TTL via ttl field; requires the container to have TTL enabled "
                     + "(set container default TTL to -1 or a positive value in the portal)"),
             Capability.of(Capability.WRITE_TIMESTAMP, true,
                     "ETag exposed as version field in DocumentMetadata on read")));

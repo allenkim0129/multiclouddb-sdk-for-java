@@ -3,17 +3,15 @@
 
 package com.multiclouddb.conformance.us2;
 
-import com.multiclouddb.api.Capability;
-import com.multiclouddb.api.ProviderId;
+import com.multiclouddb.api.*;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
-/**
- * Spanner capability conformance test — verifies all capabilities are
- * supported.
- */
+/** Spanner capability conformance test, including explicitly unsupported PATCH. */
 @Tag("spanner")
 @Tag("emulator")
 public class SpannerCapabilitiesTest extends CapabilitiesConformanceTest {
@@ -23,13 +21,23 @@ public class SpannerCapabilitiesTest extends CapabilitiesConformanceTest {
     }
 
     @Override
+    protected boolean expectedPatchSupport() {
+        return false;
+    }
+
+    @Override
     protected boolean expectedNestedPatchSupport() {
         return false;
     }
 
     @Override
     protected boolean expectedExactFractionalIncrementSupport() {
-        // PatchNumericDomain.add evaluates the fractional result in binary64.
+        // PATCH is unavailable; a future implementation will declare its arithmetic.
+        return false;
+    }
+
+    @Override
+    protected boolean expectedPatchPreservesTtlSupport() {
         return false;
     }
 
@@ -49,6 +57,21 @@ public class SpannerCapabilitiesTest extends CapabilitiesConformanceTest {
         try (var client = com.multiclouddb.conformance.ConformanceHarness.createClient(ProviderId.SPANNER)) {
             assertTrue(client.capabilities().isSupported(Capability.EXTENDED_CHANGE_FEED_HISTORY),
                     "Spanner must support EXTENDED_CHANGE_FEED_HISTORY — declared via CREATE CHANGE STREAM ... OPTIONS(retention_period)");
+        }
+    }
+
+    @Test
+    void patchFailsFastAsUnsupported() throws Exception {
+        try (var client = com.multiclouddb.conformance.ConformanceHarness.createClient(ProviderId.SPANNER)) {
+            MulticloudDbException error = assertThrows(MulticloudDbException.class,
+                    () -> client.patch(
+                            new ResourceAddress("testdb", "todos"),
+                            MulticloudDbKey.of("pk", "sk"),
+                            List.of(PatchOperation.set("/status", "done"))));
+
+            assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    error.error().category());
+            assertEquals("patch", error.error().operation());
         }
     }
 }

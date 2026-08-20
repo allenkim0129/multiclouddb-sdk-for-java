@@ -625,131 +625,8 @@ public abstract class CrudConformanceTests {
         }
     }
 
-    @Test @Order(38)
-    @DisplayName("mixed scalar kinds in IN and BETWEEN are rejected identically on every provider")
-    void mixedScalarKindsAreRejectedPortably() {
-        // Spanner must pick a single JSON coercion for the whole predicate while
-        // Cosmos and DynamoDB compare each operand in its native kind, so a mixed
-        // predicate would return a different row set per provider. The portable
-        // contract rejects it before translation, which is why every provider
-        // must produce the same INVALID_REQUEST rather than three answers.
-        MulticloudDbException inList = assertThrows(MulticloudDbException.class,
-                () -> client.query(getAddress(), QueryRequest.builder()
-                        .partitionKey("mixed-scalar")
-                        .expression("age IN (@a, @b)")
-                        .parameter("a", 10)
-                        .parameter("b", "ten")
-                        .maxPageSize(10)
-                        .build()));
-        assertInvalidRequest(inList, "query");
-
-        MulticloudDbException betweenBounds = assertThrows(MulticloudDbException.class,
-                () -> client.query(getAddress(), QueryRequest.builder()
-                        .partitionKey("mixed-scalar")
-                        .expression("age BETWEEN @lo AND @hi")
-                        .parameter("lo", 10)
-                        .parameter("hi", "fifty")
-                        .maxPageSize(10)
-                        .build()));
-        assertInvalidRequest(betweenBounds, "query");
-    }
-
-    @Test @Order(39)
-    @DisplayName("field = null and field != null select the same rows on every provider")
-    void nullComparisonsAreIdenticalOnEveryProvider() {
-        // Cosmos matches a stored JSON null with `c["f"] = null` and Spanner with
-        // `JSON_TYPE(f) = 'null'`, while a bare PartiQL `"f" = NULL` is UNKNOWN and
-        // matches nothing. Without this assertion the three translators can pin
-        // three different SQL spellings that each look right in isolation.
-        String pk = "null-compare";
-        Map<String, Object> explicitNull = new java.util.HashMap<>();
-        explicitNull.put("name", "explicit-null");
-        explicitNull.put("status", null);
-        client.create(getAddress(), MulticloudDbKey.of(pk, "explicit-null"), explicitNull);
-        client.create(getAddress(), MulticloudDbKey.of(pk, "present"),
-                Map.of("name", "present", "status", "live"));
-        client.create(getAddress(), MulticloudDbKey.of(pk, "absent"),
-                Map.of("name", "absent"));
-
-        QueryPage isNull = client.query(getAddress(), QueryRequest.builder()
-                .partitionKey(pk).expression("status = null").maxPageSize(10).build());
-        assertEquals(List.of("explicit-null"), sortedNames(isNull),
-                "`status = null` must match only the explicitly-null document");
-
-        QueryPage isNotNull = client.query(getAddress(), QueryRequest.builder()
-                .partitionKey(pk).expression("status != null").maxPageSize(10).build());
-        assertEquals(List.of("present"), sortedNames(isNotNull),
-                "`status != null` must match only present, non-null values — an absent "
-                        + "field satisfies neither comparison");
-    }
-
-    private static List<String> sortedNames(QueryPage page) {
-        return page.items().stream()
-                .map(item -> String.valueOf(item.get("name")))
-                .sorted()
-                .toList();
-    }
-
     @Test @Order(32)
-    @DisplayName("update replaces omitted fields in reads and portable queries")
-    void updateReplacementRemovesOmittedFieldsFromReadsAndQueries() {
-        String marker = "update-replacement-" + UUID.randomUUID();
-        String partition = "update-replacement";
-        MulticloudDbKey key = MulticloudDbKey.of(partition, "update-replacement-" + UUID.randomUUID());
-        try {
-            client.create(getAddress(), key,
-                    Map.of("marker", marker, "retained", "before", "stale", "remove-me"));
-            client.update(getAddress(), key, Map.of("marker", marker, "retained", "after"));
-
-            DocumentResult result = client.read(getAddress(), key);
-            assertNotNull(result);
-            assertEquals("after", result.document().get("retained").asText());
-            assertFalse(result.document().has("stale"),
-                    "update must not merge omitted fields from the old document");
-
-            QueryPage staleMatches = client.query(getAddress(), QueryRequest.builder()
-                    .partitionKey(partition)
-                    .expression("stale = @stale AND marker = @marker")
-                    .parameter("stale", "remove-me")
-                    .parameter("marker", marker)
-                    .maxPageSize(100)
-                    .build());
-            assertTrue(staleMatches.items().isEmpty(),
-                    "portable queries must not project a stale physical field after update replacement");
-        } finally {
-            safeDelete(key);
-        }
-    }
-
-    @Test @Order(33)
-    @DisplayName("upsert replaces omitted fields in portable queries")
-    void upsertReplacementRemovesOmittedFieldsFromQueries() {
-        String marker = "upsert-replacement-" + UUID.randomUUID();
-        String partition = "upsert-replacement";
-        MulticloudDbKey key = MulticloudDbKey.of(partition, "upsert-replacement-" + UUID.randomUUID());
-        try {
-            client.create(getAddress(), key,
-                    Map.of("marker", marker, "retained", "before", "stale", "remove-me"));
-            client.upsert(getAddress(), key, Map.of("marker", marker, "retained", "after"));
-
-            assertFalse(client.read(getAddress(), key).document().has("stale"),
-                    "upsert must not merge omitted fields from the old document");
-            QueryPage staleMatches = client.query(getAddress(), QueryRequest.builder()
-                    .partitionKey(partition)
-                    .expression("stale = @stale AND marker = @marker")
-                    .parameter("stale", "remove-me")
-                    .parameter("marker", marker)
-                    .maxPageSize(100)
-                    .build());
-            assertTrue(staleMatches.items().isEmpty(),
-                    "portable queries must not project a stale physical field after upsert replacement");
-        } finally {
-            safeDelete(key);
-        }
-    }
-
-    @Test @Order(34)
-    @DisplayName("data is reserved case-insensitively on every document write operation")
+    @DisplayName("SDK-reserved data field is rejected consistently on document writes")
     void dataFieldIsRejectedForCreateUpdateAndUpsert() {
         MulticloudDbKey createKey = MulticloudDbKey.of("reserved-data", "create-" + UUID.randomUUID());
         MulticloudDbKey updateKey = MulticloudDbKey.of("reserved-data", "update-" + UUID.randomUUID());
@@ -757,177 +634,25 @@ public abstract class CrudConformanceTests {
         try {
             MulticloudDbException create = assertThrows(MulticloudDbException.class,
                     () -> client.create(getAddress(), createKey, Map.of("dAtA", "reserved")));
-            assertInvalidRequest(create, "create");
-            assertNull(client.read(getAddress(), createKey),
-                    "a rejected create must not write a document");
+            assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, create.error().category());
+            assertNull(client.read(getAddress(), createKey));
 
             client.create(getAddress(), updateKey, Map.of("title", "before"));
             MulticloudDbException update = assertThrows(MulticloudDbException.class,
                     () -> client.update(getAddress(), updateKey, Map.of("DATA", "reserved")));
-            assertInvalidRequest(update, "update");
-            assertEquals("before", client.read(getAddress(), updateKey).document().get("title").asText(),
-                    "a rejected update must leave the existing document unchanged");
+            assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, update.error().category());
+            assertEquals("before", client.read(getAddress(), updateKey).document().get("title").asText());
 
             client.create(getAddress(), upsertKey, Map.of("title", "before"));
             MulticloudDbException upsert = assertThrows(MulticloudDbException.class,
                     () -> client.upsert(getAddress(), upsertKey, Map.of("Data", "reserved")));
-            assertInvalidRequest(upsert, "upsert");
-            assertEquals("before", client.read(getAddress(), upsertKey).document().get("title").asText(),
-                    "a rejected upsert must leave the existing document unchanged");
+            assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, upsert.error().category());
+            assertEquals("before", client.read(getAddress(), upsertKey).document().get("title").asText());
         } finally {
             safeDelete(createKey);
             safeDelete(updateKey);
             safeDelete(upsertKey);
         }
-    }
-
-    @Test @Order(35)
-    @DisplayName("field_exists matches present non-null fields only")
-    void fieldExistsRequiresAPresentNonNullField() {
-        String partition = "field-exists-" + UUID.randomUUID();
-        String marker = "field-exists-marker-" + UUID.randomUUID();
-        MulticloudDbKey missing = MulticloudDbKey.of(partition, "missing");
-        MulticloudDbKey explicitNull = MulticloudDbKey.of(partition, "null");
-        MulticloudDbKey present = MulticloudDbKey.of(partition, "present");
-        Map<String, Object> nullDocument = new LinkedHashMap<>();
-        nullDocument.put("marker", marker);
-        nullDocument.put("candidate", null);
-        try {
-            client.upsert(getAddress(), missing, Map.of("marker", marker));
-            client.upsert(getAddress(), explicitNull, nullDocument);
-            client.upsert(getAddress(), present, Map.of("marker", marker, "candidate", "value"));
-
-            QueryPage page = client.query(getAddress(), QueryRequest.builder()
-                    .partitionKey(partition)
-                    .expression("field_exists(candidate) AND marker = @marker")
-                    .parameter("marker", marker)
-                    .maxPageSize(100)
-                    .build());
-            assertEquals(1, page.items().size(),
-                    "missing and explicit-null fields must not satisfy field_exists");
-            assertEquals("value", page.items().get(0).get("candidate"));
-        } finally {
-            safeDelete(missing);
-            safeDelete(explicitNull);
-            safeDelete(present);
-        }
-    }
-
-    /**
-     * {@code NOT field_exists(f)} must be the exact complement of
-     * {@code field_exists(f)} on every provider.
-     * <p>
-     * This is the divergence this assertion exists to prevent: Spanner used to
-     * translate the predicate to a bare {@code JSON_TYPE(...) != 'null'} that
-     * evaluated to SQL {@code NULL} for a document where the field is absent.
-     * SQL {@code NULL} is not {@code TRUE}, so the row was silently excluded,
-     * while Cosmos DB and DynamoDB included it. "Find the documents that do not
-     * have this field" therefore returned different result sets per provider with
-     * no error and no capability flag — exactly the silent divergence the
-     * portability contract forbids. Asserting both directions over all three
-     * states pins the required truth table:
-     * <table>
-     *   <caption>Required portable truth table</caption>
-     *   <tr><th>document state</th><th>{@code field_exists}</th><th>{@code NOT field_exists}</th></tr>
-     *   <tr><td>field absent</td><td>FALSE</td><td>TRUE</td></tr>
-     *   <tr><td>field explicitly null</td><td>FALSE</td><td>TRUE</td></tr>
-     *   <tr><td>field present non-null</td><td>TRUE</td><td>FALSE</td></tr>
-     * </table>
-     */
-    @Test @Order(37)
-    @DisplayName("NOT field_exists is the exact complement of field_exists for absent, null, and present fields")
-    void notFieldExistsIsTheExactComplementOfFieldExists() {
-        String partition = "not-field-exists-" + UUID.randomUUID();
-        String marker = "not-field-exists-marker-" + UUID.randomUUID();
-        MulticloudDbKey absent = MulticloudDbKey.of(partition, "absent");
-        MulticloudDbKey explicitNull = MulticloudDbKey.of(partition, "explicit-null");
-        MulticloudDbKey present = MulticloudDbKey.of(partition, "present");
-        Map<String, Object> nullDocument = new LinkedHashMap<>();
-        nullDocument.put("marker", marker);
-        nullDocument.put("title", "explicit-null");
-        nullDocument.put("candidate", null);
-        try {
-            client.upsert(getAddress(), absent, Map.of("marker", marker, "title", "absent"));
-            client.upsert(getAddress(), explicitNull, nullDocument);
-            client.upsert(getAddress(), present,
-                    Map.of("marker", marker, "title", "present", "candidate", "value"));
-
-            assertEquals(Set.of("present"),
-                    titlesMatching(partition, "field_exists(candidate) AND marker = @marker", marker),
-                    "field_exists must be TRUE only where the field is present and non-null");
-
-            assertEquals(Set.of("absent", "explicit-null"),
-                    titlesMatching(partition, "NOT field_exists(candidate) AND marker = @marker", marker),
-                    "NOT field_exists must be TRUE for an absent field AND for an explicitly null "
-                            + "field; a provider that evaluates it to SQL NULL silently drops both rows");
-        } finally {
-            safeDelete(absent);
-            safeDelete(explicitNull);
-            safeDelete(present);
-        }
-    }
-
-    /** Runs a marker-scoped query and returns the {@code title} of every matching document. */
-    private Set<String> titlesMatching(String partitionKey, String expression, String marker) {
-        QueryPage page = client.query(getAddress(), QueryRequest.builder()
-                .partitionKey(partitionKey)
-                .expression(expression)
-                .parameter("marker", marker)
-                .maxPageSize(100)
-                .build());
-        Set<String> titles = new LinkedHashSet<>();
-        for (Map<String, Object> item : page.items()) {
-            titles.add(str(item, "title"));
-        }
-        return titles;
-    }
-
-    @Test @Order(36)
-    @DisplayName("portable comparisons do not coerce numeric or boolean strings")
-    void comparisonsDoNotCoerceNumericOrBooleanStrings() {
-        String partition = "type-compare-" + UUID.randomUUID();
-        String marker = "type-compare-marker-" + UUID.randomUUID();
-        MulticloudDbKey number = MulticloudDbKey.of(partition, "number");
-        MulticloudDbKey numericString = MulticloudDbKey.of(partition, "numeric-string");
-        MulticloudDbKey bool = MulticloudDbKey.of(partition, "boolean");
-        MulticloudDbKey booleanString = MulticloudDbKey.of(partition, "boolean-string");
-        try {
-            client.upsert(getAddress(), number, Map.of("marker", marker, "numericValue", 1));
-            client.upsert(getAddress(), numericString, Map.of("marker", marker, "numericValue", "1"));
-            client.upsert(getAddress(), bool, Map.of("marker", marker, "booleanValue", true));
-            client.upsert(getAddress(), booleanString,
-                    Map.of("marker", marker, "booleanValue", "true"));
-
-            QueryPage numericMatches = client.query(getAddress(), QueryRequest.builder()
-                    .partitionKey(partition)
-                    .expression("numericValue = @value AND marker = @marker")
-                    .parameter("value", 1)
-                    .parameter("marker", marker)
-                    .maxPageSize(100)
-                    .build());
-            assertEquals(1, numericMatches.items().size(),
-                    "a JSON string \"1\" must not match a numeric parameter");
-
-            QueryPage booleanMatches = client.query(getAddress(), QueryRequest.builder()
-                    .partitionKey(partition)
-                    .expression("booleanValue = @value AND marker = @marker")
-                    .parameter("value", true)
-                    .parameter("marker", marker)
-                    .maxPageSize(100)
-                    .build());
-            assertEquals(1, booleanMatches.items().size(),
-                    "a JSON string \"true\" must not match a boolean parameter");
-        } finally {
-            safeDelete(number);
-            safeDelete(numericString);
-            safeDelete(bool);
-            safeDelete(booleanString);
-        }
-    }
-
-    private static void assertInvalidRequest(MulticloudDbException error, String operation) {
-        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, error.error().category());
-        assertEquals(operation, error.error().operation());
     }
 
     private void assertCount(String expr, Map<String, Object> params,

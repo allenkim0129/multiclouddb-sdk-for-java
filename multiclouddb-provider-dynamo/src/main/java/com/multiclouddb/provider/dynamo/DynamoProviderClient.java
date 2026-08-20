@@ -20,7 +20,6 @@ import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
 import com.multiclouddb.api.PatchNumericDomain;
-import com.multiclouddb.spi.DocumentFieldValidator;
 import com.multiclouddb.spi.SdkUserAgent;
 import com.multiclouddb.api.query.TranslatedQuery;
 import com.multiclouddb.spi.MulticloudDbProviderClient;
@@ -219,7 +218,6 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     @Override
     public void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.CREATE);
-        DocumentFieldValidator.validateWritableDocument(document, ProviderId.DYNAMO, OperationNames.CREATE);
         try {
             Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
@@ -323,7 +321,6 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     @Override
     public void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.UPDATE);
-        DocumentFieldValidator.validateWritableDocument(document, ProviderId.DYNAMO, OperationNames.UPDATE);
         try {
             Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
@@ -380,7 +377,6 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     @Override
     public void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
         checkOpen(OperationNames.UPSERT);
-        DocumentFieldValidator.validateWritableDocument(document, ProviderId.DYNAMO, OperationNames.UPSERT);
         try {
             Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
@@ -424,11 +420,16 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      * adapter can distinguish a missing target ({@code NOT_FOUND}) from a
      * nonnumeric or overflowing increment ({@code INVALID_REQUEST}); an
      * unprovable concurrent transition remains {@code CONFLICT}.
+     * The expression never writes the absolute {@code ttlExpiry} attribute, so
+     * an existing SDK-managed expiry is preserved.
      *
      * <h4>Cost</h4>
      * Patch is not a billing guarantee. Capacity use depends on item shape,
      * account configuration, and the active pricing model; measure it against
-     * a full write for the workload that matters to the application.
+     * a full write for the workload that matters to the application. Success is
+     * one {@code UpdateItem}; a rejected condition normally carries its
+     * {@code ALL_OLD} image, with a point-read fallback only when that image is
+     * absent.
      *
      * @param address    the logical database + collection
      * @param key        the document key; must identify an existing item
@@ -589,9 +590,12 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
             keyMap.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             keyMap.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));
+            // This is a rejection-only fallback when ALL_OLD was unavailable;
+            // use the strongest point-read view to avoid a stale classification.
             GetItemResponse response = dynamoClient.getItem(GetItemRequest.builder()
                     .tableName(resolveTableName(address))
                     .key(keyMap)
+                    .consistentRead(true)
                     .build());
             return response.hasItem() ? response.item() : Map.of();
         } catch (DynamoDbException followUpFailure) {

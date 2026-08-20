@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
+import java.math.BigInteger;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -40,6 +41,17 @@ class DynamoItemMapperTest {
 
         JsonNode back = DynamoItemMapper.attributeMapToJsonNode(map);
         assertEquals(42, back.get("count").asInt());
+    }
+
+    @Test
+    void integerWiderThanLongRemainsReadable() {
+        BigInteger value = BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE);
+        AttributeValue attribute = AttributeValue.fromN(value.toString());
+
+        JsonNode node = DynamoItemMapper.attributeValueToJsonNode(attribute);
+
+        assertTrue(node.isBigInteger());
+        assertEquals(value, node.bigIntegerValue());
     }
 
     @Test

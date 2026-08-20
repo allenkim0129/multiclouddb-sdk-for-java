@@ -22,29 +22,32 @@ import java.util.Set;
 /**
  * Validates a portable patch request before it reaches a provider adapter.
  * <p>
- * Every rule enforced here exists because the three providers would otherwise
- * diverge — the validator is the mechanism that turns "Cosmos and DynamoDB
- * disagree" into a single, predictable {@link MulticloudDbErrorCategory#INVALID_REQUEST}
- * on all of them:
+ * Every rule enforced here exists because provider-native patch dialects would
+ * otherwise diverge. The validator turns those differences into a single,
+ * predictable {@link MulticloudDbErrorCategory#INVALID_REQUEST} for every
+ * provider that advertises PATCH:
  * <ul>
  *   <li><b>Operation count</b> — Cosmos DB caps a single patch at 10 operations.
  *       The SDK applies that cap uniformly so a request that succeeds on
  *       DynamoDB cannot fail on Cosmos.</li>
- *   <li><b>Overlapping paths</b> — Cosmos and Spanner evaluate operations
- *       sequentially, while DynamoDB resolves every operand against the
- *       <em>pre-update</em> item. Two operations touching the same path (or a
- *       path and its ancestor) would therefore produce different results per
- *       provider, so they are rejected.</li>
- *   <li><b>Array indexes</b> — insert-at-index shifts elements on Cosmos but
- *       replaces-or-appends on DynamoDB, and Spanner has no addressable array
- *       at all. Purely numeric segments are rejected.</li>
+ *   <li><b>Overlapping paths</b> — native engines can resolve operands against
+ *       different document versions. Two operations touching the same path (or
+ *       a path and its ancestor) could therefore produce different results, so
+ *       they are rejected.</li>
+ *   <li><b>Array indexes</b> — Cosmos DB and DynamoDB expose different
+ *       insert/replace/append semantics, and future providers may not expose
+ *       addressable array elements. Purely numeric segments are rejected.</li>
  *   <li><b>JSON Pointer escapes</b> — {@code ~0} / {@code ~1} are decoded
- *       inconsistently across the three path dialects, so {@code ~} is rejected
+ *       inconsistently across native path dialects, so {@code ~} is rejected
  *       outright.</li>
  *   <li><b>Reserved fields</b> — the SDK injects {@code id} / {@code partitionKey}
- *       / {@code sortKey} and uses {@code ttl} / {@code ttlExpiry} for
- *       row-level TTL, so patching them would corrupt the key or silently mean
- *       different things per provider.</li>
+ *       / {@code sortKey}, uses {@code ttl} / {@code ttlExpiry} for
+ *       row-level TTL, and reserves {@code data} for Spanner metadata, so
+ *       patching them would corrupt SDK state or silently mean different
+ *       things per provider.</li>
+ *   <li><b>Numeric floor</b> — DynamoDB rejects non-zero numbers below
+ *       {@code 1E-130}, so smaller fractional increments are rejected before
+ *       either supported provider is called.</li>
  * </ul>
  */
 public final class PatchValidator {
@@ -57,9 +60,10 @@ public final class PatchValidator {
      * rejected because the effect would not be portable: {@code id} /
      * {@code partitionKey} / {@code sortKey} are injected from
      * {@link com.multiclouddb.api.MulticloudDbKey}, {@code ttl} is the Cosmos
-     * document-TTL field, and {@code ttlExpiry} is the DynamoDB TTL attribute.
-     * Names starting with {@code _} are rejected separately — Cosmos reserves
-     * that prefix for system properties ({@code _ts}, {@code _etag}, ...).
+     * document-TTL field, {@code ttlExpiry} is the DynamoDB TTL attribute, and
+     * {@code data} is Spanner's internal document-metadata column. Names
+     * starting with {@code _} are rejected separately — Cosmos reserves that
+     * prefix for system properties ({@code _ts}, {@code _etag}, ...).
      */
     private static final Set<String> RESERVED_FIELDS = Set.of(
             "id", "partitionkey", "sortkey", "ttl", "ttlexpiry", "data");
@@ -152,22 +156,20 @@ public final class PatchValidator {
             if (isAllDigits(segment)) {
                 throw invalid(provider, "patch path segment '" + segment + "' in '" + path
                         + "' looks like an array index. Array element addressing is not portable "
-                        + "(Cosmos DB inserts and shifts, DynamoDB replaces or appends, Spanner "
-                        + "cannot address array elements at all), so it is rejected. Replace the "
+                        + "(native providers differ on insert, replace, and append behavior), "
+                        + "so it is rejected. Replace the "
                         + "whole array with a SET operation instead.");
             }
         }
 
         String root = segments.get(0);
-        // Matched case-insensitively: Spanner resolves column names without regard to
-        // case, so "/PartitionKey" would collide with the real key column there while
-        // Cosmos and DynamoDB would happily create a second, stray field. The `data`
-        // column is also SDK-owned metadata on Spanner. Rejecting every casing keeps
-        // the outcome identical on all three.
+        // Match case-insensitively so a path accepted by a case-sensitive
+        // document provider cannot collide with an SDK-owned field on a
+        // case-insensitive current or future provider.
         if (RESERVED_FIELDS.contains(root.toLowerCase(Locale.ROOT)) || root.charAt(0) == '_') {
             throw invalid(provider, "patch cannot modify the reserved field '" + root
                     + "'. Key fields (id, partitionKey, sortKey), TTL fields (ttl, ttlExpiry), "
-                    + "and names starting with '_' are owned by the SDK or the provider. "
+                    + "data, and names starting with '_' are owned by the SDK or the provider. "
                     + "Reserved names are matched without regard to case.");
         }
         return segments;
@@ -212,9 +214,8 @@ public final class PatchValidator {
     private static boolean overlaps(List<String> a, List<String> b) {
         int shared = Math.min(a.size(), b.size());
         for (int i = 0; i < shared; i++) {
-            // Spanner column names are case-insensitive, while Cosmos and DynamoDB
-            // accept case-distinct document fields. Treating segments as aliases here
-            // prevents a single portable patch from ambiguously touching both.
+            // Treat case-only path variants as aliases so one portable request
+            // cannot have provider-dependent meaning.
             if (!a.get(i).equalsIgnoreCase(b.get(i))) {
                 return false;
             }

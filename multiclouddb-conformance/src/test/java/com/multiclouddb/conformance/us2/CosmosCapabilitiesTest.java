@@ -32,6 +32,11 @@ public class CosmosCapabilitiesTest extends CapabilitiesConformanceTest {
         return false;
     }
 
+    @Override
+    protected boolean expectedPatchPreservesTtlSupport() {
+        return false;
+    }
+
     @Test
     void cosmosExtendedChangeFeedHistorySupported() throws Exception {
         try (var client = com.multiclouddb.conformance.ConformanceHarness.createClient(ProviderId.COSMOS)) {

@@ -86,12 +86,17 @@ Provider modules implement two SPI contracts without importing each other:
 |---------------|---------------|
 | `MulticloudDbProviderAdapter` | Factory - creates a `MulticloudDbProviderClient` from config; registered via `META-INF/services` |
 | `MulticloudDbProviderClient` | CRUD + query + provisioning + capabilities - called by `DefaultMulticloudDbClient`; provider `patch()` implementations call `validatePatchRequest(...)` before provider SDK work |
-| `DocumentFieldValidator` | SPI-only shared write-boundary helper for provider adapters; validates SDK-reserved document fields and is not application API |
 
-Direct SPI consumers receive the same portable PATCH list, path, overlap,
-reserved-root, numeric-domain, size, and capability checks as facade callers.
-Provider adapters invoke `validatePatchRequest(...)` after their lifecycle
-guard; applications should use `MulticloudDbClient`, not SPI helpers directly.
+Provider adapters that implement PATCH invoke `validatePatchRequest(...)`
+after their lifecycle guard. An adapter that does not implement PATCH inherits
+the SPI default and fails with `UNSUPPORTED_CAPABILITY` without issuing a
+provider request. Applications should use `MulticloudDbClient`, which also
+applies shared document-field validation before dispatch.
+PATCH sub-behaviors remain provider-neutral through capabilities:
+`NESTED_PATCH` gates sub-document paths,
+`EXACT_FRACTIONAL_INCREMENT` declares arithmetic, and
+`PATCH_PRESERVES_TTL` declares whether an existing SDK-managed expiry can
+survive the mutation.
 
 ---
 

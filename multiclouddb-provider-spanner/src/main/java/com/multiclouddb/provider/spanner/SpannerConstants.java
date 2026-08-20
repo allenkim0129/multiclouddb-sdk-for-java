@@ -40,11 +40,11 @@ public final class SpannerConstants {
     public static final String FIELD_SORT_KEY = "sortKey";
 
     /**
-     * Internal document column. New rows store a JSON envelope containing the
-     * complete SDK document, so arbitrary top-level fields do not require DDL
-     * columns. Legacy rows can contain the former JSON array of explicitly-written
-     * field names, which {@link SpannerRowMapper} continues to read. This column is
-     * reserved by the SDK: write-side public entry points on every provider
+     * Internal metadata column. Stores a JSON array of the field names that were
+     * explicitly written by the SDK on each row, so {@link SpannerRowMapper} can
+     * distinguish &quot;explicitly set to null&quot; from &quot;empty schema column&quot;
+     * — a distinction that Spanner's fixed schema otherwise loses. This column is
+     * reserved by the SDK: write-side public entry points
      * ({@link com.multiclouddb.spi.MulticloudDbProviderClient#create create} /
      * {@link com.multiclouddb.spi.MulticloudDbProviderClient#update update} /
      * {@link com.multiclouddb.spi.MulticloudDbProviderClient#upsert upsert})
@@ -55,9 +55,6 @@ public final class SpannerConstants {
      * as a document field to the caller.
      */
     public static final String FIELD_DATA = "data";
-
-    /** Internal property that marks a {@link #FIELD_DATA} JSON document envelope. */
-    public static final String FIELD_DATA_DOCUMENT = "_mcdbDocument";
 
     /**
      * Unambiguous prefix marker that identifies a STRING column value as a
@@ -74,9 +71,6 @@ public final class SpannerConstants {
 
     /** Named parameter bound to the partition key value in scoped queries. */
     public static final String PARAM_PK_VAL = "_pkval";
-
-    /** Named parameter bound to the table name in the column-metadata probe. */
-    public static final String PARAM_TABLE_NAME = "_tablename";
 
     /** Named parameter prefix character for Spanner named parameters. */
     public static final String PARAM_PREFIX = "@";
@@ -113,38 +107,6 @@ public final class SpannerConstants {
 
     /** SQL used to probe whether a table exists (lightweight read). */
     public static final String QUERY_TABLE_EXISTS_PROBE = "SELECT 1 FROM %s LIMIT 1";
-
-    // ── Column metadata ───────────────────────────────────────────────────────
-
-    /** {@code INFORMATION_SCHEMA} column-name of a table column. */
-    public static final String COLUMN_METADATA_NAME = "COLUMN_NAME";
-
-    /** {@code INFORMATION_SCHEMA} column carrying the declared GoogleSQL type. */
-    public static final String COLUMN_METADATA_SPANNER_TYPE = "SPANNER_TYPE";
-
-    /**
-     * Loads a table's physical column layout from {@code INFORMATION_SCHEMA}.
-     * <p>
-     * This deliberately does <b>not</b> use {@code SELECT * FROM <table> LIMIT 0}
-     * plus {@link com.google.cloud.spanner.ResultSet#getType()}: in
-     * {@code google-cloud-spanner} the row type (and
-     * {@code ResultSet.getMetadata()}) is only published after a
-     * {@code next()} call, so a {@code LIMIT 0} probe raises
-     * {@code IllegalStateException("next() call required")} — a raw JDK
-     * exception that would escape the portable error surface. An
-     * {@code INFORMATION_SCHEMA} probe is iterated with an ordinary
-     * {@code while (rs.next())} loop and therefore has no such precondition.
-     * <p>
-     * {@code TABLE_SCHEMA = ''} selects the default GoogleSQL schema, and the
-     * name comparison is case-folded because Spanner identifiers are
-     * case-insensitive while {@code INFORMATION_SCHEMA} preserves the declared
-     * casing.
-     */
-    public static final String QUERY_TABLE_COLUMNS =
-            "SELECT " + COLUMN_METADATA_NAME + ", " + COLUMN_METADATA_SPANNER_TYPE
-            + " FROM INFORMATION_SCHEMA.COLUMNS"
-            + " WHERE TABLE_SCHEMA = '' AND LOWER(TABLE_NAME) = LOWER(@" + PARAM_TABLE_NAME + ")"
-            + " ORDER BY ORDINAL_POSITION";
 
     // ── DDL ───────────────────────────────────────────────────────────────────
 

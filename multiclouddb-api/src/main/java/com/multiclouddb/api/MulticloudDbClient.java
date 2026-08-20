@@ -111,19 +111,16 @@ public interface MulticloudDbClient extends AutoCloseable {
      * Apply field-level modifications to an existing document without sending
      * the whole document.
      * <p>
-     * Cosmos DB and DynamoDB execute native partial writes; Spanner supplies
-     * an equivalent atomic document-envelope update in a retryable read-write
-     * transaction. No
-     * provider exposes a non-transactional client-side read-modify-write or
-     * lost-update window. All operations in one call are applied
-     * <strong>atomically</strong>: either every operation takes effect or none does.
+     * A provider that declares {@link Capability#PATCH} must apply all operations
+     * in one call <strong>atomically</strong>: either every operation takes effect
+     * or none does. A provider without an equivalent safe implementation declares
+     * PATCH unsupported and fails before issuing a provider request.
      * <p>
      * <strong>When to use it.</strong> {@code patch()} is a latency and
-     * concurrency optimisation, and the only way to express a safe atomic
-     * counter. Cosmos DB and DynamoDB can also reduce request payload; Spanner
-     * rewrites its document envelope transactionally. It is <em>not</em> a
-     * guaranteed write-cost reduction: billing depends on provider pricing,
-     * account configuration, indexing, item shape, and workload. Prefer it
+     * concurrency optimisation, and the only portable way to express an atomic
+     * counter on providers that support it. It is <em>not</em> a guaranteed
+     * write-cost reduction: billing depends on provider pricing, account
+     * configuration, indexing, item shape, and workload. Prefer it
      * when you are changing a few fields of a large document, when you would
      * otherwise read-then-write, or when concurrent writers touch disjoint
      * fields.
@@ -137,7 +134,9 @@ public interface MulticloudDbClient extends AutoCloseable {
      *   <li>At most {@link #MAX_PATCH_OPERATIONS} operations per call.</li>
      *   <li>The deterministic serialized list of every operation's type, path,
      *       and optional value (including a {@code REMOVE}'s type and path)
-     *       must not exceed 399 KB (408,576 bytes).</li>
+     *       must not exceed 399 KB (408,576 bytes). This bounds the request
+     *       envelope, not the resulting provider item; provider-native
+     *       post-image size limits still apply.</li>
      *   <li>Operations must address disjoint paths; duplicate, case-only alias,
      *       and ancestor paths in the same call are {@code INVALID_REQUEST}.</li>
      *   <li>{@code REPLACE}, {@code REMOVE} and {@code INCREMENT} require the
@@ -146,15 +145,18 @@ public interface MulticloudDbClient extends AutoCloseable {
      *       intermediate objects on a nested path.</li>
      *   <li>{@code INCREMENT} integral deltas and their resulting value must
      *       fit signed 64-bit range;
-     *       fractional deltas must be finite, no greater than
-     *       9,007,199,254,740,991 in magnitude, and round-trip through an
-     *       IEEE-754 {@code double} without decimal precision loss.</li>
-     *   <li>Nested paths require {@link Capability#NESTED_PATCH}, which Spanner
-     *       does not declare; using one there throws
+     *       non-zero fractional deltas must be between 1E-130 and
+     *       9,007,199,254,740,991 in magnitude, finite, and round-trip through
+     *       an IEEE-754 {@code double} without decimal precision loss.</li>
+     *   <li>Nested paths require {@link Capability#NESTED_PATCH}; a provider that
+     *       does not declare it throws
      *       {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}.</li>
      *   <li>{@link OperationOptions#ttlSeconds()} is <strong>ignored</strong> by
-     *       {@code patch()} on every provider — patching never changes a
-     *       document's TTL. Use {@code upsert()} to reset expiry.</li>
+     *       {@code patch()} and never creates or resets an expiry. Existing
+     *       SDK-managed expiry is preserved only when
+     *       {@link Capability#PATCH_PRESERVES_TTL} is supported; otherwise the
+     *       provider rejects a TTL-bearing item with
+     *       {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}.</li>
      * </ul>
      * See {@link PatchOperation} for path rules and per-operation semantics.
      *
@@ -167,12 +169,11 @@ public interface MulticloudDbClient extends AutoCloseable {
      *         not exist; INVALID_REQUEST if the operation list violates the portable
      *         contract; UNSUPPORTED_CAPABILITY if the provider does not declare
      *         {@link Capability#PATCH} or, for nested paths,
-     *         {@link Capability#NESTED_PATCH}; or CONFLICT when a concurrent writer
+     *         {@link Capability#NESTED_PATCH}, or cannot preserve an existing
+     *         SDK-managed TTL; or CONFLICT when a concurrent writer
      *         changed an addressed path between validation and the write and the
      *         resulting state does not prove a deterministic cause. CONFLICT is safe
-     *         to retry: a patch is atomic, so no operation in the list was applied.
-     *         Cosmos DB and DynamoDB surface this race directly; Spanner normally
-     *         resolves it inside its read-write transaction and rarely reports it
+     *         to retry: a patch is atomic, so no operation in the list was applied
      */
     void patch(ResourceAddress address, MulticloudDbKey key, List<PatchOperation> operations,
                OperationOptions options);

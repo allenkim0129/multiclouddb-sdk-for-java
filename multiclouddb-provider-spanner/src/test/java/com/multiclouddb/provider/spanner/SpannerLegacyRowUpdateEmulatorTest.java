@@ -21,7 +21,6 @@ import com.multiclouddb.api.MulticloudDbClient;
 import com.multiclouddb.api.MulticloudDbClientConfig;
 import com.multiclouddb.api.MulticloudDbClientFactory;
 import com.multiclouddb.api.MulticloudDbKey;
-import com.multiclouddb.api.PatchOperation;
 import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.ResourceAddress;
 import org.junit.jupiter.api.AfterAll;
@@ -31,23 +30,32 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Spanner update-replacement regression tests.
+ * Round-4 regression: a row that pre-dates this SDK's {@code FIELD_DATA}
+ * metadata column (or whose {@code FIELD_DATA} is {@code NULL} for any other
+ * reason — e.g. inserted by a sibling system writing directly to Spanner) must
+ * not lose its pre-existing columns when the SDK performs a partial
+ * {@code update()}.
  *
- * <p>The SDK's envelope is authoritative. Full writes explicitly clear omitted
- * or runtime-incompatible physical mirrors, making replacement semantics
- * correct even for legacy rows that pre-date the envelope.
+ * <p>The earlier behaviour stamped {@code FIELD_DATA} with only the keys
+ * named in the current {@code update()} call. The reader then filtered the
+ * row's columns by that stamp on the next {@code read()}, so every legacy
+ * column the row had that wasn't in the partial update payload disappeared
+ * from the user's perspective — silent data loss with no exception or log.
+ *
+ * <p>The fix in {@code SpannerProviderClient.update()} now tracks whether
+ * pre-existing {@code FIELD_DATA} metadata was successfully parsed. If not
+ * (legacy or malformed), the stamp is deliberately skipped and the row stays
+ * in the "no metadata => no filtering" reader-fallback regime — so the legacy
+ * columns remain visible.
  *
  * <p>This test runs only under the {@code -Pemulator-spanner} CI profile
  * because it needs a real Spanner instance (the {@code readWriteTransaction}
@@ -55,7 +63,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * It is tagged with both {@code spanner} and {@code emulator} so {@code -Punit}
  * (which excludes those tags) skips it.
  */
-@DisplayName("Spanner — update() replaces the authoritative document envelope")
+@DisplayName("Spanner — Legacy-row update() preserves pre-existing columns (round-4 regression)")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("spanner")
 @Tag("emulator")
@@ -134,8 +142,8 @@ class SpannerLegacyRowUpdateEmulatorTest {
     }
 
     @Test
-    @DisplayName("legacy row (FIELD_DATA NULL): update() exposes only the replacement document")
-    void updateReplacesLegacyRowDocument() {
+    @DisplayName("legacy row (FIELD_DATA NULL): partial update() preserves untouched columns on read")
+    void partialUpdatePreservesLegacyColumns() {
         String pk = "u1";
         String sk = "u1";
 
@@ -150,26 +158,39 @@ class SpannerLegacyRowUpdateEmulatorTest {
                 .set("status").to("active")
                 .set("priority").to(5L));
 
-        // 2) Replace the legacy document with a payload that names only email.
+        // 2) Run a partial SDK update() that names only the email field.
         client.update(address, MulticloudDbKey.of(pk, sk), Map.of("email", "ada@new"), null);
 
-        // 3) Read back via the SDK. The replacement envelope defines the
-        //    portable document and incompatible or omitted mirrors are cleared.
+        // 3) Read back via the SDK. The untouched columns (name, status,
+        //    priority) MUST still be visible. With the round-4 bug, only
+        //    `email` would survive because the FIELD_DATA stamp would have
+        //    narrowed the visible set to just that one key. With the fix in
+        //    place, the SDK leaves FIELD_DATA NULL on legacy rows and the
+        //    reader's "no metadata => project every column" fallback returns
+        //    all columns.
         DocumentResult result = client.read(address, MulticloudDbKey.of(pk, sk), null);
         assertNotNull(result, "read() must find the row that was updated");
         JsonNode doc = result.document();
 
         assertEquals("ada@new", doc.path("email").asText(),
-                "the replacement value must round-trip");
-        assertFalse(doc.has("name"),
-                "legacy physical columns omitted by update() must not leak through the envelope");
-        assertFalse(doc.has("status"));
-        assertFalse(doc.has("priority"));
+                "new field from the partial update() must round-trip");
+        assertEquals("Ada", doc.path("name").asText(),
+                "legacy `name` column must survive the partial update — "
+                        + "if this fails, FIELD_DATA was stamped with only the "
+                        + "partial-update keys, filtering out the legacy columns "
+                        + "on read (silent data loss)");
+        assertEquals("active", doc.path("status").asText(),
+                "legacy `status` column must survive the partial update");
+        assertTrue(doc.has("priority"),
+                "legacy `priority` column must survive the partial update; "
+                        + "got fields=" + fieldNames(doc));
+        assertEquals(5L, doc.path("priority").asLong(),
+                "legacy `priority` value must round-trip unchanged");
     }
 
     @Test
-    @DisplayName("successive updates replace prior envelopes instead of merging them")
-    void successiveUpdatesDoNotMergeLegacyColumns() {
+    @DisplayName("legacy row stays in fallback mode across multiple partial updates (no progressive narrowing)")
+    void multiplePartialUpdatesDoNotProgressivelyNarrow() {
         String pk = "u2";
         String sk = "u2";
 
@@ -181,30 +202,35 @@ class SpannerLegacyRowUpdateEmulatorTest {
                 .set("status").to("active")
                 .set("priority").to(7L));
 
-        // Each call is a full replacement of the envelope and its compatible
-        // physical mirrors.
+        // Two consecutive partial updates that each name different single keys.
+        // Both must leave FIELD_DATA NULL; otherwise the second update's stamp
+        // would only contain `priority`, hiding `name` / `status` / `email` on
+        // the subsequent read.
         client.update(address, MulticloudDbKey.of(pk, sk), Map.of("email", "bob@new"), null);
         client.update(address, MulticloudDbKey.of(pk, sk), Map.of("priority", 9L), null);
 
         DocumentResult result = client.read(address, MulticloudDbKey.of(pk, sk), null);
         assertNotNull(result);
         JsonNode doc = result.document();
+        assertEquals("Bob", doc.path("name").asText(),
+                "legacy `name` must survive both partial updates; got fields=" + fieldNames(doc));
+        assertEquals("bob@new", doc.path("email").asText());
+        assertEquals("active", doc.path("status").asText(),
+                "legacy `status` must survive both partial updates");
         assertEquals(9L, doc.path("priority").asLong(),
-                "the second replacement must apply");
-        assertFalse(doc.has("name"));
-        assertFalse(doc.has("email"),
-                "the first replacement must not merge into the second replacement");
-        assertFalse(doc.has("status"));
+                "second partial update must apply");
     }
 
     @Test
-    @DisplayName("SDK-written row: update() replaces the prior envelope")
-    void sdkWrittenRowUpdateReplacesPriorEnvelope() {
+    @DisplayName("SDK-written row (FIELD_DATA stamped): partial update() merges field set without dropping prior keys")
+    void sdkWrittenRowMergesFieldSet() {
         String pk = "u3";
         String sk = "u3";
 
-        // Establish an envelope with two fields, then replace it with a
-        // one-field update.
+        // Establish FIELD_DATA via create() so the row enters the metadata
+        // regime, then issue a partial update that names only one of the
+        // existing keys. The merged stamp must include both keys, so a
+        // subsequent read returns both.
         client.create(address, MulticloudDbKey.of(pk, sk),
                 Map.of("name", "Cara", "email", "cara@x"), null);
         client.update(address, MulticloudDbKey.of(pk, sk),
@@ -213,58 +239,16 @@ class SpannerLegacyRowUpdateEmulatorTest {
         DocumentResult result = client.read(address, MulticloudDbKey.of(pk, sk), null);
         assertNotNull(result);
         JsonNode doc = result.document();
+        assertEquals("Cara", doc.path("name").asText(),
+                "field written by create() must survive a later partial update — "
+                        + "this is the non-regression case (round-3 fix)");
         assertEquals("cara@new", doc.path("email").asText());
-        assertFalse(doc.has("name"),
-                "a field omitted from update() must not survive through an older envelope");
     }
 
-    @Test
-    @DisplayName("full writes preserve cross-type values in the envelope and clear stale mirrors")
-    void fullWritesDoNotFailWhenAFieldChangesPhysicalType() {
-        String pk = "cross-type-" + UUID.randomUUID();
-        String sk = pk;
-        MulticloudDbKey key = MulticloudDbKey.of(pk, sk);
-        try {
-            client.create(address, key, Map.of("priority", 5L, "name", "Ada"), null);
-
-            Map<String, Object> replacement = new LinkedHashMap<>();
-            replacement.put("priority", "now-text");
-            replacement.put("name", 99L);
-            client.update(address, key, replacement, null);
-
-            DocumentResult updated = client.read(address, key, null);
-            assertNotNull(updated);
-            assertEquals("now-text", updated.document().path("priority").asText(),
-                    "the envelope must preserve a value incompatible with INT64");
-            assertEquals(99L, updated.document().path("name").asLong(),
-                    "the envelope must preserve a value incompatible with STRING");
-
-            com.google.cloud.spanner.Struct afterTypeChange = rawDbClient.singleUse().readRow(
-                    TABLE, com.google.cloud.spanner.Key.of(pk, sk), List.of("priority", "name"));
-            assertTrue(afterTypeChange.isNull("priority"),
-                    "an incompatible replacement must clear the stale INT64 mirror");
-            assertTrue(afterTypeChange.isNull("name"),
-                    "an incompatible replacement must clear the stale STRING mirror");
-
-            client.upsert(address, key, Map.of("priority", 12L), null);
-            com.google.cloud.spanner.Struct afterUpsert = rawDbClient.singleUse().readRow(
-                    TABLE, com.google.cloud.spanner.Key.of(pk, sk), List.of("priority", "name"));
-            assertEquals(12L, afterUpsert.getLong("priority"));
-            assertTrue(afterUpsert.isNull("name"),
-                    "an omitted field in a full upsert must not retain its old physical mirror");
-
-            client.patch(address, key, List.of(PatchOperation.set("/priority", "patched-text")), null);
-            DocumentResult patched = client.read(address, key, null);
-            assertNotNull(patched);
-            assertEquals("patched-text", patched.document().path("priority").asText(),
-                    "PATCH must retain an incompatible value in the authoritative envelope");
-
-            com.google.cloud.spanner.Struct afterPatch = rawDbClient.singleUse().readRow(
-                    TABLE, com.google.cloud.spanner.Key.of(pk, sk), List.of("priority"));
-            assertTrue(afterPatch.isNull("priority"),
-                    "PATCH must clear an incompatible physical mirror rather than fail or retain stale data");
-        } finally {
-            client.delete(address, key, null);
-        }
+    /** Helper: collect the visible field names on a Jackson ObjectNode for diagnostics. */
+    private static java.util.List<String> fieldNames(JsonNode node) {
+        java.util.List<String> names = new java.util.ArrayList<>();
+        node.fieldNames().forEachRemaining(names::add);
+        return names;
     }
 }

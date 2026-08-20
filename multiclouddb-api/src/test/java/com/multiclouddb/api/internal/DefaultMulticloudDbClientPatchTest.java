@@ -35,11 +35,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * Locks the capability gating and delegation behaviour of
  * {@link DefaultMulticloudDbClient#patch}.
  * <p>
- * Patch is the first operation whose portability depends on <em>two</em>
- * capability gates: {@link Capability#PATCH} for the operation itself, and
- * {@link Capability#NESTED_PATCH} for sub-document paths, which Spanner cannot
- * express. Both must fail fast with {@code UNSUPPORTED_CAPABILITY} rather than
- * reaching an adapter that would silently do something different.
+ * Patch uses two independent capability gates:
+ * {@link Capability#PATCH} for the operation itself and
+ * {@link Capability#NESTED_PATCH} for sub-document paths. Both must fail fast
+ * with {@code UNSUPPORTED_CAPABILITY} rather than reaching an adapter that would
+ * silently do something different.
  */
 class DefaultMulticloudDbClientPatchTest {
 
