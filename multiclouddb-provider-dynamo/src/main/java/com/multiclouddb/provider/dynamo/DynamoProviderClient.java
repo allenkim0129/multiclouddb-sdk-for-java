@@ -457,6 +457,10 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
             List<String> removeClauses = new ArrayList<>();
             List<String> conditions = new ArrayList<>();
             conditions.add("attribute_exists(" + DynamoConstants.ATTR_PARTITION_KEY + ")");
+            // Cosmos DB cannot patch an item carrying an SDK-managed expiry without
+            // restarting it, so the portable contract does not support it anywhere.
+            // Asserting it in the same condition keeps the rejection atomic and free.
+            conditions.add("attribute_not_exists(" + DynamoConstants.ATTR_TTL_EXPIRY + ")");
 
             for (int i = 0; i < operations.size(); i++) {
                 PatchOperation op = operations.get(i);
@@ -545,6 +549,10 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         if (before.isEmpty()) {
             return patchConditionFailure(original, MulticloudDbErrorCategory.NOT_FOUND,
                     "Patch target item does not exist");
+        }
+        if (before.containsKey(DynamoConstants.ATTR_TTL_EXPIRY)) {
+            return patchConditionFailure(original, MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    "Patch is not supported on an item carrying an SDK-managed ttl expiry");
         }
         if (hasMissingRequiredPatchPath(before, operations)) {
             return patchConditionFailure(original, MulticloudDbErrorCategory.NOT_FOUND,

@@ -67,8 +67,6 @@ public final class Capability {
     public static final String CASE_FUNCTIONS               = "case_functions";
     public static final String PATCH                        = "patch";
     public static final String NESTED_PATCH                 = "nested_patch";
-    public static final String EXACT_FRACTIONAL_INCREMENT   = "exact_fractional_increment";
-    public static final String PATCH_PRESERVES_TTL          = "patch_preserves_ttl";
 
     // ── Pre-built singleton instances ─────────────────────────────────────────
     // Each well-known capability has a SUPPORTED and an _UNSUPPORTED singleton.
@@ -157,27 +155,6 @@ public final class Capability {
     public static final Capability NESTED_PATCH_CAP                 = intern(NESTED_PATCH, true);
     /** Unsupported singleton — nested-path patching. */
     public static final Capability NESTED_PATCH_UNSUPPORTED         = intern(NESTED_PATCH, false);
-
-    /**
-     * Supported singleton — a fractional {@code INCREMENT} accumulates in exact
-     * decimal arithmetic, so repeated fractional deltas produce no binary
-     * rounding drift. Informational only for providers that support PATCH:
-     * those providers accept every in-domain fractional increment, so this
-     * capability never causes an {@code UNSUPPORTED_CAPABILITY} rejection by
-     * itself. It exists so callers that need bit-identical fractional totals
-     * across providers can branch.
-     */
-    public static final Capability EXACT_FRACTIONAL_INCREMENT_CAP         = intern(EXACT_FRACTIONAL_INCREMENT, true);
-    /** Unsupported singleton — fractional increments accumulate in IEEE-754 binary64. */
-    public static final Capability EXACT_FRACTIONAL_INCREMENT_UNSUPPORTED = intern(EXACT_FRACTIONAL_INCREMENT, false);
-
-    /**
-     * Supported singleton — patching an item with SDK-managed row-level TTL
-     * preserves its existing absolute expiry.
-     */
-    public static final Capability PATCH_PRESERVES_TTL_CAP         = intern(PATCH_PRESERVES_TTL, true);
-    /** Unsupported singleton — patch cannot preserve an existing row-level TTL. */
-    public static final Capability PATCH_PRESERVES_TTL_UNSUPPORTED = intern(PATCH_PRESERVES_TTL, false);
 
     // ── Instance fields ───────────────────────────────────────────────────────
 

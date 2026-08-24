@@ -739,9 +739,12 @@ PATCH with `UNSUPPORTED_CAPABILITY` without touching a provider SDK.
 | No array-index segments (`/items/0`) | `INVALID_REQUEST` | Native array-update semantics differ and cannot be extended portably to future providers |
 | No JSON Pointer `~` escapes | `INVALID_REQUEST` | Native path dialects decode them differently |
 | No key, TTL, or SDK metadata fields (`id`, `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, `data`, `_*`) | `INVALID_REQUEST` | Owned by the SDK or provider. Names are matched **without regard to case** so a future provider can implement the same contract without narrowing previously accepted patch paths |
-| `INCREMENT` integral delta and resulting value must fit signed 64-bit range | `INVALID_REQUEST` | Prevents provider precision and numeric-range divergence |
-| A non-zero `INCREMENT` fractional delta must have magnitude from `1E-130` through 9,007,199,254,740,991, be finite, and round-trip through an IEEE-754 `double` without decimal precision loss | `INVALID_REQUEST` | `1E-130` is DynamoDB's numeric floor; the SDK normalizes accepted fractions to one `double` representation before every provider dispatch |
+| Integral numbers written by `SET` / `REPLACE`, and `INCREMENT` deltas and their resulting values, must fit the signed 64-bit range | `INVALID_REQUEST` | Prevents provider precision and numeric-range divergence. DynamoDB stores wider integers exactly while Cosmos DB rounds them to the nearest `double`, so an out-of-range write would store different data per provider |
+| A non-zero fractional number written by `SET` / `REPLACE`, or supplied as an `INCREMENT` delta, must have magnitude from `1E-130` through 9,007,199,254,740,991, be finite, and round-trip through an IEEE-754 `double` without decimal precision loss | `INVALID_REQUEST` | `1E-130` is DynamoDB's numeric floor; the SDK normalizes accepted fractions to one `double` representation before every provider dispatch |
 | Complete serialized patch request must not exceed 399 KB (408,576 bytes) | `INVALID_REQUEST` | Every operation's type, path, and optional value is measured; even a `REMOVE` path contributes to the request size |
+
+The two numeric restrictions apply to every number in an operand, including
+those nested inside an object or array passed to `SET` or `REPLACE`.
 
 The 399 KB check bounds the **request envelope**, not the resulting stored
 document. A patch that grows an already-large document remains subject to the
@@ -756,7 +759,7 @@ These depend on the stored document, so they surface from the provider:
 | `INCREMENT` target must be numeric | `INVALID_REQUEST` | Adding to a string has no portable meaning |
 | `SET` never creates missing parent objects | `NOT_FOUND` | Providers are constrained to require every nested parent. Create the parent with a top-level `SET` first |
 | `OperationOptions.ttlSeconds()` is ignored | — | PATCH never creates or resets an expiry from its own options |
-| Existing SDK-managed TTL | Preserved or `UNSUPPORTED_CAPABILITY` | Check `Capability.PATCH_PRESERVES_TTL`: DynamoDB preserves its absolute expiry; Cosmos rejects an item carrying its relative `ttl` field rather than extending it |
+| Existing SDK-managed TTL | `UNSUPPORTED_CAPABILITY` | Cosmos DB cannot patch without restarting its relative `ttl`, so both providers reject a TTL-bearing item rather than diverging. Use `upsert()` to rewrite it |
 
 #### Pre-validating an `INCREMENT` delta
 
@@ -791,26 +794,44 @@ smallest non-zero numeric magnitude. The class also exposes `isIntegralDelta(Num
 `add(Number, Number)`, and `isIntegralResultOutsideRange(Number, Number)` for
 callers that want to predict the *result* bound from a known current value.
 
-#### Fractional increments are not bit-identical across providers
+#### An `INCREMENT` delta must be a whole number
 
-The **delta** is portable, but the accumulated **fractional** result is not.
-DynamoDB evaluates `field = field + delta` in its `N` type (exact decimal,
-38 significant digits); Cosmos DB evaluates in IEEE-754 binary64. Seeding
-`{"v": 0.1}` and incrementing by `0.2` therefore stores exactly `0.3` on
-DynamoDB and `0.30000000000000004` on Cosmos DB, and the divergence compounds
-across repeated fractional increments. **Integral** increments are exact on
-both current implementations.
+A fractional delta is `INVALID_REQUEST` on every provider. Providers do not
+agree on how to accumulate one: DynamoDB evaluates `field = field + delta` in
+its `N` type (exact decimal, 38 significant digits), while Cosmos DB evaluates
+in IEEE-754 binary64. Seeding `{"v": 0.1}` and incrementing by `0.2` would
+store exactly `0.3` on DynamoDB and `0.30000000000000004` on Cosmos DB, and the
+gap compounds across repeated increments. Rather than let one portable call
+store different data on different providers, the contract rejects the delta
+before dispatch.
 
-The gap is declared, not silent — providers publish
-`Capability.EXACT_FRACTIONAL_INCREMENT` (supported on DynamoDB only). It is
-**informational**: no provider rejects a fractional increment because of it,
-and it never raises `UNSUPPORTED_CAPABILITY`.
+Integral deltas are accepted because they accumulate exactly on both providers
+whenever the stored value is itself integral. One residual case cannot be
+validated away: if the field *already* holds a fractional number, a whole-number
+delta can still land one ulp apart, because DynamoDB adds in exact decimal and
+Cosmos DB in binary64. Detecting it would require reading the current value,
+which is precisely the round trip `INCREMENT` exists to avoid, so the SDK keeps
+atomicity instead. If the exact digits matter, do not store the quantity as a
+fraction:
 
 ```java
-if (!client.capabilities().isSupported(Capability.EXACT_FRACTIONAL_INCREMENT)) {
-    // This provider accumulates in binary64. For money, prefer integer minor
-    // units (increment /balanceCents by 20) — exact on providers supporting PATCH.
-}
+// INVALID_REQUEST on every provider.
+client.patch(address, key, List.of(PatchOperation.increment("/balance", 0.20)));
+
+// Portable: for money, use integer minor units.
+client.patch(address, key, List.of(PatchOperation.increment("/balanceCents", 20)));
+```
+
+Whole-valued floating deltas are accepted, because they normalize to the same
+request as the integer: `increment("/v", 1.0)` behaves exactly like
+`increment("/v", 1)`.
+
+Fractional **values** stay fully portable — only accumulation diverges, and
+`SET` / `REPLACE` perform none. They store the operand verbatim:
+
+```java
+// Portable: no provider arithmetic is involved.
+client.patch(address, key, List.of(PatchOperation.set("/price", 19.99)));
 ```
 
 #### Nested paths are capability-gated
@@ -838,22 +859,25 @@ if (!client.capabilities().isSupported(Capability.PATCH)) {
 }
 ```
 
-#### Existing TTL is capability-gated
+#### Patching an item with an existing TTL is rejected
 
 `OperationOptions.ttlSeconds()` passed to `patch()` is always ignored; it never
-creates or resets an expiry. Existing SDK-managed TTL is a separate
-capability:
+creates or resets an expiry. Patching a document that *already* carries an
+SDK-managed expiry fails with `UNSUPPORTED_CAPABILITY` on every provider,
+before any mutation:
 
-| Provider | `PATCH_PRESERVES_TTL` | Behavior |
-|----------|-----------------------|----------|
-| Cosmos DB | ❌ | Native patch advances `_ts` and would restart relative `ttl`, so the atomic filter rejects a TTL-bearing item with `UNSUPPORTED_CAPABILITY` |
-| DynamoDB | ✅ | `UpdateItem` leaves the absolute `ttlExpiry` attribute unchanged |
-| Spanner | ❌ | PATCH itself is unavailable |
+| Provider | Native behaviour | Why the SDK rejects |
+|----------|------------------|---------------------|
+| Cosmos DB | Native patch advances `_ts`, restarting the relative `ttl` countdown | Cannot preserve the original expiry, so the atomic filter predicate rejects a TTL-bearing item |
+| DynamoDB | `UpdateItem` leaves the absolute `ttlExpiry` attribute unchanged | *Could* preserve it, but the patch `ConditionExpression` adds `attribute_not_exists(ttlExpiry)` so the same call does not keep an expiry here and change it on Cosmos DB |
+| Spanner | — | PATCH itself is unavailable |
+
+Use `upsert()` to rewrite a TTL-bearing document, passing the expiry you want.
 
 If a Cosmos container uses a provider-configured default TTL without an item
 `ttl` field, the adapter cannot detect that external policy from the patch
-request. Treat the unsupported capability as a signal not to combine PATCH
-with Cosmos default-TTL containers when absolute expiry must remain unchanged.
+request. Avoid combining PATCH with Cosmos default-TTL containers when absolute
+expiry must remain unchanged.
 
 **Key behavior across providers:**
 

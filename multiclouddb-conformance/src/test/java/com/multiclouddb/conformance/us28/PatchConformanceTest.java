@@ -45,7 +45,6 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -190,20 +189,6 @@ public abstract class PatchConformanceTest {
         return client.capabilities().isSupported(Capability.NESTED_PATCH);
     }
 
-    /**
-     * Providers declare this supported when fractional increments use
-     * exact-decimal arithmetic and unsupported when they use IEEE-754 binary64.
-     * It is informational: every provider that supports PATCH still accepts an
-     * in-domain fractional increment.
-     */
-    private boolean supportsExactFractionalIncrement() {
-        return client.capabilities().isSupported(Capability.EXACT_FRACTIONAL_INCREMENT);
-    }
-
-    private boolean supportsPatchPreservesTtl() {
-        return client.capabilities().isSupported(Capability.PATCH_PRESERVES_TTL);
-    }
-
     // ── capability declaration ───────────────────────────────────────────────
 
     @Test
@@ -214,10 +199,6 @@ public abstract class PatchConformanceTest {
                 "providers running patch conformance must declare PATCH supported");
         assertNotNull(client.capabilities().get(Capability.NESTED_PATCH),
                 "NESTED_PATCH must be declared either way so callers can branch on it");
-        assertNotNull(client.capabilities().get(Capability.EXACT_FRACTIONAL_INCREMENT),
-                "EXACT_FRACTIONAL_INCREMENT must be declared either way so callers can branch on it");
-        assertNotNull(client.capabilities().get(Capability.PATCH_PRESERVES_TTL),
-                "PATCH_PRESERVES_TTL must be declared either way so callers can branch on it");
     }
 
     @Test
@@ -572,7 +553,7 @@ public abstract class PatchConformanceTest {
         String marker = "patch-query-" + UUID.randomUUID();
         MulticloudDbKey key = seed("patch-query-dynamic", Map.of("value", 1, "marker", marker));
         client.patch(getAddress(), key, List.of(
-                PatchOperation.increment("/value", 0.5d),
+                PatchOperation.increment("/value", 1),
                 PatchOperation.set("/onSale", true)));
 
         QueryPage page = client.query(getAddress(), QueryRequest.builder()
@@ -588,7 +569,7 @@ public abstract class PatchConformanceTest {
                 "the patched document must match both numeric and dynamic portable predicates");
         Number queriedValue = org.junit.jupiter.api.Assertions.assertInstanceOf(
                 Number.class, page.items().get(0).get("value"));
-        assertEquals(1.5d, queriedValue.doubleValue(), 1e-9);
+        assertEquals(2d, queriedValue.doubleValue(), 1e-9);
         assertEquals(true, page.items().get(0).get("onSale"));
     }
 
@@ -684,31 +665,43 @@ public abstract class PatchConformanceTest {
 
     @Test
     @Order(48)
-    @DisplayName("fractional increment floor is accepted and smaller deltas are INVALID_REQUEST")
-    void fractionalIncrementFloorIsPortable() {
+    @DisplayName("fractional floor is accepted and smaller written values are INVALID_REQUEST")
+    void fractionalFloorIsPortableForWrittenValues() {
         MulticloudDbKey key = seed("patch-fractional-floor",
                 Map.of("title", "before", "value", 0));
 
+        // 1E-130 is DynamoDB's smallest non-zero magnitude, so it is the floor of
+        // the portable domain for any number a patch writes.
         client.patch(getAddress(), key,
-                List.of(PatchOperation.increment("/value", new BigDecimal("1E-130"))));
+                List.of(PatchOperation.set("/value", new BigDecimal("1E-130"))));
         assertEquals(1e-130d, read(key).get("value").asDouble());
 
         assertInvalidAndUnchanged(key,
-                List.of(PatchOperation.increment("/value", new BigDecimal("1E-131"))));
+                List.of(PatchOperation.set("/value", new BigDecimal("1E-131"))));
         assertEquals(1e-130d, read(key).get("value").asDouble(),
-                "a rejected sub-floor delta must not alter the boundary value");
+                "a rejected sub-floor value must not alter the boundary value");
     }
 
     @Test
     @Order(49)
-    @DisplayName("SET integers wider than long remain readable")
-    void setWideIntegerRemainsReadable() {
-        BigInteger value = BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE);
+    @DisplayName("SET honours the portable integral boundary and rejects anything wider")
+    void setWideIntegerIsBoundedByThePortableNumericDomain() {
+        BigInteger boundary = BigInteger.valueOf(Long.MAX_VALUE);
         MulticloudDbKey key = seed("patch-wide-integer", Map.of("title", "before"));
 
-        client.patch(getAddress(), key, List.of(PatchOperation.set("/wide", value)));
+        // Long.MAX_VALUE is the widest integer every provider stores and
+        // returns unchanged, so it must round-trip exactly.
+        client.patch(getAddress(), key, List.of(PatchOperation.set("/wide", boundary)));
+        assertEquals(boundary, read(key).get("wide").bigIntegerValue(),
+                "the portable integral boundary must round-trip exactly on every provider");
 
-        assertEquals(value, read(key).get("wide").bigIntegerValue());
+        // One past the boundary is outside the portable domain: DynamoDB keeps
+        // it exactly while Cosmos DB rounds it to the nearest double, so the
+        // SDK rejects it uniformly rather than store provider-dependent data.
+        assertInvalidAndUnchanged(key,
+                List.of(PatchOperation.set("/wide", boundary.add(BigInteger.ONE))));
+        assertEquals(boundary, read(key).get("wide").bigIntegerValue(),
+                "a rejected out-of-domain SET must not alter the stored value");
     }
 
     @Test
@@ -768,13 +761,14 @@ public abstract class PatchConformanceTest {
 
     @Test
     @Order(38)
-    @DisplayName("fractional increments on integral values produce portable floating results")
-    void incrementFractionalDeltaOnIntegralField() {
-        MulticloudDbKey key = seed("patch-incr-integral-frac", Map.of("value", 1));
+    @DisplayName("fractional INCREMENT on an integral field is INVALID_REQUEST")
+    void incrementFractionalDeltaOnIntegralFieldIsRejected() {
+        MulticloudDbKey key = seed("patch-incr-integral-frac",
+                Map.of("title", "before", "value", 1));
 
-        client.patch(getAddress(), key, List.of(PatchOperation.increment("/value", 0.5d)));
-
-        assertEquals(1.5d, read(key).get("value").asDouble(), 1e-9);
+        assertInvalidAndUnchanged(key, List.of(PatchOperation.increment("/value", 0.5d)));
+        assertEquals(1, read(key).get("value").asInt(),
+                "a rejected fractional delta must not alter the stored value");
     }
 
     @Test
@@ -882,34 +876,23 @@ public abstract class PatchConformanceTest {
 
     @Test
     @Order(50)
-    @DisplayName("existing SDK-managed TTL is preserved or rejected by capability")
-    void existingTtlMatchesPatchPreservationCapability() {
+    @DisplayName("patching an item with an SDK-managed TTL is UNSUPPORTED_CAPABILITY everywhere")
+    void existingTtlRejectsPatchOnEveryProvider() {
         OperationOptions ttl = OperationOptions.builder().ttlSeconds(3600).build();
         MulticloudDbKey key = seed("patch-existing-ttl", Map.of("title", "before"), ttl);
 
-        if (!supportsPatchPreservesTtl()) {
-            assertCategory(patchExpectingFailure(key,
-                    List.of(PatchOperation.set("/status", "after"))),
-                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY);
-            assertFalse(read(key).has("status"),
-                    "a provider unable to preserve expiry must reject before mutation");
-            return;
-        }
+        assertCategory(patchExpectingFailure(key,
+                List.of(PatchOperation.set("/status", "after"))),
+                MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY);
+        assertFalse(read(key).has("status"),
+                "the rejection must happen before any mutation");
 
         OperationOptions metadata = OperationOptions.builder().includeMetadata(true).build();
-        DocumentResult before = client.read(getAddress(), key, metadata);
-        assertNotNull(before);
-        assertNotNull(before.metadata());
-        assertNotNull(before.metadata().ttlExpiry(),
-                "a provider declaring PATCH_PRESERVES_TTL must expose the seeded expiry");
-
-        client.patch(getAddress(), key, List.of(PatchOperation.set("/status", "after")));
-
         DocumentResult after = client.read(getAddress(), key, metadata);
         assertNotNull(after);
         assertNotNull(after.metadata());
-        assertEquals(before.metadata().ttlExpiry(), after.metadata().ttlExpiry(),
-                "patch must preserve the existing absolute expiry");
+        assertNotNull(after.metadata().ttlExpiry(),
+                "the rejected patch must leave the seeded expiry intact");
     }
 
     // ── numeric representation parity ────────────────────────────────────────
@@ -935,71 +918,62 @@ public abstract class PatchConformanceTest {
                 "the stored number must stay integral on every provider");
     }
 
-    /** A genuinely fractional delta against a floating-point field is portable. */
+    /**
+     * A fractional delta is outside the portable contract even on a field that
+     * already holds a floating-point value, because the divergence comes from
+     * the provider's server-side accumulation, not from the stored type.
+     */
     @Test
     @Order(23)
-    @DisplayName("INCREMENT with a fractional delta works on a floating-point field")
-    void incrementFractionalDeltaOnFloatingField() {
-        MulticloudDbKey key = seed("patch-incr-frac", Map.of("doubleField", 1.5d));
+    @DisplayName("INCREMENT with a fractional delta is INVALID_REQUEST on a floating-point field")
+    void incrementFractionalDeltaOnFloatingFieldIsRejected() {
+        MulticloudDbKey key = seed("patch-incr-frac",
+                Map.of("title", "before", "doubleField", 1.5d));
 
-        client.patch(getAddress(), key, List.of(PatchOperation.increment("/doubleField", 0.25d)));
-
-        assertEquals(1.75d, read(key).get("doubleField").asDouble(), 1e-9);
+        assertInvalidAndUnchanged(key,
+                List.of(PatchOperation.increment("/doubleField", 0.25d)));
+        assertEquals(1.5d, read(key).get("doubleField").asDouble(), 0.0d,
+                "a rejected fractional delta must not alter the stored value");
     }
 
     /**
-     * The documented, capability-gated numeric divergence. An exact-decimal
-     * implementation produces {@code 0.3}; an IEEE-754 binary64 implementation
-     * produces {@code 0.30000000000000004}.
-     * <p>
-     * The other fractional cases in this suite use {@code 1 + 0.5} and
-     * {@code 1.5 + 0.25} — both exactly representable in binary64 — and compare
-     * with a {@code 1e-9} tolerance, so they are blind to this by construction.
-     * These two pin it in both directions with exact comparisons: an operand pair
-     * that is <em>not</em> exactly representable, and no tolerance to hide the
-     * one-ulp difference. Gated on the capability, never on the provider id.
+     * The one place a portable PATCH could store different bytes on different
+     * providers: server-side accumulation of a fractional delta. DynamoDB adds
+     * in the exact-decimal {@code N} type and would store {@code 0.3}; Cosmos DB
+     * evaluates in IEEE-754 binary64 and would store {@code 0.30000000000000004}.
+     * The portable contract removes the divergence at the source by rejecting
+     * fractional deltas outright, so this asserts the rejection with no tolerance
+     * and no capability gate — it must hold identically on every provider.
      */
     @Test
     @Order(46)
-    @DisplayName("fractional INCREMENT is exact in decimal where EXACT_FRACTIONAL_INCREMENT is declared")
-    void fractionalIncrementIsExactDecimalWhereSupported() {
-        assumeTrue(supportsExactFractionalIncrement(),
-                "provider does not declare EXACT_FRACTIONAL_INCREMENT");
-        MulticloudDbKey key = seed("patch-incr-exact-decimal", Map.of("doubleField", 0.1d));
+    @DisplayName("the fractional accumulation divergence is unreachable: 0.1 + 0.2 is rejected")
+    void fractionalAccumulationDivergenceIsUnreachable() {
+        MulticloudDbKey key = seed("patch-incr-exact-decimal",
+                Map.of("title", "before", "doubleField", 0.1d));
 
-        client.patch(getAddress(), key, List.of(PatchOperation.increment("/doubleField", 0.2d)));
+        assertInvalidAndUnchanged(key,
+                List.of(PatchOperation.increment("/doubleField", 0.2d)));
 
-        double stored = read(key).get("doubleField").asDouble();
-        assertEquals(0.3d, stored,
-                "a provider declaring EXACT_FRACTIONAL_INCREMENT must add in exact decimal, "
-                        + "so 0.1 + 0.2 is exactly 0.3");
-        assertNotEquals(0.1d + 0.2d, stored,
-                "an exact-decimal provider must not reproduce the binary64 result "
-                        + "0.30000000000000004");
+        assertEquals(0.1d, read(key).get("doubleField").asDouble(), 0.0d,
+                "a rejected fractional delta must leave the stored value byte-identical");
     }
 
     /**
-     * The other direction of the same declared divergence: where the capability is
-     * absent the increment is evaluated in binary64, and that result is pinned so
-     * it cannot drift silently either.
+     * Fractional <em>values</em> stay portable. Only accumulation diverges, and
+     * SET performs none — the operand is stored verbatim, so the same call lands
+     * the same number on every provider.
      */
     @Test
     @Order(47)
-    @DisplayName("fractional INCREMENT follows binary64 where EXACT_FRACTIONAL_INCREMENT is not declared")
-    void fractionalIncrementIsBinary64WhereUnsupported() {
-        assumeTrue(!supportsExactFractionalIncrement(),
-                "provider declares EXACT_FRACTIONAL_INCREMENT");
-        MulticloudDbKey key = seed("patch-incr-binary64", Map.of("doubleField", 0.1d));
+    @DisplayName("SET stores a fractional value identically on every provider")
+    void fractionalSetValueIsPortable() {
+        MulticloudDbKey key = seed("patch-set-fractional", Map.of("title", "before"));
 
-        client.patch(getAddress(), key, List.of(PatchOperation.increment("/doubleField", 0.2d)));
+        client.patch(getAddress(), key, List.of(PatchOperation.set("/price", 19.99d)));
 
-        double stored = read(key).get("doubleField").asDouble();
-        assertEquals(0.1d + 0.2d, stored,
-                "a provider not declaring EXACT_FRACTIONAL_INCREMENT must add in IEEE-754 "
-                        + "binary64, exactly as Java double arithmetic does");
-        assertNotEquals(0.3d, stored,
-                "a binary64 provider must not silently produce the exact-decimal result 0.3; "
-                        + "if it does, the capability declaration is wrong");
+        assertEquals(19.99d, read(key).get("price").asDouble(), 0.0d,
+                "SET writes the operand verbatim, so no provider arithmetic is involved");
     }
 
     @Test

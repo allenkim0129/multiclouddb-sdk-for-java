@@ -32,10 +32,6 @@ public final class SpannerCapabilities {
                     + "with UNSUPPORTED_CAPABILITY before any Spanner request is sent"),
             Capability.NESTED_PATCH_UNSUPPORTED.withNotes(
                     "Nested patch depends on the future Spanner patch implementation"),
-            Capability.EXACT_FRACTIONAL_INCREMENT_UNSUPPORTED.withNotes(
-                    "Fractional increment semantics will be declared with the future Spanner patch implementation"),
-            Capability.PATCH_PRESERVES_TTL_UNSUPPORTED.withNotes(
-                    "PATCH is unavailable; a future implementation must declare whether it preserves expiry"),
             // Query DSL capabilities
             Capability.PORTABLE_QUERY_EXPRESSION_CAP.withNotes("Portable expression translation to Spanner GoogleSQL"),
             Capability.LIKE_OPERATOR_CAP.withNotes("LIKE operator supported in GoogleSQL"),

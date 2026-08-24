@@ -24,10 +24,6 @@ public abstract class CapabilitiesConformanceTest {
 
     protected abstract boolean expectedNestedPatchSupport();
 
-    protected abstract boolean expectedExactFractionalIncrementSupport();
-
-    protected abstract boolean expectedPatchPreservesTtlSupport();
-
     @Test
     void capabilitiesReturnsNonEmptySet() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
@@ -41,7 +37,7 @@ public abstract class CapabilitiesConformanceTest {
     void allKnownCapabilityNamesPresent() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            // All 21 well-known capability names must be declared
+            // All 19 well-known capability names must be declared
             String[] knownNames = {
                     Capability.CONTINUATION_TOKEN_PAGING,
                     Capability.CROSS_PARTITION_QUERY,
@@ -59,8 +55,6 @@ public abstract class CapabilitiesConformanceTest {
                     Capability.CASE_FUNCTIONS,
                     Capability.PATCH,
                     Capability.NESTED_PATCH,
-                    Capability.EXACT_FRACTIONAL_INCREMENT,
-                    Capability.PATCH_PRESERVES_TTL,
                     Capability.RESULT_LIMIT,
                     Capability.ROW_LEVEL_TTL,
                     Capability.WRITE_TIMESTAMP
@@ -98,38 +92,6 @@ public abstract class CapabilitiesConformanceTest {
                     client.capabilities().isSupported(Capability.NESTED_PATCH),
                     "Provider " + provider().id()
                             + " must declare the expected NESTED_PATCH capability state");
-        }
-    }
-
-    /**
-     * Fractional INCREMENT accumulates in exact decimal arithmetic on DynamoDB
-     * and in IEEE-754 binary64 on Cosmos DB. Spanner declares this capability
-     * unsupported while PATCH itself is unavailable. Every provider publishes
-     * an explicit state so callers never infer arithmetic from provider identity.
-     * For providers supporting PATCH, this capability is informational and does
-     * not itself reject an in-domain fractional increment.
-     */
-    @Test
-    void exactFractionalIncrementCapabilityMatchesProviderArithmetic() throws Exception {
-        try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
-            assertNotNull(client.capabilities().get(Capability.EXACT_FRACTIONAL_INCREMENT),
-                    "EXACT_FRACTIONAL_INCREMENT must be declared either way so callers can branch on it");
-            assertEquals(expectedExactFractionalIncrementSupport(),
-                    client.capabilities().isSupported(Capability.EXACT_FRACTIONAL_INCREMENT),
-                    "Provider " + provider().id()
-                            + " must declare the expected EXACT_FRACTIONAL_INCREMENT capability state");
-        }
-    }
-
-    @Test
-    void patchPreservesTtlCapabilityMatchesProviderContract() throws Exception {
-        try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
-            assertNotNull(client.capabilities().get(Capability.PATCH_PRESERVES_TTL),
-                    "PATCH_PRESERVES_TTL must be declared either way so callers can branch on it");
-            assertEquals(expectedPatchPreservesTtlSupport(),
-                    client.capabilities().isSupported(Capability.PATCH_PRESERVES_TTL),
-                    "Provider " + provider().id()
-                            + " must declare the expected PATCH_PRESERVES_TTL capability state");
         }
     }
 

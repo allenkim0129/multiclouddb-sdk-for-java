@@ -27,8 +27,13 @@ public interface MulticloudDbClient extends AutoCloseable {
      * Maximum number of {@link PatchOperation}s accepted by a single
      * {@link #patch(ResourceAddress, MulticloudDbKey, List, OperationOptions)} call.
      * <p>
-     * This is Cosmos DB's native per-request limit. The SDK applies it uniformly
-     * so that a patch which succeeds on one provider cannot fail on another.
+     * This is Cosmos DB's native per-request limit: a single-document patch
+     * accepts at most 10 operations. DynamoDB has no equivalent
+     * operation-count cap, so Cosmos sets the portable ceiling. The SDK
+     * applies it uniformly so that a patch which succeeds on one provider
+     * cannot fail on another.
+     *
+     * @see <a href="https://learn.microsoft.com/en-us/azure/cosmos-db/partial-document-update#supported-modes">Azure Cosmos DB partial document update — supported modes</a>
      */
     int MAX_PATCH_OPERATIONS = 10;
 
@@ -143,20 +148,27 @@ public interface MulticloudDbClient extends AutoCloseable {
      *       target field to exist and throw {@code NOT_FOUND} otherwise.
      *       {@code SET} creates or overwrites, but never creates missing
      *       intermediate objects on a nested path.</li>
-     *   <li>{@code INCREMENT} integral deltas and their resulting value must
-     *       fit signed 64-bit range;
-     *       non-zero fractional deltas must be between 1E-130 and
-     *       9,007,199,254,740,991 in magnitude, finite, and round-trip through
-     *       an IEEE-754 {@code double} without decimal precision loss.</li>
+     *   <li>{@code INCREMENT} requires a whole-number delta, and the delta and
+     *       its resulting value must fit signed 64-bit range. A fractional
+     *       delta is {@code INVALID_REQUEST} on every provider: DynamoDB
+     *       accumulates in exact decimal arithmetic while Cosmos DB accumulates
+     *       in IEEE-754 binary64, so the stored total would depend on the
+     *       provider. Scale to whole units and increment by an integer.</li>
+     *   <li>A number written by {@code SET} or {@code REPLACE} must fit signed
+     *       64-bit range when whole; a non-zero fractional value must be
+     *       between 1E-130 and 9,007,199,254,740,991 in magnitude, finite, and
+     *       round-trip through an IEEE-754 {@code double} without decimal
+     *       precision loss.</li>
      *   <li>Nested paths require {@link Capability#NESTED_PATCH}; a provider that
      *       does not declare it throws
      *       {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}.</li>
      *   <li>{@link OperationOptions#ttlSeconds()} is <strong>ignored</strong> by
-     *       {@code patch()} and never creates or resets an expiry. Existing
-     *       SDK-managed expiry is preserved only when
-     *       {@link Capability#PATCH_PRESERVES_TTL} is supported; otherwise the
-     *       provider rejects a TTL-bearing item with
-     *       {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}.</li>
+     *       {@code patch()} and never creates or resets an expiry. An item that
+     *       already carries an SDK-managed expiry cannot be patched on any
+     *       provider and is rejected with
+     *       {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}, because
+     *       Cosmos DB's native patch would restart a relative expiry that
+     *       DynamoDB would leave untouched.</li>
      * </ul>
      * See {@link PatchOperation} for path rules and per-operation semantics.
      *

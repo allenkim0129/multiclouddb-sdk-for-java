@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.*;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.*;
 
@@ -99,7 +100,19 @@ public final class DynamoItemMapper {
                 try {
                     return new LongNode(Long.parseLong(numStr));
                 } catch (NumberFormatException widerThanLong) {
-                    return BigIntegerNode.valueOf(new BigInteger(numStr));
+                    // DynamoDB's N accepts exponent notation (for example
+                    // "1E+10" or "1E-130"), which BigInteger rejects outright.
+                    // Parsing through BigDecimal first keeps every value the
+                    // service will accept readable: without it a single stored
+                    // attribute raises a raw NumberFormatException on every
+                    // later read, leaving the document permanently unreadable
+                    // and leaking a non-portable exception type to the caller.
+                    BigDecimal exact = new BigDecimal(numStr);
+                    try {
+                        return BigIntegerNode.valueOf(exact.toBigIntegerExact());
+                    } catch (ArithmeticException fractional) {
+                        return new DecimalNode(exact);
+                    }
                 }
             }
         }

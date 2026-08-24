@@ -24,12 +24,12 @@ import java.math.BigInteger;
  * {@code 0.30000000000000004} on Cosmos DB, and the divergence compounds across
  * repeated fractional increments. Integral results are unaffected — they stay
  * exact because {@link #add(Number, Number)} bounds them to signed 64-bit range.
- * The gap is declared, not silent: providers publish
- * {@link Capability#EXACT_FRACTIONAL_INCREMENT} so callers that need
- * bit-identical fractional totals can branch on it. For a provider that
- * advertises PATCH, the capability is informational and does not itself reject
- * an in-domain fractional increment. Spanner currently advertises PATCH
- * unsupported and makes no fractional-arithmetic claim.
+ * Because that divergence cannot be reconciled without a non-atomic
+ * read-modify-write, {@code patch()} does not accept a fractional
+ * {@code INCREMENT} delta at all: {@code PatchValidator} rejects one with
+ * {@code INVALID_REQUEST} on every provider. The fractional bounds below still
+ * govern numbers <em>written</em> by {@code SET} and {@code REPLACE}, which
+ * store identically everywhere because no server-side accumulation occurs.
  *
  * <h2>Which result bound applies is decided by the <em>normalized</em> delta,
  * not by the Java type you passed</h2>
@@ -70,8 +70,6 @@ import java.math.BigInteger;
  * bound can use {@link #isIntegralResultOutsideRange(Number, Number)} or
  * {@link #maximumBaseForIntegralDelta(long)} /
  * {@link #minimumBaseForIntegralDelta(long)}.
- *
- * @see Capability#EXACT_FRACTIONAL_INCREMENT
  */
 public final class PatchNumericDomain {
 

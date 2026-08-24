@@ -404,12 +404,10 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
                     case SET, REPLACE -> patchOps.set(op.path(), op.value());
                     case REMOVE -> patchOps.remove(op.path());
                     case INCREMENT -> {
+                        // The portable contract admits whole-number deltas only,
+                        // so normalize always yields a Long here.
                         Number delta = PatchNumericDomain.normalize((Number) op.value());
-                        if (delta instanceof Long integralDelta) {
-                            patchOps.increment(op.path(), integralDelta);
-                        } else {
-                            patchOps.increment(op.path(), delta.doubleValue());
-                        }
+                        patchOps.increment(op.path(), delta.longValue());
                     }
                 }
             }
@@ -703,7 +701,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
 
     private static MulticloudDbException patchTtlUnsupported(CosmosException cause) {
         Map<String, String> details = patchFailureDetails(cause);
-        details.put("capability", Capability.PATCH_PRESERVES_TTL);
+        details.put("reason", "patch_on_ttl_item_unsupported");
         return new MulticloudDbException(new MulticloudDbError(
                 MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
                 "Cosmos PATCH cannot preserve the existing SDK-managed ttl expiry: "

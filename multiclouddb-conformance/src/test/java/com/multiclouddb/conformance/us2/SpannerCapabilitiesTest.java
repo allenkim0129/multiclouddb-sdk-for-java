@@ -30,17 +30,6 @@ public class SpannerCapabilitiesTest extends CapabilitiesConformanceTest {
         return false;
     }
 
-    @Override
-    protected boolean expectedExactFractionalIncrementSupport() {
-        // PATCH is unavailable; a future implementation will declare its arithmetic.
-        return false;
-    }
-
-    @Override
-    protected boolean expectedPatchPreservesTtlSupport() {
-        return false;
-    }
-
     @Test
     void spannerSupportsAllQueryDsl() throws Exception {
         try (var client = com.multiclouddb.conformance.ConformanceHarness.createClient(ProviderId.SPANNER)) {

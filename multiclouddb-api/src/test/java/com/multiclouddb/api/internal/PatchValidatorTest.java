@@ -234,10 +234,24 @@ class PatchValidatorTest {
     }
 
     @Test
-    @DisplayName("accepts negative and fractional INCREMENT deltas")
-    void acceptsNegativeAndFractionalDeltas() {
-        PatchValidator.validate(List.of(PatchOperation.increment("/n", -5)), PROVIDER);
-        PatchValidator.validate(List.of(PatchOperation.increment("/n", 0.5)), PROVIDER);
+    @DisplayName("accepts negative INCREMENT deltas")
+    void acceptsNegativeDeltas() {
+        assertDoesNotThrow(() -> PatchValidator.validate(
+                List.of(PatchOperation.increment("/n", -5)), PROVIDER));
+    }
+
+    /**
+     * Providers accumulate fractional deltas differently — DynamoDB in exact
+     * decimal, Cosmos DB in binary64 — so the same portable call would store
+     * different numbers. The contract rejects the delta rather than let that
+     * divergence reach storage.
+     */
+    @Test
+    @DisplayName("rejects fractional INCREMENT deltas")
+    void rejectsFractionalDeltas() {
+        assertInvalidRequest(List.of(PatchOperation.increment("/n", 0.5)));
+        assertInvalidRequest(List.of(
+                PatchOperation.increment("/n", new java.math.BigDecimal("0.1"))));
     }
 
     /**

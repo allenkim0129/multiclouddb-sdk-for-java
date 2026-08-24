@@ -592,8 +592,8 @@ class CosmosPatchPreconditionTest {
                             OperationOptions.defaults()));
             assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
                     error.error().category());
-            assertEquals(com.multiclouddb.api.Capability.PATCH_PRESERVES_TTL,
-                    error.error().providerDetails().get("capability"));
+            assertEquals("patch_on_ttl_item_unsupported",
+                    error.error().providerDetails().get("reason"));
         });
     }
 

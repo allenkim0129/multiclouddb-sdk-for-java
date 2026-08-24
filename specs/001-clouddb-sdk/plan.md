@@ -268,7 +268,7 @@ implementation can be added without changing the public API.
 |---|---|---|
 | Cosmos DB | `CosmosContainer.patchItem(...)` | `IS_DEFINED`, `IS_NUMBER`, integral-result bounds, and the item-TTL guard are evaluated atomically with the write; no item-wide `If-Match` is sent. Failed conditions are classified with a session-token point read as `NOT_FOUND`, `INVALID_REQUEST`, `UNSUPPORTED_CAPABILITY`, or `CONFLICT` |
 | DynamoDB | `UpdateItem` with a compiled `UpdateExpression` | `ConditionExpression` asserting `attribute_exists(partitionKey)` plus `attribute_exists(<path>)` per strict op — without it `UpdateItem` creates a missing item and a native `REMOVE` silently no-ops |
-| Spanner | Unsupported SPI default | `SpannerCapabilities` declares `PATCH`, `NESTED_PATCH`, `EXACT_FRACTIONAL_INCREMENT`, and `PATCH_PRESERVES_TTL` unsupported; `patch()` returns `UNSUPPORTED_CAPABILITY` before any Spanner request |
+| Spanner | Unsupported SPI default | `SpannerCapabilities` declares `PATCH` and `NESTED_PATCH` unsupported; `patch()` returns `UNSUPPORTED_CAPABILITY` before any Spanner request |
 
 ### Design decisions
 
@@ -283,9 +283,11 @@ PATCH supported.
 `NESTED_PATCH` independently gates sub-document paths. Cosmos DB and DynamoDB
 currently advertise both. Spanner advertises neither. Unsupported behavior is
 a structured pre-dispatch failure, never a silent read-modify-write fallback.
-`PATCH_PRESERVES_TTL` separately declares whether an existing SDK-managed
-expiry survives patch: DynamoDB supports it; Cosmos rejects an item carrying
-its relative `ttl` field rather than silently restarting the countdown.
+Behaviour that a provider cannot reproduce identically is **not** turned into
+a capability — it is rejected uniformly. Patching a TTL-bearing item and
+accumulating a fractional `INCREMENT` delta both fail everywhere, because a
+capability flag there would only license the same portable call to store
+different data depending on where it ran.
 
 **Error normalisation.** Cosmos puts path existence, numeric type, integral
 result bounds, and the TTL guard in the atomic server-side predicate. A failed
@@ -299,12 +301,14 @@ point-read fallback if the response omits that image. The exact Cosmos emulator
 412 behavior remains pending T192. A future provider must map the same states
 to the same categories before advertising PATCH.
 
-**Fractional increment arithmetic is declared, not normalised.** DynamoDB
+**Fractional increment deltas are rejected, not reconciled.** DynamoDB
 evaluates a fractional `INCREMENT` in exact-decimal `N`; Cosmos DB uses
-IEEE-754 binary64. Normalising this client-side would destroy atomicity, so
-`EXACT_FRACTIONAL_INCREMENT` is informational for providers that support
-PATCH. Spanner declares it unsupported while PATCH is unavailable; a future
-implementation must declare the capability according to its actual arithmetic.
+IEEE-754 binary64. Normalising this client-side would require reading the
+current value and would destroy atomicity, so the validator rejects a
+fractional delta with `INVALID_REQUEST` before dispatch. Fractional *values*
+remain portable: `SET` and `REPLACE` store the operand verbatim and perform no
+server-side arithmetic. A future provider implementing PATCH inherits the same
+rule.
 
 **Cost.** Patch is a latency and concurrency optimisation, not a guaranteed
 write-cost reduction. Pricing depends on each provider's account, indexing,

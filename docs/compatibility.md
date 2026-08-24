@@ -97,7 +97,7 @@ The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 | `THROTTLED`  | HTTP 429  | ProvisionedThroughputExceededException, ThrottlingException  | RESOURCE_EXHAUSTED  |
 | `TRANSIENT_FAILURE`  | HTTP 449, 500, 502, 503  | HTTP 500–5xx  | UNAVAILABLE  |
 | `PERMANENT_FAILURE`  | -  | ItemCollectionSizeLimitExceededException  | -  |
-| `UNSUPPORTED_CAPABILITY`  | PATCH on an item carrying SDK-managed `ttl` (`providerDetails.capability="patch_preserves_ttl"`); HTTP 400 with AVAD-not-enabled fingerprint (`reason="avad_not_enabled"`)  | `InvalidArgumentException` / `ResourceNotFoundException` for streams not enabled (`reason="stream_not_enabled"`)  | SPI default for PATCH; UNIMPLEMENTED and change-stream-not-provisioned (`reason="stream_not_enabled"`) for other features  |
+| `UNSUPPORTED_CAPABILITY`  | PATCH on an item carrying SDK-managed `ttl` (`providerDetails.reason="patch_on_ttl_item_unsupported"`); HTTP 400 with AVAD-not-enabled fingerprint (`reason="avad_not_enabled"`)  | `InvalidArgumentException` / `ResourceNotFoundException` for streams not enabled (`reason="stream_not_enabled"`)  | SPI default for PATCH; UNIMPLEMENTED and change-stream-not-provisioned (`reason="stream_not_enabled"`) for other features  |
 | `CURSOR_EXPIRED` (change-feed) | HTTP 410 GONE (`reason="PROVIDER_TRIMMED"`)  | `TrimmedDataAccessException` (`reason="PROVIDER_TRIMMED"`), `ExpiredIteratorException` (`reason="ITERATOR_EXPIRED"`)  | `INVALID_ARGUMENT` / `OUT_OF_RANGE` / `NOT_FOUND` for partition outside retention (`reason="PROVIDER_TRIMMED"`)  |
 | `PROVIDER_ERROR`  | Other  | Other  | INTERNAL, Other  |
 
@@ -136,28 +136,45 @@ contract and examples.
 |------------|-----------|----------|---------|
 | `PATCH` | ✅ Native `patchItem()` — max 10 operations natively | ✅ Native `UpdateItem` with a compiled `UpdateExpression` | ❌ Planned follow-up; calls fail with `UNSUPPORTED_CAPABILITY` |
 | `NESTED_PATCH` | ✅ Patch paths address the JSON tree directly | ✅ Document paths (`a.b.c`) address nested map attributes | ❌ Depends on the future PATCH implementation |
-| `EXACT_FRACTIONAL_INCREMENT` | ❌ Fractional `INCREMENT` is evaluated in IEEE-754 binary64 | ✅ Fractional `INCREMENT` is evaluated in the DynamoDB `N` type — exact decimal, 38 significant digits | ❌ Declared for capability completeness while PATCH is unsupported |
-| `PATCH_PRESERVES_TTL` | ❌ A native patch advances `_ts`; items carrying SDK-managed `ttl` are rejected | ✅ Absolute `ttlExpiry` is left unchanged | ❌ PATCH unavailable |
 
 Portable code checks `Capability.PATCH` before calling the operation and checks
 `Capability.NESTED_PATCH` before using a sub-document path. Unsupported calls
 fail explicitly rather than silently falling back to read-modify-write.
-Code patching an item created with `OperationOptions.ttlSeconds(...)` also
-checks `Capability.PATCH_PRESERVES_TTL`; Cosmos rejects that combination rather
-than silently extending the expiry.
+#### Two rules that are uniform rather than capability-gated
 
-`EXACT_FRACTIONAL_INCREMENT` is **informational only** for providers that
-support PATCH. It reports how a fractional increment accumulates: seeding
-`{"v": 0.1}` and incrementing by `0.2` stores exactly `0.3` on DynamoDB and
-`0.30000000000000004` on Cosmos DB. **Integral** increments are exact on both
-current implementations.
+Two cases would have stored different data depending on the provider, so the
+portable contract rejects them everywhere instead of declaring a capability.
+Neither needs a runtime check: the outcome is the same on Cosmos DB and
+DynamoDB.
+
+**Fractional `INCREMENT` deltas are `INVALID_REQUEST`.** DynamoDB accumulates
+in its `N` type (exact decimal, 38 significant digits) while Cosmos DB
+accumulates in IEEE-754 binary64, so seeding `{"v": 0.1}` and incrementing by
+`0.2` would have stored `0.3` on one and `0.30000000000000004` on the other.
+Integral deltas are the only deltas the contract accepts. They accumulate
+exactly on both providers when the stored value is integral; if the field
+already holds a fraction, a whole-number delta can still land one ulp apart,
+and closing that gap would require a read that forfeits atomicity. Keep such
+quantities in integer minor units.
 
 ```java
-if (!client.capabilities().isSupported(Capability.EXACT_FRACTIONAL_INCREMENT)) {
-    // Provider accumulates in binary64 — keep money as integer minor units,
-    // or re-round after reading, if you need identical totals everywhere.
-}
+// Rejected everywhere — the accumulated result is not portable.
+client.patch(address, key, List.of(PatchOperation.increment("/balance", 0.25)));
+
+// Portable: keep money in integer minor units.
+client.patch(address, key, List.of(PatchOperation.increment("/balanceCents", 25)));
+
+// Also portable: SET writes the operand verbatim, so no arithmetic is involved.
+client.patch(address, key, List.of(PatchOperation.set("/price", 19.99)));
 ```
+
+**Patching an item carrying an SDK-managed TTL is `UNSUPPORTED_CAPABILITY`.**
+DynamoDB's `ttlExpiry` is an absolute timestamp that `UpdateItem` leaves
+untouched, but Cosmos DB's `ttl` is a relative countdown that a native patch
+restarts by advancing `_ts`. Rather than let the same call keep the original
+expiry on one provider and extend it on the other, both reject the patch
+before any mutation. Rewrite the whole document with `upsert(...)` if you need
+to modify a TTL-bearing item.
 
 ### Cost model
 

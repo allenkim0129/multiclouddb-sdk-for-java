@@ -35,12 +35,6 @@ public final class DynamoCapabilities {
             Capability.NESTED_PATCH_CAP.withNotes(
                     "Document paths (a.b.c) address nested map attributes directly in the "
                     + "UpdateExpression"),
-            Capability.EXACT_FRACTIONAL_INCREMENT_CAP.withNotes(
-                    "fractional INCREMENT is evaluated in the DynamoDB N type, which is exact "
-                    + "decimal arithmetic with 38 significant digits, so accumulated results carry "
-                    + "no binary rounding drift; Cosmos DB evaluates in IEEE-754 binary64"),
-            Capability.PATCH_PRESERVES_TTL_CAP.withNotes(
-                    "PATCH leaves the absolute ttlExpiry attribute unchanged"),
             // Query DSL capabilities
             Capability.PORTABLE_QUERY_EXPRESSION_CAP.withNotes("Portable expression translation to DynamoDB PartiQL"),
             Capability.LIKE_OPERATOR_UNSUPPORTED.withNotes("LIKE not natively supported in PartiQL on DynamoDB"),

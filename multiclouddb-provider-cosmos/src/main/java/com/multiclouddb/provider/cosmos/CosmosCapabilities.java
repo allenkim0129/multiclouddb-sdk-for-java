@@ -33,14 +33,6 @@ public final class CosmosCapabilities {
             Capability.NESTED_PATCH_CAP.withNotes(
                     "Patch paths address the JSON document tree directly, so nested fields "
                     + "are patchable without rewriting the parent object"),
-            Capability.EXACT_FRACTIONAL_INCREMENT_UNSUPPORTED.withNotes(
-                    "fractional INCREMENT is evaluated in IEEE-754 binary64; accumulated results "
-                    + "may differ in the last ulp from DynamoDB's exact decimal arithmetic. "
-                    + "Integral increments remain exact"),
-            Capability.PATCH_PRESERVES_TTL_UNSUPPORTED.withNotes(
-                    "Cosmos advances _ts on every patch, which restarts relative item TTL. "
-                    + "PATCH rejects items carrying the SDK-managed ttl field instead of "
-                    + "silently extending their expiry"),
             // Query DSL capabilities
             Capability.PORTABLE_QUERY_EXPRESSION_CAP.withNotes("Portable expression translation to Cosmos SQL"),
             Capability.LIKE_OPERATOR_CAP.withNotes("LIKE operator supported via Cosmos SQL"),

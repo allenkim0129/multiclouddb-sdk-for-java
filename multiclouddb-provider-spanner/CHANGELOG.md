@@ -9,8 +9,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
-- `SpannerCapabilities` explicitly declares `PATCH`, `NESTED_PATCH`,
-  `EXACT_FRACTIONAL_INCREMENT`, and `PATCH_PRESERVES_TTL` unsupported. Calls to `patch(...)` inherit the
+- `SpannerCapabilities` explicitly declares `PATCH` and `NESTED_PATCH`
+  unsupported. Calls to `patch(...)` inherit the
   provider SPI default and fail with `UNSUPPORTED_CAPABILITY` before any
   Spanner request; implementation is deferred to a follow-up change.
 - Change-feed reader backed by Spanner change streams via the `READ_<stream>` TVF (single-use read-only transaction; 5-second bounded window per call). `listCursors` bootstraps the partition tree by calling the TVF with a `NULL` partition token and anchors each cursor''s bookmark at `max(now, childStart)` so `now()` cursors honour their live-tip contract on the emulator. `readChanges` drains a bounded window, absorbs `child_partitions_record` rows (splits/merges), rotates the partition list across partitions, and surfaces `isTerminal()=true` when a cursor''s sole partition closes without children. Each `data_change_record.mod` becomes one `ChangeEvent` with a stable `providerEventId` (`<server_transaction_id>:<commit_ts>:<record_sequence>:<mod_index>`). `INVALID_ARGUMENT` / `NOT_FOUND` / `OUT_OF_RANGE` on the TVF (most commonly a partition token outside the stream''s retention window) is mapped to `CursorExpiredException(reason=PROVIDER_TRIMMED)`.

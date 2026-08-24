@@ -92,11 +92,12 @@ after their lifecycle guard. An adapter that does not implement PATCH inherits
 the SPI default and fails with `UNSUPPORTED_CAPABILITY` without issuing a
 provider request. Applications should use `MulticloudDbClient`, which also
 applies shared document-field validation before dispatch.
-PATCH sub-behaviors remain provider-neutral through capabilities:
-`NESTED_PATCH` gates sub-document paths,
-`EXACT_FRACTIONAL_INCREMENT` declares arithmetic, and
-`PATCH_PRESERVES_TTL` declares whether an existing SDK-managed expiry can
-survive the mutation.
+PATCH sub-behaviors remain provider-neutral: `NESTED_PATCH` gates
+sub-document paths, and every other rule in the patch contract is the
+lowest common denominator of the implementing providers, enforced uniformly
+before dispatch rather than declared as a capability. Anything a provider
+cannot do identically — accumulating a fractional `INCREMENT` delta, or
+patching an item that carries an SDK-managed expiry — is rejected everywhere.
 
 ---
 

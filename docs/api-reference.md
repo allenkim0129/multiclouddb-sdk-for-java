@@ -24,7 +24,7 @@ contract.
 | `DocumentResult` | Read result: document payload and optional metadata |
 | `DocumentMetadata` | Write timestamps, TTL expiry, and version/ETag |
 | `PatchOperation` | A single field-level change for `patch()` - `set` / `replace` / `remove` / `increment`, addressed by JSON Pointer. Immutable; operands are normalised to a detached JSON-compatible snapshot at construction. |
-| `PatchNumericDomain` | Public helper describing the portable `INCREMENT` numeric domain. `normalize(Number)` validates and canonicalises a delta (signed 64-bit for integral, finite `double` for fractional) so callers can pre-validate before submitting; fractional magnitudes run from `MIN_NONZERO_FRACTIONAL_MAGNITUDE` (`1E-130`) through `MAX_FRACTIONAL_MAGNITUDE` (9,007,199,254,740,991). |
+| `PatchNumericDomain` | Public helper describing the portable PATCH numeric domain, applied to `SET` / `REPLACE` operands as well as `INCREMENT` deltas. `normalize(Number)` validates and canonicalises a number (signed 64-bit for integral, finite `double` for fractional) so callers can pre-validate before submitting; fractional magnitudes run from `MIN_NONZERO_FRACTIONAL_MAGNITUDE` (`1E-130`) through `MAX_FRACTIONAL_MAGNITUDE` (9,007,199,254,740,991). |
 | `CapabilitySet` | Runtime introspection of supported provider capabilities |
 | `MulticloudDbException` | Structured error with portable error category |
 | `OperationOptions` | Per-operation timeout, TTL, and metadata controls |
@@ -33,14 +33,11 @@ contract.
 See [guide.md - patch](guide.md#patch---field-level-partial-update) for the full
 patch contract, the v1 restrictions, and the per-provider behaviour table.
 Patch behaviour is capability-gated: `Capability.PATCH` and
-`Capability.NESTED_PATCH` gate the operation itself, while
-`Capability.EXACT_FRACTIONAL_INCREMENT` is **informational only** — it reports
-whether a provider accumulates fractional increments in exact decimal
-(DynamoDB) or IEEE-754 binary64 (Cosmos DB). Spanner declares the capability
-unsupported while PATCH itself is unavailable.
-`Capability.PATCH_PRESERVES_TTL` separately reports whether PATCH can retain an
-existing SDK-managed expiry; Cosmos rejects TTL-bearing items instead of
-silently extending them. See
+`Capability.NESTED_PATCH` gate the operation itself. Everything else in the
+patch contract is uniform across providers rather than capability-gated — a
+fractional `INCREMENT` delta and a patch against a TTL-bearing item both fail
+on every provider, because supporting them would store different data or leave
+a different expiry depending on which provider you ran against. See
 [compatibility.md - Patch Semantics](compatibility.md#patch-semantics)
 for the per-provider capability matrix.
 

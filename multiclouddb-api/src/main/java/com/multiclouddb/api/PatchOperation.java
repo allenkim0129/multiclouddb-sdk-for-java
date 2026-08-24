@@ -153,11 +153,12 @@ public final class PatchOperation {
      * 9,007,199,254,740,991, be finite, and round-trip through an IEEE-754
      * {@code double} without decimal precision loss.
      * <p>
-     * Integral results are exact on every provider that advertises PATCH.
-     * Accumulated <em>fractional</em> results are not bit-identical across the
-     * current implementations: DynamoDB adds in exact decimal arithmetic while
-     * Cosmos DB uses IEEE-754 binary64. Providers declare this via
-     * {@link Capability#EXACT_FRACTIONAL_INCREMENT}; see {@link PatchNumericDomain}.
+     * The delta must be a whole number. Integral results are exact on every
+     * provider that advertises PATCH, but accumulated <em>fractional</em>
+     * results are not bit-identical across the current implementations -
+     * DynamoDB adds in exact decimal arithmetic while Cosmos DB uses IEEE-754
+     * binary64 - so a fractional delta is rejected with
+     * {@code INVALID_REQUEST}; see {@link PatchNumericDomain}.
      *
      * @param path  JSON Pointer to the target field
      * @param delta the amount to add; may be negative; values outside the

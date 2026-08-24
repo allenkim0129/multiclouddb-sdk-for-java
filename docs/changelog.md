@@ -15,11 +15,13 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 - Portable `patch(...)` API with immutable `PatchOperation` values (`SET`,
   `REPLACE`, `REMOVE`, `INCREMENT`), JSON Pointer paths, atomic all-or-nothing
-  semantics, portable numeric bounds, and a 399 KB deterministic request limit.
+  semantics, and a 399 KB deterministic request limit. One portable numeric
+  domain bounds the value written by `SET` / `REPLACE` as well as an
+  `INCREMENT` delta, so a number that would be stored differently on different
+  providers is rejected with `INVALID_REQUEST` before dispatch.
   Cosmos DB and DynamoDB implement PATCH now; Spanner declares it unsupported
   so a future implementation can be added without changing the public API.
-- New capabilities `PATCH`, `NESTED_PATCH`,
-  `EXACT_FRACTIONAL_INCREMENT`, and `PATCH_PRESERVES_TTL`. Every provider
+- New capabilities `PATCH` and `NESTED_PATCH`. Every provider
   declares each capability; unsupported operation combinations fail
   explicitly rather than silently diverging.
 - `data` is reserved case-insensitively as SDK metadata across full-document
@@ -85,8 +87,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   guard are evaluated by one server-side filter predicate, with no stale
   pre-write classification read. Rejected conditions are classified with a
   session-token point read.
-- `CosmosCapabilities` declares `PATCH` and `NESTED_PATCH` supported and
-  `EXACT_FRACTIONAL_INCREMENT` and `PATCH_PRESERVES_TTL` unsupported. A
+- `CosmosCapabilities` declares `PATCH` and `NESTED_PATCH` supported. A
   TTL-bearing item is rejected instead of having its relative expiry restarted.
 - Change-feed reader backed by `CosmosContainer.queryChangeFeed(...)` and `getFeedRanges()`. `listCursors` mints one cursor per feed range at the live tip via a one-item warmup query that captures a real continuation token (with a `@@PIT:<epoch-millis>` fallback for older SDKs). `readChanges` drains one page per call, rotates the partition list across ranges so multi-range cursors are not starved, and uses All-Versions-and-Deletes (AVAD) mode so `ChangeEvent.type()` distinguishes `CREATE` / `UPDATE` / `DELETE`. The target container must be provisioned with an AVAD `ChangeFeedPolicy`. HTTP 410 GONE on `queryChangeFeed` is mapped to `CursorExpiredException(reason=PROVIDER_TRIMMED)`.
 - Extended-retention provisioning: `CosmosProviderClient.ensureContainer(address)` provisions an AVAD `ChangeFeedPolicy` carrying the duration from `ChangeFeedConfig.extendedRetention(...)` when the user opted in, and reads back the active policy — throwing `UNSUPPORTED_CAPABILITY(reason="extended_retention_not_enacted")` when a pre-existing container''s retention does not match. A 400 BadRequest whose message fingerprint indicates the Cosmos account lacks Continuous Backup is re-mapped to `UNSUPPORTED_CAPABILITY(reason="continuous_backup_required")`. `CosmosCapabilities` declares `EXTENDED_CHANGE_FEED_HISTORY_CAP` (up to 30 days via Continuous Backup; 7d minimum).
@@ -103,6 +104,12 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Application writes through `MulticloudDbClient` reject a top-level `data`
   field before Cosmos dispatch so the document remains portable to future
   provider implementations.
+
+**Fixed:**
+
+- Portable query filters on a field whose name is a Cosmos SQL keyword (for
+  example `value`) no longer fail at parse time. Field references compile to
+  quoted bracket form (`c["value"]`) instead of a bare `c.value` identifier.
 
 **Removed:**
 
@@ -141,8 +148,9 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   targets, overflow, and concurrent transitions are classified from the
   conditional-failure old image, with a strongly consistent point-read fallback
   if that image is absent.
-- `DynamoCapabilities` declares `PATCH`, `NESTED_PATCH`,
-  `EXACT_FRACTIONAL_INCREMENT`, and `PATCH_PRESERVES_TTL` supported.
+- `DynamoCapabilities` declares `PATCH` and `NESTED_PATCH` supported. The
+  patch condition adds `attribute_not_exists(ttlExpiry)` so a TTL-bearing item
+  is rejected here too, matching Cosmos DB.
 - DynamoDB numeric mapping preserves integral values wider than signed 64-bit
   on read, so a wide value written by `SET` remains usable.
 - Change-feed reader backed by DynamoDB Streams (`DescribeStream`, `GetShardIterator`, `GetRecords`). `listCursors` returns one cursor per open shard at the live tip with a pre-resolved `LATEST` iterator (`@@ITER:<iterator>` continuation), avoiding silent event loss between mint and first read. `readChanges` drains one shard''s page per call, rotates the partition list across shards, transitions to an `AFTER_SEQUENCE_NUMBER` continuation on the first observed record, and absorbs shard splits/closes. `TrimmedDataAccessException` → `CursorExpiredException(reason=PROVIDER_TRIMMED)`; `ExpiredIteratorException` → `reason=ITERATOR_EXPIRED`. Change-event payloads preserve the full DynamoDB type system via the shared `DynamoItemMapper`. The target table must have `StreamSpecification(NEW_AND_OLD_IMAGES)` enabled; otherwise `UNSUPPORTED_CAPABILITY(reason="stream_not_enabled")`.
@@ -160,6 +168,16 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Application writes through `MulticloudDbClient` reject a top-level `data`
   field before DynamoDB dispatch so the item remains portable to future
   provider implementations.
+
+**Fixed:**
+
+- A number stored in exponent notation (`1E+10`, or the `1E-130` numeric floor)
+  no longer makes an item permanently unreadable. Such values previously threw a
+  raw `NumberFormatException` on every read; they now parse through `BigDecimal`.
+- Portable query filters on a field whose name is a DynamoDB reserved word (for
+  example `value`) no longer fail at parse time. PartiQL field references now
+  compile to quoted identifiers, matching the `UpdateItem` path, which already
+  used `ExpressionAttributeNames` placeholders.
 
 **Documentation:**
 
@@ -187,8 +205,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Added:**
 
-- `SpannerCapabilities` declares `PATCH`, `NESTED_PATCH`,
-  `EXACT_FRACTIONAL_INCREMENT`, and `PATCH_PRESERVES_TTL` unsupported.
+- `SpannerCapabilities` declares `PATCH` and `NESTED_PATCH` unsupported.
   `patch(...)` inherits the SPI
   default and fails with `UNSUPPORTED_CAPABILITY` before any Spanner request;
   implementation is deferred to a follow-up change.

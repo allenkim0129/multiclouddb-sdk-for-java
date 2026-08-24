@@ -98,6 +98,8 @@ public final class PatchValidator {
 
             if (op.type() == PatchOperation.Type.INCREMENT) {
                 validateIncrementDelta(op, provider);
+            } else {
+                validateWriteOperand(op, provider);
             }
 
             for (List<String> seen : seenPaths) {
@@ -175,16 +177,67 @@ public final class PatchValidator {
         return segments;
     }
 
+    /**
+     * Confines a {@code SET} / {@code REPLACE} operand to the same portable
+     * numeric domain that {@link #validateIncrementDelta} applies to an
+     * {@code INCREMENT} delta.
+     * <p>
+     * Without this, a written number could be stored with a provider-dependent
+     * value: DynamoDB's {@code N} type keeps up to 38 digits of exact decimal
+     * precision, while Cosmos DB stores JSON numbers and only guarantees an
+     * exact round-trip inside the signed 64-bit integral range. Writing
+     * {@code Long.MAX_VALUE + 1} therefore returns the value unchanged on
+     * DynamoDB but the nearest {@code double} on Cosmos DB — silent divergence
+     * on a portable write, which the SDK never allows. Rejecting the operand
+     * before dispatch makes the outcome identical everywhere.
+     * <p>
+     * Nested values are walked because {@code PatchOperation} normalises an
+     * operand to {@code null}, {@code String}, {@code Boolean}, {@code Number},
+     * {@code List} or {@code Map}, so an out-of-domain number can sit inside an
+     * object or array operand just as easily as at the top level.
+     */
+    private static void validateWriteOperand(PatchOperation op, ProviderId provider) {
+        validateOperandValue(op, op.value(), provider);
+    }
+
+    private static void validateOperandValue(PatchOperation op, Object value, ProviderId provider) {
+        if (value instanceof Number operand) {
+            try {
+                PatchNumericDomain.normalize(operand);
+            } catch (IllegalArgumentException e) {
+                throw invalid(provider, op.type() + " on '" + op.path()
+                        + "' has a value outside the portable numeric domain: " + e.getMessage());
+            }
+        } else if (value instanceof Map<?, ?> nested) {
+            for (Object element : nested.values()) {
+                validateOperandValue(op, element, provider);
+            }
+        } else if (value instanceof List<?> elements) {
+            for (Object element : elements) {
+                validateOperandValue(op, element, provider);
+            }
+        }
+    }
+
     private static void validateIncrementDelta(PatchOperation op, ProviderId provider) {
         if (!(op.value() instanceof Number delta)) {
             throw invalid(provider, "INCREMENT on '" + op.path() + "' requires a numeric delta; got: "
                     + (op.value() == null ? "null" : op.value().getClass().getName()));
         }
+        Number normalized;
         try {
-            PatchNumericDomain.normalize(delta);
+            normalized = PatchNumericDomain.normalize(delta);
         } catch (IllegalArgumentException e) {
             throw invalid(provider, "INCREMENT on '" + op.path()
                     + "' has a delta outside the portable numeric domain: " + e.getMessage());
+        }
+        if (!(normalized instanceof Long)) {
+            throw invalid(provider, "INCREMENT on '" + op.path()
+                    + "' requires a whole-number delta. Providers accumulate fractional "
+                    + "increments differently: DynamoDB adds in exact decimal arithmetic while "
+                    + "Cosmos DB adds in IEEE-754 binary64, so incrementing 0.1 by 0.2 stores "
+                    + "0.3 on one provider and 0.30000000000000004 on the other. Scale to whole "
+                    + "units (for example cents rather than dollars) and increment by an integer.");
         }
     }
 

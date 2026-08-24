@@ -37,10 +37,12 @@ class PatchNumericDomainTest {
     }
 
     /**
-     * Locks the divergence that {@link com.multiclouddb.api.Capability#EXACT_FRACTIONAL_INCREMENT}
-     * declares: the delta is portable, the accumulated fractional result is not.
-     * Cosmos DB evaluates in binary64 (this method), while DynamoDB adds in the
-     * exact-decimal {@code N} type and would store {@code 0.3}.
+     * Locks this helper's binary64 semantics. It is the arithmetic Cosmos DB
+     * performs; DynamoDB adds in the exact-decimal {@code N} type and would
+     * produce {@code 0.3} for the same operands. That divergence is why the
+     * portable PATCH contract rejects fractional INCREMENT deltas outright —
+     * this method stays binary64 because Cosmos DB's own behaviour is what it
+     * models.
      */
     @Test
     void fractionalResultsAccumulateInBinary64NotExactDecimal() {

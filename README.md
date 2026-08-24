@@ -481,22 +481,22 @@ for (Capability cap : caps.all()) {
 | **ORDER BY** | ✓ | ✗ | ✓ |
 | **Patch** (field-level partial update) | ✓ | ✓ | ✗ (planned) |
 | **Nested patch** (`/address/city`) | ✓ | ✓ | ✗ |
-| **Exact fractional increment** | ✗ | ✓ | ✗ |
-| **Patch preserves SDK-managed TTL** | ✗ | ✓ | ✗ |
 | **Row-level TTL** | ✓ | ✓ | ✗ |
 | **Write timestamp / metadata** | ✓ | ✗ | ✗ |
 
-`Exact fractional increment` is **informational only** for providers that
-declare `PATCH` supported. DynamoDB accumulates fractional deltas in exact
-decimal arithmetic; Cosmos DB uses IEEE-754 binary64
-(`0.1 + 0.2` stores `0.3` vs `0.30000000000000004`). Integral increments are
-exact on both current implementations. See
-[docs/compatibility.md](docs/compatibility.md#patch-semantics).
+Two patch behaviours are **uniform rules rather than capabilities**, because
+the providers would otherwise store different data for the same call:
 
-`Patch preserves SDK-managed TTL` is enforced rather than advisory. DynamoDB
-leaves its absolute `ttlExpiry` unchanged. Cosmos native patch advances `_ts`,
-so an item carrying the SDK-managed `ttl` field is rejected with
-`UNSUPPORTED_CAPABILITY` instead of having its expiry silently extended.
+- A **fractional `INCREMENT` delta** is `INVALID_REQUEST` everywhere. DynamoDB
+  accumulates in exact decimal, Cosmos DB in IEEE-754 binary64, so `0.1 + 0.2`
+  would store `0.3` on one and `0.30000000000000004` on the other. Use integer
+  minor units. Fractional values written by `SET` / `REPLACE` remain portable.
+- **Patching a document that already carries an SDK-managed TTL** is
+  `UNSUPPORTED_CAPABILITY` everywhere. Cosmos native patch advances `_ts` and
+  would restart its relative `ttl`; DynamoDB's absolute `ttlExpiry` would
+  survive, so DynamoDB is constrained up to reject as well. Use `upsert()`.
+
+See [docs/compatibility.md](docs/compatibility.md#patch-semantics).
 
 ---
 
@@ -542,9 +542,11 @@ client.update(address, key, updatedDoc, opts);
 TTL requires collection-level configuration first (enable "Default TTL" on the
 Cosmos DB container; enable TTL on the DynamoDB table using `ttlExpiry` as the
 attribute name). Spanner ignores `ttlSeconds` (`ROW_LEVEL_TTL=false`).
-Before patching an item created with `ttlSeconds`, check
-`Capability.PATCH_PRESERVES_TTL`; Cosmos rejects that combination, while
-DynamoDB preserves the original absolute expiry.
+Patching an item created with `ttlSeconds` fails with
+`UNSUPPORTED_CAPABILITY` on every provider. Cosmos DB cannot patch without
+restarting its relative `ttl` countdown, so the portable contract rejects the
+combination everywhere rather than letting the same call keep an expiry on one
+provider and change it on another.
 
 ---
 

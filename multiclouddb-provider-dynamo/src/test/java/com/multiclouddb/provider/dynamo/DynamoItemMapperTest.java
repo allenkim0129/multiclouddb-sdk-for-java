@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -104,6 +105,40 @@ class DynamoItemMapperTest {
         JsonNode back = DynamoItemMapper.attributeMapToJsonNode(map);
         assertEquals(3, back.get("tags").size());
         assertEquals("b", back.get("tags").get(1).asText());
+    }
+
+    @Test
+    void exponentFormIntegerIsReadable() {
+        // DynamoDB's N type accepts exponent notation, so a value written by
+        // another client (or by a BigDecimal operand) can come back as "1E+10".
+        // BigInteger rejects that form outright, which previously made the
+        // whole document unreadable on every subsequent read.
+        JsonNode back = DynamoItemMapper.attributeValueToJsonNode(AttributeValue.fromN("1E+10"));
+
+        assertEquals(new BigInteger("10000000000"), back.bigIntegerValue());
+    }
+
+    @Test
+    void exponentFormFractionIsReadable() {
+        // 1E-130 is DynamoDB's smallest non-zero magnitude and carries no
+        // decimal point, so it takes the same integral parse path.
+        JsonNode back = DynamoItemMapper.attributeValueToJsonNode(AttributeValue.fromN("1E-130"));
+
+        assertEquals(0, new BigDecimal("1E-130").compareTo(back.decimalValue()));
+    }
+
+    @Test
+    void dynamoUpperBoundIsReadable() {
+        // The documented positive ceiling for DynamoDB's N type. It carries far
+        // more precision than binary64, so it normalises to the nearest double
+        // -- that is the portable contract, because Cosmos DB stores plain JSON
+        // numbers. What this pins is that reading it never throws.
+        String ceiling = "9.9999999999999999999999999999999999999E+125";
+        JsonNode back = DynamoItemMapper.attributeValueToJsonNode(AttributeValue.fromN(ceiling));
+
+        assertTrue(back.isNumber());
+        assertTrue(back.doubleValue() > 9.9E125,
+                "the ceiling must read back at full magnitude");
     }
 
     @Test
