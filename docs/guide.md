@@ -720,8 +720,8 @@ around. A future provider implementation must pass the same conformance suite.
 The portable patch contract is deliberately narrow. Each restriction exists
 because the providers would otherwise disagree:
 
-These are validated **before any provider SDK call**, so they fail identically
-everywhere. The patch guard lives in each adapter that implements PATCH: the SPI contract
+These are validated from the request alone, **before any provider SDK call**, so
+they fail identically everywhere. The patch guard lives in each adapter that implements PATCH: the SPI contract
 (`MulticloudDbProviderClient.patch`) requires an implementation to call
 `validatePatchRequest(...)` immediately after its lifecycle guard and before
 translating a request. `MulticloudDbClient`
@@ -729,18 +729,24 @@ deliberately does **not** re-run it — that would serialize an operand graph
 approaching the 399 KB ceiling twice on every call — so a direct SPI caller
 of a supported adapter sees the same patch-validation errors as a facade caller.
 SPI adapter authors writing a new provider must therefore call
-`validatePatchRequest(...)` themselves. The SPI default implementation rejects
-PATCH with `UNSUPPORTED_CAPABILITY` without touching a provider SDK.
+`validatePatchRequest(...)` themselves. `validatePatchRequest(...)` checks the
+portable rules **first** and the `PATCH` / `NESTED_PATCH` capabilities second.
+The SPI default implementation — the one Spanner inherits — instead rejects
+PATCH with `UNSUPPORTED_CAPABILITY` immediately, without running shared
+validation at all: on a provider that cannot patch, an invalid operation list
+still reports `UNSUPPORTED_CAPABILITY`, not `INVALID_REQUEST`.
 
 | Restriction | Error | Why |
 |-------------|-------|-----|
+| The operation list must be non-null, non-empty, and contain no `null` entries | `INVALID_REQUEST` | A patch with nothing to apply has no portable meaning, and a `null` entry has no type or path to translate |
 | Maximum 10 operations per call | `INVALID_REQUEST` | Cosmos DB's native per-request cap (`MulticloudDbClient.MAX_PATCH_OPERATIONS`) |
 | Paths must be disjoint | `INVALID_REQUEST` | Native engines disagree on sequential versus pre-update evaluation |
 | No array-index segments (`/items/0`) | `INVALID_REQUEST` | Native array-update semantics differ and cannot be extended portably to future providers |
 | No JSON Pointer `~` escapes | `INVALID_REQUEST` | Native path dialects decode them differently |
 | No key, TTL, or SDK metadata fields (`id`, `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, `data`, `_*`) | `INVALID_REQUEST` | Owned by the SDK or provider. Names are matched **without regard to case** so a future provider can implement the same contract without narrowing previously accepted patch paths |
+| An `INCREMENT` delta must be whole-valued | `INVALID_REQUEST` | Providers accumulate fractions differently. Whole-valued floating types fold to `Long`, so `1.0` and `1` are the same delta; `1.5` is rejected at **any** magnitude. See below |
 | Integral numbers written by `SET` / `REPLACE`, and `INCREMENT` deltas and their resulting values, must fit the signed 64-bit range | `INVALID_REQUEST` | Prevents provider precision and numeric-range divergence. DynamoDB stores wider integers exactly while Cosmos DB rounds them to the nearest `double`, so an out-of-range write would store different data per provider |
-| A non-zero fractional number written by `SET` / `REPLACE`, or supplied as an `INCREMENT` delta, must have magnitude from `1E-130` through 9,007,199,254,740,991, be finite, and round-trip through an IEEE-754 `double` without decimal precision loss | `INVALID_REQUEST` | `1E-130` is DynamoDB's numeric floor; the SDK normalizes accepted fractions to one `double` representation before every provider dispatch |
+| A non-zero fractional number written by `SET` / `REPLACE` must have magnitude from `1E-130` through 9,007,199,254,740,991, be finite, and round-trip through an IEEE-754 `double` without decimal precision loss | `INVALID_REQUEST` | `1E-130` is DynamoDB's numeric floor; the SDK normalizes accepted fractions to one `double` representation before every provider dispatch. Fractional `SET` / `REPLACE` values are portable because no server-side arithmetic occurs |
 | Complete serialized patch request must not exceed 399 KB (408,576 bytes) | `INVALID_REQUEST` | Every operation's type, path, and optional value is measured; even a `REMOVE` path contributes to the request size |
 
 The two numeric restrictions apply to every number in an operand, including
@@ -751,33 +757,51 @@ document. A patch that grows an already-large document remains subject to the
 provider's native item limit; Cosmos can accept a post-image that DynamoDB's
 400 KB item limit rejects.
 
-These depend on the stored document, so they surface from the provider:
+These depend on the stored document, so the SDK cannot check them from the
+request. Each is enforced **atomically with the write** — by the Cosmos filter
+predicate or the DynamoDB `ConditionExpression` — so the mutation never happens
+and the error surfaces from the provider:
 
 | Restriction | Error | Why |
 |-------------|-------|-----|
 | Document must already exist | `NOT_FOUND` | DynamoDB `UpdateItem` would otherwise create it; use `upsert()` to create |
 | `INCREMENT` target must be numeric | `INVALID_REQUEST` | Adding to a string has no portable meaning |
+| `INCREMENT` result must fit the signed 64-bit range | `INVALID_REQUEST` | The result depends on the stored value, which the SDK never reads; both providers bound it in the same atomic condition |
 | `SET` never creates missing parent objects | `NOT_FOUND` | Providers are constrained to require every nested parent. Create the parent with a top-level `SET` first |
 | `OperationOptions.ttlSeconds()` is ignored | — | PATCH never creates or resets an expiry from its own options |
 | Existing SDK-managed TTL | `UNSUPPORTED_CAPABILITY` | Cosmos DB cannot patch without restarting its relative `ttl`, so both providers reject a TTL-bearing item rather than diverging. Use `upsert()` to rewrite it |
 
+A concurrent writer can change the stored state between the request and the
+conditional write. When the rejection cannot be attributed to one of the causes
+above, patch reports `CONFLICT` — the only PATCH category with
+`error().retryable() == true`, because the write was rejected atomically and no
+operation in the list was applied.
+
 #### Pre-validating an `INCREMENT` delta
 
-`com.multiclouddb.api.PatchNumericDomain` is the public helper behind the two
+`com.multiclouddb.api.PatchNumericDomain` is the public helper behind the
 `INCREMENT` numeric rules in the pre-dispatch table above. It is intentionally
 public so you can check a delta *before*
 building a request instead of discovering the problem as an `INVALID_REQUEST`
 from `patch()`. `normalize(Number)` returns the canonical portable form — a
 `Long` for an integral delta, a `Double` for a fractional one — and throws
-`IllegalArgumentException` for anything outside the domain:
+`IllegalArgumentException` for anything outside the domain.
+Because `patch()` accepts only whole-valued deltas, `isIntegralDelta(Number)` is
+the check you want for an `INCREMENT`:
 
 ```java
 import com.multiclouddb.api.PatchNumericDomain;
 
 Number delta = userSuppliedDelta();
 try {
-    Number portable = PatchNumericDomain.normalize(delta);   // Long or Double
-    client.patch(addr, key, List.of(PatchOperation.increment("/balance", portable)));
+    if (!PatchNumericDomain.isIntegralDelta(delta)) {
+        // Normalizes cleanly but patch() still rejects it: INCREMENT deltas
+        // must be whole. Scale to minor units (cents, not dollars).
+        log.warn("delta {} is fractional; INCREMENT requires a whole number", delta);
+        return;
+    }
+    Number portable = PatchNumericDomain.normalize(delta);   // a Long here
+    client.patch(addr, key, List.of(PatchOperation.increment("/balanceCents", portable)));
 } catch (IllegalArgumentException e) {
     // Rejected before any network call: non-finite, below
     // MIN_NONZERO_FRACTIONAL_MAGNITUDE, over MAX_FRACTIONAL_MAGNITUDE,
@@ -790,9 +814,13 @@ try {
 bound used in the restrictions table above — beyond it, a `double` can no
 longer represent every integer, so the providers would stop agreeing on the
 stored value. `MIN_NONZERO_FRACTIONAL_MAGNITUDE` is `1E-130`, DynamoDB's
-smallest non-zero numeric magnitude. The class also exposes `isIntegralDelta(Number)`,
-`add(Number, Number)`, and `isIntegralResultOutsideRange(Number, Number)` for
+smallest non-zero numeric magnitude. Both bounds govern fractional values
+written by `SET` / `REPLACE`; a fractional `INCREMENT` delta is rejected
+whatever its magnitude. The class also exposes
+`add(Number, Number)` and `isIntegralResultOutsideRange(Number, Number)` for
 callers that want to predict the *result* bound from a known current value.
+Those two methods model this helper's own arithmetic, which keeps a fractional
+branch for `SET` / `REPLACE` values — an `INCREMENT` never reaches it.
 
 #### An `INCREMENT` delta must be a whole number
 
@@ -887,8 +915,8 @@ expiry must remain unchanged.
 | Missing document | HTTP 404 → `NOT_FOUND` | `attribute_exists(partitionKey)` fails → `NOT_FOUND` | Not applicable |
 | Missing required field | Atomic filter rejection, then session-token classification → `NOT_FOUND` | `attribute_exists(path)` fails → `NOT_FOUND` | Not applicable |
 | Nonnumeric increment target or integral-result overflow | Atomic filter rejection, then session-token classification → `INVALID_REQUEST` | Failed-condition old image → `INVALID_REQUEST` | Not applicable |
-| Existing SDK-managed TTL | Atomic filter rejection → `UNSUPPORTED_CAPABILITY` | Absolute `ttlExpiry` preserved | Not applicable |
-| Concurrent addressed-state change | Rejection classified as `NOT_FOUND`, `INVALID_REQUEST`, or `CONFLICT` | Conditional-write failure classified from the old image | Not applicable |
+| Existing SDK-managed TTL | Atomic filter rejection → `UNSUPPORTED_CAPABILITY` | `attribute_not_exists(ttlExpiry)` fails → `UNSUPPORTED_CAPABILITY` | Not applicable |
+| Concurrent addressed-state change | Rejection classified as `NOT_FOUND`, `INVALID_REQUEST`, or retryable `CONFLICT` | Conditional-write failure classified from the old image; unattributable → retryable `CONFLICT` | Not applicable |
 | Atomicity | Single patch request | Single update request | Not applicable |
 | Return value | None (void) | None (void) | Unsupported capability error |
 

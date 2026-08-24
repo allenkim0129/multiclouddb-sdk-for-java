@@ -53,20 +53,32 @@ import java.math.BigInteger;
  * whole-valued {@code Float}, {@code Double}, or {@code BigDecimal} down to a
  * {@link Long}. A delta of {@code 1.0d} is therefore an <em>integral</em>
  * delta, identical to {@code 1L}, and picks up the 64-bit result bound — even
- * though the caller wrote a {@code double}. On a field holding {@code 1e300}:
+ * though the caller wrote a {@code double}. On a {@code current} of
+ * {@code 1e300}:
  *
  * <pre>{@code
- * increment("/v", 1)      // integral delta   → INVALID_REQUEST (result > Long.MAX_VALUE)
- * increment("/v", 1.0d)   // folded to 1L     → INVALID_REQUEST (same rule)
- * increment("/v", 1.5d)   // fractional delta → accepted (result is finite)
+ * add(1e300, 1)      // integral delta   → IllegalArgumentException (result > Long.MAX_VALUE)
+ * add(1e300, 1.0d)   // folded to 1L     → IllegalArgumentException (same rule)
+ * add(1e300, 1.5d)   // fractional delta → returns 1e300 (only finiteness applies)
  * }</pre>
+ *
+ * <b>These are this helper's rules, not {@code patch()}'s.</b> The third line
+ * is reachable only through {@code add} / {@code isIntegralResultOutsideRange}.
+ * A real {@code PatchOperation.increment("/v", 1.5d)} never gets this far:
+ * {@code PatchValidator} rejects every fractional {@code INCREMENT} delta with
+ * {@code INVALID_REQUEST} on every provider, for the accumulation-divergence
+ * reason described above. This class keeps its fractional branch because the
+ * same normalization rules govern fractional values written by {@code SET} and
+ * {@code REPLACE}, which are accepted.
  *
  * A larger delta being accepted where a smaller one is rejected is surprising,
  * but it is deliberate and stable: the accepted case produces a {@code Double}
  * that no conforming provider has to narrow, while the rejected cases would
  * produce an integral value that cannot survive a {@code Long} round-trip. Callers that
  * need to know which rule will apply before dispatch can ask
- * {@link #isIntegralDelta(Number)}, and callers that want to pre-check the
+ * {@link #isIntegralDelta(Number)} — which is also the cheapest way to
+ * pre-check the whole-number requirement {@code patch()} enforces — and callers
+ * that want to pre-check the
  * bound can use {@link #isIntegralResultOutsideRange(Number, Number)} or
  * {@link #maximumBaseForIntegralDelta(long)} /
  * {@link #minimumBaseForIntegralDelta(long)}.
@@ -192,6 +204,10 @@ public final class PatchNumericDomain {
      * {@code add(1e300, 1.5d)} succeeds. See the class Javadoc for why this
      * asymmetry is deliberate; use {@link #isIntegralDelta(Number)} to find out
      * which rule a delta will take before dispatch.
+     * <p>
+     * The fractional branch describes this helper only. {@code patch()} rejects
+     * every fractional {@code INCREMENT} delta with {@code INVALID_REQUEST}
+     * before dispatch, so no {@code INCREMENT} reaching a provider can take it.
      *
      * @param current existing numeric field value; must not be {@code null}
      * @param delta caller-supplied increment delta

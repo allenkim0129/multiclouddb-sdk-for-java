@@ -56,7 +56,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * <tr><td>{@link Type#SET}</td><td>no</td><td>Creates the field, or overwrites it if already present.</td></tr>
  * <tr><td>{@link Type#REPLACE}</td><td>yes</td><td>Overwrites an existing field; {@code NOT_FOUND} if the field is absent.</td></tr>
  * <tr><td>{@link Type#REMOVE}</td><td>yes</td><td>Deletes an existing field; {@code NOT_FOUND} if the field is absent.</td></tr>
- * <tr><td>{@link Type#INCREMENT}</td><td>yes</td><td>Adds a delta to an existing numeric field; {@code NOT_FOUND} if absent, {@code INVALID_REQUEST} if not numeric.</td></tr>
+ * <tr><td>{@link Type#INCREMENT}</td><td>yes</td><td>Adds a whole-number delta to an existing numeric field; {@code NOT_FOUND} if absent, {@code INVALID_REQUEST} if not numeric or if the delta is fractional.</td></tr>
  * </table>
  * <p>
  * For a nested path, every <em>parent</em> object must already exist on every
@@ -93,7 +93,7 @@ public final class PatchOperation {
         REPLACE,
         /** Delete a field that must already exist. */
         REMOVE,
-        /** Add a numeric delta to a field that must already exist and hold a number. */
+        /** Add a whole-number delta to a field that must already exist and hold a number. */
         INCREMENT
     }
 
@@ -148,23 +148,29 @@ public final class PatchOperation {
      * <p>
      * The addition is evaluated by the provider inside the same atomic write, so
      * concurrent increments do not lose updates.
-     * Integral deltas must fit signed 64-bit range. Non-zero fractional deltas
-     * must have magnitude from {@code 1E-130} through
-     * 9,007,199,254,740,991, be finite, and round-trip through an IEEE-754
-     * {@code double} without decimal precision loss.
      * <p>
-     * The delta must be a whole number. Integral results are exact on every
+     * <b>The delta must be a whole number</b>, and it and the resulting value
+     * must fit signed 64-bit range. Integral results are exact on every
      * provider that advertises PATCH, but accumulated <em>fractional</em>
      * results are not bit-identical across the current implementations -
      * DynamoDB adds in exact decimal arithmetic while Cosmos DB uses IEEE-754
-     * binary64 - so a fractional delta is rejected with
-     * {@code INVALID_REQUEST}; see {@link PatchNumericDomain}.
+     * binary64 - so <em>every</em> fractional delta is rejected with
+     * {@code INVALID_REQUEST}, whatever its magnitude. Scale to whole units
+     * (cents rather than dollars) and increment by an integer. Normalization
+     * folds whole-valued floating types down to {@code Long}, so {@code 1.0d}
+     * and {@code 1} are the same portable delta and both succeed; check a
+     * caller-supplied delta up front with
+     * {@link PatchNumericDomain#isIntegralDelta(Number)}.
+     * <p>
+     * The wider fractional domain described by {@link PatchNumericDomain}
+     * governs values written by {@link #set} and {@link #replace}, which store
+     * identically everywhere because no server-side accumulation occurs.
      *
      * @param path  JSON Pointer to the target field
-     * @param delta the amount to add; may be negative; values outside the
-     *              portable numeric domain (including non-zero fractional
-     *              magnitudes below {@code 1E-130}) fail with
-     *              {@code INVALID_REQUEST} when the patch is submitted
+     * @param delta the amount to add; may be negative; must be whole-valued.
+     *              A fractional delta, or an integral delta or result outside
+     *              signed 64-bit range, fails with {@code INVALID_REQUEST} when
+     *              the patch is submitted
      * @return the operation
      */
     public static PatchOperation increment(String path, Number delta) {
