@@ -21,6 +21,12 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   providers is rejected with `INVALID_REQUEST` before dispatch.
   Cosmos DB and DynamoDB implement PATCH now; Spanner declares it unsupported
   so a future implementation can be added without changing the public API.
+- Portable PATCH retry contract: `CONFLICT` is the only PATCH category
+  reported with `MulticloudDbError.retryable() == true`, because a rejected
+  conditional patch applied no operation and an identical retry cannot
+  double-apply an `INCREMENT`. Every other PATCH category names a
+  deterministic cause and is non-retryable, so one retry policy works across
+  providers.
 - New capabilities `PATCH` and `NESTED_PATCH`. Every provider
   declares each capability; unsupported operation combinations fail
   explicitly rather than silently diverging.

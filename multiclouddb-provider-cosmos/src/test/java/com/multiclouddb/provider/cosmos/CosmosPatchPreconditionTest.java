@@ -41,6 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -324,6 +325,8 @@ class CosmosPatchPreconditionTest {
                             + "reports as NOT_FOUND from its before-image");
             assertEquals(412, error.error().statusCode(),
                     "the reclassified envelope keeps the provider's raw status for diagnostics");
+            assertFalse(error.error().retryable(),
+                    "a proven missing target is deterministic - an identical retry reproduces it");
         });
     }
 
@@ -361,6 +364,46 @@ class CosmosPatchPreconditionTest {
                     "current state satisfies every term, so the adapter cannot name a cause. "
                             + "DynamoDB reports the same unclassifiable condition failure as "
                             + "CONFLICT rather than claiming a deterministic validation failure");
+            assertTrue(error.error().retryable(),
+                    "patch is atomic, so a rejected conditional write applied no operation. "
+                            + "MulticloudDbClient.patch documents CONFLICT as safe to retry, and "
+                            + "the retryable() hint is how a retry layer reads that contract");
+        });
+    }
+
+    /**
+     * Pins the one asymmetry in the PATCH retry contract: {@code CONFLICT} is
+     * retryable here even though a {@code create}-duplicate {@code CONFLICT} is
+     * not. A patch {@code CONFLICT} proves the atomic write was rejected with
+     * nothing applied, so re-issuing it cannot double-apply an {@code INCREMENT};
+     * every other PATCH category names a deterministic cause an identical retry
+     * would reproduce.
+     */
+    @Test
+    @DisplayName("CONFLICT is the only retryable portable PATCH category")
+    void conflictIsTheOnlyRetryablePatchCategory() throws Exception {
+        CosmosContainer container = mock(CosmosContainer.class);
+        stubRead(container, MAPPER.createObjectNode()
+                .put("value", "not-a-number")
+                .put("status", "draft"));
+        stubPatchFailure(container, cosmosException(412));
+
+        withCosmos(container, client -> {
+            MulticloudDbException invalid = assertThrows(MulticloudDbException.class,
+                    () -> client.patch(ADDRESS, KEY,
+                            List.of(PatchOperation.increment("/value", 1)),
+                            OperationOptions.defaults()));
+            assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, invalid.error().category());
+            assertFalse(invalid.error().retryable(),
+                    "a nonnumeric target is deterministic - retrying reproduces it");
+
+            MulticloudDbException conflict = assertThrows(MulticloudDbException.class,
+                    () -> client.patch(ADDRESS, KEY,
+                            List.of(PatchOperation.replace("/status", "live")),
+                            OperationOptions.defaults()));
+            assertEquals(MulticloudDbErrorCategory.CONFLICT, conflict.error().category());
+            assertTrue(conflict.error().retryable(),
+                    "only the unprovable race is worth retrying");
         });
     }
 

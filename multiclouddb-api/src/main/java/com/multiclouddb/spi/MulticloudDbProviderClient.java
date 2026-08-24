@@ -124,15 +124,27 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      * <p>
      * Default implementation throws {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}
      * so that adapters predating this operation continue to compile and fail
-     * predictably.
+     * predictably. The default deliberately rejects <em>before</em> running
+     * {@link #validatePatchRequest(List)}: a provider that cannot patch at all
+     * has no portable reason to grade the request first, so an unsupported
+     * provider reports {@code UNSUPPORTED_CAPABILITY} even for an operation
+     * list that a supported provider would have rejected as
+     * {@code INVALID_REQUEST}. Shared request validation therefore runs once
+     * per call, but only on adapters that override this method.
      *
      * @param address    target database + collection
      * @param key        document key; must identify an existing document
      * @param operations validated, non-empty, disjoint-path operations
      * @param options    operation options; {@code ttlSeconds} is ignored
      * @throws MulticloudDbException with category NOT_FOUND if the document or a
-     *         required field does not exist, or UNSUPPORTED_CAPABILITY when the
-     *         provider cannot preserve an existing SDK-managed TTL
+     *         required field does not exist; UNSUPPORTED_CAPABILITY when the
+     *         provider does not declare the required PATCH capability, or when
+     *         the target item already carries an SDK-managed TTL that the
+     *         provider cannot preserve; or CONFLICT when a concurrent
+     *         transition prevents classification. An implementation must report
+     *         CONFLICT as {@linkplain com.multiclouddb.api.MulticloudDbError#retryable()
+     *         retryable}, because patch is atomic and a rejected write applied
+     *         no operation; every other PATCH category must be non-retryable
      */
     default void patch(ResourceAddress address, MulticloudDbKey key,
                        List<PatchOperation> operations, OperationOptions options) {

@@ -164,11 +164,32 @@ public abstract class PatchConformanceTest {
                 () -> client.patch(getAddress(), key, ops));
     }
 
+    /**
+     * Asserts the portable envelope every PATCH failure must carry, including
+     * the retry hint.
+     * <p>
+     * {@code CONFLICT} is the only retryable portable PATCH category: a patch is
+     * atomic, so a rejected conditional write applied no operation and
+     * re-issuing the identical request cannot double-apply an {@code INCREMENT}.
+     * Every other category names a deterministic cause — a missing document or
+     * field, an unsupported capability, an out-of-domain value — that an
+     * identical retry would reproduce, so a retrying caller would spin. Both
+     * halves must hold on every provider or a portable retry layer built on
+     * {@code retryable()} behaves differently per provider.
+     */
     private void assertCategory(MulticloudDbException e, MulticloudDbErrorCategory expected) {
         assertEquals(expected, e.error().category(),
                 "patch must normalise this failure to " + expected + " on every provider");
         assertEquals(OperationNames.PATCH, e.error().operation(),
                 "the error envelope must attribute the failure to the patch operation");
+        if (MulticloudDbErrorCategory.CONFLICT.equals(expected)) {
+            assertTrue(e.error().retryable(),
+                    "patch CONFLICT must be retryable on every provider - nothing was applied");
+        } else {
+            assertFalse(e.error().retryable(),
+                    expected + " names a deterministic cause, so it must not be marked "
+                            + "retryable - a retrying caller would spin on it");
+        }
     }
 
     private void assertInvalidAndUnchanged(MulticloudDbKey key, List<PatchOperation> operations) {

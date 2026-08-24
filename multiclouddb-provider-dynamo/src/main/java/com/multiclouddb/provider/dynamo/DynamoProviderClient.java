@@ -420,8 +420,15 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      * adapter can distinguish a missing target ({@code NOT_FOUND}) from a
      * nonnumeric or overflowing increment ({@code INVALID_REQUEST}); an
      * unprovable concurrent transition remains {@code CONFLICT}.
-     * The expression never writes the absolute {@code ttlExpiry} attribute, so
-     * an existing SDK-managed expiry is preserved.
+     * <p>
+     * The condition also asserts {@code attribute_not_exists(ttlExpiry)}, so an
+     * item that already carries an SDK-managed expiry is <em>rejected</em> with
+     * {@code UNSUPPORTED_CAPABILITY} rather than patched. DynamoDB alone could
+     * have preserved that absolute expiry — {@code UpdateItem} never writes the
+     * attribute — but Cosmos DB's native patch advances {@code _ts} and would
+     * restart its relative countdown. Rejecting on both providers is what keeps
+     * one portable call from preserving an expiry here and changing it there.
+     * Use {@code upsert} to rewrite a TTL-bearing item.
      *
      * <h4>Cost</h4>
      * Patch is not a billing guarantee. Capacity use depends on item shape,
@@ -437,8 +444,12 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      * @param options    operation options; {@code ttlSeconds} is intentionally ignored
      * @throws com.multiclouddb.api.MulticloudDbException category {@code NOT_FOUND} for a
      *         missing item or required field, {@code INVALID_REQUEST} for a
-     *         nonnumeric increment target or integral-result overflow, or
-     *         {@code CONFLICT} when a concurrent transition prevents classification
+     *         nonnumeric increment target or integral-result overflow,
+     *         {@code UNSUPPORTED_CAPABILITY} when the item carries an
+     *         SDK-managed {@code ttlExpiry}, or {@code CONFLICT} when a
+     *         concurrent transition prevents classification. {@code CONFLICT}
+     *         is reported as retryable because the condition rejected the write
+     *         atomically, so no operation in the list was applied
      */
     @Override
     public void patch(ResourceAddress address, MulticloudDbKey key, List<PatchOperation> operations,
@@ -643,6 +654,25 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         return current;
     }
 
+    /**
+     * Whether a portable PATCH category is worth retrying.
+     * <p>
+     * {@code CONFLICT} is the one retryable PATCH category, and it is retryable
+     * for a reason specific to this operation: the {@code ConditionExpression}
+     * rejected the {@code UpdateItem} <em>atomically</em>, so no operation in
+     * the list was applied and re-issuing the identical request cannot
+     * double-apply an {@code INCREMENT}. Every other portable PATCH category
+     * names a deterministic cause — a missing item or field, an unsupported
+     * capability, an out-of-domain value — that an identical retry would
+     * reproduce.
+     * <p>
+     * This deliberately differs from a {@code create}-duplicate {@code CONFLICT},
+     * which stays non-retryable because the conflicting key still exists.
+     */
+    private static boolean patchRetryable(MulticloudDbErrorCategory category) {
+        return MulticloudDbErrorCategory.CONFLICT.equals(category);
+    }
+
     private static MulticloudDbException patchConditionFailure(ConditionalCheckFailedException exception,
             MulticloudDbErrorCategory category, String message) {
         Map<String, String> details = new LinkedHashMap<>();
@@ -654,7 +684,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
                 message + ": " + exception.getMessage(),
                 ProviderId.DYNAMO,
                 OperationNames.PATCH,
-                false,
+                patchRetryable(category),
                 exception.statusCode(),
                 details), exception);
     }

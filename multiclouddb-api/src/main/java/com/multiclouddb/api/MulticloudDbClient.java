@@ -185,7 +185,9 @@ public interface MulticloudDbClient extends AutoCloseable {
      *         SDK-managed TTL; or CONFLICT when a concurrent writer
      *         changed an addressed path between validation and the write and the
      *         resulting state does not prove a deterministic cause. CONFLICT is safe
-     *         to retry: a patch is atomic, so no operation in the list was applied
+     *         to retry: a patch is atomic, so no operation in the list was applied,
+     *         and it is the only PATCH category reported with
+     *         {@link MulticloudDbError#retryable()} {@code == true}
      */
     void patch(ResourceAddress address, MulticloudDbKey key, List<PatchOperation> operations,
                OperationOptions options);

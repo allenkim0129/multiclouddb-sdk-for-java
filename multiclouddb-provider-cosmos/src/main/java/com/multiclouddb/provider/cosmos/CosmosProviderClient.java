@@ -669,6 +669,24 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         }
     }
 
+    /**
+     * Whether a portable PATCH category is worth retrying.
+     * <p>
+     * {@code CONFLICT} is the one retryable PATCH category, and it is retryable
+     * for a reason specific to this operation: the conditional write was
+     * rejected <em>atomically</em>, so no operation in the list was applied and
+     * re-issuing the identical request cannot double-apply an {@code INCREMENT}.
+     * Every other portable PATCH category names a deterministic cause — a
+     * missing document or field, an unsupported capability, an out-of-domain
+     * value — that an identical retry would reproduce.
+     * <p>
+     * This deliberately differs from a {@code create}-duplicate {@code CONFLICT},
+     * which stays non-retryable because the conflicting key still exists.
+     */
+    private static boolean patchRetryable(MulticloudDbErrorCategory category) {
+        return MulticloudDbErrorCategory.CONFLICT.equals(category);
+    }
+
     private static MulticloudDbException patchFailure(MulticloudDbErrorCategory category,
             String message) {
         return new MulticloudDbException(new MulticloudDbError(
@@ -676,7 +694,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
                 message,
                 ProviderId.COSMOS,
                 OperationNames.PATCH,
-                false,
+                patchRetryable(category),
                 Map.of()));
     }
 
@@ -694,7 +712,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
                 message + ": " + cause.getMessage(),
                 ProviderId.COSMOS,
                 OperationNames.PATCH,
-                false,
+                patchRetryable(category),
                 cause.getStatusCode(),
                 details), cause);
     }
