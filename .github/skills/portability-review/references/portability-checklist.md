@@ -170,16 +170,25 @@ document why they aren't cheap to exercise end-to-end.
   after the user explicitly approves them.
 - Applying fixes does **not** authorize publication. The orchestrator
   leaves changes unstaged, uncommitted, and unpushed by default.
-- The orchestrator may commit and/or push only after the user explicitly
-  requests that action, either in the original input or a later message,
-  or affirmatively approves an immediately preceding prompt that names
-  the exact action, branch, and remote. Commit authorization alone does
-  not authorize a push.
-- An authorized commit or push must use a non-default branch, include
-  only paths changed for approved findings, preserve unrelated work,
-  and avoid force-pushing, amending, bypassing hooks, or rewriting
-  history.
-- The portability-review agent never opens PRs or posts GitHub comments;
-  those actions remain with the author even after an authorized push.
+- The orchestrator may commit only after the user explicitly requests
+  it or approves an immediately preceding commit proposal. Apply
+  approval does not authorize a commit.
+- Every `git push` requires a fresh, just-in-time confirmation after the
+  orchestrator shows the exact remote, destination branch, PR (if any),
+  and commit or commit range. That confirmation authorizes one push
+  attempt only and is consumed whether it succeeds or fails; retries and
+  later pushes require a new prompt and approval.
+- The repository **default branch** means GitHub's canonical integration
+  branch (`defaultBranchRef`, usually `main`). Existing PR head branches
+  are valid and preferred push targets when updating those PRs; the
+  orchestrator resolves the head repository and branch and must not push
+  to the PR base by mistake.
+- An authorized commit or push includes only paths changed for approved
+  findings, preserves unrelated work, and avoids force-pushing,
+  amending, bypassing hooks, or rewriting history.
+- The orchestrator may open or update PRs and post review comments when
+  the user explicitly authorizes the specific target and content. Each
+  authorization is action-specific rather than blanket permission, and
+  every posted review comment includes the required AI disclosure.
 - Style, formatting, and naming nits are out of scope unless they
   obscure the portability or doc-alignment story.
