@@ -157,7 +157,7 @@ document why they aren't cheap to exercise end-to-end.
 **Mandatory escalation:** any cross-provider divergence not gated by
 `CapabilitySet` stays 🔴, regardless of perceived severity.
 
-## What "review only" means
+## Review and publication boundaries
 
 - Comment on the gap. Cite the **exact file path** and (where
   applicable) the section/line where the missing change belongs.
@@ -165,9 +165,21 @@ document why they aren't cheap to exercise end-to-end.
   matters** (tie the consequence back to the portability or
   doc-alignment invariant), and offer a concrete suggestion when
   possible (e.g., the exact CHANGELOG line text).
-- **You never push commits, never open PRs, never post GitHub comments
-  yourself** — even when explicitly approved by the user. On explicit
-  approval the portability-review agent edits working-tree files only
-  and leaves them unstaged for the author to commit and push.
+- The review phase is read-only and ends at a hard gate. All reviewer
+  subagents remain read-only; only the orchestrator may apply fixes
+  after the user explicitly approves them.
+- Applying fixes does **not** authorize publication. The orchestrator
+  leaves changes unstaged, uncommitted, and unpushed by default.
+- The orchestrator may commit and/or push only after the user explicitly
+  requests that action, either in the original input or a later message,
+  or affirmatively approves an immediately preceding prompt that names
+  the exact action, branch, and remote. Commit authorization alone does
+  not authorize a push.
+- An authorized commit or push must use a non-default branch, include
+  only paths changed for approved findings, preserve unrelated work,
+  and avoid force-pushing, amending, bypassing hooks, or rewriting
+  history.
+- The portability-review agent never opens PRs or posts GitHub comments;
+  those actions remain with the author even after an authorized push.
 - Style, formatting, and naming nits are out of scope unless they
   obscure the portability or doc-alignment story.
