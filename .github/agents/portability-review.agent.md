@@ -114,7 +114,8 @@ After the reviewers return:
 2. **Validate fresh-eyes findings.** Some may be non-issues given the
    context. Drop those. Keep the rest as their own bucket.
 3. **Apply severity self-challenge** to every 🔴 finding. Use the
-   rules from `references/portability-checklist.md` §
+   rules from
+   `.github/skills/portability-review/references/portability-checklist.md` §
    "Severity self-challenge". Downgrade if the bad outcome
    self-corrects, if a `CapabilitySet` gate / `MulticloudDbErrorCategory`
    mapping / conformance assertion covers it, or if you can't
@@ -127,8 +128,8 @@ After the reviewers return:
 ### Step 4 — Present the report (hard gate)
 
 Emit the report using the skeleton in
-`references/parity-matrix-template.md` § "Report skeleton". Concrete
-structure:
+`.github/skills/portability-review/references/parity-matrix-template.md`
+§ "Report skeleton". Concrete structure:
 
 ````
 ## Summary
@@ -170,8 +171,9 @@ GitHub. Wait for the user to explicitly request "apply", "fix it",
 GitHub-action request in the original input does not bypass this review
 gate; remember the requested intent, but still wait for approval before
 applying fixes. After approval, follow the canonical publication state
-machine in `references/portability-checklist.md`; no publication intent
-bypasses this hard gate.
+machine in
+`.github/skills/portability-review/references/portability-checklist.md`;
+no publication intent bypasses this hard gate.
 
 ### Step 5 — Apply suggested fixes (only on explicit approval)
 
@@ -192,14 +194,16 @@ When the user explicitly approves:
 5. Continue to Step 6 or Step 7 only when the user has explicitly
    requested the relevant action or approves an immediately preceding
    prompt that describes it. Follow the canonical authorization and
-   push-mode rules in `references/portability-checklist.md`.
+   push-mode rules in
+   `.github/skills/portability-review/references/portability-checklist.md`.
 
 ### Step 6 — Commit and push (action-specific authorization)
 
-Read and follow `references/portability-checklist.md` § "Review and
-publication boundaries" before any commit or push. It is the sole source
-of truth for authorization, push modes, allowed branches, reset
-conditions, and history safety; do not restate or override it here.
+Read and follow
+`.github/skills/portability-review/references/portability-checklist.md`
+§ "Review and publication boundaries" before any commit or push. It is
+the sole source of truth for authorization, push modes, allowed branches,
+reset conditions, and history safety; do not restate or override it here.
 
 1. Inspect `git status` and the final diff again. Identify the exact
    paths you changed for the approved findings, but do not stage yet.
@@ -231,7 +235,7 @@ Before every push:
 ### Step 7 — Open or update PRs and post review comments
 
 Follow the canonical PR-action authorization rules in
-`references/portability-checklist.md`.
+`.github/skills/portability-review/references/portability-checklist.md`.
 
 1. Identify the exact repository and PR, or the exact head and base
    repositories and branches for a new PR. Never assume that the
@@ -260,9 +264,9 @@ the conversation. Disagree? → reply with your reasoning.</sub>
 ## Key rules
 
 - **Publication policy is canonical in the skill.** Follow
-  `references/portability-checklist.md` § "Review and publication
-  boundaries"; do not duplicate or override its authorization,
-  push-mode, branch, history, or PR-action rules.
+  `.github/skills/portability-review/references/portability-checklist.md`
+  § "Review and publication boundaries"; do not duplicate or override
+  its authorization, push-mode, branch, history, or PR-action rules.
 - **Cite evidence on every finding.** Every finding names a file
   path (and lines when known) and quotes the specific code or doc.
   Every "Confirmed OK" line names what you checked.
