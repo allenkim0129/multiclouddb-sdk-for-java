@@ -173,11 +173,25 @@ document why they aren't cheap to exercise end-to-end.
 - The orchestrator may commit only after the user explicitly requests
   it or approves an immediately preceding commit proposal. Apply
   approval does not authorize a commit.
-- Every `git push` requires a fresh, just-in-time confirmation after the
-  orchestrator shows the exact remote, destination branch, PR (if any),
-  and commit or commit range. That confirmation authorizes one push
-  attempt only and is consumed whether it succeeds or fails; retries and
-  later pushes require a new prompt and approval.
+- Push mode starts as **`confirm_each`** for every portability-review
+  workflow. In this mode the orchestrator shows the exact remote,
+  destination branch, PR, and commit range, then obtains a fresh,
+  single-use confirmation before each `git push`.
+- The user can switch modes explicitly at any time. The orchestrator
+  echoes the resulting mode and scope so the change is visible.
+- The user may explicitly enable **`auto_push_current_pr`** for one
+  exact PR during the current review workflow. The orchestrator records
+  and echoes the repository, PR number, head repository/owner, head
+  branch, and destination remote. While those values still match, it
+  announces each push but doesn't pause for confirmation.
+- Auto-push is session-scoped and never authorizes applying fixes,
+  committing, PR actions, force-pushing, hook bypasses, or history
+  rewrites. It covers only agent-created commits for approved findings
+  after required validation, with unrelated changes excluded.
+- Auto-push resets to `confirm_each` when disabled, when review scope or
+  PR-head identity changes, when the PR closes or merges, when validation
+  fails, when unexpected commits appear, or when the workflow/session
+  ends. It never carries into a later review workflow.
 - The repository **default branch** means GitHub's canonical integration
   branch (`defaultBranchRef`, usually `main`). Existing PR head branches
   are valid and preferred push targets when updating those PRs; the
