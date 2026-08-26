@@ -159,6 +159,12 @@ document why they aren't cheap to exercise end-to-end.
 
 ## Review and publication boundaries
 
+This section is the canonical publication policy. The orchestrator
+references this state machine; agent files must not restate or override
+its invariants.
+
+### Review and edit gate
+
 - Comment on the gap. Cite the **exact file path** and (where
   applicable) the section/line where the missing change belongs.
 - Quote the specific code or doc being discussed, explain **why it
@@ -173,33 +179,51 @@ document why they aren't cheap to exercise end-to-end.
 - The orchestrator may commit only after the user explicitly requests
   it or approves an immediately preceding commit proposal. Apply
   approval does not authorize a commit.
+
+### Push-mode state machine
+
 - Push mode starts as **`confirm_each`** for every portability-review
   workflow. In this mode the orchestrator shows the exact remote,
   destination branch, PR, and commit range, then obtains a fresh,
   single-use confirmation before each `git push`.
-- The user can switch modes explicitly at any time. The orchestrator
-  echoes the resulting mode and scope so the change is visible.
+- "Enable auto-push for this PR" activates
+  **`auto_push_current_pr`**. "Disable auto-push", "turn auto-push
+  off", or "ask before pushes" restores `confirm_each`. The
+  orchestrator echoes the resulting mode and scope after every switch.
 - The user may explicitly enable **`auto_push_current_pr`** for one
   exact PR during the current review workflow. The orchestrator records
   and echoes the repository, PR number, head repository/owner, head
   branch, and destination remote. While those values still match, it
   announces each push but doesn't pause for confirmation.
-- Auto-push is session-scoped and never authorizes applying fixes,
+- Auto-push remains valid only while the destination exactly matches
+  the recorded PR head, the PR is open with an unchanged head identity,
+  required validation passed, unrelated changes remain excluded, and
+  the outgoing range contains only agent-created commits for findings
+  approved in the current review workflow.
+- Auto-push is session-scoped. It never authorizes applying fixes,
   committing, PR actions, force-pushing, hook bypasses, or history
-  rewrites. It covers only agent-created commits for approved findings
-  after required validation, with unrelated changes excluded.
+  rewrites.
 - Auto-push resets to `confirm_each` when disabled, when review scope or
   PR-head identity changes, when the PR closes or merges, when validation
   fails, when unexpected commits appear, or when the workflow/session
   ends. It never carries into a later review workflow.
+
+### Branch and history safety
+
 - The repository **default branch** means GitHub's canonical integration
-  branch (`defaultBranchRef`, usually `main`). Existing PR head branches
-  are valid and preferred push targets when updating those PRs; the
-  orchestrator resolves the head repository and branch and must not push
-  to the PR base by mistake.
+  branch (`defaultBranchRef`, usually `main`). The orchestrator must
+  never push directly to that branch.
+- Existing PR head branches are valid and preferred push targets when
+  updating those PRs. The orchestrator resolves the head repository,
+  owner, remote, and branch and must not push to the PR base by mistake.
+- If work starts on the default branch and isn't updating an existing PR
+  head, create a descriptively named feature branch before staging.
 - An authorized commit or push includes only paths changed for approved
   findings, preserves unrelated work, and avoids force-pushing,
   amending, bypassing hooks, or rewriting history.
+
+### PR actions
+
 - The orchestrator may open or update PRs and post review comments when
   the user explicitly authorizes the specific target and content. Each
   authorization is action-specific rather than blanket permission, and

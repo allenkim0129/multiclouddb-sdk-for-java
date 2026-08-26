@@ -169,8 +169,9 @@ GitHub. Wait for the user to explicitly request "apply", "fix it",
 "go ahead", or to call out specific findings to address. A commit or
 GitHub-action request in the original input does not bypass this review
 gate; remember the requested intent, but still wait for approval before
-applying fixes. A prior push request does not change push mode, and
-enabling auto-push does not bypass this hard gate.
+applying fixes. After approval, follow the canonical publication state
+machine in `references/portability-checklist.md`; no publication intent
+bypasses this hard gate.
 
 ### Step 5 — Apply suggested fixes (only on explicit approval)
 
@@ -190,86 +191,22 @@ When the user explicitly approves:
    authorization.
 5. Continue to Step 6 or Step 7 only when the user has explicitly
    requested the relevant action or approves an immediately preceding
-   prompt that describes it. Push behavior follows the active,
-   explicitly reported push mode from Step 6.
+   prompt that describes it. Follow the canonical authorization and
+   push-mode rules in `references/portability-checklist.md`.
 
 ### Step 6 — Commit and push (action-specific authorization)
 
-Treat commit and push as distinct actions:
-
-- "Commit these fixes" authorizes staging and committing, but not
-  pushing.
-- A generic approval that follows the review report authorizes Step 5
-  only. Never infer commit authorization from silence or from an
-  ambiguous "looks good".
-- "Commit and push" or "push this branch" records push intent. Whether
-  a confirmation is required immediately before the push depends on the
-  active push mode below.
-
-#### Push modes
-
-Start every new portability-review workflow in `confirm_each`. Push mode
-is session-scoped state, never a repository setting or durable global
-preference.
-
-Recognize "enable auto-push for this PR" as a request to activate
-`auto_push_current_pr`. Recognize "disable auto-push", "turn auto-push
-off", or "ask before pushes" as a request to return to `confirm_each`.
-After either change, echo the active mode and its scope.
-
-- **`confirm_each` (default):** show the exact push contents and
-  destination, then ask immediately before each `git push`. An
-  affirmative answer authorizes one push attempt and is consumed
-  whether that attempt succeeds or fails.
-- **`auto_push_current_pr`:** the user explicitly enables auto-push for
-  one exact PR during the current review workflow. Resolve and record
-  the repository, PR number, head repository/owner, head branch, and
-  destination remote. Echo that complete scope and announce that
-  auto-push is on. If "this PR" is ambiguous, ask the user to identify
-  it before enabling the mode.
-
-`auto_push_current_pr` authorizes normal pushes only when all of these
-remain true:
-
-1. The destination exactly matches the recorded PR head repository and
-   branch.
-2. The outgoing commit range contains only agent-created commits for
-   findings the user approved in this review workflow.
-3. Required validation passed, and unrelated working-tree changes are
-   neither staged nor committed.
-4. The PR is still open and its head repository and branch have not
-   changed.
-
-Auto-push does not authorize applying fixes, committing, opening or
-editing PRs, posting comments, force-pushing, bypassing hooks, or
-rewriting history. Announce the commit range and destination immediately
-before every automatic push, but do not pause for confirmation while the
-scope remains valid.
-
-Reset to `confirm_each` and announce the reset when the user disables
-auto-push, the review moves to another PR/repository/branch, the PR
-closes or merges, the recorded PR head changes, the current review
-workflow or session ends, validation fails, unexpected outgoing commits
-appear, or any push would require history rewriting. Never carry
-auto-push into a later review workflow.
-
-When commit is authorized:
+Read and follow `references/portability-checklist.md` § "Review and
+publication boundaries" before any commit or push. It is the sole source
+of truth for authorization, push modes, allowed branches, reset
+conditions, and history safety; do not restate or override it here.
 
 1. Inspect `git status` and the final diff again. Identify the exact
    paths you changed for the approved findings, but do not stage yet.
    If one of those paths already contains unrelated changes, stop and
    ask rather than committing them.
-2. Determine the intended branch:
-   - The repository's **default branch** is its canonical integration
-     branch from GitHub's `defaultBranchRef`, usually `main`. It is not
-     the currently checked-out branch and it is not an existing PR's
-     head branch.
-   - An existing PR's head branch is an allowed and preferred target
-     when updating that PR. Resolve its head repository, owner, remote,
-     and `headRefName` with `gh pr view`; never push to the PR's base
-     branch by mistake.
-   - If currently on the default branch and not updating an existing PR
-     head, create a descriptively named feature branch before staging.
+2. Resolve the intended branch and remote using the checklist's branch
+   rules. For PR work, verify the head identity with `gh pr view`.
 3. Stage only the exact approved paths; never use `git add -A` or
    include unrelated user changes.
 4. Create a descriptive commit using the repository's commit
@@ -278,48 +215,34 @@ When commit is authorized:
 
 Before every push:
 
-5. Resolve the exact destination remote and branch. Feature branches
-   and existing PR head branches are valid; the repository default
-   branch is not.
+5. Resolve the exact destination remote and branch.
 6. Show or announce:
    - destination remote and branch;
    - whether the push updates an existing PR, and which one;
    - commit SHA or commit range that will be sent; and
    - current status, including any uncommitted or unrelated changes
      that won't be pushed.
-7. Apply the active push mode:
-   - In `confirm_each`, ask a direct confirmation such as: "Push commit
-     `<sha>` from `<local-branch>` to
-     `<remote>/<remote-branch>` now?" Only an affirmative answer to that
-     immediately preceding prompt authorizes one push attempt.
-   - In `auto_push_current_pr`, recheck every scope invariant above,
-     announce "Auto-push is on for `<repo>#<pr>`", and push without
-     pausing. If any invariant fails, reset to `confirm_each` instead.
-8. Use a normal push, setting the upstream when needed. Never force
-   push, push the repository default branch, or rewrite history.
+7. Apply the active push mode exactly as defined by the checklist,
+   including all scope checks and reset conditions.
+8. Use a normal push, setting the upstream when needed.
 9. Report the branch, commit SHA, remote, active push mode, and updated
    PR (if any) after success.
 
 ### Step 7 — Open or update PRs and post review comments
 
-You may open or update a PR, submit a review, or post a PR comment when
-the user explicitly requests that specific action or approves an
-immediately preceding proposal for it.
+Follow the canonical PR-action authorization rules in
+`references/portability-checklist.md`.
 
 1. Identify the exact repository and PR, or the exact head and base
    repositories and branches for a new PR. Never assume that the
    current repository or current branch is the intended target.
 2. Before opening a PR, show the proposed repository, head, base, title,
    and body. Any required branch push must complete separately under
-   Step 6's fresh-confirmation rule.
+   Step 6's push-mode workflow.
 3. Before editing a PR or posting a comment/review, show the target PR
    and the exact final content or fields that will change.
-4. Append the AI-generated disclosure footer below to every review
-   comment you post. Do not alter or omit it.
-5. Authorization applies only to the PR action just described. A later
-   PR edit, review, or comment requires another explicit request or
-   approval; never treat one approval as blanket permission.
-6. Report the resulting PR or comment URL after success.
+4. Append the AI-generated disclosure footer below to review comments.
+5. Execute only the authorized action and report the resulting URL.
 
 ## Output disclosure
 
@@ -336,22 +259,10 @@ the conversation. Disagree? → reply with your reasoning.</sub>
 
 ## Key rules
 
-- **No publication by default.** Step 5 ends with unstaged,
-  uncommitted, and unpushed changes unless the user separately and
-  explicitly authorizes a later action.
-- **Push mode is explicit and scoped.** `confirm_each` is the default.
-  `auto_push_current_pr` applies only to one recorded PR head for the
-  current review workflow and resets whenever its scope or safety
-  invariants change.
-- **PR head branches are supported push targets.** "Default branch"
-  means the repository's canonical integration branch (usually
-  `main`), not the head branch of an existing PR.
-- **PR actions are allowed when action-specifically authorized.** Show
-  the exact target and content first, and include the disclosure footer
-  on every review comment.
-- **Preserve repository history and unrelated work.** Publish only
-  approved paths without force-pushing, bypassing hooks, amending, or
-  rewriting history.
+- **Publication policy is canonical in the skill.** Follow
+  `references/portability-checklist.md` § "Review and publication
+  boundaries"; do not duplicate or override its authorization,
+  push-mode, branch, history, or PR-action rules.
 - **Cite evidence on every finding.** Every finding names a file
   path (and lines when known) and quotes the specific code or doc.
   Every "Confirmed OK" line names what you checked.
