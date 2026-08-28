@@ -5,7 +5,8 @@ description: >
   multiclouddb-sdk-for-java. Houses the canonical checklist (provider
   symmetry, conformance coverage, capability declarations, error
   normalization, cost-efficiency parity, doc/changelog/spec alignment), the
-  cross-provider parity matrix template, and the PowerShell diff loader.
+  safe-publication state machine, cross-provider parity matrix template, and
+  PowerShell diff loader.
   Invoked by the `portability-review` agent (and its subagents) when
   reviewing a diff, a branch, or a PR.
 allowed-tools: pwsh git gh read_file
@@ -41,7 +42,7 @@ to this `SKILL.md` (e.g. `references/portability-checklist.md`).
 
 | Path | Purpose |
 |---|---|
-| `references/portability-checklist.md` | Canonical checklist — provider symmetry, conformance coverage, capability declaration, error normalization, cost-efficiency parity, doc alignment, spec conformance. |
+| `references/portability-checklist.md` | Canonical checklist — provider symmetry, conformance coverage, capability declaration, error normalization, cost-efficiency parity, doc alignment, spec conformance, and the review/publication state machine. |
 | `references/parity-matrix-template.md` | Cross-provider parity matrix and cost-efficiency sub-matrix templates, with explicit "placeholders only — do not copy literally" warning. |
 | `scripts/load-diff.ps1` | PowerShell diff loader. Auto-detects the base ref (`upstream/main` → `origin/main` → repo default branch), `git fetch`es it explicitly, supports `staged` / `branch` / `pr` scopes, writes diff + diff-stat to temp files. |
 
