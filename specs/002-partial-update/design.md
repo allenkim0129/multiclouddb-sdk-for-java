@@ -6,7 +6,7 @@
 | Scope | `MulticloudDbClient.update(...)` on Cosmos DB and DynamoDB |
 | Deferred | Spanner — already conformant, see section 5.3 |
 | Out of scope | The portable PATCH API (`patch()`, `PatchOperation`, `REMOVE` / `INCREMENT`) — separate surface on its own branch |
-| Updated | 2026-08-27 |
+| Updated | 2026-08-28 |
 
 > **Terminology.** Three layers are distinguished throughout, because the
 > difference between them carries real weight in this design:
@@ -24,11 +24,12 @@
 > without consulting it or the caller (section 7.2). Unqualified, "the SDK" means
 > this project, the Multicloud DB SDK.
 
-> **Note on the Cosmos Patch API.** Section 5.1 uses
-> `CosmosContainer.patchItem(...)` as an *internal implementation detail* of
-> `update()`. Callers still call `update()`; they gain no patch surface, no new
-> capability, and no new error category. The distinction is between the vendor
-> SDK call the provider makes and the product surface this SDK exposes.
+> **Note on the Cosmos partial-update APIs.** Section 5.1 uses
+> `CosmosContainer.patchItem(...)` and `executeCosmosBatch(...)` as *internal
+> implementation details* of `update()`. Callers still call `update()`; they gain
+> no patch or batch surface, no new capability, and no new error category. The
+> distinction is between vendor SDK calls made by the provider and the product
+> surface exposed by this SDK.
 
 ## 1. Decision
 
@@ -41,11 +42,13 @@ client.update(address, key, Map.of("status", "SHIPPED"), options);
 // Stored: {"status":"SHIPPED","owner":"ana","region":"westus"}
 ```
 
-Fields present in the supplied document are written; fields absent from it are
-preserved. No new API, no new operation vocabulary, no new capability.
+Entries present in `fields` are written; fields absent from it are preserved. No
+new API, no new operation vocabulary, no new capability.
 
-Each provider implements this with its **native single-request partial-write
-API**. Read-modify-write in the adapter is a bounded fallback, not the design.
+Each provider implements this with a **native single-request partial write**.
+Cosmos uses one direct patch or one transactional batch without reading the
+item. Read-merge-replace remains only a last-resort path beyond the transactional
+batch envelope (section 11.1), not the normal design.
 
 **Parameters.** No parameter is added by this design; one is renamed.
 
@@ -170,10 +173,11 @@ void update(..., Map<String, Object> fields,    ...);  // named fields only
 replacement, so leaving it would make partial update *more* confusing, not less.
 `create()` and `upsert()` keep it because they genuinely take a whole document.
 Parameter names bind neither the source nor the binary contract for callers — the
-build sets no `-parameters` flag — so this costs callers nothing. It touches six
-signatures: `MulticloudDbClient` (abstract plus default overload),
-`MulticloudDbProviderClient`, `DefaultMulticloudDbClient`, and the three provider
-implementations. Type-level separation is considered and deferred in 11.5.
+build sets no `-parameters` flag — so this costs callers nothing. It touches seven
+method declarations across six types: `MulticloudDbClient` (abstract plus default
+overload), `MulticloudDbProviderClient`, `DefaultMulticloudDbClient`, and the
+three provider implementations. Type-level separation is considered and deferred
+in 11.5.
 
 ## 4. Portable contract
 
@@ -258,17 +262,44 @@ SDK exists to prevent. Shallow merge makes both cases unreachable, since every
 path the adapter emits is a single top-level segment. It is also what makes the
 native single-request path possible: one set-instruction per field, with no read.
 
+**Examples.** An object-valued field is one top-level value, so both providers
+replace it as a unit:
+
+```java
+// Stored: {"status":"NEW","profile":{"name":"Ana","city":"Seattle"}}
+client.update(address, key,
+    Map.of("profile", Map.of("name", "Bob")), options);
+// Both: {"status":"NEW","profile":{"name":"Bob"}}
+```
+
+`status` survives because it was omitted. `city` does not, because `profile` was
+named and therefore replaced as one value.
+
+An array follows the same rule:
+
+```java
+// Stored: {"tags":["a","b"]}
+client.update(address, key,
+    Map.of("tags", List.of("a", "b", "c")), options);
+// Both: {"tags":["a","b","c"]}
+```
+
+The adapter never emits a path such as `tags[5]`, so neither engine's
+out-of-range index behaviour is reachable. To change an element, the caller
+supplies the complete desired array as the value of the top-level `tags` field.
+
 If deep paths are ever revisited they need an explicit `CapabilitySet` gate, and
 the Cosmos row above needs verifying against a live account first — Microsoft
 documents `add` as *"if the target path specifies an element that doesn't exist,
 it's added"* and defines `set` as similar outside arrays, but never states the
 intermediate-object case outright, so that row is inference from RFC 6902 rather
 than a documented guarantee. The DynamoDB row is documented verbatim.
+
 ## 5. Provider implementations
 
-| Provider | Native mechanism | Requests | Read required |
+| Provider | Native mechanism | Native requests | Read required |
 |---|---|---|---|
-| Cosmos DB | `patchItem` with one `set` per top-level field | 1 | No |
+| Cosmos DB | `patchItem` for at most 10 set operations; `executeCosmosBatch` with patch chunks above 10 | 1 for direct or batch; 2+ only beyond the batch envelope | No for direct or batch; yes only for the last-resort fallback |
 | DynamoDB | `UpdateItem` with a `SET` update expression | 1 | No |
 | Spanner | Deferred — already conformant | 1 txn | n/a |
 
@@ -283,27 +314,48 @@ sequenceDiagram
     App->>API: update(address, key, fields)
     API->>ADP: reserved-field and size validation
     Note over ADP: one native set-instruction<br/>per top-level field
-    ADP->>DB: patchItem(set /a, set /b)<br/>or UpdateItem(SET #a=:a, #b=:b)
-    DB-->>ADP: 200 OK
+    alt Cosmos: at most 10 set operations
+        ADP->>DB: patchItem(set /a, set /b)
+    else Cosmos: above 10, within the batch envelope
+        ADP->>DB: executeCosmosBatch(patch chunks of at most 10)
+    else DynamoDB
+        ADP->>DB: UpdateItem(SET #a=:a, #b=:b)
+    end
+    DB-->>ADP: success
     ADP-->>App: void
     Note over ADP,DB: one request, no read,<br/>unlisted fields untouched
 ```
 
 ### 5.1 Cosmos DB
 
-`CosmosProviderClient.update(...)` switches from `replaceItem` to `patchItem`,
-building one `set` operation per top-level field:
+`CosmosProviderClient.update(...)` switches from `replaceItem` to one of two
+server-side partial-write paths. The adapter first builds one `set` operation per
+top-level field, plus one for TTL when present, then groups them into patches of
+at most 10 operations:
 
 ```java
-CosmosPatchOperations ops = CosmosPatchOperations.create();
-for (Map.Entry<String, Object> field : document.entrySet()) {
-    ops.set("/" + escapeJsonPointer(field.getKey()), field.getValue());
+List<CosmosPatchOperations> patches = buildPatchChunks(fields, options, 10);
+
+if (patches.size() == 1) {
+    container.patchItem(cosmosId, partitionKey, patches.get(0), ObjectNode.class);
+} else if (fitsTransactionalBatch(patches)) {
+    CosmosBatch batch = CosmosBatch.createCosmosBatch(partitionKey);
+    for (CosmosPatchOperations patch : patches) {
+        batch.patchItemOperation(cosmosId, patch);
+    }
+    CosmosBatchResponse response = container.executeCosmosBatch(batch);
+    requireSuccessfulBatch(response);
+} else {
+    updateByReadMergeReplace(address, key, fields, options); // section 11.1
 }
-container.patchItem(cosmosId, partitionKey, ops, ObjectNode.class);
 ```
 
+`buildPatchChunks(...)` escapes each field name, adds its value with `set`, and
+adds TTL exactly once. `ObjectNode.class` is the response type token required by
+the direct `patchItem` overload; it does not describe the request payload.
+
 Cosmos `set` is create-or-overwrite at the addressed path and never touches a
-path the request does not name. Four details follow:
+path the request does not name. Seven details follow:
 
 1. **JSON Pointer escaping.** Field names come from a caller-supplied `Map` and
    may contain `/` or `~`, which are structural in JSON Pointer. Each must be
@@ -312,34 +364,50 @@ path the request does not name. Four details follow:
    nested `b` under `a`. This is escaping only; JSON Pointer never becomes a
    caller-facing concept.
 2. **No key injection.** Today `update()` writes `id` and `partitionKey` into the
-   document before `replaceItem`. With `patchItem` those are already on the
-   stored item and must not be patched. Reserved-field validation already
+   document before `replaceItem`. On either partial-write path those values are
+   already stored and must not be patched. Reserved-field validation already
    prevents a caller supplying them.
-3. **TTL consumes an operation slot.** When `options.ttlSeconds()` is set the
-   adapter adds `set("/ttl", n)`, counting against the 10-operation cap. The
-   effective field budget is 10, or **9 when a TTL is supplied**.
-4. **Error mapping is unchanged.** `patchItem` against a missing item returns
-   HTTP 404, which `CosmosErrorMapper` already maps to `NOT_FOUND` — the same
-   category today's `replaceItem` produces.
+3. **Ten operations select the path; they do not limit the portable API.** Up to
+   10 total set operations use direct `patchItem`. More than 10 are divided into
+   chunks of at most 10 and placed in one transactional batch. TTL counts as one
+   operation and appears in exactly one chunk, so 10 fields plus TTL selects the
+   batch path. No shared field-count validation is added.
+4. **Transactional means all-or-nothing.** Every patch chunk targets the same
+   item and partition key. Cosmos serialises the chunks into one service request,
+   executes them in order, and commits all of them or rolls back all of them. Do
+   not substitute multiple `patchItem` requests or `executeBulkOperations`; both
+   would permit a partial update.
+5. **Batch errors must be normalised.** `executeCosmosBatch` can return a failed
+   `CosmosBatchResponse` rather than throw. The provider must check
+   `isSuccessStatusCode()`, find the operation result whose status is not `424
+   Failed Dependency`, and map that underlying status. A missing item is therefore
+   `NOT_FOUND` on both paths; `424` must never escape as the caller-facing cause.
+6. **Suppress write response bodies.** `CosmosProviderClient` currently enables
+   `contentResponseOnWriteEnabled(true)`. A batch can otherwise return the full
+   updated item after every patch chunk. Portable writes return `void`, so the
+   implementation should disable write content globally while retaining response
+   headers and diagnostics. The direct SDK overload still requires
+   `ObjectNode.class` even when content is disabled.
+7. **The batch has its own envelope.** Cosmos permits at most 100 operations per
+   transactional batch, a 2 MB serialised request, and five seconds of execution.
+   With 10 sets per patch, one batch carries up to 1,000 set operations. The SDK's
+   existing 399 KB portable payload limit keeps the size ceiling remote, but the
+   provider must still check the built batch. Section 11.1 covers the last-resort
+   path when its operation count or serialised size exceeds the batch envelope;
+   section 11.4 covers whole-batch retry on timeout.
 
-**Payloads above the operation cap.** Microsoft documents: *"It's possible to
-execute multiple patch operations on a single document. The maximum limit is 10
-operations."* A larger payload cannot be one native patch; the options are
-weighed in open question 11.1, which recommends a point-read / merge /
-`replaceItem` fallback.
+The direct and transactional-batch paths are both one request, require no read,
+and preserve server-side field scoping. The official Java SDK test
+`PatchAsyncTest.conditionalPatchInBatch` also exercises two patch operations
+against the same item in one successful batch; this is supported behaviour, not
+an assumption based only on the builder API.
 
-If that fallback is adopted, two properties are mandatory. First, the `If-Match`
-ETag is **not optional**: without it two concurrent `update()` calls to disjoint
-fields would each write from a stale read, and the later would silently discard
-the earlier — a lost update on Cosmos alone. Second, **retry exhaustion must not
-become a Cosmos-only error.** Under sustained contention the ETag can be
-invalidated on every attempt; surfacing that as a failure after N tries would
-make `update()` fail on Cosmos for a workload that always succeeds on DynamoDB —
-a divergence *created* by the adapter rather than inherited from the engine. The
-loop must retry until it succeeds or the caller's own `OperationOptions` timeout
-expires. A timeout is a portable outcome any provider can produce; "ran out of
-adapter retries" is not. Each attempt re-applies the same absolute values, so any
-attempt that lands produces the correct document.
+If the section 11.1 last-resort fallback is reached, two properties remain
+mandatory. First, `If-Match` ETag is **not optional**: without it two concurrent
+updates to disjoint fields can each write from a stale read and the later replace
+silently discards the earlier. Second, ETag contention must retry until success or
+the caller's `OperationOptions` timeout; a fixed adapter retry count would create
+a Cosmos-only failure. Each attempt re-applies the same absolute values.
 
 ### 5.2 DynamoDB
 
@@ -455,9 +523,10 @@ retries on ambiguous failures. From `ClientRetryPolicy`:
 
 Correct as a general-purpose default, but it costs availability for writes that
 *are* idempotent — which, after this change, is every `update()` the Cosmos
-adapter issues. The opt-in
-`CosmosItemRequestOptions.setNonIdempotentWriteRetryPolicy(true, true)` is
-tracked as open question 11.4.
+adapter issues. The direct path can opt in through
+`CosmosItemRequestOptions.setNonIdempotentWriteRetryPolicy(true, true)`.
+`CosmosBatchRequestOptions` in azure-cosmos 4.78.0 has no equivalent public
+switch, so open question 11.4 covers both paths rather than only `patchItem`.
 
 `attribute_exists(pk)` does not weaken any of this: if a first attempt succeeded
 but its response was lost, the item exists on retry, the condition holds, and the
@@ -474,8 +543,9 @@ same absolute values are re-applied for the same result.
 
 | Provider | Disjoint-field concurrency handled by |
 |---|---|
-| Cosmos DB, native path | `patchItem` `set` is path-scoped, evaluated server-side |
-| Cosmos DB, fallback path | `If-Match` ETag + retry; the loser re-reads and re-applies its own fields |
+| Cosmos DB, direct path | `patchItem` `set` is path-scoped and evaluated server-side |
+| Cosmos DB, transactional-batch path | Each chunk is path-scoped; all chunks commit as one ACID transaction |
+| Cosmos DB, last-resort fallback | `If-Match` ETag + retry; the loser re-reads and reapplies its own fields |
 | DynamoDB | `UpdateItem` `SET` is attribute-scoped, never rewrites unnamed attributes |
 | Spanner | `readWriteTransaction` retries on `ABORTED` |
 
@@ -486,31 +556,36 @@ correctly and kept correct — the main reason native mechanisms are preferred.
 
 ## 8. Cost
 
-**This change removes a read from the common path.** Today, a caller who wants
-partial-update semantics on Cosmos or DynamoDB cannot use `update()` safely — it
-would destroy unlisted fields — so they must read the document, merge in the
-caller, and write it back. That is two round trips plus the transfer of a full
-document. After this change the same intent is one request that carries only the
-changed fields:
+**This change removes a read from every payload inside the native Cosmos batch
+envelope.** Today, a caller who wants partial-update semantics on Cosmos or
+DynamoDB cannot use `update()` safely — it would destroy unlisted fields — so
+they must read the document, merge in the caller, and write it back. The new
+paths send only changed fields:
 
 | Path | Today (Cosmos / Dynamo) | After |
 |---|---|---|
-| Partial update of a few fields | read + write, 2 round trips, full document on the wire twice | 1 write, changed fields only |
+| At most 10 Cosmos set operations | read + write, 2 round trips, full document transferred | 1 `patchItem`, changed fields only |
+| More than 10, within the Cosmos batch envelope | read + write, 2 round trips, full document transferred | 1 transactional-batch request containing patch chunks, changed fields only |
 | Full-document replace | 1 write | 1 write via `upsert()` — unchanged |
 
 Per-provider cost drivers after the change:
 
 | Provider | Driver | Direction |
 |---|---|---|
-| Cosmos DB | `patchItem` RU is charged against the patch operations rather than a full-document write, and the request body carries only changed fields | Lower than `replaceItem`, materially so for large documents |
+| Cosmos DB | Direct path is one patch operation. The batch path remains one network round trip but contains `ceil(total set operations / 10)` patch operations; total request charge includes those chunks and must be measured. Only changed values cross the request wire. | Eliminates the caller-side read and extra round trip; do not promise a fixed RU saving over `replaceItem` without measurement |
 | DynamoDB | `UpdateItem` WCU is computed from the larger of the before/after item size, the same basis as `PutItem` | **No per-request saving**; the saving is the eliminated caller-side read (RCU) and round trip |
 | Spanner | Unchanged — already read-merge-write. Replacing it with a plain `UPDATE` mutation would drop its read | Deferred, section 5.3 |
 
-The one place cost increases is the Cosmos over-budget fallback, which adds a
-point read and sends a full document. It applies only to payloads above the
-operation budget and is bounded; it belongs in `docs/compatibility.md` under the
-existing convention for operations that are not always one request. No cost
-asymmetry here is unbounded or scales with data volume.
+The Cosmos client must disable write response content before using multiple patch
+chunks; otherwise each batch result can carry another copy of the updated item.
+Status, request charge, and diagnostics remain available without those bodies.
+
+Only a payload beyond the 100-operation or 2 MB transactional-batch envelope
+reaches the section 11.1 fallback, which adds a point read and transfers the full
+document. `docs/compatibility.md` must distinguish direct, transactional-batch,
+and last-resort request counts and cost. No 10-field limit is imposed on DynamoDB
+or Spanner merely to mirror a Cosmos implementation detail.
+
 ## 9. Breaking change and migration
 
 For Cosmos DB and DynamoDB this **changes the observable behaviour of an existing
@@ -533,11 +608,11 @@ Documentation that must ship with the change:
 | Doc | Content |
 |---|---|
 | `multiclouddb-api/CHANGELOG.md` | Behaviour change to `update()` under `[Unreleased]` |
-| `multiclouddb-provider-cosmos/CHANGELOG.md` | `replaceItem` to `patchItem` |
+| `multiclouddb-provider-cosmos/CHANGELOG.md` | `replaceItem` to direct `patchItem` / transactional-batch patching |
 | `multiclouddb-provider-dynamo/CHANGELOG.md` | `PutItem` to `UpdateItem` |
 | `docs/changelog.md` | User-visible behaviour change |
 | `docs/guide.md` | Migration section with the before/after table |
-| `docs/compatibility.md` | Cost note and the Cosmos fallback request count |
+| `docs/compatibility.md` | Cosmos direct, transactional-batch, and last-resort request counts and cost |
 
 ## 10. Conformance coverage
 
@@ -555,54 +630,76 @@ Documentation that must ship with the change:
 9. Applying the same `update()` twice yields the same document as applying it once.
 10. Concurrent updates to disjoint fields both survive.
 11. A reserved field name is `INVALID_REQUEST` before provider I/O.
+12. An update carrying 11 top-level fields succeeds and writes all 11, proving
+    that Cosmos's direct-patch cap is not part of the portable acceptance envelope.
 
-Items 9 and 10 are the headline assertions: 9 is the direct expression of the
-idempotency guarantee, 10 is what protects against a regression into a lost
-update. Item 8 would fail on DynamoDB without `ExpressionAttributeNames`.
+Items 9, 10, and 12 are the headline assertions: 9 expresses idempotency, 10
+protects against a lost-update regression, and 12 prevents a Cosmos implementation
+detail from leaking into the common contract. Item 8 would fail on DynamoDB
+without `ExpressionAttributeNames`.
 
-Because Spanner already satisfies the contract, all eleven can be enabled for
+Because Spanner already satisfies the contract, all twelve can be enabled for
 every provider immediately — Spanner should pass with no product change, which is
 itself evidence the target semantics are right.
 
 Cosmos additionally needs provider-level tests the portable suite cannot express:
 
 - A field name containing `/` or `~` round-trips correctly (section 5.1 detail 1).
-- A payload at the operation budget uses the native path and one above it uses the
-  fallback, with identical observable results.
-- A TTL-bearing update is correctly accounted against the operation budget.
+- Ten total set operations call `patchItem`; eleven call
+  `executeCosmosBatch` once with two patch chunks against the same item.
+- Ten fields plus TTL select the batch path, and TTL appears in exactly one chunk.
+- A failure in any chunk rolls back every chunk; `executeBulkOperations` is never
+  used for this path.
+- A missing item in a batch maps the underlying 404 to `NOT_FOUND`; sibling 424
+  statuses never become the caller-facing error.
+- Write response content is disabled while batch status, request charge, and
+  diagnostics remain available.
+- A payload beyond the batch envelope takes the ETag-protected fallback and
+  retains concurrent disjoint-field updates.
 
 **E2E.** `multiclouddb-e2e/Main.java` already exercises `update()` against
 whichever provider the active `*.properties` selects. It should be extended to
 write a document, update a subset of its fields, and read back to confirm the
-unlisted fields survived — the single scenario that would have caught this
-divergence.
+unlisted fields survived. A second scenario should update 11 fields in one call
+and verify that all 11 landed — the case that exercises Cosmos transactional
+batch while remaining ordinary portable input everywhere else.
 
 ## 11. Open questions
 
-### 11.1 Payloads above the Cosmos operation budget
+### 11.1 Payloads beyond the Cosmos transactional-batch envelope
 
-**Question.** What happens when a payload carries more top-level fields than one
-`patchItem` can express — 11 or more, or 10 or more with a TTL?
+**Resolved boundary.** More than 10 set operations do **not** fail validation and
+do not trigger read-merge-replace. The Cosmos provider divides them into patch
+chunks of at most 10 and sends those chunks as one transactional batch. That is
+one request, one ACID transaction, and no read.
 
-**Why it matters.** It decides whether `update()` keeps a uniform portable
-acceptance envelope or grows a provider-specific cliff, and whether the Cosmos
-adapter has one code path or two.
+**Remaining question.** What happens when the built batch needs more than 100
+patch chunks or exceeds the 2 MB serialised batch limit? One hundred chunks carry
+1,000 set operations; TTL counts as one. The service's five-second execution
+limit is an operational timeout handled by whole-batch retry in section 11.4,
+not a reason to split the transaction.
+
+**Why it matters.** The existing shared 399 KB payload limit makes these cases
+unusual but not impossible — a map can contain more than 1,000 small fields. The
+answer must preserve a uniform acceptance envelope without exposing a Cosmos
+implementation detail to DynamoDB and Spanner callers.
 
 | Option | Consequence |
 |---|---|
-| **A. Fallback** — read, merge, `replaceItem` with `If-Match` | Preserves today's envelope: every call that works now keeps working. Costs a second Cosmos code path with a different request count, and it is the only place a lost update could reappear, so it needs its own concurrency test. |
-| **B. Portable cap** — reject over-budget payloads with `INVALID_REQUEST` | One code path, trivial to document and test. But it rejects calls that succeed today — a *second* breaking change stacked on the first — and imposes a Cosmos limit on DynamoDB and Spanner callers who have no such limit. |
-| **C. Cosmos-only cap via `CapabilitySet`** | Honest rather than silent. But a capability reading "at most 10 fields on Cosmos" forces portable code to become provider-aware, precisely what the SDK exists to prevent. |
+| **A. Last-resort fallback** — read, merge, `replaceItem` with `If-Match` | Preserves today's accepted payloads. Costs a second Cosmos code path and 2+ requests only beyond the batch envelope; requires ETag concurrency and retry tests. |
+| **B. Portable cap** — reject beyond the batch envelope with `INVALID_REQUEST` | Easy to validate, but rejects calls that succeed today and imposes Cosmos's batch limit on DynamoDB and Spanner. |
+| **C. Cosmos-only cap via `CapabilitySet`** | Honest rather than silent, but forces portable callers to branch on a provider-specific field-count constraint. |
 
-**Recommendation: A.** The deciding factor is that B is not a clean limit — 10
-fields normally but 9 with a TTL, so the contract would read "at most 10
-top-level fields, unless you set a TTL, in which case 9": awkward to document,
-easy to violate accidentally, and tied to one provider's implementation detail.
+**Recommendation: A.** Transactional batch handles the ordinary over-10 case
+without a read, while the fallback keeps the public contract independent of both
+the 10-operation patch cap and the 100-operation batch cap. Before fallback, the
+provider should build and measure the actual batch rather than infer size from
+field count alone.
 
-**What would change the answer.** If usage data showed over-budget updates are
-vanishingly rare and the team valued a single code path more than backward
-compatibility, B becomes reasonable. If Cosmos raises the cap, the question
-disappears.
+**Fallback correctness.** `replaceItem` must use `If-Match`. On 412 it re-reads,
+reapplies the same absolute field values, and retries until success or the
+caller's `OperationOptions` timeout. A fixed retry count would create a
+Cosmos-only failure under sustained contention.
 
 ### 11.2 Migration target for callers who want full replacement
 
@@ -665,29 +762,35 @@ a behaviour change with data-loss-shaped consequences in reverse — code that
 expected fields to disappear will now find them retained — and must name the
 migration target directly.
 
-### 11.4 Opting into Cosmos non-idempotent write retries
+### 11.4 Retrying idempotent Cosmos writes
 
-**Question.** Should the Cosmos adapter set
-`setNonIdempotentWriteRetryPolicy(true, true)` on `update()`?
+**Question.** How should the Cosmos provider retry ambiguous failures on both the
+direct `patchItem` and transactional-batch paths?
 
-**Why it matters.** Section 7.2: the Cosmos SDK does not retry writes whose
-outcome is ambiguous, so a `patchItem` that times out surfaces to the caller even
-when a retry would be harmless. After this change every `update()` the adapter
-issues is idempotent, so the conservative default guards a hazard that no longer
-exists on this path.
+**Why it matters.** Section 7.2: the Cosmos SDK normally suppresses write retries
+when it cannot tell whether the service applied the request. Every update in this
+design is replay-safe, including a whole transactional batch: each operation sets
+an absolute value, and the batch commits all chunks or none.
 
-**Enabling it** improves write availability, particularly for multi-region
-accounts, and moves Cosmos closer to DynamoDB — which already retries these
-writes unconditionally — narrowing a real difference in how often a transient
-fault reaches the caller. **Leaving it off** means the same application sees a
-higher error rate on Cosmos than DynamoDB for identical workloads.
+**Direct path.** Set
+`CosmosItemRequestOptions.setNonIdempotentWriteRetryPolicy(true, true)` only on
+`update()` requests. Other operations are not necessarily idempotent, so enabling
+it globally would be wrong.
 
-**Caveats.** Scope it to `update()` alone; other operations are not necessarily
-idempotent and setting it globally would be wrong. If the 11.1 fallback is
-adopted, check its interaction with the `If-Match` path.
+**Batch path.** `CosmosBatchRequestOptions` in azure-cosmos 4.78.0 exposes no
+public equivalent. The provider therefore needs either a verified client-level
+mechanism in the implementation SDK version or its own retry of the entire batch
+for transient or ambiguous outcomes. Retrying individual chunks would destroy the
+atomicity guarantee and is forbidden. A provider-level loop must use the caller's
+`OperationOptions` timeout rather than a fixed attempt count.
 
-**Recommendation: yes, scoped to `update()`**, once 11.1 is settled. A direct
-dividend of the set/replace-only decision.
+**Last-resort fallback.** Its read / `If-Match` replace loop is separate and must
+not inherit blind write retries; a 412 means re-read and reapply.
+
+**Recommendation: enable replay-safe retries on both native paths**, using the
+item request option for direct patch and a whole-batch retry for transactional
+batch unless the selected SDK version adds an equivalent option. This narrows the
+transient error-rate difference from DynamoDB without changing stored results.
 
 ### 11.5 Type vocabulary for document payloads
 
@@ -721,6 +824,8 @@ rename already captures the cheap part of the benefit.
 
 - `SpannerProviderClient.update(...)` — existing partial-merge implementation and its asymmetry note
 - [Cosmos DB partial document update](https://learn.microsoft.com/en-us/azure/cosmos-db/partial-document-update) — `set` semantics, 10-operation cap, array out-of-range error
+- [Cosmos DB transactional batch](https://learn.microsoft.com/en-us/azure/cosmos-db/transactional-batch) — one-request ACID execution, rollback and 424 failure semantics, 100-operation / 2 MB / five-second envelope
+- [`PatchAsyncTest.conditionalPatchInBatch`](https://github.com/Azure/azure-sdk-for-java/blob/main/sdk/cosmos/azure-cosmos-tests/src/test/java/com/azure/cosmos/PatchAsyncTest.java) — official Java SDK coverage for multiple patch operations against the same item in one batch
 - [RFC 6901 — JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901.txt) — `~0` / `~1` escaping
 - [Cosmos DB Java SDK v4 troubleshooting](https://learn.microsoft.com/en-us/azure/cosmos-db/nosql/troubleshoot-java-sdk-v4) — timeout and retry guidance
 - `ClientRetryPolicy` / `ThrottlingRetryOptions` in `Azure/azure-sdk-for-java` — write-retry suppression, 9-retry / 30 s throttling defaults
