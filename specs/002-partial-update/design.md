@@ -8,11 +8,27 @@
 | Out of scope | The portable PATCH API (`patch()`, `PatchOperation`, `REMOVE` / `INCREMENT`) — separate surface on its own branch |
 | Updated | 2026-08-27 |
 
+> **Terminology.** Three layers are distinguished throughout, because the
+> difference between them carries real weight in this design:
+>
+> | Term | Refers to | Examples |
+> |---|---|---|
+> | **Engine** | The database service itself, executing server-side | Cosmos DB, DynamoDB, Spanner |
+> | **Vendor SDK** | The vendor's Java client library that talks to an engine | `azure-cosmos` v4, AWS SDK for Java v2 |
+> | **Provider** | This repository's adapter for one engine | `multiclouddb-provider-cosmos` |
+>
+> A guarantee enforced by the **engine** holds under concurrency, retries, and
+> partial failure without any adapter code having to be correct — which is why
+> section 4.1 argues for native mechanisms over adapter-side merging. Retry
+> policies, by contrast, live in the **vendor SDK** and run beneath the provider
+> without consulting it or the caller (section 7.2). Unqualified, "the SDK" means
+> this project, the Multicloud DB SDK.
+
 > **Note on the Cosmos Patch API.** Section 5.1 uses
 > `CosmosContainer.patchItem(...)` as an *internal implementation detail* of
 > `update()`. Callers still call `update()`; they gain no patch surface, no new
-> capability, and no new error category. The distinction is between the provider
-> SDK call the adapter makes and the product surface the SDK exposes.
+> capability, and no new error category. The distinction is between the vendor
+> SDK call the provider makes and the product surface this SDK exposes.
 
 ## 1. Decision
 
@@ -152,7 +168,7 @@ rather than several partially:
 - **Remove a field, or clear stale fields wholesale** — `upsert()` with the
   complete desired document (see open question 11.2).
 - **Increment a counter** — read, compute in the caller, write the result.
-  Section 7.2 shows what the native SDKs' automatic retries would otherwise do to
+  Section 7.2 shows what the vendor SDKs' automatic retries would otherwise do to
   a server-side increment.
 - **Write only if a precondition holds** — a separate feature, section 2.3.
 
@@ -340,7 +356,7 @@ stored value, so re-applying a call is indistinguishable from applying it once:
 sequenceDiagram
     autonumber
     participant ADP as Provider adapter
-    participant SDK as Native SDK
+    participant SDK as Vendor SDK
     participant DB as Database
 
     ADP->>SDK: update: a=1, b=2
@@ -359,9 +375,9 @@ Had the contract included server-side arithmetic, step 6 would have applied the
 delta a second time and the final state would depend on how many retries
 occurred — an outcome the caller cannot detect or correct.
 
-### 7.2 Retries inside the native SDKs
+### 7.2 Retries inside the vendor SDKs
 
-This matters more than it first appears: **both native SDKs retry on their own**,
+This matters more than it first appears: **both vendor SDKs retry on their own**,
 beneath the adapter, without the SDK or the caller being consulted.
 
 | Behaviour | Cosmos DB (`azure-cosmos` v4) | DynamoDB (AWS SDK v2) |
@@ -373,7 +389,7 @@ beneath the adapter, without the SDK or the caller being consulted.
 
 The two vendors made opposite choices, and each reinforces this design.
 
-**DynamoDB retries writes blindly.** The AWS SDK does not inspect an update
+**The AWS SDK retries writes blindly.** It does not inspect an update
 expression before retrying. Had the contract offered increment, the adapter would
 emit `SET #n = #n + :d` or `ADD`, and the SDK's *own default policy* could
 double-apply it with no caller involvement. AWS documents this for atomic
@@ -386,7 +402,7 @@ counters:
 Because the adapter emits only `SET #name = :absoluteValue`, that entire class of
 bug is unreachable.
 
-**Cosmos DB refuses to retry writes.** The Java SDK deliberately suppresses write
+**The Cosmos SDK refuses to retry writes.** It deliberately suppresses write
 retries on ambiguous failures. From `ClientRetryPolicy`:
 
 > For any causes that SDK not sure whether the request has reached/processed from
