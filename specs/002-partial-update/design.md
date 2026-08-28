@@ -37,7 +37,7 @@ semantics**:
 
 ```java
 // Stored: {"status":"NEW","owner":"ana","region":"westus"}
-client.update(address, key, Map.of("status", "SHIPPED"));
+client.update(address, key, Map.of("status", "SHIPPED"), options);
 // Stored: {"status":"SHIPPED","owner":"ana","region":"westus"}
 ```
 
@@ -46,6 +46,27 @@ preserved. No new API, no new operation vocabulary, no new capability.
 
 Each provider implements this with its **native single-request partial-write
 API**. Read-modify-write in the adapter is a bounded fallback, not the design.
+
+**Parameters.** No parameter is added by this design; one is renamed.
+
+| Parameter | | What it is | Example |
+|---|---|---|---|
+| `address` | required | Which database and collection to target | `new ResourceAddress("orders-db", "orders")` |
+| `key` | required | Which record inside that collection | `MulticloudDbKey.of("cust-42", "order-7")` |
+| `fields` | required | The fields to set — **not** a replacement document | `Map.of("status", "SHIPPED")` |
+| `options` | optional | Per-call timeout, TTL, and metadata hints | `OperationOptions.defaults()` |
+
+Only the payload changes meaning: it stops being *"the new document"* and
+becomes *"the fields to set"*. Section 3 renames it `document` -> `fields`.
+
+`options` is optional in the sense that omitting it selects a three-argument
+overload of the same method, which supplies `OperationOptions.defaults()` on your
+behalf. Both call sites below are the same operation:
+
+```java
+client.update(address, key, Map.of("status", "SHIPPED"), options);
+client.update(address, key, Map.of("status", "SHIPPED"));
+```
 
 ## 2. Why
 
@@ -77,6 +98,12 @@ flowchart LR
 
 Silent data loss from a call that looks additive is the sharpest edge in the
 current API. Aligning behaviour with the signature removes it.
+
+**One part of the signature argues the other way.** The payload parameter is
+named `document`, and its Javadoc reads *"@param document document payload"* —
+the only element of the declaration that suggests "here is the whole document".
+Section 3 renames it to `fields`, so that the entire signature, and not just its
+type and verb, says what the operation does.
 
 ### 2.2 Set/replace is the portability floor
 
@@ -130,6 +157,23 @@ interchangeable, produces two different documents.
 
 This design resolves that follow-up. Spanner's behaviour matches the shape of the
 API, so **Cosmos DB and DynamoDB move to Spanner's semantics.**
+
+**The payload parameter is renamed on `update()`.** It becomes `fields`:
+
+```java
+void create(..., Map<String, Object> document, ...);  // whole document
+void upsert(..., Map<String, Object> document, ...);  // whole document
+void update(..., Map<String, Object> fields,    ...);  // named fields only
+```
+
+`document` is the one part of today's signature that argues for full
+replacement, so leaving it would make partial update *more* confusing, not less.
+`create()` and `upsert()` keep it because they genuinely take a whole document.
+Parameter names bind neither the source nor the binary contract for callers — the
+build sets no `-parameters` flag — so this costs callers nothing. It touches six
+signatures: `MulticloudDbClient` (abstract plus default overload),
+`MulticloudDbProviderClient`, `DefaultMulticloudDbClient`, and the three provider
+implementations. Type-level separation is considered and deferred in 11.5.
 
 ## 4. Portable contract
 
@@ -644,6 +688,34 @@ adopted, check its interaction with the `If-Match` path.
 
 **Recommendation: yes, scoped to `update()`**, once 11.1 is settled. A direct
 dividend of the set/replace-only decision.
+
+### 11.5 Type vocabulary for document payloads
+
+**The question.** Should payloads be a named type rather than `Map<String, Object>`?
+
+**Why it comes up here.** This design gives `update()` a payload whose meaning
+differs from `create()` and `upsert()` — fields to merge rather than a whole
+document — while all three keep the same type. The section 3 rename separates
+them by parameter name, not by type.
+
+**Why a type would not have prevented the bug in section 2.1.** A field set and a
+whole document have identical shape: both are string-keyed maps. No type can tell
+the compiler whether a caller supplied every field or only some. The gain would be
+readability, not safety.
+
+**The real inconsistency it would address.** Writes and reads already disagree —
+writes take `Map<String, Object>`, while `DocumentResult.document()` returns a
+Jackson `ObjectNode`. Read-modify-write, the most common pattern, makes callers
+convert between the two. Any type work should settle both sides, not just writes.
+
+**Precedent.** The MongoDB Java driver's `org.bson.Document` implements
+`Map<String, Object>` — a named payload that does not break `Map` call sites. AWS
+SDK v2 keeps a raw `Map<String, AttributeValue>`.
+
+**Recommendation: defer.** Payload types break every call site, span
+`create`/`update`/`upsert`/`read` and all three providers plus conformance, and
+contradict this design's "no new API" boundary. Track separately; the section 3
+rename already captures the cheap part of the benefit.
 
 ## 12. References
 
