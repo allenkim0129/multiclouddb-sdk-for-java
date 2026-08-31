@@ -22,7 +22,6 @@ Select a provider and supply its connection and auth properties.
     multiclouddb.provider=cosmos
     multiclouddb.connection.endpoint=https://localhost:8081
     multiclouddb.connection.key=C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw==
-    multiclouddb.connection.connectionMode=gateway
     ```
 
 === "Azure Cloud (key-based)"
@@ -32,7 +31,6 @@ Select a provider and supply its connection and auth properties.
     multiclouddb.provider=cosmos
     multiclouddb.connection.endpoint=https://your-account.documents.azure.com:443/
     multiclouddb.connection.key=your-master-key
-    multiclouddb.connection.connectionMode=direct
     ```
 
 === "Azure Identity (Entra ID) - Recommended"
@@ -48,14 +46,12 @@ Select a provider and supply its connection and auth properties.
 |-----|-------------|
 | `multiclouddb.connection.endpoint` | Cosmos DB account URI or emulator URI |
 | `multiclouddb.connection.key` | Master key (omit for Azure Identity auth) |
-| `multiclouddb.connection.connectionMode` | `gateway` (default) or `direct` |
-| `multiclouddb.connection.gatewayMaxConnectionPoolSize` | Gateway HTTP/1.1 maximum connection-pool size (optional, positive integer) |
-| `multiclouddb.connection.gatewayHttp2Enabled` | Enables Gateway HTTP/2 (`true`/`false`; **default `true`**, Gateway mode only) |
+| `multiclouddb.connection.tenantId` | Azure AD tenant ID (optional, for Entra ID) |
+| `multiclouddb.connection.thinClientEnabled` | Gateway V2 thin-client override: unset for automatic probe/fallback (default), `false` to opt out, or `true` to force opt-in |
+| `multiclouddb.connection.gatewayMaxConnectionPoolSize` | Gateway HTTP/1.1 fallback maximum connection-pool size (optional, positive integer) |
 | `multiclouddb.connection.gatewayHttp2MinConnectionPoolSize` | Gateway HTTP/2 minimum connection-pool size (optional) |
 | `multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize` | Gateway HTTP/2 maximum connection-pool size (optional) |
 | `multiclouddb.connection.gatewayHttp2MaxConcurrentStreams` | Maximum concurrent HTTP/2 streams per connection (optional) |
-| `multiclouddb.connection.tenantId` | Azure AD tenant ID (optional, for Entra ID) |
-| `multiclouddb.connection.thinClientEnabled` | Routes data-plane traffic through Gateway V2 / thin client (`true`/`false`; default `false`) |
 | `multiclouddb.connection.contentResponseOnWriteEnabled` | Return the document body in write responses (`true`/`false`; default `true`) |
 | `multiclouddb.connection.consistencyLevel` | Read consistency override (optional — see below) |
 
@@ -73,48 +69,26 @@ Select a provider and supply its connection and auth properties.
 - **Master key** - when `connection.key` is provided, uses shared-key authentication.
   Suitable for local emulator development only.
 
-### Connection Modes
+### Transport
 
-- **Gateway** (default) - HTTP-based routing through the Cosmos DB gateway. Required for the emulator.
-- **Direct** - TCP-based direct connectivity. Better performance for production workloads.
+The provider always uses **Gateway mode over HTTP/2**. Direct mode and HTTP/2
+enablement are intentionally not configurable.
 
-Gateway transport settings are rejected when `connectionMode=direct` rather than silently ignored.
+Gateway V2 thin-client proxy routing is eligible by default. With
+`thinClientEnabled` unset, the Azure Cosmos DB SDK probes Gateway V2
+connectivity and uses it when available; otherwise it automatically falls back
+to Gateway V1. Set `multiclouddb.connection.thinClientEnabled=false` for a hard
+opt-out, or `true` for a hard opt-in that bypasses the probe.
 
-**HTTP/2 is enabled by default** in Gateway mode. It multiplexes concurrent requests over one
-connection, removing the head-of-line blocking and per-request connection acquisition of
-HTTP/1.1. To force HTTP/1.1 — for example for a transport-equivalent benchmark against
-DynamoDB's HTTP/1.1 synchronous client — set it explicitly:
+The Azure SDK implements this switch as a JVM-wide setting. An existing
+`COSMOS.THINCLIENT_ENABLED` system property or `COSMOS_THINCLIENT_ENABLED`
+environment variable takes precedence over the connection property. When
+multiple Cosmos clients run in one JVM, configure the same value for all of
+them.
 
-```properties
-multiclouddb.connection.connectionMode=gateway
-multiclouddb.connection.gatewayMaxConnectionPoolSize=64
-multiclouddb.connection.gatewayHttp2Enabled=false
-```
-
-### Gateway V2 (thin client)
-
-Gateway V2, also called the *thin client*, is a leaner data-plane proxy than the classic compute
-gateway (Gateway V1). It forwards requests over HTTP/2 with far less per-request work, cutting
-latency without moving to Direct/RNTBD mode.
-
-```properties
-multiclouddb.connection.connectionMode=gateway
-multiclouddb.connection.gatewayHttp2Enabled=true
-multiclouddb.connection.thinClientEnabled=true
-```
-
-Requires Gateway mode and HTTP/2; both are validated and rejected rather than silently ignored.
-
-!!! warning "Opt-in, and JVM-wide"
-
-    `thinClientEnabled` defaults to `false`. The Cosmos Java SDK exposes no per-client builder
-    API for Gateway V2 — it is selected by the JVM-wide `COSMOS.THINCLIENT_ENABLED` system
-    property, so enabling it affects **every** Cosmos client in the process. An operator-supplied
-    `-DCOSMOS.THINCLIENT_ENABLED` always wins and is never overwritten.
-
-    Automatic fallback to Gateway V1 behind an HTTP/2 connectivity probe is **not** in
-    azure-cosmos 4.81.0 (it lands in 4.82.0), so an account or region without thin-client
-    support has no safety net. Verify the path before enabling it in production.
+The optional pool settings tune the corresponding Azure SDK connection pools.
+When omitted, the SDK defaults apply. HTTP/2 itself remains enabled regardless
+of these sizing values.
 
 ### Write Response Payload
 
@@ -304,7 +278,6 @@ MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
     .provider(ProviderId.COSMOS)
     .connection("endpoint", "https://localhost:8081")
     .connection("key", "your-key")
-    .connection("connectionMode", "gateway")
     .build();
 
 MulticloudDbClient client = MulticloudDbClientFactory.create(config);

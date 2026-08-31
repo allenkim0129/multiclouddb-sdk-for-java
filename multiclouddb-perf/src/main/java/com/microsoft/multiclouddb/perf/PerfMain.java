@@ -593,27 +593,21 @@ public final class PerfMain {
 
     static String transportProfile(String providerId, ConfigLoader.AppConfig cfg) {
         if ("cosmos".equals(providerId)) {
-            String mode = cfg.get("multiclouddb.connection.connectionMode", "gateway");
-            if ("direct".equalsIgnoreCase(mode)) {
-                return "direct (RNTBD)";
-            }
-            // Defaults mirror the Cosmos provider: HTTP/2 is on unless explicitly disabled.
-            // A stale "false" default here would label an HTTP/2 run as HTTP/1.1 and let the
-            // aggregation guard merge incomparable runs.
-            boolean http2 = Boolean.parseBoolean(
-                    cfg.get("multiclouddb.connection.gatewayHttp2Enabled", "true"));
-            boolean thinClient = Boolean.parseBoolean(
-                    cfg.get("multiclouddb.connection.thinClientEnabled", "false"));
-            if (http2) {
-                return (thinClient ? "gateway-v2/thin-client HTTP/2 pool=" : "gateway HTTP/2 pool=")
-                        + valueOrDefault(cfg, "multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize")
-                        + " minPool="
-                        + valueOrDefault(cfg, "multiclouddb.connection.gatewayHttp2MinConnectionPoolSize")
-                        + " streams="
-                        + valueOrDefault(cfg, "multiclouddb.connection.gatewayHttp2MaxConcurrentStreams");
-            }
-            return "gateway HTTP/1.1 pool="
-                    + valueOrDefault(cfg, "multiclouddb.connection.gatewayMaxConnectionPoolSize");
+            String thinClient = cfg.get(
+                    "multiclouddb.connection.thinClientEnabled", "").trim().toLowerCase(Locale.ROOT);
+            String routing = switch (thinClient) {
+                case "" -> "gateway HTTP/2 (Gateway V2 auto-probe)";
+                case "true" -> "gateway-v2/thin-client HTTP/2 (forced)";
+                case "false" -> "gateway HTTP/2 (Gateway V2 disabled)";
+                default -> throw new IllegalArgumentException(
+                        "multiclouddb.connection.thinClientEnabled must be true or false");
+            };
+            return routing + " pool="
+                    + valueOrDefault(cfg, "multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize")
+                    + " minPool="
+                    + valueOrDefault(cfg, "multiclouddb.connection.gatewayHttp2MinConnectionPoolSize")
+                    + " streams="
+                    + valueOrDefault(cfg, "multiclouddb.connection.gatewayHttp2MaxConcurrentStreams");
         }
         if ("dynamo".equals(providerId)) {
             return "Apache HTTP/1.1 pool="

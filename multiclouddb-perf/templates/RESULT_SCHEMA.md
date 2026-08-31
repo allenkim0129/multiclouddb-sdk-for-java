@@ -9,7 +9,7 @@ One row per measured operation. Warmup iterations are never written.
 | `provider` | enum | `cosmos` \| `dynamo` \| `spanner`. |
 | `region` | string | Probed/config region recorded for the provider resource. |
 | `comparison_region` | string | Colocation label used for fairness checks/reporting. |
-| `transport_profile` | string | Effective protocol and pool profile, e.g. `gateway HTTP/1.1 pool=64`. |
+| `transport_profile` | string | Configured routing and pool profile, e.g. `gateway HTTP/2 (Gateway V2 auto-probe) pool=64 minPool=8 streams=32`. |
 | `endpoint_rtt_ms` | float | Median TCP handshake time to the provider endpoint, probed once per provider at run start. Blank when the probe failed. Reports subtract it to derive RTT-normalised service time. |
 | `host_label` | string | Client host descriptor. |
 | `jdk` | string | JDK vendor+version. |

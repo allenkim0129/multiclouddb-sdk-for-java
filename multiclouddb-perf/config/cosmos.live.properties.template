@@ -2,35 +2,29 @@
 multiclouddb.provider=cosmos
 multiclouddb.connection.endpoint=https://<your-account>.documents.azure.com:443/
 multiclouddb.connection.key=<primary-key>
-multiclouddb.connection.connectionMode=gateway
 
-# ── Cosmos perf transport: Gateway V2 (thin client) over HTTP/2 ───────────
-# Cosmos DB is optimized for HTTP/2, and Gateway V2 requires it: the data plane is
-# routed through the lean thin-client proxy instead of the compute gateway. This is
-# the fastest non-Direct path and the default for perf runs.
+# ── Cosmos perf transport: Gateway over HTTP/2 ────────────────────────────
+# Gateway mode and HTTP/2 are fixed provider defaults. Cosmos SDK 4.82 probes
+# Gateway V2 thin-client proxy connectivity and falls back to Gateway V1 when needed.
+# Leave thinClientEnabled unset for that safe default. Set true only to force Gateway V2
+# after verifying support, or false to opt out.
 #
 # Transport-protocol parity with DynamoDB is deliberately NOT a goal. The AWS
 # synchronous client is HTTP/1.1-only, so holding the protocol constant would mean
 # handicapping Cosmos onto a path the service no longer optimizes for. Each provider
 # runs its own recommended data path instead.
-multiclouddb.connection.gatewayHttp2Enabled=true
-multiclouddb.connection.thinClientEnabled=true
 multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize=64
 multiclouddb.connection.gatewayHttp2MinConnectionPoolSize=8
 multiclouddb.connection.gatewayHttp2MaxConcurrentStreams=32
-# HTTP/1.1 gateway pool. The HTTP/2 settings above govern the active transport; this
-# keeps the pool size equal if you switch to the Gateway V1 profile below.
+# Gateway V1 fallback pool.
 multiclouddb.connection.gatewayMaxConnectionPoolSize=64
 # Dynamo's PutItem returns no item; suppress the Cosmos write payload to match.
 multiclouddb.connection.contentResponseOnWriteEnabled=false
 
-# ── Diagnostic profile: Gateway V1 over HTTP/1.1 ────────────────────────
-# Not the comparison baseline. Use only to attribute a Cosmos change to the transport
-# rather than the service. HTTP/2 is on by default in the provider, so opting out takes
-# both keys explicitly; omitting them yields HTTP/2, not HTTP/1.1.
-#   multiclouddb.connection.gatewayHttp2Enabled=false
+# ── Diagnostic profile: Gateway V2 disabled ───────────────────────────────
+# Not the comparison baseline. Use only to isolate Gateway V2 routing while retaining
+# the provider's fixed Gateway HTTP/2 transport.
 #   multiclouddb.connection.thinClientEnabled=false
-# Gateway V2 is rejected without HTTP/2, so it never silently degrades to Gateway V1.
 # Reports record the effective transport_profile and aggregation refuses to mix
 # profiles for the same provider, so give such a run its own --title.
 

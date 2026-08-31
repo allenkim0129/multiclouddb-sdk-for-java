@@ -51,13 +51,12 @@ class PerfMainValidationTest {
     }
 
     @Test
-    void cosmosTransportProfileDefaultsToHttp2AndTagsGatewayV2() {
-        // The provider enables HTTP/2 by default, so an unset key must not be labelled
-        // HTTP/1.1 — Statistics.aggregate would otherwise merge two incomparable runs.
-        assertEquals("gateway HTTP/2 pool=sdk-default minPool=sdk-default streams=sdk-default",
+    void cosmosTransportProfileRecordsGatewayV2Selection() {
+        assertEquals("gateway HTTP/2 (Gateway V2 auto-probe) "
+                        + "pool=sdk-default minPool=sdk-default streams=sdk-default",
                 PerfMain.transportProfile("cosmos", cfg()));
 
-        assertEquals("gateway-v2/thin-client HTTP/2 pool=64 minPool=8 streams=32",
+        assertEquals("gateway-v2/thin-client HTTP/2 (forced) pool=64 minPool=8 streams=32",
                 PerfMain.transportProfile("cosmos", cfg(
                         "multiclouddb.connection.thinClientEnabled", "true",
                         "multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize", "64",
@@ -66,19 +65,20 @@ class PerfMainValidationTest {
     }
 
     @Test
-    void cosmosTransportProfileDistinguishesParityAndDirectProfiles() {
-        assertEquals("gateway HTTP/1.1 pool=64",
+    void transportProfilesDistinguishGatewayV2OptOutAndDynamo() {
+        assertEquals("gateway HTTP/2 (Gateway V2 disabled) "
+                        + "pool=64 minPool=sdk-default streams=sdk-default",
                 PerfMain.transportProfile("cosmos", cfg(
-                        "multiclouddb.connection.gatewayHttp2Enabled", "false",
-                        "multiclouddb.connection.gatewayMaxConnectionPoolSize", "64")));
-
-        assertEquals("direct (RNTBD)",
-                PerfMain.transportProfile("cosmos", cfg(
-                        "multiclouddb.connection.connectionMode", "direct")));
+                        "multiclouddb.connection.thinClientEnabled", "false",
+                        "multiclouddb.connection.gatewayHttp2MaxConnectionPoolSize", "64")));
 
         assertEquals("Apache HTTP/1.1 pool=64",
                 PerfMain.transportProfile("dynamo", cfg(
                         "multiclouddb.connection.maxConnections", "64")));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> PerfMain.transportProfile("cosmos", cfg(
+                        "multiclouddb.connection.thinClientEnabled", "sometimes")));
     }
 
     private static ConfigLoader.AppConfig cfg(String... keyValuePairs) {

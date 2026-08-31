@@ -19,7 +19,8 @@ class HtmlReportTest {
         StatRow cosmos = stat("cosmos", 90.0, 82.0, 20.0);
         StatRow dynamo = stat("dynamo", 100.0, 80.0, 75.0);
         List<EnvRow> env = List.of(
-                new EnvRow("cosmos", "westus2", "west", "gateway HTTP/1.1 pool=64",
+                new EnvRow("cosmos", "westus2", "west",
+                        "gateway HTTP/2 (Gateway V2 auto-probe) pool=64 minPool=8 streams=32",
                         64.0, "host", "jdk", "manual", "4000 RU/s", "dev"),
                 new EnvRow("dynamo", "us-west-2", "west", "Apache HTTP/1.1 pool=64",
                         38.0, "host", "jdk", "PROVISIONED",
