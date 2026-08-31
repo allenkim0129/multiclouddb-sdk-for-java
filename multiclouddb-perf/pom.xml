@@ -23,9 +23,10 @@
         or Google Cloud Spanner by switching a single properties file, and appends
         one CSV row per measured operation for downstream aggregation.
 
-        This module is intentionally excluded from the default CI build path:
-        it is only ever built/run from the perf/* branch, its runner refuses to
-        execute in CI, and it is never merged to main. See perf/README.md.
+        The module is part of the reactor and can be built in any environment.
+        Its live-account runner refuses to execute in CI, preventing automated
+        workflows from changing provisioned capacity or incurring benchmark
+        traffic. See multiclouddb-perf/README.md.
     </description>
 
     <dependencies>
