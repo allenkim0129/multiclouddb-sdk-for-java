@@ -20,6 +20,31 @@ also easy to treat as one setting even though they are separate layers:
 The product decision is to standardize the first two and make the third safe by
 default with an operational opt-out.
 
+## Change at a Glance
+
+```mermaid
+flowchart LR
+    subgraph Before["Before"]
+        direction TB
+        BConfig["Connection configuration"]
+        BConfig --> BMode{"Choose connection mode"}
+        BMode -->|Gateway| BGateway["Gateway path<br/>SDK transport defaults"]
+        BMode -->|Direct| BDirect["Direct / RNTBD path"]
+    end
+
+    subgraph After["After PR 101"]
+        direction TB
+        AConfig["Connection configuration"]
+        AConfig --> AProvider["Cosmos provider"]
+        AProvider --> AGateway["Gateway mode<br/>fixed"]
+        AGateway --> AHttp2["HTTP/2<br/>fixed on"]
+        AHttp2 --> AThin["Gateway V2 thin client<br/>AUTO by default"]
+    end
+```
+
+`thinClientEnabled` now controls only the final Gateway V2 routing decision.
+It cannot select Direct mode or disable HTTP/2.
+
 ## Goals
 
 - Construct every Cosmos client in Gateway mode.
@@ -52,36 +77,101 @@ default with an operational opt-out.
 | Removed keys | Reject `connectionMode` and `gatewayHttp2Enabled` |
 | Portable API | No change |
 
+## What "Thin Client" Means
+
+The thin client is **not** another client library, application-side process,
+sidecar, or proxy that users install. It is the Azure Cosmos SDK's name for
+using the Gateway V2 thin-client proxy path for eligible data-plane requests.
+Application code, credentials, endpoints, and Multicloud DB operations remain
+the same.
+
+```mermaid
+flowchart LR
+    App["Application<br/>same Multicloud DB calls"]
+    Provider["Cosmos provider"]
+    SDK["Azure Cosmos SDK 4.82.0<br/>Gateway + HTTP/2"]
+    V1["Cosmos Gateway V1<br/>metadata and fallback"]
+    V2["Cosmos Gateway V2<br/>eligible data-plane requests"]
+    Data["Cosmos DB data"]
+
+    App --> Provider
+    Provider --> SDK
+    SDK -->|"opt-out or AUTO fallback"| V1
+    SDK -->|"AUTO success or forced on"| V2
+    V1 --> Data
+    V2 --> Data
+```
+
+Both branches remain Gateway-mode traffic. The setting changes which Gateway
+implementation the Azure SDK uses; it does not change the portable API or
+document/query behavior. Gateway V2 handles eligible data-plane requests;
+metadata requests remain on Gateway V1 under the native SDK.
+
 ## Construction Flow
 
-```text
-MulticloudDbClientConfig
-        |
-        v
-validate endpoint and removed keys
-        |
-        v
-parse thinClientEnabled strictly
-        |
-        v
-preserve operator SDK override, otherwise map explicit value
-        |
-        v
-CosmosClientBuilder
-  + endpoint / credential
-  + GatewayConnectionConfig
-      + Http2ConnectionConfig(enabled=true)
-  + optional consistency
-  + user agent
-        |
-        v
-buildClient()
+```mermaid
+flowchart TD
+    Config["MulticloudDbClientConfig"]
+    Validate["Validate endpoint and reject removed keys"]
+    Parse["Parse thinClientEnabled strictly"]
+    Resolve["Preserve operator override<br/>or publish explicit preference"]
+    Builder["Configure CosmosClientBuilder<br/>endpoint and credentials<br/>Gateway mode<br/>HTTP/2 enabled"]
+    Build["Build Cosmos client"]
+
+    Config --> Validate
+    Validate --> Parse
+    Parse --> Resolve
+    Resolve --> Builder
+    Builder --> Build
 ```
 
 Validation precedes native client construction so malformed or stale
 configuration cannot trigger credential work or network I/O.
 
 ## Gateway V2 Selection
+
+```mermaid
+flowchart TD
+    Start["Gateway mode and HTTP/2 are already fixed"]
+    System{"Non-empty SDK<br/>system property?"}
+    Environment{"Non-empty SDK<br/>environment variable?"}
+    Connection{"Connection property<br/>thinClientEnabled?"}
+    Publish["Validate and publish<br/>one JVM-wide SDK setting"]
+    Value{"Resolved Boolean value"}
+    Auto["AUTO<br/>leave SDK setting unset"]
+    Probe["Azure SDK probes Gateway V2"]
+    V2["Route eligible data-plane requests<br/>through Gateway V2"]
+    V1["Route through Gateway V1"]
+    Force["Force Gateway V2<br/>skip probe"]
+    Off["Disable Gateway V2<br/>skip probe"]
+    Error["Fail client construction"]
+
+    Start --> System
+    System -->|Yes| Value
+    System -->|No| Environment
+    Environment -->|Yes| Value
+    Environment -->|No| Connection
+    Connection -->|true or false| Publish
+    Connection -->|unset| Auto
+    Connection -->|invalid| Error
+    Publish --> Value
+    Value -->|true| Force
+    Value -->|false| Off
+    Force --> V2
+    Off --> V1
+    Auto --> Probe
+    Probe -->|available| V2
+    Probe -->|unavailable| V1
+```
+
+| Effective preference | V2 probe | Eligible data-plane routing |
+|---|---|---|
+| unset / `AUTO` | yes | Gateway V2 when available; otherwise Gateway V1 |
+| `false` | no | Gateway V1; Gateway V2 is disabled |
+| `true` | no | Gateway V2 is forced; native connectivity failures remain visible |
+
+> **Default does not mean `true`.** Leaving the value unset activates SDK
+> 4.82.0's safe AUTO behavior. Explicit `true` bypasses the probe and fallback.
 
 ### Default
 
@@ -115,6 +205,11 @@ environment variable, not `CosmosClientBuilder`. Therefore:
 This global behavior is documented as a provider constraint. Process isolation
 is required if an application needs different Gateway V2 policies
 simultaneously.
+
+The system property and environment variable are native Azure SDK controls and
+are expected to contain `true` or `false`. The wrapper strictly validates only
+its `thinClientEnabled` connection property; native-setting parsing remains
+owned by the SDK.
 
 ## Query-plan Routing
 
