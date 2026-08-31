@@ -14,6 +14,11 @@ The provider always constructs a Gateway client with HTTP/2 enabled. Azure
 Cosmos SDK 4.82.0 then probes Gateway V2 thin-client proxy connectivity. It
 uses Gateway V2 after a successful probe and otherwise remains on Gateway V1.
 
+> **Thin client requires nothing extra to install or deploy.** It is an
+> Azure SDK routing path inside Gateway mode. See the
+> [request-path diagram](design.md#what-thin-client-means) and
+> [selection flow](design.md#gateway-v2-selection).
+
 ## Opt out of Gateway V2
 
 ```properties
