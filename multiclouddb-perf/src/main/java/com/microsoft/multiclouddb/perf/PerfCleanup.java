@@ -42,7 +42,7 @@ public final class PerfCleanup {
         boolean dryRun = Boolean.parseBoolean(System.getProperty("perf.dryRun", "false"));
         int pageSize   = intProp("perf.pageSize", 1000);
 
-        ConfigLoader.AppConfig cfg = ConfigLoader.load("cosmos.properties");
+        ConfigLoader.AppConfig cfg = ConfigLoader.load(configPath());
         String provider   = cfg.sdk().provider().id();
         String database   = cfg.get("multiclouddb.database", "perfdb");
         String collection = cfg.get("multiclouddb.collection", "perf");
@@ -95,6 +95,10 @@ public final class PerfCleanup {
                     "== done == scanned=%d %s=%d failed=%d%n",
                     scanned, dryRun ? "would-delete" : "deleted", deleted, failed);
         }
+    }
+
+    static String configPath() {
+        return System.getProperty("multiclouddb.config", "cosmos.properties");
     }
 
     private static int intProp(String key, int def) {

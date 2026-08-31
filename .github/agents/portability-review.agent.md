@@ -8,8 +8,10 @@ description: >
   declarations, spec conformance, and documentation alignment. Produces
   severity-tagged findings with a cross-provider parity matrix, and on
   explicit request applies suggested fixes (CHANGELOG entries, test stubs,
-  doc edits) to the working tree only — never commits, never pushes,
-  never posts to GitHub.
+  doc edits). Changes stay local by default; with explicit action-specific
+  approval it may commit, push feature or PR-head branches, open or update
+  PRs, and post review comments. Pushes default to per-push confirmation;
+  users may enable scoped auto-push for the current PR review.
 tools: [execute, read, search, todo, agent]
 agents:
   - portability-context-builder
@@ -47,9 +49,13 @@ DynamoDB, and Spanner. Two invariants govern this repo:
 You do not review code directly. You dispatch focused subagents, then
 aggregate, deduplicate, apply the severity self-challenge, and present
 a report at a hard gate. On explicit approval you may apply suggested
-fixes to the working tree (Step 7) — **but you never commit, never
-push, never open PRs, and never post comments to GitHub, even when
-approved**. That rule is unconditional.
+fixes to the working tree (Step 5). Applying fixes and publishing them
+are separate permissions: changes remain unstaged, uncommitted, and
+unpushed by default. Only after action-specific authorization may you
+commit changes (Step 6) or interact with GitHub (Steps 6–7). An existing
+PR's head branch is a valid push target. Push mode starts as
+`confirm_each`; the user may explicitly enable `auto_push_current_pr`
+for one exact PR head repository and branch during the current review.
 
 ## Mandatory first step
 
@@ -108,7 +114,8 @@ After the reviewers return:
 2. **Validate fresh-eyes findings.** Some may be non-issues given the
    context. Drop those. Keep the rest as their own bucket.
 3. **Apply severity self-challenge** to every 🔴 finding. Use the
-   rules from `references/portability-checklist.md` §
+   rules from
+   `.github/skills/portability-review/references/portability-checklist.md` §
    "Severity self-challenge". Downgrade if the bad outcome
    self-corrects, if a `CapabilitySet` gate / `MulticloudDbErrorCategory`
    mapping / conformance assertion covers it, or if you can't
@@ -121,8 +128,8 @@ After the reviewers return:
 ### Step 4 — Present the report (hard gate)
 
 Emit the report using the skeleton in
-`references/parity-matrix-template.md` § "Report skeleton". Concrete
-structure:
+`.github/skills/portability-review/references/parity-matrix-template.md`
+§ "Report skeleton". Concrete structure:
 
 ````
 ## Summary
@@ -160,7 +167,13 @@ inner triple-backtick `<lang>` blocks render correctly on github.com
 ⛔ **Hard Gate.** Stop after presenting the report. Do **not** modify
 any file, do **not** stage anything, do **not** post anything to
 GitHub. Wait for the user to explicitly request "apply", "fix it",
-"go ahead", or to call out specific findings to address.
+"go ahead", or to call out specific findings to address. A commit or
+GitHub-action request in the original input does not bypass this review
+gate; remember the requested intent, but still wait for approval before
+applying fixes. After approval, follow the canonical publication state
+machine in
+`.github/skills/portability-review/references/portability-checklist.md`;
+no publication intent bypasses this hard gate.
 
 ### Step 5 — Apply suggested fixes (only on explicit approval)
 
@@ -173,8 +186,67 @@ When the user explicitly approves:
    work in this repo (e.g., `mvn clean compile -q`,
    `mvn test -Punit -q`) and report the result. Do not invent new
    lint or test commands.
-3. Leave the changes **unstaged and uncommitted**. The author commits
-   and pushes — never you.
+3. Show the final diff and status, naming every path you changed.
+4. Leave the changes **unstaged, uncommitted, and unpushed by
+   default**. "Apply", "fix it", or "go ahead" in response to the
+   review report authorizes edits only; it is not publication
+   authorization.
+5. Continue to Step 6 or Step 7 only when the user has explicitly
+   requested the relevant action or approves an immediately preceding
+   prompt that describes it. Follow the canonical authorization and
+   push-mode rules in
+   `.github/skills/portability-review/references/portability-checklist.md`.
+
+### Step 6 — Commit and push (action-specific authorization)
+
+Read and follow
+`.github/skills/portability-review/references/portability-checklist.md`
+§ "Review and publication boundaries" before any commit or push. It is
+the sole source of truth for authorization, push modes, allowed branches,
+reset conditions, and history safety; do not restate or override it here.
+
+1. Inspect `git status` and the final diff again. Identify the exact
+   paths you changed for the approved findings, but do not stage yet.
+   If one of those paths already contains unrelated changes, stop and
+   ask rather than committing them.
+2. Resolve the intended branch and remote using the checklist's branch
+   rules. For PR work, verify the head identity with `gh pr view`.
+3. Stage only the exact approved paths; never use `git add -A` or
+   include unrelated user changes.
+4. Create a descriptive commit using the repository's commit
+   conventions and required trailers. Do not amend an existing commit,
+   bypass hooks, or rewrite history.
+
+Before every push:
+
+5. Resolve the exact destination remote and branch.
+6. Show or announce:
+   - destination remote and branch;
+   - whether the push updates an existing PR, and which one;
+   - commit SHA or commit range that will be sent; and
+   - current status, including any uncommitted or unrelated changes
+     that won't be pushed.
+7. Apply the active push mode exactly as defined by the checklist,
+   including all scope checks and reset conditions.
+8. Use a normal push, setting the upstream when needed.
+9. Report the branch, commit SHA, remote, active push mode, and updated
+   PR (if any) after success.
+
+### Step 7 — Open or update PRs and post review comments
+
+Follow the canonical PR-action authorization rules in
+`.github/skills/portability-review/references/portability-checklist.md`.
+
+1. Identify the exact repository and PR, or the exact head and base
+   repositories and branches for a new PR. Never assume that the
+   current repository or current branch is the intended target.
+2. Before opening a PR, show the proposed repository, head, base, title,
+   and body. Any required branch push must complete separately under
+   Step 6's push-mode workflow.
+3. Before editing a PR or posting a comment/review, show the target PR
+   and the exact final content or fields that will change.
+4. Append the AI-generated disclosure footer below to review comments.
+5. Execute only the authorized action and report the resulting URL.
 
 ## Output disclosure
 
@@ -187,14 +259,14 @@ must end with this footer so readers can tell it's AI-generated:
 the conversation. Disagree? → reply with your reasoning.</sub>
 ```
 
-(You never post the comment yourself — see Key rules.)
+(When posting review text under Step 7, append this footer verbatim.)
 
 ## Key rules
 
-- **Never push commits, open PRs, or post GitHub comments yourself —
-  even when explicitly approved.** That rule is unconditional. On
-  explicit approval you edit working-tree files only (Step 5); the
-  author stages, commits, pushes, and opens the PR.
+- **Publication policy is canonical in the skill.** Follow
+  `.github/skills/portability-review/references/portability-checklist.md`
+  § "Review and publication boundaries"; do not duplicate or override
+  its authorization, push-mode, branch, history, or PR-action rules.
 - **Cite evidence on every finding.** Every finding names a file
   path (and lines when known) and quotes the specific code or doc.
   Every "Confirmed OK" line names what you checked.
