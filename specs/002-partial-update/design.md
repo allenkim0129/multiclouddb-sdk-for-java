@@ -497,6 +497,15 @@ the extension supported through the shared 399 KB limit. Portable callers that
 must issue every otherwise-valid field shape through that limit should inspect
 the extension capability first or handle `UNSUPPORTED_CAPABILITY`.
 
+**Concrete provider limits.** Cosmos allows at most 10 patch operations in one
+`patchItem` call. Wider updates use a transactional batch containing at most 100
+patch requests, with a 2 MB serialized request limit and a five-second service
+execution limit. Each patch request carries at most 10 set operations, so the
+operation-count ceiling is 1,000 fields without TTL or 999 with TTL; the 2 MB
+limit may bind first. DynamoDB limits the encoded `UpdateExpression` to 4 KB,
+which may bind before the shared 399 KB document payload limit. Spanner adds no
+smaller partial-update envelope beyond the shared 399 KB limit in this design.
+
 On Cosmos, an over-envelope request fails before provider I/O with reason
 `cosmos_transactional_batch_limit` and structured `providerDetails` containing
 actual/maximum operation counts and bytes where available. On DynamoDB, an
@@ -750,9 +759,10 @@ request, one ACID transaction, and no read.
 exceeds the 2 MB serialised batch limit, Cosmos does not attempt an adapter-side
 merge. One hundred chunks carry at most 1,000 set operations only in the ideal
 operation-count case; TTL consumes one set operation and serialised size may bind
-first. The service's five-second execution limit is an operational timeout
-handled by whole-batch retry in section 11.4, not a reason to split the
-transaction.
+first. The service's five-second execution limit is an operational timeout, not
+an unsupported capability. The provider relies on the Cosmos SDK's retry
+behaviour and otherwise returns the normalized timeout error to the caller; it
+never splits the transaction.
 
 **Why it matters.** The existing shared 399 KB payload limit makes these cases
 unusual but not impossible — a map can contain more than 1,000 small fields. The
