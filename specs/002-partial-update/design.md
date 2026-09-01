@@ -6,7 +6,7 @@
 | Scope | `MulticloudDbClient.update(...)` on Cosmos DB and DynamoDB |
 | Deferred | Spanner — already conformant, see section 5.3 |
 | Out of scope | The portable PATCH API (`patch()`, `PatchOperation`, `REMOVE` / `INCREMENT`) — separate surface on its own branch |
-| Updated | 2026-08-28 |
+| Updated | 2026-09-01 |
 
 > **Terminology.** Three layers are distinguished throughout, because the
 > difference between them carries real weight in this design:
@@ -27,9 +27,12 @@
 > **Note on the Cosmos partial-update APIs.** Section 5.1 uses
 > `CosmosContainer.patchItem(...)` and `executeCosmosBatch(...)` as *internal
 > implementation details* of `update()`. Callers still call `update()`; they gain
-> no patch or batch surface, no new capability, and no new error category. The
-> distinction is between vendor SDK calls made by the provider and the product
-> surface exposed by this SDK.
+> no patch or batch surface. Ordinary partial update remains universal and
+> ungated. `PARTIAL_UPDATE_EXTENDED_PAYLOAD` describes whether a provider
+> guarantees every otherwise-valid field shape through the shared 399 KB limit,
+> including shapes beyond its native atomic partial-write envelope (section 6).
+> The distinction is between vendor SDK calls made by the provider and the
+> product surface exposed by this SDK.
 
 ## 1. Decision
 
@@ -43,12 +46,18 @@ client.update(address, key, Map.of("status", "SHIPPED"), options);
 ```
 
 Entries present in `fields` are written; fields absent from it are preserved. No
-new API, no new operation vocabulary, no new capability.
+new API or operation vocabulary is introduced. Normal partial update is a
+universal, ungated capability within each provider's native atomic partial-write
+envelope. A separate `PARTIAL_UPDATE_EXTENDED_PAYLOAD` capability describes
+whether a provider guarantees every otherwise-valid partial update through the
+SDK's shared 399 KB payload limit regardless of field shape. An unsupported
+declaration does not gate ordinary requests that fit the provider's envelope.
 
 Each provider implements this with a **native single-request partial write**.
 Cosmos uses one direct patch or one transactional batch without reading the
-item. Read-merge-replace remains only a last-resort path beyond the transactional
-batch envelope (section 11.1), not the normal design.
+item. If the prospective Cosmos transactional batch exceeds its native envelope,
+the provider fails locally with `UNSUPPORTED_CAPABILITY`; it does not perform a
+read/merge/write path (section 11.1).
 
 **Parameters.** No parameter is added by this design; one is renamed.
 
@@ -116,7 +125,10 @@ ordering-dependent behaviour. The operations that would extend the vocabulary �
 removal and arithmetic — are exactly the ones that diverge, in engine semantics
 and in replay-safety (section 7). Holding the floor here is what lets partial
 update ship as universal behaviour with no `CapabilitySet` gate and no
-provider-specific error categories.
+provider-specific error categories at the portable baseline. Requests beyond a
+provider's native atomic partial-write envelope are a separate extension boundary:
+`PARTIAL_UPDATE_EXTENDED_PAYLOAD` is declared through `CapabilitySet`, while the
+set/replace semantics themselves remain universal.
 
 ### 2.3 Conditional writes belong to a different feature
 
@@ -223,9 +235,10 @@ rather than several partially:
 **Behaviour is portable; mechanism and cost need not be.** Reaching an identical
 result through different native instructions is the entire job of a provider
 adapter. Request count and cost may legitimately differ and are documented in
-`docs/compatibility.md` rather than equalised (section 8). What may **not** differ
-is which calls succeed, which fail, and what the stored document looks like
-afterwards.
+`docs/compatibility.md` rather than equalised (section 8). What may **not**
+differ is the result inside the portable baseline. Any wider acceptance envelope
+must be exposed through `CapabilitySet`, and rejection must use the portable
+`UNSUPPORTED_CAPABILITY` category rather than silently diverge.
 
 ### 4.2 Absent document vs absent field
 
@@ -299,7 +312,7 @@ than a documented guarantee. The DynamoDB row is documented verbatim.
 
 | Provider | Native mechanism | Native requests | Read required |
 |---|---|---|---|
-| Cosmos DB | `patchItem` for at most 10 set operations; `executeCosmosBatch` with patch chunks above 10 | 1 for direct or batch; 2+ only beyond the batch envelope | No for direct or batch; yes only for the last-resort fallback |
+| Cosmos DB | `patchItem` for at most 10 set operations; `executeCosmosBatch` with patch chunks above 10; local `UNSUPPORTED_CAPABILITY` beyond the batch envelope | 1 for direct or batch; 0 when rejected locally | No |
 | DynamoDB | `UpdateItem` with a `SET` update expression | 1 | No |
 | Spanner | Deferred — already conformant | 1 txn | n/a |
 
@@ -318,6 +331,8 @@ sequenceDiagram
         ADP->>DB: patchItem(set /a, set /b)
     else Cosmos: above 10, within the batch envelope
         ADP->>DB: executeCosmosBatch(patch chunks of at most 10)
+    else Cosmos: beyond the batch envelope
+        ADP-->>App: UNSUPPORTED_CAPABILITY (no provider I/O)
     else DynamoDB
         ADP->>DB: UpdateItem(SET #a=:a, #b=:b)
     end
@@ -338,15 +353,19 @@ List<CosmosPatchOperations> patches = buildPatchChunks(fields, options, 10);
 
 if (patches.size() == 1) {
     container.patchItem(cosmosId, partitionKey, patches.get(0), ObjectNode.class);
-} else if (fitsTransactionalBatch(patches)) {
+} else {
     CosmosBatch batch = CosmosBatch.createCosmosBatch(partitionKey);
     for (CosmosPatchOperations patch : patches) {
         batch.patchItemOperation(cosmosId, patch);
     }
+    BatchMeasurements measured = measureSerializedBatch(batch);
+    if (!fitsTransactionalBatch(measured)) {
+        throw unsupportedExtendedPayload(
+            "cosmos_transactional_batch_limit",
+            measured.providerDetails()); // no provider I/O
+    }
     CosmosBatchResponse response = container.executeCosmosBatch(batch);
     requireSuccessfulBatch(response);
-} else {
-    updateByReadMergeReplace(address, key, fields, options); // section 11.1
 }
 ```
 
@@ -388,26 +407,25 @@ path the request does not name. Seven details follow:
    implementation should disable write content globally while retaining response
    headers and diagnostics. The direct SDK overload still requires
    `ObjectNode.class` even when content is disabled.
-7. **The batch has its own envelope.** Cosmos permits at most 100 operations per
-   transactional batch, a 2 MB serialised request, and five seconds of execution.
-   With 10 sets per patch, one batch carries up to 1,000 set operations. The SDK's
-   existing 399 KB portable payload limit keeps the size ceiling remote, but the
-   provider must still check the built batch. Section 11.1 covers the last-resort
-   path when its operation count or serialised size exceeds the batch envelope;
-   section 11.4 covers whole-batch retry on timeout.
+7. **The batch has its own envelope and must be measured locally.** Cosmos
+   permits at most 100 operations per transactional batch, a 2 MB serialised
+   request, and five seconds of execution. One hundred patch operations of at
+   most 10 sets each is a theoretical maximum of 1,000 set operations, but TTL
+   consumes one set operation and the serialised 2 MB limit may bind first; this
+   is not a promise that every 1,000-field request is accepted. The provider must
+   build and measure the prospective batch before provider I/O. If it exceeds
+   either 100 patch operations or 2 MB, it fails with
+   `UNSUPPORTED_CAPABILITY`, reason `cosmos_transactional_batch_limit`, and
+   structured provider details containing actual and maximum operation counts
+   and actual and maximum bytes where available. `INVALID_REQUEST` is wrong:
+   the request is valid within the shared SDK limit, but Cosmos cannot satisfy
+   the atomicity guarantee. Section 11.4 covers whole-batch retry on timeout.
 
-The direct and transactional-batch paths are both one request, require no read,
-and preserve server-side field scoping. The official Java SDK test
+The ordinary direct and transactional-batch paths are both one request, require
+no read, and preserve server-side field scoping. The official Java SDK test
 `PatchAsyncTest.conditionalPatchInBatch` also exercises two patch operations
 against the same item in one successful batch; this is supported behaviour, not
 an assumption based only on the builder API.
-
-If the section 11.1 last-resort fallback is reached, two properties remain
-mandatory. First, `If-Match` ETag is **not optional**: without it two concurrent
-updates to disjoint fields can each write from a stale read and the later replace
-silently discards the earlier. Second, ETag contention must retry until success or
-the caller's `OperationOptions` timeout; a fixed adapter retry count would create
-a Cosmos-only failure. Each attempt re-applies the same absolute values.
 
 ### 5.2 DynamoDB
 
@@ -422,9 +440,19 @@ request with no read:
   `ConditionalCheckFailedException` continues to map to `NOT_FOUND` exactly as it
   does for today's `PutItem`.
 
-`SET` is create-or-overwrite and never touches an unnamed attribute. There is no
-operation-count cap; the practical bound is DynamoDB's documented expression size
-quota, which the adapter should check before sending.
+`SET` is create-or-overwrite and never touches an unnamed attribute. The provider
+must build and measure the prospective `UpdateExpression` before provider I/O.
+If its encoded expression exceeds DynamoDB's expression-size limit, the provider
+fails locally with `UNSUPPORTED_CAPABILITY`, reason
+`dynamodb_update_expression_limit`, and `providerDetails` containing actual and
+maximum expression bytes where available.
+
+DynamoDB therefore conservatively declares
+`PARTIAL_UPDATE_EXTENDED_PAYLOAD` unsupported: implementation research has not
+proved that `UpdateItem` can atomically encode every otherwise-valid field set
+through the shared 399 KB payload limit, and the expression limit can bind
+first. This does not gate requests whose expression fits the service envelope;
+those ordinary `update()` calls remain supported without a capability check.
 
 ### 5.3 Spanner — deferred
 
@@ -442,20 +470,42 @@ terms. The deferred items are documentation and optimisation only:
 
 ## 6. Capabilities
 
-**No `CapabilitySet` gate is required, and that is the headline result.** Partial
-update becomes universal — same semantics everywhere, nothing to interrogate at
-runtime, nothing to branch on.
+**Base partial update is not gated.** Set/replace-only partial update is universal
+within each provider's native atomic partial-write envelope. A caller using that
+portable baseline writes one code path and does not interrogate `CapabilitySet`.
+
+`PARTIAL_UPDATE_EXTENDED_PAYLOAD` is a separate, binary capability answering
+whether a provider guarantees every otherwise-valid partial update through the
+shared 399 KB payload limit regardless of field shape. It fits the existing
+`CapabilitySet` plus notes model: the capability is declared supported or
+unsupported, and static notes may describe the provider envelope. Notes do not
+carry per-request measurements; an actual failure carries those numeric values
+in `providerDetails`.
 
 | Behaviour | Cosmos | Dynamo | Spanner | Gate needed |
 |---|---|---|---|---|
 | Partial update (set/replace) | Yes | Yes | Yes (already) | No — universal |
+| `PARTIAL_UPDATE_EXTENDED_PAYLOAD` | **No** — 100 batch operations or 2 MB can bind before 399 KB | **No** — the `UpdateExpression` limit can bind before 399 KB | **Yes** — all otherwise-valid field shapes through 399 KB | Yes — only to rely on every otherwise-valid shape through 399 KB |
 | Field removal | No | No | No | No — uniform |
 | Server-side increment | No | No | No | No — uniform |
 | Conditional / compare-and-set write | No | No | No | No — uniform |
 
-A `CapabilitySet` entry exists to warn callers that providers disagree. Every row
-is unanimous — the first because all three support it, the rest because none
-does — so a caller writes one code path and runs it anywhere.
+Cosmos capability notes document its 100-operation and 2 MB transactional-batch
+envelope without promising an exact caller field count. DynamoDB capability
+notes document that its expression-size limit may bind first. Spanner declares
+the extension supported through the shared 399 KB limit. Portable callers that
+must issue every otherwise-valid field shape through that limit should inspect
+the extension capability first or handle `UNSUPPORTED_CAPABILITY`.
+
+On Cosmos, an over-envelope request fails before provider I/O with reason
+`cosmos_transactional_batch_limit` and structured `providerDetails` containing
+actual/maximum operation counts and bytes where available. On DynamoDB, an
+over-expression request likewise fails locally with reason
+`dynamodb_update_expression_limit` and actual/maximum expression bytes where
+available. A false extension capability never blocks an ordinary request that
+fits the provider envelope: direct-patch and within-envelope transactional-batch
+updates on Cosmos, and encodable `UpdateItem` requests on DynamoDB, remain
+supported and ungated.
 
 ## 7. Idempotency, retries, and concurrency
 
@@ -545,7 +595,6 @@ same absolute values are re-applied for the same result.
 |---|---|
 | Cosmos DB, direct path | `patchItem` `set` is path-scoped and evaluated server-side |
 | Cosmos DB, transactional-batch path | Each chunk is path-scoped; all chunks commit as one ACID transaction |
-| Cosmos DB, last-resort fallback | `If-Match` ETag + retry; the loser re-reads and reapplies its own fields |
 | DynamoDB | `UpdateItem` `SET` is attribute-scoped, never rewrites unnamed attributes |
 | Spanner | `readWriteTransaction` retries on `ABORTED` |
 
@@ -580,11 +629,12 @@ The Cosmos client must disable write response content before using multiple patc
 chunks; otherwise each batch result can carry another copy of the updated item.
 Status, request charge, and diagnostics remain available without those bodies.
 
-Only a payload beyond the 100-operation or 2 MB transactional-batch envelope
-reaches the section 11.1 fallback, which adds a point read and transfers the full
-document. `docs/compatibility.md` must distinguish direct, transactional-batch,
-and last-resort request counts and cost. No 10-field limit is imposed on DynamoDB
-or Spanner merely to mirror a Cosmos implementation detail.
+An otherwise-valid Cosmos payload beyond the 100-operation or 2 MB
+transactional-batch envelope fails locally before provider I/O, so it consumes no
+Cosmos request charge and performs no read. `docs/compatibility.md` must
+distinguish direct and transactional-batch request counts and cost, and document
+the `PARTIAL_UPDATE_EXTENDED_PAYLOAD` boundary. No 10-field limit is imposed on
+DynamoDB or Spanner merely to mirror a Cosmos implementation detail.
 
 ## 9. Breaking change and migration
 
@@ -612,7 +662,7 @@ Documentation that must ship with the change:
 | `multiclouddb-provider-dynamo/CHANGELOG.md` | `PutItem` to `UpdateItem` |
 | `docs/changelog.md` | User-visible behaviour change |
 | `docs/guide.md` | Migration section with the before/after table |
-| `docs/compatibility.md` | Cosmos direct, transactional-batch, and last-resort request counts and cost |
+| `docs/compatibility.md` | Cosmos direct and transactional-batch request counts and cost; `PARTIAL_UPDATE_EXTENDED_PAYLOAD` declarations; local `UNSUPPORTED_CAPABILITY` rejection beyond the Cosmos or DynamoDB expression envelope |
 
 ## 10. Conformance coverage
 
@@ -654,8 +704,26 @@ Cosmos additionally needs provider-level tests the portable suite cannot express
   statuses never become the caller-facing error.
 - Write response content is disabled while batch status, request charge, and
   diagnostics remain available.
-- A payload beyond the batch envelope takes the ETag-protected fallback and
-  retains concurrent disjoint-field updates.
+- A prospective batch above 100 patch operations or 2 MB fails before provider
+  I/O as `UNSUPPORTED_CAPABILITY`, with reason
+  `cosmos_transactional_batch_limit` and actual/maximum operation counts and
+  bytes in `providerDetails` where available.
+
+DynamoDB additionally needs provider-level tests proving that it builds and
+measures the `UpdateExpression` before provider I/O, that an expression over the
+service limit fails locally as `UNSUPPORTED_CAPABILITY` with reason
+`dynamodb_update_expression_limit` and actual/maximum expression bytes where
+available, and that no vendor call is made on that path. A wide request whose
+expression remains within the limit must still succeed without a capability
+gate.
+
+`CapabilitiesConformanceTest` must assert that Cosmos and DynamoDB declare
+`PARTIAL_UPDATE_EXTENDED_PAYLOAD` unsupported and Spanner declares it supported.
+Extension conformance tests should run otherwise-valid wide field shapes through
+the shared 399 KB limit only for supporting providers and assert all-or-nothing
+set/replace semantics. The Cosmos and DynamoDB provider-level rejection tests
+must additionally verify that no vendor call was made; ordinary 11-field and
+other within-envelope conformance cases remain ungated on every provider.
 
 **E2E.** `multiclouddb-e2e/Main.java` already exercises `update()` against
 whichever provider the active `*.properties` selects. It should be extended to
@@ -669,37 +737,53 @@ batch while remaining ordinary portable input everywhere else.
 ### 11.1 Payloads beyond the Cosmos transactional-batch envelope
 
 **Resolved boundary.** More than 10 set operations do **not** fail validation and
-do not trigger read-merge-replace. The Cosmos provider divides them into patch
-chunks of at most 10 and sends those chunks as one transactional batch. That is
-one request, one ACID transaction, and no read.
+do not trigger a read path. The Cosmos provider divides them into patch chunks of
+at most 10 and sends those chunks as one transactional batch. That is one
+request, one ACID transaction, and no read.
 
-**Remaining question.** What happens when the built batch needs more than 100
-patch chunks or exceeds the 2 MB serialised batch limit? One hundred chunks carry
-1,000 set operations; TTL counts as one. The service's five-second execution
-limit is an operational timeout handled by whole-batch retry in section 11.4,
-not a reason to split the transaction.
+**Team decision.** When the built batch needs more than 100 patch chunks or
+exceeds the 2 MB serialised batch limit, Cosmos does not attempt an adapter-side
+merge. One hundred chunks carry at most 1,000 set operations only in the ideal
+operation-count case; TTL consumes one set operation and serialised size may bind
+first. The service's five-second execution limit is an operational timeout
+handled by whole-batch retry in section 11.4, not a reason to split the
+transaction.
 
 **Why it matters.** The existing shared 399 KB payload limit makes these cases
 unusual but not impossible — a map can contain more than 1,000 small fields. The
-answer must preserve a uniform acceptance envelope without exposing a Cosmos
-implementation detail to DynamoDB and Spanner callers.
+answer must expose a provider-specific acceptance boundary honestly without
+imposing a Cosmos implementation detail on other provider callers. The same
+extension-boundary pattern also covers DynamoDB field shapes whose encoded
+`UpdateExpression` exceeds its service envelope before payload bytes reach
+399 KB.
 
 | Option | Consequence |
 |---|---|
-| **A. Last-resort fallback** — read, merge, `replaceItem` with `If-Match` | Preserves today's accepted payloads. Costs a second Cosmos code path and 2+ requests only beyond the batch envelope; requires ETag concurrency and retry tests. |
+| **A. Read/merge/replace** — read, merge, `replaceItem` with `If-Match` | Preserves today's accepted payloads, but adds a second Cosmos algorithm, a read path, an ETag retry loop, and contention-sensitive cost merely to emulate an envelope Cosmos cannot satisfy natively. |
 | **B. Portable cap** — reject beyond the batch envelope with `INVALID_REQUEST` | Easy to validate, but rejects calls that succeed today and imposes Cosmos's batch limit on DynamoDB and Spanner. |
-| **C. Cosmos-only cap via `CapabilitySet`** | Honest rather than silent, but forces portable callers to branch on a provider-specific field-count constraint. |
+| **C. Provider-specific extension via `CapabilitySet`** | Keep normal partial update universal; define `PARTIAL_UPDATE_EXTENDED_PAYLOAD` as the guarantee that every otherwise-valid field shape works through 399 KB. Declare it unsupported on Cosmos and, conservatively, DynamoDB; retain support on Spanner. Cosmos and DynamoDB reject only requests exceeding their respective envelopes with `UNSUPPORTED_CAPABILITY` and measured limit details. |
 
-**Recommendation: A.** Transactional batch handles the ordinary over-10 case
-without a read, while the fallback keeps the public contract independent of both
-the 10-operation patch cap and the 100-operation batch cap. Before fallback, the
-provider should build and measure the actual batch rather than infer size from
-field count alone.
+**Decision and recommendation: C.** This keeps the ordinary at-most-10 direct
+patch and over-10-within-envelope transactional-batch paths to one request, no
+read, and all-or-nothing execution. It removes the complex read algorithm and
+ETag retry loop entirely, preserves atomicity instead of reconstructing it in the
+adapter, and makes the genuine provider divergence explicit. The provider builds
+and measures the prospective batch locally; above 100 patch operations or 2 MB
+it fails before provider I/O with `UNSUPPORTED_CAPABILITY`, reason
+`cosmos_transactional_batch_limit`, and actual/maximum operation counts and bytes
+where available. The same pattern applies to DynamoDB's expression envelope:
+the adapter builds and measures the `UpdateExpression` locally and, above the
+expression limit, returns `UNSUPPORTED_CAPABILITY`, reason
+`dynamodb_update_expression_limit`, with actual/maximum expression bytes in
+`providerDetails` where available.
 
-**Fallback correctness.** `replaceItem` must use `If-Match`. On 412 it re-reads,
-reapplies the same absolute field values, and retries until success or the
-caller's `OperationOptions` timeout. A fixed retry count would create a
-Cosmos-only failure under sustained contention.
+The tradeoff is deliberate: portable callers that require the guarantee for
+every otherwise-valid field shape through 399 KB must inspect
+`PARTIAL_UPDATE_EXTENDED_PAYLOAD` or handle `UNSUPPORTED_CAPABILITY`. This is
+preferable to either imposing one provider's limit on the others or hiding a
+costly, concurrency-sensitive Cosmos-only algorithm behind otherwise identical
+calls. A false capability does not reject all `update()` calls: ordinary
+requests fitting the Cosmos or DynamoDB envelope remain supported and ungated.
 
 ### 11.2 Migration target for callers who want full replacement
 
@@ -784,9 +868,6 @@ for transient or ambiguous outcomes. Retrying individual chunks would destroy th
 atomicity guarantee and is forbidden. A provider-level loop must use the caller's
 `OperationOptions` timeout rather than a fixed attempt count.
 
-**Last-resort fallback.** Its read / `If-Match` replace loop is separate and must
-not inherit blind write retries; a 412 means re-read and reapply.
-
 **Recommendation: enable replay-safe retries on both native paths**, using the
 item request option for direct patch and a whole-batch retry for transactional
 batch unless the selected SDK version adds an equivalent option. This narrows the
@@ -831,6 +912,16 @@ ordinary field-name content, but callers may assume dot-path syntax and silently
 create the wrong top-level field. `Map<String, Object>` cannot distinguish those
 intentions. Reading the stored document to infer intent would add a read and make
 the result race-dependent.
+
+**Escaping is adapter-internal, not path syntax.** The JSON Pointer escaping in
+section 5.1 is only a Cosmos provider-adapter implementation detail; it does not
+mean the portable `update()` API supports nested paths. The caller always supplies
+the raw literal top-level field name. For example, Cosmos internally encodes raw
+top-level `customer/name` as `/customer~1name`, while DynamoDB uses
+`ExpressionAttributeNames`; both must store or update the same literal top-level
+field. A shallow update still has one logical path segment: escaping prevents a
+literal slash or tilde from being misinterpreted as path structure.
+Provider-specific escaped forms must never appear in the public API.
 
 | Option | Semantics and trade-off |
 |---|---|
