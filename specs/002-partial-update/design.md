@@ -564,8 +564,10 @@ counters:
 Because the adapter emits only `SET #name = :absoluteValue`, that entire class of
 bug is unreachable.
 
-**The Cosmos SDK refuses to retry writes.** It deliberately suppresses write
-retries on ambiguous failures. From `ClientRetryPolicy`:
+**The Cosmos SDK suppresses ambiguous write retries.** It still retries
+throttling and selected routing or service failures, but deliberately avoids
+replaying a write when it cannot tell whether the service applied it. From
+`ClientRetryPolicy`:
 
 > For any causes that SDK not sure whether the request has reached/processed from
 > server side, unless customer has specifically opted in for
@@ -573,10 +575,11 @@ retries on ambiguous failures. From `ClientRetryPolicy`:
 
 Correct as a general-purpose default, but it costs availability for writes that
 *are* idempotent — which, after this change, is every `update()` the Cosmos
-adapter issues. The direct path can opt in through
-`CosmosItemRequestOptions.setNonIdempotentWriteRetryPolicy(true, true)`.
+adapter issues. The direct path could opt in through
+`CosmosItemRequestOptions.setNonIdempotentWriteRetryPolicy(true, true)`, while
 `CosmosBatchRequestOptions` in azure-cosmos 4.78.0 has no equivalent public
-switch, so open question 11.4 covers both paths rather than only `patchItem`.
+switch. Section 11.4 records the decision to leave both paths on the vendor
+SDK's default retry behaviour instead of adding provider-managed retries.
 
 `attribute_exists(pk)` does not weaken any of this: if a first attempt succeeded
 but its response was lost, the item exists on retry, the condition holds, and the
@@ -850,36 +853,46 @@ disappear will now find them retained. It must direct full-document-replacement
 callers to `upsert()` and warn that `upsert()` creates the document when it is
 missing rather than failing `NOT_FOUND`.
 
-### 11.4 Retrying idempotent Cosmos writes
+### 11.4 Cosmos retry ownership
 
-**Question.** How should the Cosmos provider retry ambiguous failures on both the
-direct `patchItem` and transactional-batch paths?
+**Team decision.** The Multicloud SDK and Cosmos provider do not implement a
+retry loop for either direct `patchItem` or `executeCosmosBatch`, and do not opt
+the direct path into non-idempotent-write retries. Both paths rely on the retry
+behaviour built into azure-cosmos 4.78.0.
 
-**Why it matters.** Section 7.2: the Cosmos SDK normally suppresses write retries
-when it cannot tell whether the service applied the request. Every update in this
-design is replay-safe, including a whole transactional batch: each operation sets
-an absolute value, and the batch commits all chunks or none.
+**Verified transactional-batch behaviour.** `executeCosmosBatch` sends the batch
+through the normal `ClientRetryPolicy`. A 429 response retries the same complete
+batch according to the client's `ThrottlingRetryOptions` — by default up to nine
+retries and 30 seconds cumulative wait, honouring the service's retry-after
+duration. The SDK also handles stale collection or partition routing and retries
+selected 410, 403.3, session, network, and 503 cases when its endpoint and
+failover rules consider replay safe. Any retry reissues the one atomic batch;
+individual patch chunks are never submitted independently.
 
-**Direct path.** Set
-`CosmosItemRequestOptions.setNonIdempotentWriteRetryPolicy(true, true)` only on
-`update()` requests. Other operations are not necessarily idempotent, so enabling
-it globally would be wrong.
+The SDK does **not** generally replay an ambiguously failed batch. In particular,
+408 request timeout and 500 internal server error return to the caller without a
+normal retry; ambiguous network or SDK-generated 503 write failures can also be
+returned unless a built-in safe-retry or failover condition applies.
+`CosmosBatchRequestOptions` exposes no public equivalent of
+`CosmosItemRequestOptions.setNonIdempotentWriteRetryPolicy(...)` in 4.78.0.
 
-**Batch path.** `CosmosBatchRequestOptions` in azure-cosmos 4.78.0 exposes no
-public equivalent. The provider therefore needs either a verified client-level
-mechanism in the implementation SDK version or its own retry of the entire batch
-for transient or ambiguous outcomes. Retrying individual chunks would destroy the
-atomicity guarantee and is forbidden. A provider-level loop must use the caller's
-`OperationOptions` timeout rather than a fixed attempt count.
+The provider therefore normalizes the final Cosmos error and its retryable hint
+but does not retry it. This intentionally accepts a possible availability
+difference from DynamoDB in exchange for avoiding a second retry policy with
+independent attempt, backoff, and timeout semantics.
 
-**Recommendation: enable replay-safe retries on both native paths**, using the
-item request option for direct patch and a whole-batch retry for transactional
-batch unless the selected SDK version adds an equivalent option. This narrows the
-transient error-rate difference from DynamoDB without changing stored results.
+**Future design.** Provider-specific retry tuning at client construction — for
+example, property-file settings mapped to Cosmos throttling options, the AWS SDK
+retry strategy, or Spanner RPC retry settings — is outside this feature. A
+separate design should define those startup settings and document that their
+semantics are provider-specific rather than part of the portable
+`OperationOptions` contract. When no settings are supplied, each vendor SDK's
+defaults should remain in effect.
 
 ### 11.5 Type vocabulary for document payloads
 
-**The question.** Should payloads be a named type rather than `Map<String, Object>`?
+**Team decision.** Keep `Map<String, Object>` for document payloads in this
+feature; do not introduce a named document type.
 
 **Why it comes up here.** This design gives `update()` a payload whose meaning
 differs from `create()` and `upsert()` — fields to merge rather than a whole
@@ -900,16 +913,17 @@ convert between the two. Any type work should settle both sides, not just writes
 `Map<String, Object>` — a named payload that does not break `Map` call sites. AWS
 SDK v2 keeps a raw `Map<String, AttributeValue>`.
 
-**Recommendation: defer.** Payload types break every call site, span
-`create`/`update`/`upsert`/`read` and all three providers plus conformance, and
-contradict this design's "no new API" boundary. Track separately; the section 3
-rename already captures the cheap part of the benefit.
+A unified document type remains a valid future design, but it must cover
+`create`/`update`/`upsert`/`read` and all three providers together. It is outside
+this feature's "no new API" boundary; the section 3 parameter rename captures the
+readability benefit needed here without changing payload types or call sites.
 
 ### 11.6 Dotted field names vs nested-path intent
 
-**The question.** If a caller passes `Map.of("name.first", "John")`, should
-`update()` treat `name.first` as a literal top-level field name, reject it as an
-attempted nested update, or interpret it as the path `name` → `first`?
+**Team decision: Option A.** If a caller passes
+`Map.of("name.first", "John")`, `update()` treats `name.first` as a literal
+top-level field name. It does not reject the name or interpret it as the path
+`name` → `first`.
 
 **Why it matters.** The current contract and conformance item 8 treat `.` as
 ordinary field-name content, but callers may assume dot-path syntax and silently
@@ -933,10 +947,9 @@ Provider-specific escaped forms must never appear in the public API.
 | **B — Reject path-looking names** | Fails with `INVALID_REQUEST` before provider I/O and prevents the likely mistake, but forbids valid top-level names containing `.` or `/`. |
 | **C — Add an explicit path vocabulary later** | A future Patch API can express intent with `DocumentPath.of("name", "first")`. |
 
-**Recommendation: A now, C with a Patch API.** Do not infer path intent from
-punctuation. Documentation should demonstrate dotted literal behavior and
-whole-object replacement. If B is chosen instead, conformance item 8 must be
-reversed.
+Do not infer path intent from punctuation. Documentation and conformance must
+demonstrate dotted literal behaviour and whole-object replacement. An explicit
+path vocabulary remains deferred to a future Patch API.
 
 ## 12. References
 
