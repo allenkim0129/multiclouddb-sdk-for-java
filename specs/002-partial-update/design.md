@@ -226,7 +226,7 @@ and partial failure without the SDK having to get anything subtle right:
 rather than several partially:
 
 - **Remove a field, or clear stale fields wholesale** — `upsert()` with the
-  complete desired document (see open question 11.2).
+  complete desired document (see the team decision in section 11.2).
 - **Increment a counter** — read, compute in the caller, write the result.
   Section 7.2 shows what the vendor SDKs' automatic retries would otherwise do to
   a server-side increment.
@@ -615,7 +615,7 @@ paths send only changed fields:
 |---|---|---|
 | At most 10 Cosmos set operations | read + write, 2 round trips, full document transferred | 1 `patchItem`, changed fields only |
 | More than 10, within the Cosmos batch envelope | read + write, 2 round trips, full document transferred | 1 transactional-batch request containing patch chunks, changed fields only |
-| Full-document replace | 1 write | 1 write via `upsert()` — unchanged |
+| Full-document replace | 1 write | 1 write via `upsert()`; creates the document if it is missing |
 
 Per-provider cost drivers after the change:
 
@@ -647,20 +647,22 @@ silently stop dropping them.
 | Apply a few fields, keep the rest | `update()` — worked on Spanner, destroyed data on Cosmos/Dynamo | `update()` |
 | Replace the whole document | `update()` on Cosmos/Dynamo | `upsert()` |
 
-`upsert()` is the closest existing operation but not an exact replacement: it
-creates the document when absent instead of failing `NOT_FOUND`, so a caller
-needing full replacement *and* the existence guard has no equivalent single call.
-Whether that gap is closed by adding `replace()` is section 11.2, and the answer
-determines how complete the migration table above actually is.
+**Team decision:** `upsert()` is the migration path for full-document replacement;
+this release does not add a `replace()` API. This deliberately accepts that
+`upsert()` creates a missing document instead of preserving `update()`'s current
+`NOT_FOUND` existence guard. The team knows of no consumer that depends on that
+guard, and the SDK currently has few customers, so a separate guarded-replace
+operation is not justified now. The decision can be revisited if customer demand
+establishes that need.
 
 Documentation that must ship with the change:
 
 | Doc | Content |
 |---|---|
-| `multiclouddb-api/CHANGELOG.md` | Behaviour change to `update()` under `[Unreleased]` |
+| `multiclouddb-api/CHANGELOG.md` | Loud behaviour change to `update()` under `[Unreleased]`; direct full-replacement callers to `upsert()` and warn that it creates a missing document |
 | `multiclouddb-provider-cosmos/CHANGELOG.md` | `replaceItem` to direct `patchItem` / transactional-batch patching |
 | `multiclouddb-provider-dynamo/CHANGELOG.md` | `PutItem` to `UpdateItem` |
-| `docs/changelog.md` | User-visible behaviour change |
+| `docs/changelog.md` | Loud user-visible behaviour change with the `upsert()` migration and create-on-missing warning |
 | `docs/guide.md` | Migration section with the before/after table |
 | `docs/compatibility.md` | Cosmos direct and transactional-batch request counts and cost; `PARTIAL_UPDATE_EXTENDED_PAYLOAD` declarations; local `UNSUPPORTED_CAPABILITY` rejection beyond the Cosmos or DynamoDB expression envelope |
 
@@ -787,7 +789,7 @@ requests fitting the Cosmos or DynamoDB envelope remain supported and ungated.
 
 ### 11.2 Migration target for callers who want full replacement
 
-**Question.** After this change no operation performs "replace the whole
+**Historical question.** After this change no operation performs "replace the whole
 document, but only if it already exists" — exactly what `update()` does today on
 Cosmos and DynamoDB. Is `upsert()` adequate?
 
@@ -797,25 +799,24 @@ consequence: it *creates* the document when absent instead of failing
 
 | Option | Consequence |
 |---|---|
-| **A. Point callers at `upsert()`** | No new API. But a caller needing the existence guard must read then upsert, and that sequence is not atomic — a concurrent `delete()`, or a TTL expiry, landing in between resurrects the document. Those callers have no correct single-call migration, so this silently converts a data-integrity guarantee into a race. |
+| **A. Point callers at `upsert()`** | No new API. A caller needing the existence guard must read then upsert, and that sequence is not atomic — a concurrent `delete()`, or a TTL expiry, landing in between can recreate the document. |
 | **B. Add `replace(address, key, document, options)`** | Full-document replace with the existence guard — today's `update()` behaviour under a name that says what it does. Migration becomes mechanical. Cost: one more operation to document, test, and hold portable. On Cosmos and DynamoDB the implementation is the code being removed from `update()`, so close to free; Spanner needs a genuine replace path rather than its current merge. |
 | **C. A mode flag on `update()`** | Avoids a new method name, but a boolean that inverts the semantics of an operation is the hardest kind of API to reason about portably, and it doubles the conformance matrix — every assertion in section 10 run in both modes on every provider. |
 
-**Recommendation: B.** A has an atomicity hole and is therefore not a migration
-at all for some callers. B preserves a capability that otherwise disappears, and
-is largely a rename of code being removed rather than new functionality.
-
-**The deciding test.** Does any consumer depend on `update()` failing when the
-document is absent? If no, A is genuinely correct and the portable surface stays
-smaller. Note that TTL expiry makes the resurrection scenario reachable without
-any concurrent client — the engine itself does the deleting.
-
-**Dependency.** Coupled to 11.3: whether a hard break is acceptable depends on
-whether affected callers have somewhere to go.
+**Team decision and recommendation: A.** Full-document replacement callers
+migrate to the existing `upsert()` operation; no `replace()` API is added now.
+The team explicitly accepts the create-on-missing difference from the old
+Cosmos/DynamoDB `update()` behaviour. There are few current customers and no
+known consumers that require the `NOT_FOUND` existence guard, so preserving it
+does not justify another portable operation in this release. If customer demand
+demonstrates a need for guarded replacement, the team can reconsider a dedicated
+API. Callers that independently require the guard should note that a read
+followed by `upsert()` is not atomic and can recreate a document after a
+concurrent delete or TTL expiry.
 
 ### 11.3 How the behaviour change reaches users
 
-**Question.** Hard break, or transitional switch?
+**Historical question.** Hard break, or transitional switch?
 
 **Why it matters.** This is a *silent* behaviour change. Signature, return type,
 and exceptions are unchanged, so nothing fails to compile and nothing throws —
@@ -837,14 +838,17 @@ Two facts weigh on it:
 | **B. Transitional flag defaulting to today's behaviour** | Opt-in migration, but doubles the conformance matrix, makes the flag itself portable surface, and prolongs the divergence this design exists to end. Fact 2 makes it close to incoherent — the flag cannot restore a consistent prior behaviour because none existed. |
 | **C. Hard break plus `replace()` in the same release** | A, with a mechanical migration path for every affected caller. |
 
-**Recommendation: C**, contingent on adopting 11.2 option B. A hard break is
-defensible here mainly *because* an affected caller can fix their code with a
-one-word change.
+**Team decision and recommendation: A.** Ship the semantic change as a hard
+break with no transitional flag and no `replace()` API in this release. The SDK
+is beta, has few customers, and its old `update()` behaviour is already
+provider-divergent, so a compatibility switch would prolong rather than resolve
+the portability problem.
 
-**Regardless of the option chosen**, the changelog must be explicit that this is
-a behaviour change with data-loss-shaped consequences in reverse — code that
-expected fields to disappear will now find them retained — and must name the
-migration target directly.
+The changelog must loudly and explicitly identify the behaviour change and its
+data-loss-shaped consequences in reverse: code that expected omitted fields to
+disappear will now find them retained. It must direct full-document-replacement
+callers to `upsert()` and warn that `upsert()` creates the document when it is
+missing rather than failing `NOT_FOUND`.
 
 ### 11.4 Retrying idempotent Cosmos writes
 
