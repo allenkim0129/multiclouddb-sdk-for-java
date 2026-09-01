@@ -820,6 +820,29 @@ SDK v2 keeps a raw `Map<String, AttributeValue>`.
 contradict this design's "no new API" boundary. Track separately; the section 3
 rename already captures the cheap part of the benefit.
 
+### 11.6 Dotted field names vs nested-path intent
+
+**The question.** If a caller passes `Map.of("name.first", "John")`, should
+`update()` treat `name.first` as a literal top-level field name, reject it as an
+attempted nested update, or interpret it as the path `name` → `first`?
+
+**Why it matters.** The current contract and conformance item 8 treat `.` as
+ordinary field-name content, but callers may assume dot-path syntax and silently
+create the wrong top-level field. `Map<String, Object>` cannot distinguish those
+intentions. Reading the stored document to infer intent would add a read and make
+the result race-dependent.
+
+| Option | Semantics and trade-off |
+|---|---|
+| **A — Keep literal top-level semantics** | Preserves arbitrary JSON field names and a one-request shallow update; nested updates remain unsupported. |
+| **B — Reject path-looking names** | Fails with `INVALID_REQUEST` before provider I/O and prevents the likely mistake, but forbids valid top-level names containing `.` or `/`. |
+| **C — Add an explicit path vocabulary later** | A future Patch API can express intent with `DocumentPath.of("name", "first")`. |
+
+**Recommendation: A now, C with a Patch API.** Do not infer path intent from
+punctuation. Documentation should demonstrate dotted literal behavior and
+whole-object replacement. If B is chosen instead, conformance item 8 must be
+reversed.
+
 ## 12. References
 
 - `SpannerProviderClient.update(...)` — existing partial-merge implementation and its asymmetry note
