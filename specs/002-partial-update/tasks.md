@@ -1,7 +1,7 @@
 ---
 description: "Focused implementation tasks for portable partial update"
 branch: "002-partial-update"
-status: "local-validation-complete-spanner-and-all-provider-e2e-pending"
+status: "ci-validation-complete-all-provider-e2e-pending"
 ---
 
 # Tasks: Portable Partial Update
@@ -69,7 +69,7 @@ No Spanner provider data-path or provider-test change is present.
 - [X] T032 Verify the existing Cosmos, Dynamo, and Spanner concrete conformance classes inherit the same methods; update capability assertions for all 19 names without adding provider branches, new Spanner classes, or Spanner schema columns
 - [X] T033 Run the named Cosmos emulator/conformance tests and verify positive Surefire discovery
 - [X] T034 Re-run the exact Dynamo emulator/conformance profile, including the concrete result-item-size regression; all 88 discovered tests pass with zero failures/errors/skips
-- [ ] T035 Run the existing Spanner shared conformance suite against the existing schema only; add no Spanner-specific test or schema helper (intentionally deferred to PR CI under the narrowed local scope)
+- [X] T035 Run the existing Spanner shared conformance suite against the existing schema only; PR CI passed without a Spanner-specific test, schema helper, or data-path change
 
 ## Phase 5: Documentation and migration
 
@@ -139,14 +139,15 @@ same provider-neutral tests and requires no Spanner-specific implementation.
 ## Counts
 
 - Total tasks: **54**
-- Completed: **52**
-- Remaining: **2**
+- Completed: **53**
+- Remaining: **1**
 
 The exact Dynamo emulator profile passed all 88 discovered tests, and the
 Cosmos profile passed all 78 discovered tests with one expected emulator skip.
-The focused Dynamo E2E partial/wide update run remains recorded. Spanner
-runtime validation and complete three-provider E2E remain intentionally
-unclaimed until their configured environments run.
+The focused Dynamo E2E partial/wide update run remains recorded. PR CI also
+passed the unchanged Spanner shared conformance suite. Complete three-provider
+E2E remains intentionally unclaimed until all environments are configured
+together.
 
 ## Scope rules
 

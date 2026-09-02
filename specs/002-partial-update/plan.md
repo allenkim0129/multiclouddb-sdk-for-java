@@ -30,8 +30,8 @@ The work is intentionally split:
 | Feature artifacts/docs/contracts | Reconciled for request and result envelopes |
 | Shared conformance | Provider-neutral coverage implemented; Cosmos and Dynamo runtime reruns complete |
 | Provider-native result-size regressions | Cosmos and Dynamo emulator regressions pass |
-| Spanner runtime validation | Not run or claimed |
-| Emulator/full-suite validation | Clean unit, Cosmos, and Dynamo suites passed; Spanner runtime and complete E2E remain |
+| Spanner runtime validation | Existing shared conformance passed in PR CI |
+| Emulator/full-suite validation | Clean unit plus Cosmos, Dynamo, and Spanner CI suites passed; complete E2E remains |
 
 ## Technical context
 
@@ -180,15 +180,15 @@ compile successfully. No Spanner runtime validation is claimed.
 
 ### Remaining
 
-1. existing Spanner conformance suite, without new Spanner tests; and
-2. complete provider-neutral E2E across configured Cosmos, Dynamo, and Spanner
+1. complete provider-neutral E2E across configured Cosmos, Dynamo, and Spanner
    environments.
 
 The exact CI Dynamo emulator profile passed all 88 discovered tests, including
 the concrete result-item-size regression. The exact Cosmos profile passed all
 78 discovered tests, including its concrete result-item-size regression, with
 zero failures/errors and one expected emulator skip. Javadocs and feature
-artifact/link/schema/traceability checks pass.
+artifact/link/schema/traceability checks pass. PR CI also passes the unchanged
+Spanner shared conformance suite.
 
 ## Planned parity matrix
 
