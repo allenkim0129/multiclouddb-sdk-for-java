@@ -8,10 +8,12 @@ import com.multiclouddb.api.DocumentResult;
 import com.multiclouddb.api.MulticloudDbClient;
 import com.multiclouddb.api.MulticloudDbClientFactory;
 import com.multiclouddb.api.MulticloudDbKey;
+import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -107,16 +109,36 @@ public class Main {
         }
         System.out.println();
 
-        // ── UPDATE ────────────────────────────────────────────────────
-        System.out.println("── UPDATE (prod-005: mark in-stock, new price) ────────────────");
-        upsert("prod-005", "USB-C Hub", "electronics", 54.99, true);
+        // ── PARTIAL UPDATE ────────────────────────────────────────────
+        System.out.println("── PARTIAL UPDATE (prod-005: price + stock only) ─────────────");
+        update("prod-005", Map.of("price", 54.99, "inStock", true));
         System.out.println();
 
         // ── READ (verify update) ──────────────────────────────────────
-        System.out.println("── READ (verify update) ───────────────────────────────────────");
+        System.out.println("── READ (verify selected fields + omitted-field preservation) ─");
         DocumentResult updateResult = read("prod-005");
         if (updateResult == null) {
             throw new AssertionError("Expected document for prod-005 after update but got null");
+        }
+        if (!"USB-C Hub".equals(updateResult.document().path("name").asText())
+                || !"electronics".equals(updateResult.document().path("category").asText())
+                || Math.abs(updateResult.document().path("price").asDouble() - 54.99) > 0.0001
+                || !updateResult.document().path("inStock").asBoolean()) {
+            throw new AssertionError("Partial update did not preserve omitted product fields");
+        }
+        System.out.println("    → selected fields changed; name and category were preserved");
+        System.out.println();
+
+        // The existing Spanner E2E setup is fixed-schema and does not provision
+        // the additional ordinary columns used by this wide-envelope exercise.
+        if (ProviderId.COSMOS.equals(client.providerId())
+                || ProviderId.DYNAMO.equals(client.providerId())) {
+            System.out.println("── WIDE PARTIAL UPDATE (>10 fields, Cosmos/Dynamo) ───────────");
+            wideUpdate("prod-004");
+        } else {
+            System.out.println("── WIDE PARTIAL UPDATE ────────────────────────────────────────");
+            System.out.println("  Skipped: the configured Spanner products table is fixed-schema;");
+            System.out.println("  no columns or schema helpers are created by this E2E run.");
         }
         System.out.println();
 
@@ -199,6 +221,48 @@ public class Main {
             System.out.println("    → not found");
         }
         return result;
+    }
+
+    private void update(String id, Map<String, Object> fields) {
+        MulticloudDbKey key = MulticloudDbKey.of(id, id);
+
+        System.out.printf("  client.update(address, key(%s), fields=%s)%n", id, fields.keySet());
+        client.update(address, key, fields);
+        System.out.println("    → partial update applied");
+    }
+
+    private void wideUpdate(String id) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("title", "wide-title");
+        fields.put("value", 101);
+        fields.put("active", true);
+        fields.put("version", 2);
+        fields.put("extra", "wide-extra");
+        fields.put("batch", "wide-batch");
+        fields.put("status", "wide-status");
+        fields.put("priority", 9);
+        fields.put("category", "wide-category");
+        fields.put("shared", "wide-shared");
+        fields.put("originalOnly", "wide-original");
+
+        update(id, fields);
+        DocumentResult result = read(id);
+        if (result == null) {
+            throw new AssertionError("Expected document for " + id + " after wide update");
+        }
+        fields.forEach((name, expected) -> {
+            String actual = result.document().path(name).asText();
+            if (!String.valueOf(expected).equals(actual)) {
+                throw new AssertionError("Wide update mismatch for " + name
+                        + ": expected=" + expected + ", actual=" + actual);
+            }
+        });
+        if (!"Notebook (paper)".equals(result.document().path("name").asText())
+                || Math.abs(result.document().path("price").asDouble() - 4.99) > 0.0001
+                || !result.document().path("inStock").asBoolean()) {
+            throw new AssertionError("Wide partial update did not preserve omitted product fields");
+        }
+        System.out.println("    → 11 fields changed in one logical update; omitted product fields preserved");
     }
 
     private void delete(String id) {

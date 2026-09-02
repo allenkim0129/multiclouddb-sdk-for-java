@@ -25,8 +25,48 @@ contract.
 | `DocumentMetadata` | Write timestamps, TTL expiry, and version/ETag |
 | `CapabilitySet` | Runtime introspection of supported provider capabilities |
 | `MulticloudDbException` | Structured error with portable error category |
-| `OperationOptions` | Per-operation timeout, TTL, and metadata controls |
+| `OperationOptions` | Per-operation timeout and metadata controls; `ttlSeconds` is create/upsert-only |
 | `OperationDiagnostics` | Latency, request charge, request ID, and item count |
+
+### `update()` Partial-Update Contract
+
+```java
+void update(
+    ResourceAddress address,
+    MulticloudDbKey key,
+    Map<String, Object> fields,
+    OperationOptions options);
+```
+
+- Sets or replaces only the supplied top-level fields; omitted fields remain.
+- Map/list values replace the complete top-level value. Java `null` stores null.
+- A missing item returns `NOT_FOUND` and is not created.
+- Non-null `options.ttlSeconds()` returns pre-I/O, non-retryable
+  `INVALID_REQUEST`.
+- The shared serialized field-map limit is 408,576 bytes.
+
+`Capability.PARTIAL_UPDATE` is supported by all three built-in providers.
+`PARTIAL_UPDATE_EXTENDED_PAYLOAD` is unsupported by Cosmos DB and DynamoDB
+because a native request or resulting-item envelope can bind first. Dynamo
+rejects generated expressions above 4,096 UTF-8 bytes before I/O and may reject
+the one attempted `UpdateItem` when the result would exceed 409,600 bytes.
+Cosmos may reject one attempted patch or batch with HTTP 413 when the resulting
+document would exceed 2,097,152 bytes.
+Spanner reports the capability supported only for its existing fixed-schema
+mappings; fields must already be provisioned columns.
+
+The Cosmos result-size case is non-retryable `UNSUPPORTED_CAPABILITY` with
+`reason=cosmos_result_item_size_limit` and
+`maximumResultBytes=2097152`.
+The Dynamo result-size case is non-retryable `UNSUPPORTED_CAPABILITY` with
+`reason=dynamodb_result_item_size_limit` and
+`maximumResultBytes=409600`. Other Dynamo `ValidationException` errors remain
+`INVALID_REQUEST`.
+
+For complete replacement, call `upsert()` with the complete desired document.
+`upsert()` creates a missing item, so it is not an update-only replacement.
+See [guide.md - update](guide.md#update---partial-update-existing) for native
+request counts, costs, and migration guidance.
 
 ### Query Expression Types
 

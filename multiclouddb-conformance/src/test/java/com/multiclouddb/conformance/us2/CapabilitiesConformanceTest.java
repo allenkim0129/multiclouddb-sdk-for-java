@@ -7,6 +7,8 @@ import com.multiclouddb.api.*;
 import com.multiclouddb.conformance.ConformanceHarness;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -15,6 +17,15 @@ import static org.junit.jupiter.api.Assertions.*;
  * Subclasses specify the provider; tests verify the expected capability set.
  */
 public abstract class CapabilitiesConformanceTest {
+
+    private static final Map<ProviderId, Boolean> EXTENDED_PARTIAL_UPDATE_SUPPORT = Map.of(
+            ProviderId.COSMOS, false,
+            ProviderId.DYNAMO, false,
+            ProviderId.SPANNER, true);
+    private static final Map<ProviderId, String> EXTENDED_PARTIAL_UPDATE_NOTE = Map.of(
+            ProviderId.COSMOS, "100 patch operations",
+            ProviderId.DYNAMO, "update expression",
+            ProviderId.SPANNER, "fixed-schema");
 
     protected abstract ProviderId provider();
 
@@ -31,7 +42,7 @@ public abstract class CapabilitiesConformanceTest {
     void allKnownCapabilityNamesPresent() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            // All 17 well-known capability names must be declared
+            // All 19 well-known capability names must be declared
             String[] knownNames = {
                     Capability.CONTINUATION_TOKEN_PAGING,
                     Capability.CROSS_PARTITION_QUERY,
@@ -49,7 +60,9 @@ public abstract class CapabilitiesConformanceTest {
                     Capability.CASE_FUNCTIONS,
                     Capability.RESULT_LIMIT,
                     Capability.ROW_LEVEL_TTL,
-                    Capability.WRITE_TIMESTAMP
+                    Capability.WRITE_TIMESTAMP,
+                    Capability.PARTIAL_UPDATE,
+                    Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD
             };
             for (String name : knownNames) {
                 assertNotNull(caps.get(name),
@@ -59,11 +72,29 @@ public abstract class CapabilitiesConformanceTest {
     }
 
     @Test
-    void capabilityCountIs17() throws Exception {
+    void capabilityCountIs19() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            assertEquals(17, caps.all().size(),
-                    "Provider " + provider().id() + " should declare exactly 17 capabilities");
+            assertEquals(19, caps.all().size(),
+                    "Provider " + provider().id() + " should declare exactly 19 capabilities");
+        }
+    }
+
+    @Test
+    void partialUpdateCapabilitiesMatchProviderEnvelopes() throws Exception {
+        try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
+            CapabilitySet caps = client.capabilities();
+            assertTrue(caps.isSupported(Capability.PARTIAL_UPDATE),
+                    "All providers must support PARTIAL_UPDATE");
+
+            Capability extended = caps.get(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD);
+            assertNotNull(extended);
+            assertEquals(EXTENDED_PARTIAL_UPDATE_SUPPORT.get(provider()).booleanValue(),
+                    extended.supported(),
+                    "Unexpected extended partial-update declaration for " + provider().id());
+            assertNotNull(extended.notes());
+            assertTrue(extended.notes().contains(EXTENDED_PARTIAL_UPDATE_NOTE.get(provider())),
+                    "Extended partial-update notes must describe the provider envelope");
         }
     }
 

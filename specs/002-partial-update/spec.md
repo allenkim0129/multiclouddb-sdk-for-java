@@ -1,261 +1,220 @@
 # Feature Specification: Portable Partial Update
 
-**Feature Branch**: `002-partial-update`  
-**Created**: 2026-09-01  
-**Status**: Draft  
-**Input**: Make `update()` perform portable, shallow partial updates across Cosmos DB, DynamoDB, and Spanner according to the approved design.
+**Branch**: `002-partial-update`
+**Status**: Portability-review blockers implemented; focused validation passes,
+DynamoDB Local regression and Spanner runtime reruns remain
 
-## User Scenarios & Testing *(mandatory)*
+## Scope decision
 
-### User Story 1 - Update Selected Fields Without Data Loss (Priority: P1)
+`MulticloudDbClient.update()` becomes a shallow set/replace operation. Cosmos DB
+and DynamoDB move from full replacement to native partial update.
 
-As an application developer, I can update selected top-level fields without
-resending the complete document, and fields omitted from the request remain
-unchanged on every supported provider.
+Spanner is the behavioral baseline and its existing update data path is
+unchanged. It continues to:
 
-**Why this priority**: Cosmos DB and DynamoDB currently replace the complete
-document while Spanner performs a partial update. This silent divergence can
-delete data and violates the SDK's portability contract.
+- use its existing read-write transaction and `FIELD_DATA` merge;
+- map logical fields to already provisioned table columns;
+- reject an unknown column rather than creating schema;
+- bind Java null using its existing STRING-null mapping; and
+- preserve its existing provider error normalization.
 
-**Independent Test**: Store a document containing multiple fields, update one
-field, and verify on Cosmos DB, DynamoDB, and Spanner that the requested field
-changed and every omitted field retained its original value.
+This feature does not add Spanner schema discovery, typed-null binding, DDL,
+schema helpers, provider-specific tests, or E2E schema provisioning.
 
-**Acceptance Scenarios**:
+## User scenarios
 
-1. **Given** an existing document with `status`, `owner`, and `region`, **When**
-   the caller updates only `status`, **Then** `status` is overwritten while
-   `owner` and `region` are preserved.
-2. **Given** an existing document without `priority`, **When** the caller updates
-   `priority`, **Then** the new top-level field is created.
-3. **Given** no document for the supplied key, **When** the caller invokes
-   `update()`, **Then** the operation fails with `NOT_FOUND` and does not create
-   a document.
+### US1 — Update selected fields without losing omitted data
 
----
+Given an existing document with `title`, `status`, and `owner`, updating only
+`status` changes `status` and preserves `title` and `owner`.
 
-### User Story 2 - Receive Predictable Shallow-Update Semantics (Priority: P1)
+**Acceptance**:
 
-As an application developer, I receive the same shallow set/replace semantics
-for nulls, objects, arrays, and literal field names on every provider.
+1. Present fields are set/replaced.
+2. Omitted fields remain unchanged.
+3. A missing document returns `NOT_FOUND` and is not created.
+4. The assignments commit atomically.
 
-**Why this priority**: Inferring nested paths or recursively merging values would
-produce provider-specific behavior and make updates difficult to replay safely.
+### US2 — Use predictable shallow value semantics
 
-**Independent Test**: Apply the same field payload to equivalent documents on
-all providers and verify identical stored documents, including null, object,
-array, and punctuation-containing field names.
+Scalar values replace scalars. A map or list replaces the complete top-level
+value. Java null stores provider-native null for a supported mapping and never
+means remove.
 
-**Acceptance Scenarios**:
+Shared three-provider conformance is limited to field names and shapes already
+supported by the existing provider fixtures. For Spanner this means ordinary
+pre-provisioned columns, STRING-backed null, and the existing STRING encoding
+used for map/list values.
 
-1. **Given** a stored object-valued field, **When** the caller supplies a new
-   object for that field, **Then** the complete top-level object is replaced
-   rather than recursively merged.
-2. **Given** a stored array-valued field, **When** the caller supplies a new
-   array, **Then** the complete array is replaced rather than appended or merged.
-3. **Given** an existing field, **When** the caller supplies `null`, **Then** JSON
-   null is stored and the field is not removed.
-4. **Given** a field named `name.first`, **When** the caller updates it, **Then**
-   it is treated as one literal top-level field and not as a nested path.
-5. **Given** the same update is submitted more than once, **When** each attempt
-   completes, **Then** the final document is identical to the result of one
-   successful application.
-6. **Given** concurrent updates to different top-level fields, **When** both
-   complete successfully, **Then** both changes are retained.
+### US3 — Receive deterministic native-envelope failures
 
----
+Cosmos DB and DynamoDB normalize lower native partial-update envelopes to
+non-retryable `UNSUPPORTED_CAPABILITY` tied to
+`partial_update_extended_payload`, with structured size/count details.
+Prospective Cosmos batches and oversized Dynamo update expressions fail before
+provider I/O. Cosmos DB's state-dependent 2,097,152-byte resulting-document
+limit is reported after one attempted patch or batch request, and DynamoDB's
+state-dependent 409,600-byte result-item limit is reported after one attempted
+`UpdateItem`; no read/merge preflight is added.
 
-### User Story 3 - Understand Provider Payload Boundaries (Priority: P2)
+### US4 — Migrate callers that relied on replacement
 
-As an application developer, I can discover whether a provider guarantees very
-wide partial updates and receive a consistent, actionable error when a valid
-request exceeds that provider's native atomic-update envelope.
+Cosmos DB and DynamoDB callers that used `update()` as complete replacement
+move to `upsert(address, key, completeDocument)`. Documentation must warn that
+`upsert()` creates a missing document and is not an atomic guarded replacement.
 
-**Why this priority**: Provider limits differ by operation count and encoded
-size. The SDK must expose those differences without imposing one provider's
-limit on all providers or silently changing atomicity.
+## Functional requirements
 
-**Independent Test**: Query the extended-payload capability for each provider,
-submit requests inside and outside native envelopes, and verify that ordinary
-requests succeed while over-envelope requests fail before provider I/O with
-structured limit details.
+- **FR-001**: `update()` MUST treat its map as literal top-level fields to set
+  or replace.
+- **FR-002**: Omitted top-level fields MUST be preserved.
+- **FR-003**: Map and list values MUST replace the complete named top-level
+  value; recursive merge is out of scope.
+- **FR-004**: Java null MUST store null for provider mappings that support the
+  value. Shared conformance MUST use the existing Spanner STRING-null baseline.
+- **FR-005**: A missing document MUST return `NOT_FOUND` and MUST NOT be
+  created.
+- **FR-006**: All assignments in one call MUST commit atomically and replaying
+  the same absolute assignments MUST be idempotent.
+- **FR-007**: Shared preflight MUST reject a null/empty map and null, empty, or
+  blank field names as non-retryable `INVALID_REQUEST`.
+- **FR-008**: Shared preflight MUST reject, case-insensitively, `id`,
+  `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, and `data`; names beginning
+  with `_`; and case-insensitive duplicates.
+- **FR-009**: Accepted field names MUST NOT be trimmed or rewritten.
+- **FR-010**: A non-null `OperationOptions.ttlSeconds()` on `update()` MUST be
+  rejected before provider I/O. TTL remains create/upsert-only.
+- **FR-011**: The serialized field map limit MUST be exactly 408,576 bytes.
+  408,576 bytes passes shared preflight and 408,577 bytes fails.
+- **FR-012**: After validation and before delegation, the default client MUST
+  gate `Capability.PARTIAL_UPDATE`; an unsupported provider receives
+  non-retryable `UNSUPPORTED_CAPABILITY` with
+  `providerDetails.capability=partial_update`.
+- **FR-013**: `PARTIAL_UPDATE_EXTENDED_PAYLOAD` MUST describe whether supported
+  provider field mappings can reach the common size limit without a lower
+  provider request or resulting-item envelope. It MUST NOT disable ordinary
+  updates.
+- **FR-014**: Every built-in provider MUST declare every known capability.
+- **FR-015**: Spanner's existing provider implementation MUST remain unchanged.
+  Its fields map only to already provisioned columns; `update()` MUST NOT be
+  described as creating arbitrary missing Spanner columns.
+- **FR-016**: Cosmos DB MUST encode each raw field name as one RFC 6901 segment
+  (`~` → `~0`, `/` → `~1`) and use `set`.
+- **FR-017**: Cosmos DB MUST issue one direct `patchItem` for up to 10 fields.
+- **FR-018**: Cosmos DB MUST issue one same-item, same-partition transactional
+  batch of at-most-10-operation patch chunks for wider requests.
+- **FR-019**: Cosmos DB MUST reject a prospective batch over 100 batch
+  operations or 2,097,152 serialized UTF-8 bytes before I/O.
+- **FR-020**: Cosmos DB MUST NOT add an adapter read, replace, or retry loop.
+- **FR-021**: A failed Cosmos batch MUST surface the first non-424 operation
+  failure, otherwise a usable non-424 aggregate failure, otherwise a sanitized
+  `PROVIDER_ERROR`. HTTP 424 MUST NOT be presented as the root cause.
+- **FR-022**: Cosmos CRUD/update HTTP 408 and 410 failures MUST be transient and
+  retryable; 410 substatus MUST be preserved.
+- **FR-023**: Cosmos write response bodies MAY be disabled only while status,
+  activity ID, request charge, duration, and diagnostics used by existing
+  write paths remain available.
+- **FR-024**: DynamoDB MUST issue one conditional `UpdateItem` with stable name
+  and value aliases, one `SET` assignment per field, and an aliased
+  `attribute_exists(partitionKey)` guard.
+- **FR-025**: DynamoDB values MUST preserve null, scalar, map, and list shapes.
+- **FR-026**: DynamoDB MUST measure the complete update expression as UTF-8;
+  4,096 bytes passes and 4,097 bytes fails before I/O.
+- **FR-027**: DynamoDB conditional failure on the existence guard MUST map to
+  `NOT_FOUND`; no read, `PutItem`, or adapter retry loop may be added.
+- **FR-028**: Provider diagnostics MUST be concise and MUST NOT log field
+  values, serialized request bodies, credentials, or authorization data.
+- **FR-029**: Shared conformance MUST use only existing three-provider fixture
+  field names/shapes. No new Spanner-specific test or schema fixture is part of
+  this feature.
+- **FR-030**: Migration documentation MUST direct replacement callers to
+  `upsert()` and explain its create-on-missing behavior.
+- **FR-031**: On `update()` only, the DynamoDB `ValidationException` message
+  variant indicating that the resulting item exceeds the maximum item size MUST
+  map to non-retryable `UNSUPPORTED_CAPABILITY` with
+  `capability=partial_update_extended_payload`,
+  `reason=dynamodb_result_item_size_limit`, and
+  `maximumResultBytes=409600`. Other `ValidationException` failures MUST remain
+  `INVALID_REQUEST`. The original cause and sanitized native error code, status,
+  request ID, and service details MUST be preserved where available, without
+  payload data.
+- **FR-032**: On `update()` only, Cosmos DB HTTP 413 MUST map to
+  non-retryable `UNSUPPORTED_CAPABILITY` with
+  `capability=partial_update_extended_payload`,
+  `reason=cosmos_result_item_size_limit`, and
+  `maximumResultBytes=2097152`. The direct exception cause and sanitized
+  native status, substatus, activity ID, and request charge MUST be preserved
+  where available. The failed native patch or batch MUST leave the item
+  unchanged. HTTP 413 from other operations MUST retain the normal Cosmos
+  provider-error mapping.
 
-**Acceptance Scenarios**:
+## Provider behavior matrix
 
-1. **Given** an 11-field update within all size limits, **When** it is submitted
-   to any provider, **Then** all 11 fields are updated atomically.
-2. **Given** a Cosmos DB update requiring more than 100 patch requests or
-   exceeding the 2 MB serialized transactional-batch limit, **When** it is
-   submitted, **Then** it fails with `UNSUPPORTED_CAPABILITY`, reason
-   `cosmos_transactional_batch_limit`, before provider I/O.
-3. **Given** a DynamoDB update whose encoded update expression exceeds 4 KB,
-   **When** it is submitted, **Then** it fails with
-   `UNSUPPORTED_CAPABILITY`, reason `dynamodb_update_expression_limit`, before
-   provider I/O.
-4. **Given** a provider that reports the extended-payload capability as
-   unsupported, **When** an ordinary update fits its native envelope, **Then**
-   the update remains available and succeeds.
-5. **Given** a Cosmos DB transactional batch exceeds its five-second service
-   execution limit, **When** the vendor SDK does not recover it, **Then** the
-   caller receives a normalized timeout or transient operation error rather than
-   `UNSUPPORTED_CAPABILITY`.
+| Concern | Cosmos DB | DynamoDB | Spanner |
+|---|---|---|---|
+| Core partial update | Native patch | Native `UpdateItem` | Existing implementation, unchanged |
+| Missing item | 404 → `NOT_FOUND` | failed existence condition → `NOT_FOUND` | existing `NOT_FOUND` behavior |
+| Wide request | same-item transactional batch | one larger expression | existing fixed-schema mutation |
+| Lower native envelope | 100 batch ops / 2 MiB request; 2 MiB resulting item | 4,096-byte expression; 409,600-byte resulting item | none declared for supported fixed-schema mappings |
+| Schema | schemaless fields | schemaless attributes | pre-provisioned columns only |
+| Adapter read/retry | no read/retry; result-size rejection follows one attempted patch/batch | no read/retry; result-size rejection follows one attempted `UpdateItem` | existing transaction remains |
 
----
+## Edge cases
 
-### User Story 4 - Migrate Full-Document Replacement Callers (Priority: P2)
+- Empty maps, blank names, reserved names, underscore-prefixed names,
+  case-insensitive collisions, update TTL, and 408,577-byte maps fail before
+  provider delegation.
+- Names containing `.`, `/`, `~`, or surrounding spaces remain literal. Cosmos
+  escapes them and Dynamo aliases them. Spanner can use such a name only if a
+  matching column already exists; this feature provisions no such columns.
+- More than 10 Cosmos fields use one atomic batch, never independent patch
+  calls.
+- All-424 or empty failed Cosmos batch result lists use the aggregate fallback
+  or the sanitized no-root error.
+- A small Cosmos update can pass shared and batch preflight but fail with HTTP
+  413 when the existing document plus assignments would exceed 2,097,152
+  bytes. The failure becomes the extended-payload capability error and leaves
+  the document unchanged.
+- Dynamo reserved words and punctuation never appear directly in the update
+  expression.
+- A small Dynamo update can pass shared and expression preflight but fail when
+  the existing item plus assignments would exceed 409,600 bytes. Only the
+  item-size `ValidationException` variant becomes the extended-payload
+  capability error; the failed native update leaves the item unchanged.
 
-As an existing SDK user, I can identify the `update()` behavior change and move
-full-document replacement code to `upsert()`.
+## Non-functional requirements
 
-**Why this priority**: The corrected behavior is intentionally breaking for
-Cosmos DB and DynamoDB callers that relied on omitted fields being deleted.
+- **NFR-001**: Keep planners package-private, deterministic, and small.
+- **NFR-002**: Use one adapter SDK invocation for each accepted Cosmos or
+  Dynamo update. Vendor-managed retries are outside this count.
+- **NFR-003**: Local validation failures perform zero provider I/O.
+- **NFR-004**: No unsafe casts, swallowed failures, private vendor SDK imports,
+  or read/replace emulation may be introduced.
+- **NFR-005**: No Spanner provider data-path or provider-test diff may remain.
 
-**Independent Test**: Follow the migration documentation to replace a complete
-document using `upsert()` and verify that `update()` now preserves omitted
-fields.
+## Success criteria
 
-**Acceptance Scenarios**:
+- **SC-001**: Focused API tests pass for validation order, capability gating,
+  TTL rejection, and the exact common-size boundary.
+- **SC-002**: Focused Cosmos tests prove direct patch, wide batch, RFC 6901
+  escaping, local limits, batch failure fallback, exact 408/410 mapping,
+  update-only 413 result-size normalization, diagnostics, and the updated
+  consistency test.
+- **SC-003**: Focused Dynamo tests prove one aliased conditional `UpdateItem`,
+  structured values, exact expression measurement, `NOT_FOUND`, zero-I/O
+  expression rejection, narrow result-item-size error normalization, cause
+  preservation, and unchanged state after the failed native update.
+- **SC-004**: Shared conformance later passes for existing baseline fields and
+  shapes on all three providers without any new Spanner-specific tests.
+- **SC-005**: `git diff --check` passes and
+  `SpannerProviderClient.java` has no diff.
 
-1. **Given** existing code that used `update()` for complete replacement,
-   **When** the user follows the migration guide, **Then** it uses `upsert()`
-   instead.
-2. **Given** `upsert()` is used as the migration target with a missing key,
-   **When** the operation executes, **Then** the documentation clearly warns
-   that a new document is created rather than returning `NOT_FOUND`.
-3. **Given** a user reviews release documentation, **When** they read the
-   partial-update change, **Then** they can identify the old and new behavior,
-   affected providers, and required migration.
+## Out of scope
 
-### Edge Cases
-
-- An empty field map is rejected as `INVALID_REQUEST` before provider I/O.
-- Reserved fields (`id`, provider key fields, TTL bookkeeping fields, `data`,
-  and `_`-prefixed names) remain rejected before provider I/O.
-- A field name containing `.`, `/`, or `~` is handled as literal top-level
-  content; provider escaping never appears in the public API.
-- TTL consumes one Cosmos patch operation and is included exactly once when a
-  wide update is divided into patch requests.
-- If one part of a provider-native atomic update fails, none of the requested
-  field changes are committed.
-- A provider failure status associated with an atomic batch is mapped from the
-  underlying failed operation; dependent failure statuses do not replace the
-  actual cause.
-- The common 399 KB payload validation still applies before provider-specific
-  atomic-update envelope checks.
-
-## Requirements *(mandatory)*
-
-### Functional Requirements
-
-- **FR-001**: `update()` MUST interpret its payload as top-level fields to set or
-  replace, not as a complete replacement document.
-- **FR-002**: `update()` MUST preserve every stored top-level field omitted from
-  the request.
-- **FR-003**: `update()` MUST overwrite a stored top-level field present in the
-  request.
-- **FR-004**: `update()` MUST create a requested top-level field that does not
-  yet exist in the stored document.
-- **FR-005**: `update()` on a missing document MUST return `NOT_FOUND` and MUST
-  NOT create the document.
-- **FR-006**: The merge MUST be shallow. Object and array values MUST replace the
-  complete value of their named top-level field.
-- **FR-007**: A supplied null MUST store JSON null and MUST NOT remove the field.
-- **FR-008**: Field-name punctuation, including `.`, `/`, and `~`, MUST be
-  interpreted literally and MUST NOT imply nested-path syntax.
-- **FR-009**: All fields in one `update()` call MUST be applied atomically.
-- **FR-010**: Reapplying the same field update MUST produce the same stored
-  document as applying it once.
-- **FR-011**: Concurrent successful updates to disjoint top-level fields MUST
-  preserve both changes.
-- **FR-012**: Existing reserved-field and common 399 KB payload validation MUST
-  remain in effect and fail before provider I/O.
-- **FR-013**: The payload parameter in `update()` declarations and documentation
-  MUST be named `fields`; the public payload type MUST remain
-  `Map<String, Object>`.
-- **FR-014**: Base set/replace partial update MUST remain universally available
-  without a capability gate when a request fits the selected provider's native
-  atomic-update envelope.
-- **FR-015**: The SDK MUST expose `PARTIAL_UPDATE_EXTENDED_PAYLOAD` to indicate
-  whether a provider guarantees every otherwise-valid partial update through the
-  common 399 KB payload limit.
-- **FR-016**: Cosmos DB and DynamoDB MUST declare
-  `PARTIAL_UPDATE_EXTENDED_PAYLOAD` unsupported; Spanner MUST declare it
-  supported.
-- **FR-017**: Cosmos DB MUST support updates wider than 10 field operations as
-  one atomic operation when they fit within 100 patch requests and a 2 MB
-  serialized request.
-- **FR-018**: A Cosmos DB request exceeding 100 patch requests or 2 MB MUST fail
-  before provider I/O with `UNSUPPORTED_CAPABILITY`, reason
-  `cosmos_transactional_batch_limit`, and actual/maximum operation counts and
-  bytes where measurable.
-- **FR-019**: A DynamoDB request with an encoded update expression exceeding
-  4 KB MUST fail before provider I/O with `UNSUPPORTED_CAPABILITY`, reason
-  `dynamodb_update_expression_limit`, and actual/maximum expression bytes where
-  measurable.
-- **FR-020**: Operational timeout, throttling, routing, and transient failures
-  MUST use the existing normalized operation error categories and MUST NOT be
-  reported as unsupported capabilities.
-- **FR-021**: Provider adapters MUST rely on vendor SDK retry behavior and MUST
-  NOT add a separate partial-update retry loop.
-- **FR-022**: A provider retry of a wide atomic update MUST replay the complete
-  atomic operation and MUST NOT submit individual portions independently.
-- **FR-023**: The feature MUST NOT add `replace()`, nested-path operations,
-  field-removal operations, arithmetic operations, or conditional writes.
-- **FR-024**: Full-document replacement migration guidance MUST direct callers
-  to `upsert()` and MUST state that `upsert()` creates a missing document.
-- **FR-025**: API, provider, guide, compatibility, and changelog documentation
-  MUST describe the behavior change, provider envelopes, capability declarations,
-  error reasons, request/cost differences, and migration path.
-- **FR-026**: The same portable conformance suite MUST verify the required
-  observable semantics on Cosmos DB, DynamoDB, and Spanner.
-
-### Key Entities
-
-- **Partial Update Field Set**: A map of literal top-level field names to
-  absolute replacement values.
-- **Document Key**: The portable partition and sort-key identity of the existing
-  document to update.
-- **Extended Payload Capability**: A provider declaration indicating whether all
-  otherwise-valid field shapes through the common payload limit are guaranteed.
-- **Provider Limit Details**: Structured error data containing the provider
-  reason and measured versus maximum operation or byte limits.
-
-### Assumptions
-
-- The SDK remains in beta, so the team accepts a documented hard behavior change
-  without a compatibility flag.
-- Known consumers do not require `update()` to preserve full-replacement
-  `NOT_FOUND` behavior; `upsert()` is an acceptable migration target.
-- Spanner's existing update implementation already satisfies the observable
-  shallow partial-update contract.
-- Vendor SDK default retry policies remain responsible for retry execution.
-
-### Out of Scope
-
-- A portable Patch API or explicit nested document path type
-- Field removal and server-side arithmetic
-- Conditional or compare-and-set updates
-- A new full-document `replace()` operation
-- A unified document payload type replacing `Map<String, Object>`
-- Portable or provider-specific retry configuration
-- Spanner update-path cost optimization
-
-## Success Criteria *(mandatory)*
-
-### Measurable Outcomes
-
-- **SC-001**: All portable partial-update conformance scenarios pass unchanged
-  against Cosmos DB, DynamoDB, and Spanner.
-- **SC-002**: On every provider, updating one field in a document containing at
-  least three fields preserves 100% of the omitted fields.
-- **SC-003**: An ordinary 11-field update succeeds atomically on every provider.
-- **SC-004**: Repeating the same update twice produces a document byte-equivalent
-  in logical JSON content to applying it once.
-- **SC-005**: Concurrent updates to two disjoint fields retain both changes in
-  all provider conformance runs.
-- **SC-006**: Provider-envelope rejection tests observe zero provider network
-  calls and return the required `UNSUPPORTED_CAPABILITY` reason and limit
-  details.
-- **SC-007**: All affected public API declarations, provider adapters,
-  compatibility documentation, guides, and changelogs consistently describe
-  partial-update semantics and the `upsert()` migration path.
+- Spanner data-path changes, typed-null work, schema discovery, DDL, new
+  Spanner tests, or Spanner E2E schema helpers
+- remove/increment/nested-path patch operations
+- a new `replace()` API or compatibility mode
+- native-client escape hatch, cancellation, or retry-policy work tracked by
+  issues #102, #103, and #104
+- changes under `multiclouddb-perf/`

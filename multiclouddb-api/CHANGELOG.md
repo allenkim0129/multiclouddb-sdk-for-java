@@ -7,6 +7,16 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- Well-known `PARTIAL_UPDATE` and `PARTIAL_UPDATE_EXTENDED_PAYLOAD` capabilities; the latter covers lower native request or resulting-item envelopes for supported field mappings. All built-in providers now declare all 19 known capability names.
+
+### Changed
+
+- `MulticloudDbClient.update()` now specifies shallow top-level set/replace semantics: supplied fields are replaced, omitted fields remain, map/list values replace their complete top-level value, and a missing item returns `NOT_FOUND` without create.
+- Update payloads are validated before delegation. Non-null `OperationOptions.ttlSeconds()` returns non-retryable `INVALID_REQUEST` with zero provider I/O, and the serialized field map is limited to 408,576 bytes.
+- Full-document replacement callers must use `upsert()` with the complete desired document. `upsert()` creates a missing item and is not an update-only replacement.
+
 ## [0.1.0-beta.2] — 2026-06-17
 
 ### Added

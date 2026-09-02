@@ -11,8 +11,9 @@ capabilities (e.g., `CROSS_PARTITION_QUERY`, `ORDER_BY`, `LIKE`); use
 
 ## What Works Everywhere
 
-Every capability listed below is fully supported on **all** providers. There are
-no asterisks, no provider-specific caveats, and no runtime checks required.
+Every operation listed below is supported on **all** providers. Portable field
+names and value shapes still follow each provider's declared mapping; notably,
+Spanner updates require already provisioned columns.
 
 ### CRUD Operations
 
@@ -20,9 +21,28 @@ no asterisks, no provider-specific caveats, and no runtime checks required.
 |-----------|-------------|
 | **Create** | Insert a new document (fails if the key already exists) |
 | **Read** | Point-read by partition key + sort key |
-| **Update** | Replace an existing document (fails if not found) |
+| **Update** | Shallow set/replace of supplied top-level fields; omitted fields remain; fails if not found |
 | **Upsert** | Create or replace - always succeeds |
 | **Delete** | Remove by key (idempotent — silent on missing; use `read()` to detect a missing key, since `read()` returns `null` on every provider) |
+
+### Partial Update
+
+`update()` never creates a missing item. It replaces supplied top-level values
+atomically, preserves omitted fields, and treats map/list values as complete
+top-level replacements. Non-null update TTL is rejected before provider I/O
+with `INVALID_REQUEST`.
+
+All built-in providers declare all 19 known capability names.
+
+| Provider | `PARTIAL_UPDATE` | `PARTIAL_UPDATE_EXTENDED_PAYLOAD` | Native mechanism / request count | Cost and limits |
+|----------|:----------------:|:---------------------------------:|----------------------------------|-----------------|
+| Cosmos DB | ✅ | ❌ | One `patchItem` for up to 10 fields; otherwise one same-item transactional-batch request | RU cost follows patch chunks; 100 batch operations / 2,097,152 serialized bytes; 2,097,152-byte resulting document after one attempted update |
+| DynamoDB | ✅ | ❌ | One conditional aliased `UpdateItem SET` | 4,096-byte generated expression (pre-I/O); 409,600-byte resulting item (after one attempted update); accepted calls consume one item update's write capacity |
+| Spanner | ✅ | ✅, fixed-schema mappings only | Existing read-write transaction and one partial row mutation | Transaction read + write; every field must already be a column |
+
+For full replacement, use `upsert()` with the complete document. It creates a
+missing item; read-then-upsert is not an atomic update-only replacement and can
+recreate an item deleted or expired between the calls.
 
 ### Query - Portable Expression DSL
 
@@ -84,23 +104,30 @@ The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 
 | Category  | Cosmos DB  | DynamoDB  | Spanner  |
 |-----------|------------|-----------|----------|
-| `INVALID_REQUEST`  | HTTP 400  | ValidationException, HTTP 400  | INVALID_ARGUMENT, FAILED_PRECONDITION  |
+| `INVALID_REQUEST`  | HTTP 400  | ValidationException, HTTP 400, except the update result-item-size variant below  | INVALID_ARGUMENT, FAILED_PRECONDITION  |
 | `AUTHENTICATION_FAILED`  | HTTP 401  | UnrecognizedClientException, HTTP 401/403  | UNAUTHENTICATED  |
 | `AUTHORIZATION_FAILED`  | HTTP 403  | AccessDeniedException  | PERMISSION_DENIED  |
-| `NOT_FOUND`  | HTTP 404  | ResourceNotFoundException, HTTP 404  | NOT_FOUND  |
+| `NOT_FOUND`  | HTTP 404  | ResourceNotFoundException, HTTP 404, or `ConditionalCheckFailedException` from the `update()` existence guard  | NOT_FOUND  |
 | `CONFLICT` (409 - duplicate key)  | HTTP 409  | `ConditionalCheckFailedException` from `create()` - `attribute_not_exists` guard fails when the item already exists  | ALREADY_EXISTS  |
-| `CONFLICT` (412 - precondition)  | HTTP 412  | `ConditionalCheckFailedException` from `update()`/`upsert()` with a condition expression¹  | ABORTED  |
+| `CONFLICT` (412 - precondition)  | HTTP 412  | Other conditional-write precondition failures¹  | ABORTED  |
 | `THROTTLED`  | HTTP 429  | ProvisionedThroughputExceededException, ThrottlingException  | RESOURCE_EXHAUSTED  |
 | `TRANSIENT_FAILURE`  | HTTP 449, 500, 502, 503  | HTTP 500–5xx  | UNAVAILABLE  |
 | `PERMANENT_FAILURE`  | -  | ItemCollectionSizeLimitExceededException  | -  |
-| `UNSUPPORTED_CAPABILITY`  | HTTP 400 with AVAD-not-enabled fingerprint (`providerDetails.reason="avad_not_enabled"`)  | `InvalidArgumentException` / `ResourceNotFoundException` for streams not enabled (`reason="stream_not_enabled"`)  | UNIMPLEMENTED, plus change-stream-not-provisioned (`reason="stream_not_enabled"`)  |
+| `UNSUPPORTED_CAPABILITY`  | HTTP 400 with AVAD-not-enabled fingerprint (`providerDetails.reason="avad_not_enabled"`); update HTTP 413 (`reason="cosmos_result_item_size_limit"`, `maximumResultBytes="2097152"`)  | `InvalidArgumentException` / `ResourceNotFoundException` for streams not enabled (`reason="stream_not_enabled"`); update result-item-size `ValidationException` (`reason="dynamodb_result_item_size_limit"`, `maximumResultBytes="409600"`)  | UNIMPLEMENTED, plus change-stream-not-provisioned (`reason="stream_not_enabled"`)  |
 | `CURSOR_EXPIRED` (change-feed) | HTTP 410 GONE (`reason="PROVIDER_TRIMMED"`)  | `TrimmedDataAccessException` (`reason="PROVIDER_TRIMMED"`), `ExpiredIteratorException` (`reason="ITERATOR_EXPIRED"`)  | `INVALID_ARGUMENT` / `OUT_OF_RANGE` / `NOT_FOUND` for partition outside retention (`reason="PROVIDER_TRIMMED"`)  |
 | `PROVIDER_ERROR`  | Other  | Other  | INTERNAL, Other  |
 
-> ¹ DynamoDB uses `ConditionalCheckFailedException` for both the 409 (duplicate-key on `create`) and 412
-> (precondition failure on conditional `update`/`upsert`) cases - both currently map to `CONFLICT`.
-> The portable API does not yet expose ETag-based conditional updates; when it does, the 412-equivalent
-> path will be split into a dedicated `PRECONDITION_FAILED` category (tracked in issue #29).
+> ¹ DynamoDB uses `ConditionalCheckFailedException` for several condition
+> failures. The SDK maps the specific `update()` existence guard to `NOT_FOUND`;
+> duplicate `create()` remains `CONFLICT`. The portable API does not yet expose
+> ETag-based conditional updates.
+
+Cosmos DB's result-item-size capability error follows one attempted direct
+patch or batch. DynamoDB's follows one attempted `UpdateItem`; expression
+overflow remains a local zero-I/O rejection. No read/merge preflight is
+performed. Cosmos HTTP 413 from other operations retains the general provider
+mapping, and other Dynamo `ValidationException` messages remain
+`INVALID_REQUEST`.
 
 ## Change-Feed History Retention
 

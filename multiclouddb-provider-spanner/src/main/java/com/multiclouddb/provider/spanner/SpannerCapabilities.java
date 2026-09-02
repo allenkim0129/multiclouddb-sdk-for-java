@@ -42,5 +42,10 @@ public final class SpannerCapabilities {
                     + "not implementable as a runtime write — SDK does not manage schema"),
             Capability.of(Capability.WRITE_TIMESTAMP, false,
                     "Full commit-timestamp metadata requires allow_commit_timestamp=true DDL; "
-                    + "deferred — current impl returns empty metadata shell")));
+                    + "deferred — current impl returns empty metadata shell"),
+            // Feature 002 leaves the existing fixed-schema update data path unchanged.
+            Capability.PARTIAL_UPDATE_CAP.withNotes(
+                    "Existing fixed-schema partial mutation; fields must map to provisioned columns"),
+            Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD_CAP.withNotes(
+                    "No lower request/result envelope for supported fixed-schema field mappings")));
 }
