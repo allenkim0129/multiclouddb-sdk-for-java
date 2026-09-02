@@ -82,7 +82,7 @@ No Spanner provider data-path or provider-test change is present.
 
 - [X] T040 Re-run targeted API/Cosmos/Dynamo unit suites after conformance/docs edits (API 36, Cosmos 95, Dynamo 46; zero failures/errors/skips)
 - [X] T041 Run the applicable complete unit and emulator/conformance suites with positive discovery: clean unit reactor plus complete Cosmos (78 discovered, one expected emulator skip) and Dynamo (88 discovered) profiles
-- [ ] T042 Run provider-neutral E2E against configured Cosmos, Dynamo, and Spanner environments
+- [X] T042 Run provider-neutral E2E against Cosmos Emulator, DynamoDB Local, and Spanner Emulator; all three provider runs completed successfully
 - [X] T043 Build API/provider Javadocs and validate 23 changed Markdown files/anchors, four JSON examples, the provider-details schema, 19 capabilities per provider, and all 42 requirement IDs in task traceability
 - [X] T044 Run `git diff --check` and final scope/status audit; confirm no `SpannerProviderClient.java` diff, no new Spanner test/source helper, no credentials, and no touched/staged `multiclouddb-perf/`
 
