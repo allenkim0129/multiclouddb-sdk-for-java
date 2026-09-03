@@ -139,15 +139,14 @@ same provider-neutral tests and requires no Spanner-specific implementation.
 ## Counts
 
 - Total tasks: **54**
-- Completed: **53**
-- Remaining: **1**
+- Completed: **54**
+- Remaining: **0**
 
 The exact Dynamo emulator profile passed all 88 discovered tests, and the
 Cosmos profile passed all 78 discovered tests with one expected emulator skip.
-The focused Dynamo E2E partial/wide update run remains recorded. PR CI also
-passed the unchanged Spanner shared conformance suite. Complete three-provider
-E2E remains intentionally unclaimed until all environments are configured
-together.
+PR CI also passed the unchanged Spanner shared conformance suite. The
+provider-neutral E2E flow completed successfully against Cosmos Emulator,
+DynamoDB Local, and Spanner Emulator.
 
 ## Scope rules
 
