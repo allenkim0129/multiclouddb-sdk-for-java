@@ -45,23 +45,16 @@ void update(
   `INVALID_REQUEST`.
 - The shared serialized field-map limit is 408,576 bytes.
 
-`Capability.PARTIAL_UPDATE` is supported by all three built-in providers.
-`PARTIAL_UPDATE_EXTENDED_PAYLOAD` is unsupported by Cosmos DB and DynamoDB
-because a native request or resulting-item envelope can bind first. Dynamo
-rejects generated expressions above 4,096 UTF-8 bytes before I/O and may reject
-the one attempted `UpdateItem` when the result would exceed 409,600 bytes.
-Cosmos may reject one attempted patch or batch with HTTP 413 when the resulting
-document would exceed 2,097,152 bytes.
-Spanner reports the capability supported only for its existing fixed-schema
-mappings; fields must already be provisioned columns.
+`Capability.PARTIAL_UPDATE` is supported by Cosmos DB and DynamoDB. The
+unchanged Spanner provider does not advertise it, so the default client returns
+non-retryable `UNSUPPORTED_CAPABILITY` with `capability=partial_update` before
+provider delegation.
 
-`PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` is supported by Cosmos DB and DynamoDB.
-Spanner declares it unsupported because GoogleSQL column identifiers are
-case-insensitive. Spanner requires the established logical spelling or, for a
-new field, the exact provisioned-column spelling, and returns non-retryable
-`UNSUPPORTED_CAPABILITY` with
-`reason=spanner_case_insensitive_column_collision` for a case-only alias.
-
+Cosmos and Dynamo report `PARTIAL_UPDATE_EXTENDED_PAYLOAD=false` because a
+native request or resulting-item envelope can bind first, and
+`PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS=true` because both preserve literal field
+case. Spanner does not declare either extension because it does not participate
+in this feature release.
 The Cosmos result-size case is non-retryable `UNSUPPORTED_CAPABILITY` with
 `reason=cosmos_result_item_size_limit` and
 `maximumResultBytes=2097152`.

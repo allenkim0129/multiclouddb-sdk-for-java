@@ -9,7 +9,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
-- Well-known `PARTIAL_UPDATE`, `PARTIAL_UPDATE_EXTENDED_PAYLOAD`, and `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` capabilities. The latter two describe lower native envelopes and literal case-sensitive field identity, respectively. All built-in providers now declare all 20 known capability names.
+- Well-known `PARTIAL_UPDATE`, `PARTIAL_UPDATE_EXTENDED_PAYLOAD`, and `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` capabilities. The latter two describe lower native envelopes and literal case-sensitive field identity. Cosmos DB and DynamoDB declare all three; the unchanged Spanner provider does not participate in this feature release and is rejected by the core capability gate.
 
 ### Changed
 

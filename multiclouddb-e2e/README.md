@@ -93,10 +93,10 @@ the app starts.
    ```
 
 The E2E runner does not add application columns to Spanner. The configured
-`products` table must already contain the columns used by the portable scenario:
-`id`, `name`, `category`, `price`, and `inStock` (in addition to the SDK key and
-`data` columns). The wider update is skipped on Spanner rather than altering its
-schema or claiming that missing columns can be created automatically.
+`products` table must already contain the columns used by its existing CRUD and
+query scenario: `id`, `name`, `category`, `price`, and `inStock` (in addition to
+the SDK key and `data` columns). Partial-update steps are capability-gated and
+skipped because the unchanged Spanner provider does not advertise this feature.
 
 ---
 
@@ -108,8 +108,8 @@ Each run exercises the full CRUD surface on a `products` collection:
 |------|-----------|------------|
 | 1 | Create 5 products | `client.upsert(...)` |
 | 2 | Read one by ID | `client.read(...)` |
-| 3 | Partially update price and stock | `client.update(...)` |
-| 4 | Verify changed fields and omitted name/category preservation | `client.read(...)` |
+| 3 | Partially update price and stock (Cosmos/Dynamo only) | `client.update(...)` |
+| 4 | Verify changed fields and omitted name/category preservation (Cosmos/Dynamo only) | `client.read(...)` |
 | 5 | Update 11 ordinary fields (Cosmos/Dynamo only) and verify preservation | `client.update(...)`, `client.read(...)` |
 | 6 | List all (paged) | `client.query(...)` |
 | 7 | Filter by category | `client.query(expression)` |
@@ -118,10 +118,9 @@ Each run exercises the full CRUD surface on a `products` collection:
 | 10 | Confirm deletion | `client.query(...)` |
 | 11 | Cleanup all items | `client.delete(...)` |
 
-The wide case reuses ordinary field names already provisioned by the repository's
-conformance fixture. It exists to exercise Cosmos's transactional-batch path and
-DynamoDB's single wide `UpdateItem`; it is intentionally not a Spanner schema
-test.
+The partial-update cases exercise Cosmos's patch/batch paths and DynamoDB's
+single `UpdateItem`. They are skipped for providers that do not advertise
+`PARTIAL_UPDATE`, including unchanged Spanner in this release.
 
 ---
 

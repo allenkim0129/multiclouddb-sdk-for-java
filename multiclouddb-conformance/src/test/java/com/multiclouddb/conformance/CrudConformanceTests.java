@@ -37,6 +37,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -128,6 +129,11 @@ public abstract class CrudConformanceTests {
         fields.put("originalOnly", "wide-original");
         assertTrue(fields.size() > 10, "This case must remain wider than ten fields");
         return fields;
+    }
+
+    private void assumePartialUpdateSupported() {
+        assumeTrue(client.capabilities().isSupported(Capability.PARTIAL_UPDATE),
+                "Provider does not participate in the portable partial-update release");
     }
 
     // ── CRUD tests ────────────────────────────────────────────────────────────
@@ -612,8 +618,26 @@ public abstract class CrudConformanceTests {
     // ── Partial update ────────────────────────────────────────────────────────
 
     @Test @Order(22)
+    @DisplayName("unsupported partial update fails at the shared capability gate")
+    void unsupportedPartialUpdateIsCapabilityGated() {
+        assumeFalse(client.capabilities().isSupported(Capability.PARTIAL_UPDATE));
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-unsupported");
+
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> client.update(getAddress(), key, Map.of("title", "not-delegated")));
+
+        assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY, ex.error().category());
+        assertFalse(ex.error().retryable());
+        assertEquals(client.providerId(), ex.error().provider());
+        assertEquals(Capability.PARTIAL_UPDATE,
+                ex.error().providerDetails().get("capability"));
+        assertNull(client.read(getAddress(), key));
+    }
+
+    @Test @Order(23)
     @DisplayName("update replaces selected fields and preserves omitted fields")
     void partialUpdateReplacesSelectedFieldsAndPreservesOmittedFields() {
+        assumePartialUpdateSupported();
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-shapes");
         Map<String, Object> seed = new LinkedHashMap<>();
         seed.put("title", "before");
@@ -652,9 +676,10 @@ public abstract class CrudConformanceTests {
         }
     }
 
-    @Test @Order(23)
+    @Test @Order(24)
     @DisplayName("update of a missing item returns NOT_FOUND and does not create")
     void partialUpdateMissingItemReturnsNotFoundWithoutCreate() {
+        assumePartialUpdateSupported();
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-missing");
 
         MulticloudDbException ex = assertThrows(MulticloudDbException.class,
@@ -665,9 +690,10 @@ public abstract class CrudConformanceTests {
                 "A failed update must not create the missing item");
     }
 
-    @Test @Order(24)
+    @Test @Order(25)
     @DisplayName("replaying the same partial update is idempotent")
     void partialUpdateReplayIsIdempotent() {
+        assumePartialUpdateSupported();
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-replay");
         Map<String, Object> fields = Map.of("status", "complete", "priority", 7);
 
@@ -686,9 +712,10 @@ public abstract class CrudConformanceTests {
         }
     }
 
-    @Test @Order(25)
+    @Test @Order(26)
     @DisplayName("concurrent disjoint partial updates preserve both writes")
     void disjointConcurrentPartialUpdatesPreserveBothWrites() throws Exception {
+        assumePartialUpdateSupported();
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-concurrent");
         ExecutorService executor = Executors.newFixedThreadPool(2);
 
@@ -716,9 +743,10 @@ public abstract class CrudConformanceTests {
         }
     }
 
-    @Test @Order(26)
+    @Test @Order(27)
     @DisplayName("partial update supports more than ten provisioned ordinary fields")
     void partialUpdateSupportsMoreThanTenOrdinaryFields() {
+        assumePartialUpdateSupported();
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-wide");
         Map<String, Object> fields = wideUpdateFields();
 
@@ -737,7 +765,7 @@ public abstract class CrudConformanceTests {
         }
     }
 
-    @Test @Order(27)
+    @Test @Order(28)
     @DisplayName("update TTL is rejected and leaves the existing document unchanged")
     void partialUpdateRejectsTtlWithoutMutation() {
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-ttl");
@@ -766,7 +794,7 @@ public abstract class CrudConformanceTests {
         }
     }
 
-    @Test @Order(28)
+    @Test @Order(29)
     @DisplayName("invalid and reserved update fields leave the existing document unchanged")
     void partialUpdateInvalidFieldsDoNotMutateExistingDocument() {
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-invalid");
@@ -809,7 +837,7 @@ public abstract class CrudConformanceTests {
         }
     }
 
-    @Test @Order(29)
+    @Test @Order(30)
     @DisplayName("a 408,577-byte update is rejected and leaves the document unchanged")
     void partialUpdateOneByteOverCommonLimitDoesNotMutateExistingDocument() throws Exception {
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-size");
@@ -835,9 +863,10 @@ public abstract class CrudConformanceTests {
         }
     }
 
-    @Test @Order(30)
+    @Test @Order(31)
     @DisplayName("a wide update of a missing item returns NOT_FOUND without creating it")
     void partialUpdateWideMissingItemReturnsNotFoundWithoutCreate() {
+        assumePartialUpdateSupported();
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-wide-missing");
 
         MulticloudDbException ex = assertThrows(MulticloudDbException.class,
@@ -848,9 +877,10 @@ public abstract class CrudConformanceTests {
                 "A failed wide update must not create the missing item");
     }
 
-    @Test @Order(31)
+    @Test @Order(32)
     @DisplayName("case-variant update fields are preserved or explicitly capability-gated")
     void partialUpdateCaseVariantFieldIdentityIsExplicit() {
+        assumePartialUpdateSupported();
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-case");
 
         try {
@@ -881,9 +911,10 @@ public abstract class CrudConformanceTests {
         }
     }
 
-    @Test @Order(32)
+    @Test @Order(33)
     @DisplayName("case variant of an unwritten schema field is preserved or capability-gated")
     void partialUpdateUnwrittenSchemaFieldCaseIsExplicit() {
+        assumePartialUpdateSupported();
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-schema-case");
 
         try {
@@ -915,7 +946,7 @@ public abstract class CrudConformanceTests {
         }
     }
 
-    @Test @Order(33)
+    @Test @Order(34)
     @DisplayName("the exact common payload limit executes when extended payload is advertised")
     void partialUpdateExactCommonLimitExecutesWhenAdvertised() throws Exception {
         assumeTrue(client.capabilities().isSupported(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD));

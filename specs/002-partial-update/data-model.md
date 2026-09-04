@@ -139,30 +139,19 @@ The result-size path is state-dependent and has no adapter read/merge preflight.
 Only the matching update `ValidationException` is normalized; other validation
 errors remain `INVALID_REQUEST`.
 
-## 6. Spanner fixed-schema mapping and casing guard
+## 6. Provider release boundary
 
-The existing transaction/value model remains, with one casing preflight:
-
-| Component | Behavior |
-|---|---|
-| row lookup | reads `FIELD_DATA` in a read-write transaction |
-| logical casing | compares request names with established metadata ignoring case |
-| schema casing | queries `INFORMATION_SCHEMA.COLUMNS` for previously unseen names and requires exact spelling |
-| values | existing scalar conversion; maps/lists encoded in STRING columns |
-| null | null STRING binding |
-| metadata | valid `FIELD_DATA` is unioned with updated names and controls logical output spelling |
-| missing row | existing `NOT_FOUND` behavior |
-
-An update mutation cannot create a missing Spanner column. A case-only alias
-returns `UNSUPPORTED_CAPABILITY` before the mutation is buffered.
-
+Spanner is not a feature-002 data model. Its provider module and capability set
+remain unchanged. Because it does not advertise `partial_update`, the default
+client rejects valid calls before provider delegation; no row, schema, metadata,
+or mapping behavior is changed by this feature.
 ## 7. Capabilities
 
 | Provider | `partial_update` | `partial_update_extended_payload` | `partial_update_case_sensitive_fields` |
 |---|---|---|---|
 | Cosmos DB | supported | unsupported | supported |
 | DynamoDB | supported | unsupported | supported |
-| Spanner | supported | supported for fixed-schema mappings | unsupported |
+| Spanner | not advertised | not advertised | not advertised |
 
 The payload extension describes request/result-envelope reach, not schema
 breadth. The case capability describes literal identity across calls.
@@ -221,8 +210,7 @@ the failed native operation leaves the item unchanged.
 
 ## 9. Conformance fixture rule
 
-Shared tests use only names/shapes already present in all three provider
-fixtures. Existing Spanner STRING columns cover null, map, and list baselines;
-existing ordinary columns cover wider updates and the exact common-size call.
-No new Spanner fixture column is introduced; focused row-mapper coverage checks
-logical casing without changing schema.
+Supported partial-update behavior runs only for providers advertising the core
+capability. Shared invalid-request checks still run on every provider because
+validation precedes the gate. Unchanged Spanner receives a dedicated assertion
+for non-retryable `UNSUPPORTED_CAPABILITY` with zero provider mutation.

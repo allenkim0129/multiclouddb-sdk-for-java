@@ -16,9 +16,9 @@ void update(
     OperationOptions options);
 ```
 
-Cosmos DB and DynamoDB move to native partial-update operations. Spanner's
-fixed-schema implementation remains the baseline, with a narrow exact-case
-validation and logical-name projection fix to prevent silent field aliasing.
+Cosmos DB and DynamoDB move to native partial-update operations and advertise
+the core capability. Spanner is excluded from this release and its provider
+module remains byte-for-byte unchanged from the PR base.
 
 ## 2. Portable contract
 
@@ -34,39 +34,23 @@ For field names and value shapes supported by the provider mapping:
 The operation does not support nested paths, remove, increment, conditional
 field predicates, or update TTL.
 
-### 2.1 Spanner fixed-schema baseline and casing guard
+### 2.1 Release boundary
 
-The existing transaction/value mapping remains, but exact-case validation is
-added because GoogleSQL resolves column identifiers case-insensitively.
+Only providers advertising `partial_update` enter a provider data path. Cosmos
+DB and DynamoDB advertise it. Spanner retains its pre-feature capability set,
+so the default client rejects a valid update after shared validation and before
+delegation with:
 
-The implementation:
+```text
+category=UNSUPPORTED_CAPABILITY
+retryable=false
+operation=update
+capability=partial_update
+```
 
-1. reads `FIELD_DATA` in the existing read-write transaction;
-2. returns `NOT_FOUND` when that row read finds no row;
-3. compares each request name with existing logical metadata ignoring case;
-4. queries `INFORMATION_SCHEMA.COLUMNS` only for names not established in
-   metadata and verifies their exact provisioned spelling;
-5. rejects a case-only alias with non-retryable `UNSUPPORTED_CAPABILITY` tied
-   to `partial_update_case_sensitive_fields` before buffering a mutation;
-6. writes accepted values through the existing `setMutationValue` mapping,
-   unions valid metadata, and commits one mutation; and
-7. projects the exact logical spelling recorded in `FIELD_DATA` when the
-   physical column has different case.
-
-Consequences:
-
-- an established logical field must retain its metadata spelling, while a new
-  logical field must exactly match an already provisioned Spanner column;
-- a row mutation cannot create a missing column;
-- Java null keeps the null-STRING binding;
-- maps/lists keep the marker-prefixed JSON STRING representation; and
-- no DDL or schema-aware typed-null behavior is claimed.
-
-Shared conformance uses existing ordinary fixture columns such as STRING-backed
-`nullField`, `nestedObj`, and `arrayField`. It adds no quoted punctuation,
-typed-null, or wide-field schema column and no E2E schema helper. Focused row
-mapper coverage verifies logical spelling projection.
-
+This boundary avoids changing or releasing any Spanner provider code while
+keeping unsupported behavior explicit rather than silently invoking its legacy
+implementation.
 ## 3. Shared preflight
 
 `DefaultMulticloudDbClient.update()` runs:
@@ -90,9 +74,8 @@ Name validation:
 - unique ignoring case; and
 - accepted names are not trimmed or rewritten.
 
-The validator accepts literal `.`, `/`, `~`, and surrounding spaces. Provider
-mapping still applies. In particular, Spanner requires a matching provisioned
-column.
+The validator accepts literal `.`, `/`, `~`, and surrounding spaces. Mapping
+constraints apply only after the provider passes the core capability gate.
 
 All validation failures are non-retryable `INVALID_REQUEST` and perform zero
 provider I/O. Exactly 408,576 serialized bytes passes; 408,577 fails.
@@ -114,10 +97,10 @@ descriptive and never disable ordinary updates.
 |---|---|---|---|
 | Cosmos DB | supported | unsupported | supported |
 | DynamoDB | supported | unsupported | supported |
-| Spanner | supported | supported for its fixed-schema mappings | unsupported |
+| Spanner | not advertised | not advertised | not advertised |
 
-After these additions every built-in provider declares all 20 known capability
-names.
+Cosmos DB and DynamoDB declare all 20 known capability names. Unchanged Spanner
+retains its existing 17 declarations.
 
 ## 5. Cosmos DB design
 
@@ -300,37 +283,23 @@ needed by the pinned SDK so a clean module-path compilation succeeds.
 
 ### Shared layer
 
-The existing Cosmos, Dynamo, and Spanner concrete `CrudConformanceTests`
-subclasses inherit provider-neutral coverage using only columns/shapes already
-present in the three-provider baseline:
+All providers inherit shared validation coverage for invalid maps, names, TTL,
+and the 408,577-byte rejection because validation precedes the core gate.
+Supported behavior—preservation, missing-item handling, replay, concurrency,
+wide updates, and case identity—runs only when `partial_update` is advertised.
+A dedicated shared assertion verifies that unchanged Spanner returns
+`UNSUPPORTED_CAPABILITY` with `capability=partial_update` and does not mutate
+state.
 
-- overwrite and omitted-field preservation;
-- existing mapped field becoming visible;
-- missing-item `NOT_FOUND`;
-- STRING-backed null;
-- existing map/list encoding;
-- replay and disjoint-field concurrency; and
-- a wider-than-10-field update using already provisioned ordinary columns;
-- complete null/empty/name/reserved/collision validation, update-TTL, and
-  408,577-byte rejection with unchanged stored state;
-- a wider-than-10-field update against a missing item returning `NOT_FOUND`
-  without create;
-- case-distinct identity when supported, otherwise an explicit capability
-  error with unchanged state; and
-- an exact 408,576-byte provider update when
-  `partial_update_extended_payload` is advertised (currently Spanner only).
+The exact 408,576-byte runtime assertion remains gated by
+`partial_update_extended_payload`. Neither participating provider advertises
+that extension, so the positive boundary is locked by API validator tests while
+Cosmos and Dynamo exercise their lower native envelopes in concrete emulator
+regressions.
 
-The exact 408,576-byte boundary remains covered at the API validator and now
-also executes through providers that advertise the extension. Providers with a
-lower native envelope skip that positive runtime assertion via capability, so
-the suite does not invent a false guarantee for Cosmos or DynamoDB.
-
-`CosmosConformanceTest` and `DynamoConformanceTest` additionally seed native
-items below their service limits, apply small portable updates that would push
-the results above those limits, and assert normalized capability errors plus
-unchanged stored state. These provider-specific native-envelope regressions
-are not branched into the shared abstract suite.
-
+`CosmosConformanceTest` and `DynamoConformanceTest` seed native items below their
+service limits, apply small portable updates that would push the results above
+those limits, and assert normalized capability errors plus unchanged state.
 ## 8. Migration
 
 Before this feature, Cosmos and Dynamo `update()` replaced the complete stored

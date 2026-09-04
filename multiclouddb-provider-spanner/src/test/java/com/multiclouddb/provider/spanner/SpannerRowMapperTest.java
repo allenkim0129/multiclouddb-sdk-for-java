@@ -315,28 +315,4 @@ class SpannerRowMapperTest {
             assertTrue(node.get("maybe").isNull());
         }
     }
-
-    @Test
-    @DisplayName("FIELD_DATA preserves the caller's exact case for a Spanner column")
-    void metadataCaseControlsLogicalFieldName() {
-        Type rowType = Type.struct(
-                StructField.of("partitionKey", Type.string()),
-                StructField.of("sortKey", Type.string()),
-                StructField.of("data", Type.string()),
-                StructField.of("title", Type.string()));
-        Struct row = Struct.newBuilder()
-                .set("partitionKey").to("p")
-                .set("sortKey").to("s")
-                .set("data").to("[\"TITLE\"]")
-                .set("title").to("uppercase-logical-name")
-                .build();
-
-        try (ResultSet rs = singleRow(rowType, row)) {
-            JsonNode node = SpannerRowMapper.toJsonNode(rs);
-            assertEquals("uppercase-logical-name", node.path("TITLE").asText());
-            assertFalse(node.has("title"),
-                    "the physical column spelling must not replace the logical metadata spelling");
-        }
-    }
-
 }

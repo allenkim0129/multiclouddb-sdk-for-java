@@ -126,11 +126,11 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
             //   3) the internal core PARTIAL_UPDATE capability gate.
             PartialUpdateValidator.validate(fields, options, OperationNames.UPDATE);
             DocumentSizeValidator.validate(fields, OperationNames.UPDATE);
-            // Internal core gate: current callers do not pre-check because Cosmos DB,
-            // DynamoDB, and Spanner all declare partial_update supported. A future provider
-            // without the core operation fails here locally and non-retryably with
-            // operation=update and providerDetails.capability=partial_update. The gate never
-            // consults PARTIAL_UPDATE_EXTENDED_PAYLOAD; delegation happens exactly once.
+            // Core release gate: Cosmos DB and DynamoDB advertise partial_update. The
+            // unchanged Spanner provider does not, so valid calls fail here locally and
+            // non-retryably with operation=update and
+            // providerDetails.capability=partial_update. The gate never consults
+            // PARTIAL_UPDATE_EXTENDED_PAYLOAD; supported calls delegate exactly once.
             checkCapability(Capability.PARTIAL_UPDATE, OperationNames.UPDATE,
                     "Partial update (partial_update) is not supported by provider " + config.provider().id());
             providerClient.update(address, key, fields, options);

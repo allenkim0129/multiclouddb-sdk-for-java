@@ -7,8 +7,8 @@ status: "complete"
 # Tasks: Portable Partial Update
 
 **Binding design**: `specs/002-partial-update/design.md`
-**Scope**: shared API plus Cosmos DB and DynamoDB implementation, with a narrow
-fixed-schema Spanner casing guard required for explicit portability.
+**Scope**: shared API plus Cosmos DB and DynamoDB implementation. Spanner is
+unchanged and excluded through the shared core capability gate.
 
 All tasks are complete.
 
@@ -24,11 +24,11 @@ All tasks are complete.
 - [X] T005 Add `DefaultMulticloudDbClientPartialUpdateTest` coverage for closed-client precedence, zero delegation, validation order, core capability gating, and no extended-capability lookup
 - [X] T006 Add `DocumentSizeValidatorTest` coverage proving 408,576 bytes passes and 408,577 bytes fails
 - [X] T007 Add `MulticloudDbClientPartialUpdateContractTest` coverage for both existing overloads, `Map<String,Object>`, default options, and TTL rejection
-- [X] T008 Rewrite `MulticloudDbClient.update()` Javadocs for shallow set/replace, omitted-field preservation, mapping-aware null semantics, missing-item `NOT_FOUND`, exact validation, fixed-schema Spanner behavior, capabilities, and replacement migration
-- [X] T009 Rewrite `MulticloudDbProviderClient.update()` Javadocs for the validated SPI contract and fixed-schema Spanner mapping
+- [X] T008 Rewrite `MulticloudDbClient.update()` Javadocs for shallow set/replace, omitted-field preservation, mapping-aware null semantics, missing-item `NOT_FOUND`, exact validation, capability gating, and replacement migration
+- [X] T009 Rewrite `MulticloudDbProviderClient.update()` Javadocs for the validated SPI contract and participating-provider boundary
 - [X] T010 Update `OperationOptions` Javadocs so TTL is create/upsert-only and `update()` rejects it
 - [X] T011 Implement `PartialUpdateValidator` with `Locale.ROOT`, literal names, reserved/collision checks, underscore rejection, and update TTL rejection
-- [X] T012 Add `PARTIAL_UPDATE` and `PARTIAL_UPDATE_EXTENDED_PAYLOAD`, declare them in all providers, and gate the core capability in `DefaultMulticloudDbClient`
+- [X] T012 Add `PARTIAL_UPDATE` and `PARTIAL_UPDATE_EXTENDED_PAYLOAD`, declare them in Cosmos/Dynamo, and gate the core capability in `DefaultMulticloudDbClient`
 - [X] T013 State and test the exact 408,576-byte common limit without changing the existing serializer
 - [X] T014 Remove stale full-replacement wording from API update/delete documentation
 - [X] T015 Run the focused API suite (`PartialUpdateValidatorTest`, `DefaultMulticloudDbClientPartialUpdateTest`, `DocumentSizeValidatorTest`, `MulticloudDbClientPartialUpdateContractTest`, `CapabilityTest`) successfully
@@ -53,37 +53,36 @@ All tasks are complete.
 
 ### Cross-provider declarations and focused validation
 
-- [X] T026 Add the original partial-update declarations in `SpannerCapabilities.java`; later remediation extends all providers to 20 known capabilities with explicit field-case identity
-- [X] T027 Confirm the original Cosmos/Dynamo-focused implementation left `.gitignore` and `SpannerProviderClient.java` unchanged before portability review; T056 records the later approved narrow Spanner fix
+- [X] T026 Confirm unchanged Spanner retains its existing 17 capabilities and does not advertise feature-002 partial update
+- [X] T027 Confirm `.gitignore` and every path under `multiclouddb-provider-spanner/` remain unchanged from the PR base
 - [X] T028 Run focused tests successfully: API 36 tests, Cosmos 95 tests, and Dynamo 15 tests, all with zero failures/errors/skips
 - [X] T029 Reconcile `spec.md`, binding `design.md`, `plan.md`, `research.md`, `data-model.md`, contracts, `quickstart.md`, requirements checklist, and `tasks.md` to the focused scope
 
-**Checkpoint**: Shared/API and Cosmos/Dynamo implementation is complete. The
-later Spanner diff is limited to the portability-review casing guard and
-logical-name projection.
+**Checkpoint**: Shared/API and Cosmos/Dynamo implementation is complete. Spanner
+is excluded through capability gating and has zero provider-module diff.
 
 ## Phase 4: Shared baseline conformance
 
 - [X] T030 Put update-TTL rejection in `CrudConformanceTests` so all three concrete providers inherit the zero-I/O `INVALID_REQUEST` assertion, and remove the unreachable duplicate from `TtlAndMetadataConformanceTest`
-- [X] T031 Add provider-neutral partial-update assertions to `CrudConformanceTests` using only existing three-provider fixture fields/shapes: overwrite, omitted-field preservation, mapped absent field, missing-item `NOT_FOUND`, STRING-backed null, existing map/list mapping, replay, disjoint concurrency, a wider-than-10-field successful update, update-TTL and invalid/reserved-field atomic failure, exact 408,577-byte atomic failure, and a wider-than-10-field missing-item failure without create
-- [X] T032 Verify the Cosmos, Dynamo, and Spanner concrete conformance classes inherit the same methods; capability assertions now cover all 20 names without provider-type branches or new Spanner schema columns
+- [X] T031 Add capability-gated partial-update behavior assertions for Cosmos/Dynamo plus provider-neutral update-TTL, invalid/reserved-field, and 408,577-byte preflight assertions that also run before the Spanner gate
+- [X] T032 Verify Cosmos/Dynamo run supported behavior, while unchanged Spanner advertises 17 capabilities and runs the core unsupported assertion
 - [X] T033 Run the named Cosmos emulator/conformance tests and verify positive Surefire discovery
 - [X] T034 Re-run the exact Dynamo emulator/conformance profile, including the concrete result-item-size regression; all 88 discovered tests pass with zero failures/errors/skips
-- [X] T035 Run the original Spanner shared conformance suite against the existing schema; final casing/exact-limit rerun is tracked by T061
+- [X] T035 Run Spanner conformance against the unchanged provider and verify shared validation plus core capability rejection
 
 ## Phase 5: Documentation and migration
 
-- [X] T036 Update `docs/guide.md`, `docs/api-reference.md`, `docs/configuration.md`, `docs/compatibility.md`, and `docs/changelog.md` for shallow update, capability declarations, fixed-schema Spanner mapping, native envelopes, TTL rejection, and `upsert()` migration
-- [X] T037 Update `[Unreleased]` entries in API and every provider changelog, including the narrow Spanner casing guard and capability declaration
-- [X] T038 Update E2E to exercise selected-field preservation on every provider and a wider-than-10-field path on Cosmos/Dynamo only; the Spanner run remains fixed-schema and adds no schema helper
-- [X] T039 Update `multiclouddb-e2e/README.md` and directly related root README text without claiming automatic Spanner column creation
+- [X] T036 Update user docs for Cosmos/Dynamo shallow update, unchanged Spanner capability rejection, native envelopes, TTL rejection, and `upsert()` migration
+- [X] T037 Update API, Cosmos, and Dynamo `[Unreleased]` entries while restoring the Spanner changelog to the PR base
+- [X] T038 Update E2E to exercise partial update on Cosmos/Dynamo and skip the scenario when `PARTIAL_UPDATE` is absent
+- [X] T039 Update E2E and root README text to document unchanged Spanner as outside the feature release
 
 ## Phase 6: Final validation
 
 - [X] T040 Re-run targeted API/Cosmos/Dynamo unit suites after conformance/docs edits (API 36, Cosmos 95, Dynamo 46; zero failures/errors/skips)
 - [X] T041 Run the applicable complete unit and emulator/conformance suites with positive discovery: clean unit reactor plus complete Cosmos (78 discovered, one expected emulator skip) and Dynamo (88 discovered) profiles
-- [X] T042 Run provider-neutral E2E against Cosmos Emulator, DynamoDB Local, and Spanner Emulator; all three provider runs completed successfully
-- [X] T043 Build API/provider Javadocs and validate changed Markdown files/anchors, JSON examples, the provider-details schema, 20 capabilities per provider, and requirement traceability
+- [X] T042 Run E2E against all three emulators; Cosmos/Dynamo execute partial update and Spanner skips it by capability
+- [X] T043 Build Javadocs and validate Markdown, JSON, provider details, 20 Cosmos/Dynamo capabilities, 17 unchanged Spanner capabilities, and requirement traceability
 - [X] T044 Run the pre-review `git diff --check` and scope/status audit; confirm no credentials and no touched/staged `multiclouddb-perf/`
 
 ## Phase 7: Portability-review blocker remediation
@@ -104,13 +103,13 @@ logical-name projection.
 
 ## Phase 9: Final portability-review blocker remediation
 
-- [X] T055 Add `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` to the API, declare it in all three providers, and extend capability unit/conformance assertions to all 20 known names
-- [X] T056 Add Spanner exact-case validation inside the existing update transaction and preserve accepted logical casing through `FIELD_DATA` projection
-- [X] T057 Expand shared invalid-map/name conformance and add capability-gated case-distinct field identity with unchanged-state assertions
-- [X] T058 Add a capability-gated assertion that executes the exact 408,576-byte update through providers advertising `PARTIAL_UPDATE_EXTENDED_PAYLOAD`
+- [X] T055 Add `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` to the API and participating Cosmos/Dynamo providers; keep Spanner at its existing 17 capabilities
+- [X] T056 Restore every Spanner provider path to the PR base and rely on the shared `PARTIAL_UPDATE` gate
+- [X] T057 Expand shared invalid-map/name conformance, gate supported behavior by `PARTIAL_UPDATE`, and assert Spanner core rejection
+- [X] T058 Retain the capability-gated exact 408,576-byte runtime assertion; no participating provider currently advertises the extension
 - [X] T059 Document Cosmos CRUD/update 408/410 normalization and failed-batch 424 root selection in compatibility docs and changelogs
-- [X] T060 Reconcile the spec, design, plan, research, data model, contracts, quickstart, checklist, tasks, user docs, and changelogs with shipped behavior
-- [X] T061 Run targeted/full unit and all three emulator/conformance profiles, validate Javadocs/Markdown/capability counts/traceability, run `git diff --check`, and complete the protected-path audit
+- [X] T060 Reconcile all feature artifacts and user docs with the Cosmos/Dynamo release scope and zero Spanner diff
+- [X] T061 Run targeted/full validation, verify all three emulator profiles with Spanner capability gating, confirm zero Spanner diff, and complete documentation/traceability audits
 
 ## Dependencies
 
@@ -126,15 +125,15 @@ T001-T015
 ```
 
 Cosmos and Dynamo emulator work can proceed independently after shared
-conformance compiles. Spanner uses the same shared suite plus the narrow
-fixed-schema casing guard; no new schema fixture is required.
+conformance compiles. Spanner runs shared preflight and unsupported-gate
+coverage without any provider-module change.
 
 ## Requirement traceability
 
 | Requirements | Tasks |
 |---|---|
 | FR-001–FR-014 shared contract, validation, capabilities | T004–T015, T026, T030–T032 |
-| FR-015 fixed-schema Spanner baseline and exact-case guard | T008–T009, T026–T027, T029, T032, T035, T055–T056 |
+| FR-015 unchanged-provider core capability rejection | T005, T008–T009, T026–T027, T032, T035, T056–T057 |
 | FR-016–FR-023 Cosmos mechanics/errors/diagnostics | T016–T021, T033 |
 | FR-024–FR-027 Dynamo mechanics/errors | T022–T025, T034 |
 | FR-031 Dynamo result-item envelope | T024, T034, T045–T047 |
@@ -156,16 +155,15 @@ fixed-schema casing guard; no new schema fixture is required.
 
 The exact Dynamo emulator profile passed all 88 discovered tests, and the
 Cosmos profile passed all 78 discovered tests with one expected emulator skip.
-Prior PR CI passed the Spanner shared conformance suite, and the
-provider-neutral E2E flow completed successfully against Cosmos Emulator,
-DynamoDB Local, and Spanner Emulator. Post-remediation unit, Javadoc, artifact,
-and all three emulator/conformance validations also pass.
+Prior PR CI passed all provider jobs. The scope-correction rerun verifies
+Cosmos/Dynamo behavior and Spanner's shared preflight/core-gate path before
+publication.
 
 ## Scope rules
 
-- Limit `SpannerProviderClient.java` changes to the approved exact-case guard.
-- Do not add Spanner typed-null/DDL work, schema fixtures, or E2E schema helpers.
-- Do not claim arbitrary missing Spanner columns can be created.
+- Keep every path under `multiclouddb-provider-spanner/` identical to the PR base.
+- Do not add Spanner capabilities, data-path logic, changelog entries, schema
+  fixtures, or E2E schema helpers.
 - Do not add a public patch model, `replace()` method, cancellation, retry
   configuration, or native-client escape hatch.
 - Do not touch or stage `multiclouddb-perf/`.

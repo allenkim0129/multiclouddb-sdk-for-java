@@ -67,9 +67,10 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      * {@link MulticloudDbErrorCategory#NOT_FOUND} without creating it. Providers must add no
      * update-TTL assignment.
      * <p>
-     * A fixed-schema provider (Spanner) maps each field name to an already provisioned column
-     * and may reject a missing column as non-retryable
-     * {@link MulticloudDbErrorCategory#INVALID_REQUEST}. A provider whose identifier model
+     * Only adapters that advertise
+     * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE} receive this call. Feature 002
+     * leaves the Spanner adapter unchanged and unadvertised, so the default client rejects
+     * Spanner calls before delegation. A participating provider whose identifier model
      * cannot preserve case-distinct logical fields must declare
      * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS} unsupported
      * and reject a case-only alias as {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}

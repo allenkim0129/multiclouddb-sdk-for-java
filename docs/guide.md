@@ -571,20 +571,18 @@ client.update(addr, MulticloudDbKey.of("customer-456", "order-123"), fields);
 |----------|-------------------------------|--------------------------|
 | **Cosmos DB** | Up to 10 fields use one `patchItem`; wider updates use one same-item transactional-batch request containing patch chunks of at most 10 fields. | At most 100 batch operations and 2,097,152 serialized bytes. The resulting document is capped at 2,097,152 bytes. RU cost grows with the patch operations/chunks. |
 | **DynamoDB** | One conditional, aliased `UpdateItem SET ...` request with `attribute_exists(partitionKey)`. | Generated update expressions above 4,096 UTF-8 bytes fail before I/O. DynamoDB can reject the one attempted update if the resulting item would exceed 409,600 bytes. Accepted calls consume one item update's write capacity. |
-| **Spanner** | Read-write transaction: read field metadata, validate previously unseen names against `INFORMATION_SCHEMA.COLUMNS`, then commit one partial row mutation. | Fixed-schema mapping only: fields match established logical spelling or, when new to the row, the provisioned column's exact spelling. Cost includes the transaction reads and write. |
+| **Spanner** | No provider call in this release. | The unchanged provider does not advertise `PARTIAL_UPDATE`; the shared client rejects valid calls before Spanner I/O. |
 
-All built-in providers declare all 20 known capability names, including
-`Capability.PARTIAL_UPDATE`. Cosmos and Dynamo declare
+Cosmos and Dynamo declare all 20 known capability names, including
+`Capability.PARTIAL_UPDATE` and
+`PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS=true`. Both declare
 `PARTIAL_UPDATE_EXTENDED_PAYLOAD` unsupported because their native envelopes
-can bind before the SDK's common 408,576-byte limit. Spanner declares it
-supported only for fields and value shapes accepted by its existing
-fixed-schema mapping; no columns are created by `update()`.
+can bind before the SDK's common 408,576-byte limit.
 
-Cosmos and Dynamo support `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS`. Spanner
-declares it unsupported because GoogleSQL identifiers are case-insensitive. A
-case-only alias is rejected as non-retryable `UNSUPPORTED_CAPABILITY` with
-`reason=spanner_case_insensitive_column_collision`; the document is unchanged.
-
+Spanner retains its existing 17 capability declarations. Because it does not
+advertise `PARTIAL_UPDATE`, valid calls fail locally with non-retryable
+`UNSUPPORTED_CAPABILITY` and `capability=partial_update`; shared invalid-request
+validation still runs first.
 For DynamoDB, `reason=dynamodb_update_expression_limit` is a local, zero-I/O
 rejection. `reason=dynamodb_result_item_size_limit` includes
 `maximumResultBytes=409600` and is returned after one attempted `UpdateItem`;

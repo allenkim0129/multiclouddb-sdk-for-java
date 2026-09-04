@@ -1,7 +1,7 @@
 # Phase 0 Research: Portable Partial Update
 
 **Branch**: `002-partial-update`
-**Reconciled**: 2026-09-03 for the focused implementation and portability-review remediation
+**Reconciled**: 2026-09-04 for the Cosmos/Dynamo release scope and unchanged Spanner boundary
 
 ## Decision 1 — Keep the existing Java API
 
@@ -11,34 +11,30 @@ parameter from `document` to `fields`.
 **Why**: Java parameter names are not binary API, and a new patch type or method
 would expand scope unnecessarily.
 
-## Decision 2 — Keep Spanner fixed-schema and make casing explicit
+## Decision 2 — Exclude Spanner from this feature release
 
-Retain Spanner's read-write transaction, `FIELD_DATA` merge, STRING-null
-binding, and encoded STRING map/list mapping. Add only an exact-case guard and
-logical-name projection because GoogleSQL identifiers are case-insensitive:
+Restore every file under `multiclouddb-provider-spanner/` to the PR base and do
+not advertise any feature-002 partial-update capability there. The default
+client already gates `partial_update`, so a valid Spanner update returns
+non-retryable `UNSUPPORTED_CAPABILITY` before provider delegation.
 
-1. compare requested names with established `FIELD_DATA` names;
-2. query `INFORMATION_SCHEMA.COLUMNS` for previously unseen names;
-3. reject a case-only alias as non-retryable `UNSUPPORTED_CAPABILITY`; and
-4. project the accepted logical spelling recorded in `FIELD_DATA`.
+**Why**: Spanner is not being released with this feature. Explicitly gating the
+operation avoids both an unplanned provider change and silent invocation of its
+legacy, case-insensitive fixed-schema behavior.
 
 **Rejected**:
 
-- schema-aware typed nulls or type discovery;
-- DDL or automatic column creation;
-- new Spanner schema fixtures; and
-- a Spanner E2E schema helper.
-
-The narrow guard is required to prevent silent cross-provider field aliasing;
-the broader fixed-schema/value baseline remains unchanged.
-
+- retaining the casing guard, because it changes an unreleased provider module;
+- bypassing the core gate for Spanner, because that restores silent field-case
+  divergence; and
+- adding a provider-ID special case in shared code.
 ## Decision 3 — Define a shallow absolute operation
 
 Present fields are set/replaced; omitted fields survive; map/list values replace
 as units; null is a stored null for a supported mapping.
 
-**Why**: Cosmos `set`, Dynamo `SET`, and the existing Spanner mutation share
-these semantics. Absolute assignments are replay-idempotent.
+**Why**: Cosmos `set` and Dynamo `SET` share these semantics. Absolute
+assignments are replay-idempotent.
 
 Recursive merge, nested paths, remove, increment, and conditional field updates
 are out of scope.
@@ -58,10 +54,8 @@ The default client validates:
 **Why**: one preflight gives all providers the same category and zero-I/O
 behavior.
 
-Accepted names are literal and are not trimmed. Cosmos and Dynamo can directly
-support punctuation through escaping/aliases. Spanner can use a literal name
-only when a matching column already exists; no new shared Spanner fixture is
-added.
+Accepted names are literal and are not trimmed. Cosmos and Dynamo support
+punctuation through escaping and aliases.
 
 ## Decision 5 — Reject TTL on update
 
@@ -81,10 +75,9 @@ replay time-relative.
   literal identities.
 
 Cosmos and Dynamo declare the payload extension unsupported and case-sensitive
-identity supported. Spanner declares extended payload supported for fixed-schema
-mappings and case-sensitive identity unsupported.
-
-Every provider declares all 20 known capability names.
+identity supported. Spanner declares none of the three capabilities because it
+is outside the feature release. Cosmos and Dynamo therefore expose 20 known
+names while unchanged Spanner retains 17.
 
 ## Decision 7 — Cosmos uses direct patch plus one atomic wide batch
 
@@ -164,21 +157,21 @@ operations keeps the general provider-error mapping.
 oversized result atomically, so update-scoped status normalization preserves
 state and portability with one attempted native write.
 
-## Decision 13 — Keep shared runtime assertions portable
+## Decision 13 — Keep shared runtime assertions capability-driven
 
-Shared conformance uses fields and shapes already present in the existing
-three-provider fixtures. It proves unchanged state for every invalid-map/name
-class, update TTL, and a 408,577-byte fields map, plus `NOT_FOUND` without create
-for a wide missing-item update. Case-distinct identity is asserted when the new
-capability is supported and explicitly rejected otherwise. The exact
-408,576-byte positive boundary executes only when
-`partial_update_extended_payload` is advertised, so Spanner performs the
-provider call while Cosmos and Dynamo skip it under their declared envelopes.
+Shared invalid-map/name, update-TTL, and 408,577-byte assertions run on all
+providers because validation precedes the core gate. Supported behavior runs
+only where `partial_update` is advertised. A dedicated assertion verifies that
+unchanged Spanner fails locally with `UNSUPPORTED_CAPABILITY` and
+`capability=partial_update`.
 
-The Cosmos and Dynamo result-item regressions remain in their concrete
-conformance classes because they deliberately exercise provider-native limits.
-Capability gates, not provider-type branches, control shared assertions.
+Case-distinct identity runs on Cosmos and Dynamo, which advertise the case
+capability. The exact 408,576-byte positive runtime assertion remains gated by
+`partial_update_extended_payload`; no participating provider currently
+advertises it, while API tests lock the shared boundary.
 
+Concrete Cosmos and Dynamo regressions continue to exercise their native
+result-item limits.
 ## Decision 14 — Preserve migration intent
 
 Callers that require complete replacement move to `upsert()` and must be told

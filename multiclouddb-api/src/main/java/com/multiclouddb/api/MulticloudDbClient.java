@@ -69,8 +69,8 @@ public interface MulticloudDbClient extends AutoCloseable {
      * stores JSON null and does <em>not</em> remove the field. Field names are literal, not
      * path syntax — names exactly {@code .}, {@code /}, and {@code ~} address top-level
      * fields, and an accepted name such as {@code " customer "} is never trimmed. Provider
-     * mappings still apply: in particular, Spanner requires a matching provisioned column.
-     * All requested assignments commit atomically, and because every assignment is absolute
+     * mappings still apply. All requested assignments commit atomically, and because every
+     * assignment is absolute
      * the operation is replay-idempotent.
      * <p>
      * A missing document is never created: after the requested field set has valid provider
@@ -89,19 +89,16 @@ public interface MulticloudDbClient extends AutoCloseable {
      * {@code create()}/{@code upsert()}); and a serialized field map larger than exactly
      * 408,576 bytes (399 KiB).
      * <p>
-     * <strong>Spanner is fixed-schema.</strong> Each field name must match its established logical
-     * spelling or, for a newly used field, exactly match an already provisioned column;
-     * {@code update()} never adds a column. Because GoogleSQL column names
-     * are case-insensitive, a spelling that would alias another logical field is rejected as
-     * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} rather than silently overwriting
-     * it. The limitation is declared by {@link Capability#PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS}.
-     * Existing Spanner value mapping remains unchanged: Java null is bound as a null STRING
-     * value, so portable null updates use string-backed columns.
+     * The operation is available only when the provider advertises
+     * {@link Capability#PARTIAL_UPDATE}. Cosmos DB and DynamoDB advertise it in this release.
+     * The unchanged Spanner provider does not, so a valid call returns non-retryable
+     * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} after shared validation and
+     * before provider delegation. A participating provider whose identifier model cannot
+     * preserve case-distinct fields must declare
+     * {@link Capability#PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS} unsupported and reject the
+     * alias explicitly.
      * <p>
-     * The core {@link Capability#PARTIAL_UPDATE} check is performed internally by the SDK
-     * after shared validation and before provider delegation; callers of the current
-     * providers do not pre-check it because Cosmos DB, DynamoDB, and Spanner all declare it
-     * supported. The separate {@link Capability#PARTIAL_UPDATE_EXTENDED_PAYLOAD} models only
+     * The separate {@link Capability#PARTIAL_UPDATE_EXTENDED_PAYLOAD} models only
      * whether supported provider field mappings can reach the common limit without a lower
      * native request or resulting-item envelope. DynamoDB can reject after one attempted
      * {@code UpdateItem} when the existing item plus otherwise-valid fields would exceed
@@ -114,9 +111,9 @@ public interface MulticloudDbClient extends AutoCloseable {
      * @param options  operation options; {@code ttlSeconds} must be null for {@code update()}
      * @throws MulticloudDbException category {@link MulticloudDbErrorCategory#NOT_FOUND} if the
      *         key does not exist, or {@link MulticloudDbErrorCategory#INVALID_REQUEST} for an
-     *         invalid field map, name, collision, update TTL, or over-size payload; provider
-     *         native envelopes may produce
-     *         {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}
+     *         invalid field map, name, collision, update TTL, or over-size payload;
+     *         {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} if the provider does
+     *         not advertise partial update or a native envelope rejects the request
      */
     void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> fields, OperationOptions options);
 

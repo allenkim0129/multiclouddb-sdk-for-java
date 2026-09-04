@@ -80,6 +80,10 @@ class DefaultMulticloudDbClientPartialUpdateTest {
         return new CapabilitySet(List.of(Capability.PARTIAL_UPDATE_UNSUPPORTED));
     }
 
+    private static CapabilitySet coreMissing() {
+        return new CapabilitySet(List.of(Capability.CONTINUATION_TOKEN_PAGING_CAP));
+    }
+
     private static Map<String, Object> validFields() {
         Map<String, Object> f = new LinkedHashMap<>();
         f.put("status", "SHIPPED");
@@ -173,6 +177,18 @@ class DefaultMulticloudDbClientPartialUpdateTest {
         assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY, ex.error().category());
         assertEquals(false, ex.error().retryable());
         assertEquals(OperationNames.UPDATE, ex.error().operation());
+        assertEquals(Capability.PARTIAL_UPDATE, ex.error().providerDetails().get("capability"));
+        assertEquals(0, provider.updateCount);
+    }
+
+    @Test
+    @DisplayName("a provider missing PARTIAL_UPDATE fails with typed UNSUPPORTED_CAPABILITY")
+    void missingCoreCapabilityIsTyped() {
+        RecordingProvider provider = new RecordingProvider(coreMissing());
+        DefaultMulticloudDbClient c = client(provider);
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> c.update(ADDRESS, KEY, validFields()));
+        assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY, ex.error().category());
         assertEquals(Capability.PARTIAL_UPDATE, ex.error().providerDetails().get("capability"));
         assertEquals(0, provider.updateCount);
     }

@@ -1,19 +1,16 @@
 # Portable API Surface
 
-The Multicloud DB SDK's portable API surface covers capabilities that work
-identically across all three providers. The features listed below require no
-runtime capability checks - they are guaranteed to work on Azure Cosmos DB,
-Amazon DynamoDB, and Google Cloud Spanner. Some providers offer additional
-capabilities (e.g., `CROSS_PARTITION_QUERY`, `ORDER_BY`, `LIKE`); use
-`client.capabilities()` to discover what the current provider supports.
+The Multicloud DB SDK exposes provider-neutral operations and capability-gated
+features. Use `client.capabilities()` before optional operations; unsupported
+calls fail locally with `UNSUPPORTED_CAPABILITY`.
 
 ---
 
 ## What Works Everywhere
 
-Every operation listed below is supported on **all** providers. Portable field
-names and value shapes still follow each provider's declared mapping; notably,
-Spanner updates require already provisioned columns.
+Core create, read, upsert, delete, and query behavior remains available on all
+providers. Partial update in this release is supported by Cosmos DB and
+DynamoDB only.
 
 ### CRUD Operations
 
@@ -21,34 +18,34 @@ Spanner updates require already provisioned columns.
 |-----------|-------------|
 | **Create** | Insert a new document (fails if the key already exists) |
 | **Read** | Point-read by partition key + sort key |
-| **Update** | Shallow set/replace of supplied top-level fields; omitted fields remain; fails if not found |
+| **Update** | Capability-gated shallow set/replace; supported by Cosmos DB and DynamoDB in this release |
 | **Upsert** | Create or replace - always succeeds |
 | **Delete** | Remove by key (idempotent — silent on missing; use `read()` to detect a missing key, since `read()` returns `null` on every provider) |
 
 ### Partial Update
 
-`update()` never creates a missing item. It replaces supplied top-level values
-atomically, preserves omitted fields, and treats map/list values as complete
-top-level replacements. Non-null update TTL is rejected before provider I/O
-with `INVALID_REQUEST`.
+For providers advertising `PARTIAL_UPDATE`, `update()` never creates a missing
+item. It replaces supplied top-level values atomically, preserves omitted
+fields, and treats map/list values as complete top-level replacements. Non-null
+update TTL is rejected before provider I/O with `INVALID_REQUEST`.
 
-All built-in providers declare all 20 known capability names.
+Cosmos DB and DynamoDB declare all 20 known capability names. The unchanged
+Spanner provider retains its existing 17 declarations and does not advertise
+any feature-002 partial-update capability.
 
 | Provider | `PARTIAL_UPDATE` | `PARTIAL_UPDATE_EXTENDED_PAYLOAD` | `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` | Native mechanism / request count | Cost and limits |
 |----------|:----------------:|:---------------------------------:|:--------------------------------------:|----------------------------------|-----------------|
 | Cosmos DB | ✅ | ❌ | ✅ | One `patchItem` for up to 10 fields; otherwise one same-item transactional-batch request | RU cost follows patch chunks; 100 batch operations / 2,097,152 serialized bytes; 2,097,152-byte resulting document after one attempted update |
 | DynamoDB | ✅ | ❌ | ✅ | One conditional aliased `UpdateItem SET` | 4,096-byte generated expression (pre-I/O); 409,600-byte resulting item (after one attempted update); accepted calls consume one item update's write capacity |
-| Spanner | ✅ | ✅, fixed-schema mappings only | ❌ | One read-write transaction with field metadata read, schema-casing validation for unseen names, and one partial row mutation | Transaction reads + write; fields match established logical spelling or, when new to the row, exact column spelling |
+| Spanner | ❌ | — | — | No provider call; rejected by the shared capability gate | Zero Spanner I/O |
 
-Spanner rejects a case-only field alias with non-retryable
-`UNSUPPORTED_CAPABILITY`, `capability=partial_update_case_sensitive_fields`,
-and `reason=spanner_case_insensitive_column_collision`. The rejected update
-does not mutate the document.
+A valid Spanner `update()` call returns non-retryable `UNSUPPORTED_CAPABILITY`
+with `capability=partial_update`. Shared invalid-request validation still runs
+first and remains provider-neutral.
 
 For full replacement, use `upsert()` with the complete document. It creates a
 missing item; read-then-upsert is not an atomic update-only replacement and can
 recreate an item deleted or expired between the calls.
-
 ### Query - Portable Expression DSL
 
 Write a WHERE-clause filter once. The SDK translates it to the native query

@@ -8,7 +8,6 @@ import com.multiclouddb.api.DocumentResult;
 import com.multiclouddb.api.MulticloudDbClient;
 import com.multiclouddb.api.MulticloudDbClientFactory;
 import com.multiclouddb.api.MulticloudDbKey;
-import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
@@ -109,38 +108,36 @@ public class Main {
         }
         System.out.println();
 
-        // ── PARTIAL UPDATE ────────────────────────────────────────────
-        System.out.println("── PARTIAL UPDATE (prod-005: price + stock only) ─────────────");
-        update("prod-005", Map.of("price", 54.99, "inStock", true));
-        System.out.println();
+        if (client.capabilities().isSupported(Capability.PARTIAL_UPDATE)) {
+            // ── PARTIAL UPDATE ────────────────────────────────────────
+            System.out.println("── PARTIAL UPDATE (prod-005: price + stock only) ─────────────");
+            update("prod-005", Map.of("price", 54.99, "inStock", true));
+            System.out.println();
 
-        // ── READ (verify update) ──────────────────────────────────────
-        System.out.println("── READ (verify selected fields + omitted-field preservation) ─");
-        DocumentResult updateResult = read("prod-005");
-        if (updateResult == null) {
-            throw new AssertionError("Expected document for prod-005 after update but got null");
-        }
-        if (!"USB-C Hub".equals(updateResult.document().path("name").asText())
-                || !"electronics".equals(updateResult.document().path("category").asText())
-                || Math.abs(updateResult.document().path("price").asDouble() - 54.99) > 0.0001
-                || !updateResult.document().path("inStock").asBoolean()) {
-            throw new AssertionError("Partial update did not preserve omitted product fields");
-        }
-        System.out.println("    → selected fields changed; name and category were preserved");
-        System.out.println();
+            // ── READ (verify update) ──────────────────────────────────
+            System.out.println("── READ (verify selected fields + omitted-field preservation) ─");
+            DocumentResult updateResult = read("prod-005");
+            if (updateResult == null) {
+                throw new AssertionError("Expected document for prod-005 after update but got null");
+            }
+            if (!"USB-C Hub".equals(updateResult.document().path("name").asText())
+                    || !"electronics".equals(updateResult.document().path("category").asText())
+                    || Math.abs(updateResult.document().path("price").asDouble() - 54.99) > 0.0001
+                    || !updateResult.document().path("inStock").asBoolean()) {
+                throw new AssertionError("Partial update did not preserve omitted product fields");
+            }
+            System.out.println("    → selected fields changed; name and category were preserved");
+            System.out.println();
 
-        // The existing Spanner E2E setup is fixed-schema and does not provision
-        // the additional ordinary columns used by this wide-envelope exercise.
-        if (ProviderId.COSMOS.equals(client.providerId())
-                || ProviderId.DYNAMO.equals(client.providerId())) {
             System.out.println("── WIDE PARTIAL UPDATE (>10 fields, Cosmos/Dynamo) ───────────");
             wideUpdate("prod-004");
+            System.out.println();
         } else {
-            System.out.println("── WIDE PARTIAL UPDATE ────────────────────────────────────────");
-            System.out.println("  Skipped: the configured Spanner products table is fixed-schema;");
-            System.out.println("  no columns or schema helpers are created by this E2E run.");
+            System.out.println("── PARTIAL UPDATE ─────────────────────────────────────────────");
+            System.out.printf("  Skipped: %s does not advertise partial_update.%n",
+                    client.providerId().displayName());
+            System.out.println();
         }
-        System.out.println();
 
         // ── LIST (full scan, paged) ───────────────────────────────────
         System.out.println("── LIST (pageSize=3) ──────────────────────────────────────────");

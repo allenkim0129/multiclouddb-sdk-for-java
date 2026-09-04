@@ -1,18 +1,17 @@
 # Specification Quality Checklist: Portable Partial Update
 
 **Reviewed**: 2026-09-02
-**Scope**: Cosmos DB and DynamoDB implementation; fixed-schema Spanner baseline with a narrow casing guard
+**Scope**: Cosmos DB and DynamoDB implementation; unchanged Spanner excluded by the core capability gate
 
 ## Scope and consistency
 
-- [x] The artifacts limit `SpannerProviderClient` changes to exact-case validation inside the existing update transaction.
-- [x] No artifact requires typed-null discovery, DDL, automatic column creation,
-  new schema fixtures, or unrelated schema/row precedence changes.
-- [x] Focused Spanner coverage is limited to logical-name projection; no E2E schema helper is required.
-- [x] Spanner is described as fixed-schema with existing STRING-null and
-  encoded STRING map/list mappings.
-- [x] Shared conformance is limited to fields/shapes in the existing
-  three-provider fixtures.
+- [x] Every path under `multiclouddb-provider-spanner/` matches the PR base.
+- [x] No artifact requires Spanner capability, data-path, changelog, schema,
+  fixture, or E2E helper changes.
+- [x] Spanner is described as outside the feature release and rejected by the
+  shared `partial_update` capability gate.
+- [x] Shared conformance gates supported behavior by capability while retaining
+  provider-neutral preflight and unsupported-gate coverage.
 - [x] Cosmos/Dynamo replacement-to-partial-update migration remains explicit.
 
 ## Shared API
@@ -30,7 +29,7 @@
   explicit.
 - [x] `partial_update_extended_payload` covers native request and
   resulting-item envelopes for supported provider mappings.
-- [x] All providers declare all 20 known capabilities, including explicit case-sensitive partial-update support.
+- [x] Cosmos and Dynamo declare all 20 known capabilities; unchanged Spanner retains 17 and advertises no feature-002 capability.
 
 ## Cosmos DB
 
@@ -70,14 +69,14 @@
   wide missing-item update without provider branches.
 - [x] Concrete Cosmos and Dynamo emulator regressions cover result-item
   overflow and unchanged stored state.
-- [x] Spanner unit coverage verifies `FIELD_DATA` logical-case projection
-  without adding a schema fixture.
-- [x] Shared conformance covers case identity/capability gating and exact-limit
-  provider execution; all three emulator reruns pass.
+- [x] Shared conformance verifies Spanner core capability rejection without
+  entering provider code.
+- [x] Shared conformance covers Cosmos/Dynamo case identity and keeps the exact
+  limit assertion capability-gated; all three emulator profiles pass.
 - [x] `multiclouddb-perf/` is excluded.
 - [x] Issues #102–#104 remain out of scope.
 
 ## Notes
 
-The feature artifacts describe the completed original implementation and final
-portability-review remediation. `tasks.md` records all validation as complete.
+The feature artifacts describe the completed Cosmos/Dynamo implementation and
+the final zero-Spanner-diff release boundary. `tasks.md` records validation.

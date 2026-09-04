@@ -18,7 +18,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - New error category `MulticloudDbErrorCategory.CLIENT_CLOSED` surfaced by a `DefaultMulticloudDbClient` post-close guard on every public entry point (replaces provider-specific `IllegalStateException` leaks). `MulticloudDbClient.close()` is now idempotent.
 - Extended change-feed retention opt-in: `ChangeFeedConfig.extendedRetention(Duration)` (validates `> 24h`), wired into `MulticloudDbClientConfig.changeFeed(...)`, plus the new `Capability.EXTENDED_CHANGE_FEED_HISTORY`. The factory''s build-time gate refuses to instantiate a client whose provider does not declare the capability, surfacing `UNSUPPORTED_CAPABILITY(reason="extended_retention_unavailable")` before any I/O. The cursor token wire format carries an optional `"e"` field stamping the opted-in retention so a persisted cursor under a 7-day opt-in can be resumed beyond 24h up to the configured window without `TOKEN_AGED_OUT`; older tokens (no `"e"`) keep the 24h floor.
 - `OperationNames.LIST_CURSORS`, `READ_CHANGES`, `PROVISION_SCHEMA` propagated through `MulticloudDbError.operation()` and `OperationDiagnostics`.
-- Added the well-known `PARTIAL_UPDATE`, `PARTIAL_UPDATE_EXTENDED_PAYLOAD`, and `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` capabilities. Every built-in provider declares all 20 known capability names.
+- Added the well-known `PARTIAL_UPDATE`, `PARTIAL_UPDATE_EXTENDED_PAYLOAD`, and `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` capabilities. Cosmos DB and DynamoDB declare all three; unchanged Spanner remains outside this feature release.
 
 **Changed:**
 
@@ -164,11 +164,10 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Spanner instance creation in `ensureDatabase` is gated to emulator mode. In production the instance is expected to pre-exist; only the database is created.
 - Complex container values (`Map`, `Collection`) round-trip through STRING columns using an unambiguous prefix marker (`U+0001` + `mcdb:json:`).
 - `BETWEEN` translation wraps in parentheses (`(field BETWEEN @lo AND @hi)`) for cross-provider consistency.
-- Partial update declares `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` unsupported. A schema-aware preflight rejects case-only aliases with non-retryable `UNSUPPORTED_CAPABILITY`, and `FIELD_DATA` projection preserves accepted logical spelling. `PARTIAL_UPDATE` and `PARTIAL_UPDATE_EXTENDED_PAYLOAD` remain supported for fixed-schema mappings.
 
 **Breaking changes:**
 
-- `update()` preserves previously written fields through a read-modify-write transaction. Cosmos and DynamoDB now implement the same portable semantics; Spanner additionally rejects case-only field aliases it cannot represent distinctly.
+- `update()` is a partial update preserving previously written fields (read-modify-write transaction). **Known cross-provider asymmetry:** Cosmos and DynamoDB `update()` are still full-document replaces.
 - Document field named `data` is rejected with `MulticloudDbException(INVALID_REQUEST)` (case-insensitive — Spanner resolves column names case-insensitively). The `data` column is reserved for the internal `FIELD_DATA` metadata.
 - `upsert()` is a full document replace; columns absent from the upserted document become NULL on read (matches the Cosmos / DynamoDB upsert contract).
 - Customer-managed tables require a `data STRING(MAX)` column. Tables created by `ensureContainer()` already include it; tables provisioned outside the SDK must run `ALTER TABLE <table> ADD COLUMN data STRING(MAX);`.

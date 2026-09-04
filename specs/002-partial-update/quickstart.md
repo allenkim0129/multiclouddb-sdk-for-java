@@ -33,19 +33,12 @@ client.update(orders, key, fields);
 The merge is shallow: `profile` and `tags` replace their complete top-level
 values.
 
-### Spanner note
+### Spanner release boundary
 
-Spanner remains fixed-schema. A field must match its established logical
-spelling or, when new to the row, an existing column's exact spelling. Its null
-mapping is null STRING, and map/list values use encoded JSON in STRING
-columns. This feature does not create columns, discover types, or provision
-schema.
-
-Because GoogleSQL identifiers are case-insensitive, Spanner reports
-`PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS=false`. A case-only alias returns
-non-retryable `UNSUPPORTED_CAPABILITY` with
-`reason=spanner_case_insensitive_column_collision` and leaves the row unchanged.
-
+Spanner is not part of this feature release. Its provider module remains
+unchanged and does not advertise `PARTIAL_UPDATE`. After shared validation, a
+valid call returns non-retryable `UNSUPPORTED_CAPABILITY` with
+`capability=partial_update` before any Spanner provider I/O.
 ## Literal names
 
 Shared validation does not trim accepted names. Cosmos escapes `/` and `~` as
@@ -59,8 +52,6 @@ literal.put(" customer ", "spaces preserved");
 client.update(orders, key, literal);
 ```
 
-On Spanner, those names are usable only if matching quoted columns already
-exist. This feature adds no such schema.
 
 ## Invalid requests
 
@@ -81,7 +72,7 @@ duplicates also fail. The exact shared serialized limit is 408,576 bytes.
 
 ## Capabilities
 
-Ordinary callers do not need to pre-check:
+Callers using Cosmos DB or DynamoDB do not need to pre-check:
 
 ```java
 client.update(orders, key, fields);
@@ -98,8 +89,8 @@ boolean noLowerEnvelope = client.capabilities()
     .isSupported(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD);
 ```
 
-Cosmos and Dynamo report false. Spanner reports true for its existing
-fixed-schema mappings; this does not promise arbitrary columns or value types.
+Cosmos and Dynamo report false. Spanner does not declare this extension because
+it does not advertise the core operation.
 
 Field-case identity is separately discoverable:
 
@@ -108,8 +99,8 @@ boolean preservesCaseDistinctNames = client.capabilities()
     .isSupported(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS);
 ```
 
-Cosmos and Dynamo report true. Spanner reports false and rejects case-only
-aliases rather than silently merging them.
+Cosmos and Dynamo report true. Spanner does not declare this extension because
+it is outside the feature release.
 
 ## Provider-envelope errors
 

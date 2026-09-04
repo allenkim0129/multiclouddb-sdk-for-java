@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://multiclouddb.example/specs/002-partial-update/provider-limit-details.schema.json",
   "title": "Partial update provider limit details",
-  "description": "String-valued MulticloudDbError.providerDetails for Cosmos or Dynamo partial-update envelope rejection tied to partial_update_extended_payload. Cosmos batch and Dynamo expression rejections are local and zero-I/O; Cosmos and Dynamo result-item rejections are returned after one attempted native update. The extension applies after provider field mapping and does not describe Spanner schema breadth. This schema does not cover the default client's future-provider core partial_update gate.",
+  "description": "String-valued MulticloudDbError.providerDetails for Cosmos or Dynamo partial-update envelope rejection tied to partial_update_extended_payload. Cosmos batch and Dynamo expression rejections are local and zero-I/O; Cosmos and Dynamo result-item rejections are returned after one attempted native update. The extension applies after participating-provider field mapping. This schema does not cover the default client's core partial_update gate.",
   "type": "object",
   "required": [
     "reason",
