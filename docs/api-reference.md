@@ -55,6 +55,13 @@ document would exceed 2,097,152 bytes.
 Spanner reports the capability supported only for its existing fixed-schema
 mappings; fields must already be provisioned columns.
 
+`PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` is supported by Cosmos DB and DynamoDB.
+Spanner declares it unsupported because GoogleSQL column identifiers are
+case-insensitive. Spanner requires the established logical spelling or, for a
+new field, the exact provisioned-column spelling, and returns non-retryable
+`UNSUPPORTED_CAPABILITY` with
+`reason=spanner_case_insensitive_column_collision` for a case-only alias.
+
 The Cosmos result-size case is non-retryable `UNSUPPORTED_CAPABILITY` with
 `reason=cosmos_result_item_size_limit` and
 `maximumResultBytes=2097152`.

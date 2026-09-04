@@ -47,5 +47,8 @@ public final class SpannerCapabilities {
             Capability.PARTIAL_UPDATE_CAP.withNotes(
                     "Existing fixed-schema partial mutation; fields must map to provisioned columns"),
             Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD_CAP.withNotes(
-                    "No lower request/result envelope for supported fixed-schema field mappings")));
+                    "No lower request/result envelope for supported fixed-schema field mappings"),
+            Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS_UNSUPPORTED.withNotes(
+                    "GoogleSQL column names are case-insensitive; update rejects noncanonical field spelling "
+                    + "instead of silently aliasing another logical field")));
 }

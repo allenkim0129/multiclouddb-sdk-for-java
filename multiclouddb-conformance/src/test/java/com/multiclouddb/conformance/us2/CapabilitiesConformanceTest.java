@@ -22,6 +22,14 @@ public abstract class CapabilitiesConformanceTest {
             ProviderId.COSMOS, false,
             ProviderId.DYNAMO, false,
             ProviderId.SPANNER, true);
+    private static final Map<ProviderId, Boolean> CASE_SENSITIVE_PARTIAL_UPDATE_SUPPORT = Map.of(
+            ProviderId.COSMOS, true,
+            ProviderId.DYNAMO, true,
+            ProviderId.SPANNER, false);
+    private static final Map<ProviderId, String> CASE_SENSITIVE_PARTIAL_UPDATE_NOTE = Map.of(
+            ProviderId.COSMOS, "JSON property",
+            ProviderId.DYNAMO, "Attribute names",
+            ProviderId.SPANNER, "case-insensitive");
     private static final Map<ProviderId, String> EXTENDED_PARTIAL_UPDATE_NOTE = Map.of(
             ProviderId.COSMOS, "100 patch operations",
             ProviderId.DYNAMO, "update expression",
@@ -42,7 +50,7 @@ public abstract class CapabilitiesConformanceTest {
     void allKnownCapabilityNamesPresent() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            // All 19 well-known capability names must be declared
+            // All 20 well-known capability names must be declared
             String[] knownNames = {
                     Capability.CONTINUATION_TOKEN_PAGING,
                     Capability.CROSS_PARTITION_QUERY,
@@ -62,7 +70,8 @@ public abstract class CapabilitiesConformanceTest {
                     Capability.ROW_LEVEL_TTL,
                     Capability.WRITE_TIMESTAMP,
                     Capability.PARTIAL_UPDATE,
-                    Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD
+                    Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD,
+                    Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS
             };
             for (String name : knownNames) {
                 assertNotNull(caps.get(name),
@@ -72,11 +81,11 @@ public abstract class CapabilitiesConformanceTest {
     }
 
     @Test
-    void capabilityCountIs19() throws Exception {
+    void capabilityCountIs20() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            assertEquals(19, caps.all().size(),
-                    "Provider " + provider().id() + " should declare exactly 19 capabilities");
+            assertEquals(20, caps.all().size(),
+                    "Provider " + provider().id() + " should declare exactly 20 capabilities");
         }
     }
 
@@ -95,6 +104,15 @@ public abstract class CapabilitiesConformanceTest {
             assertNotNull(extended.notes());
             assertTrue(extended.notes().contains(EXTENDED_PARTIAL_UPDATE_NOTE.get(provider())),
                     "Extended partial-update notes must describe the provider envelope");
+
+            Capability caseSensitive = caps.get(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS);
+            assertNotNull(caseSensitive);
+            assertEquals(CASE_SENSITIVE_PARTIAL_UPDATE_SUPPORT.get(provider()).booleanValue(),
+                    caseSensitive.supported(),
+                    "Unexpected case-sensitive partial-update declaration for " + provider().id());
+            assertNotNull(caseSensitive.notes());
+            assertTrue(caseSensitive.notes().contains(CASE_SENSITIVE_PARTIAL_UPDATE_NOTE.get(provider())),
+                    "Case-sensitive partial-update notes must describe field identity");
         }
     }
 

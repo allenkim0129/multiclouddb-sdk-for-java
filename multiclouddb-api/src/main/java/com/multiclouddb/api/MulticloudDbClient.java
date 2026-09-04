@@ -89,10 +89,14 @@ public interface MulticloudDbClient extends AutoCloseable {
      * {@code create()}/{@code upsert()}); and a serialized field map larger than exactly
      * 408,576 bytes (399 KiB).
      * <p>
-     * <strong>Spanner is fixed-schema and unchanged by this feature.</strong> Each field name
-     * must resolve to an already provisioned column; {@code update()} never adds a column.
-     * Existing Spanner value mapping also remains unchanged: Java null is bound as a null
-     * STRING value, so portable null updates use string-backed columns.
+     * <strong>Spanner is fixed-schema.</strong> Each field name must match its established logical
+     * spelling or, for a newly used field, exactly match an already provisioned column;
+     * {@code update()} never adds a column. Because GoogleSQL column names
+     * are case-insensitive, a spelling that would alias another logical field is rejected as
+     * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} rather than silently overwriting
+     * it. The limitation is declared by {@link Capability#PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS}.
+     * Existing Spanner value mapping remains unchanged: Java null is bound as a null STRING
+     * value, so portable null updates use string-backed columns.
      * <p>
      * The core {@link Capability#PARTIAL_UPDATE} check is performed internally by the SDK
      * after shared validation and before provider delegation; callers of the current

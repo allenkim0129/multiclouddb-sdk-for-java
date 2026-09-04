@@ -571,14 +571,19 @@ client.update(addr, MulticloudDbKey.of("customer-456", "order-123"), fields);
 |----------|-------------------------------|--------------------------|
 | **Cosmos DB** | Up to 10 fields use one `patchItem`; wider updates use one same-item transactional-batch request containing patch chunks of at most 10 fields. | At most 100 batch operations and 2,097,152 serialized bytes. The resulting document is capped at 2,097,152 bytes. RU cost grows with the patch operations/chunks. |
 | **DynamoDB** | One conditional, aliased `UpdateItem SET ...` request with `attribute_exists(partitionKey)`. | Generated update expressions above 4,096 UTF-8 bytes fail before I/O. DynamoDB can reject the one attempted update if the resulting item would exceed 409,600 bytes. Accepted calls consume one item update's write capacity. |
-| **Spanner** | Existing read-write transaction: read field metadata, then commit one partial row mutation. | Existing fixed-schema mapping only: every field must already be a provisioned column. Cost includes the transaction read and write. |
+| **Spanner** | Read-write transaction: read field metadata, validate previously unseen names against `INFORMATION_SCHEMA.COLUMNS`, then commit one partial row mutation. | Fixed-schema mapping only: fields match established logical spelling or, when new to the row, the provisioned column's exact spelling. Cost includes the transaction reads and write. |
 
-All built-in providers declare all 19 known capability names, including
+All built-in providers declare all 20 known capability names, including
 `Capability.PARTIAL_UPDATE`. Cosmos and Dynamo declare
 `PARTIAL_UPDATE_EXTENDED_PAYLOAD` unsupported because their native envelopes
 can bind before the SDK's common 408,576-byte limit. Spanner declares it
 supported only for fields and value shapes accepted by its existing
 fixed-schema mapping; no columns are created by `update()`.
+
+Cosmos and Dynamo support `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS`. Spanner
+declares it unsupported because GoogleSQL identifiers are case-insensitive. A
+case-only alias is rejected as non-retryable `UNSUPPORTED_CAPABILITY` with
+`reason=spanner_case_insensitive_column_collision`; the document is unchanged.
 
 For DynamoDB, `reason=dynamodb_update_expression_limit` is a local, zero-I/O
 rejection. `reason=dynamodb_result_item_size_limit` includes
@@ -590,6 +595,12 @@ For Cosmos DB, HTTP 413 from an attempted update maps to
 `reason=cosmos_result_item_size_limit` with
 `maximumResultBytes=2097152`. The SDK does not read the existing document
 before the patch or batch; the failed native write leaves it unchanged.
+
+Cosmos CRUD/update HTTP 408 and 410 failures map to retryable
+`TRANSIENT_FAILURE`, with 410 substatus retained. For a failed transactional
+batch, the SDK skips dependent HTTP 424 results and selects the first usable
+non-424 operation failure, then a usable aggregate failure, then a sanitized
+`PROVIDER_ERROR` when no root status exists.
 
 `OperationOptions.ttlSeconds()` is invalid for `update()`. A non-null update TTL
 fails before provider I/O with non-retryable `INVALID_REQUEST`.

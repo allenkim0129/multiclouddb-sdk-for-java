@@ -35,13 +35,16 @@ values.
 
 ### Spanner note
 
-Spanner's implementation is unchanged and fixed-schema. Every field must map to
-an existing column. Its current null mapping is null STRING, and its current
-map/list mapping stores encoded JSON in STRING columns. This feature does not
-create columns, discover types, or provision schema.
+Spanner remains fixed-schema. A field must match its established logical
+spelling or, when new to the row, an existing column's exact spelling. Its null
+mapping is null STRING, and map/list values use encoded JSON in STRING
+columns. This feature does not create columns, discover types, or provision
+schema.
 
-Use only already provisioned application columns. A missing column is not
-created by `update()`.
+Because GoogleSQL identifiers are case-insensitive, Spanner reports
+`PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS=false`. A case-only alias returns
+non-retryable `UNSUPPORTED_CAPABILITY` with
+`reason=spanner_case_insensitive_column_collision` and leaves the row unchanged.
 
 ## Literal names
 
@@ -97,6 +100,16 @@ boolean noLowerEnvelope = client.capabilities()
 
 Cosmos and Dynamo report false. Spanner reports true for its existing
 fixed-schema mappings; this does not promise arbitrary columns or value types.
+
+Field-case identity is separately discoverable:
+
+```java
+boolean preservesCaseDistinctNames = client.capabilities()
+    .isSupported(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS);
+```
+
+Cosmos and Dynamo report true. Spanner reports false and rejects case-only
+aliases rather than silently merging them.
 
 ## Provider-envelope errors
 
@@ -162,6 +175,5 @@ mvn -pl multiclouddb-provider-dynamo -am -Punit `
   '-Dsurefire.failIfNoSpecifiedTests=false' test
 ```
 
-Do not add or run Spanner-specific tests for this feature. Shared conformance
-and provider-neutral E2E remain later phases and must use the existing Spanner
-schema.
+Shared conformance and provider-neutral E2E use the existing Spanner schema.
+The blocker-remediation rerun adds no schema fixture or E2E schema helper.

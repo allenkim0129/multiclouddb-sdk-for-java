@@ -48,5 +48,7 @@ public final class CosmosCapabilities {
                     "Native patch: direct patchItem for <=10 fields, one same-item transactional batch for wider requests"),
             Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD_UNSUPPORTED.withNotes(
                     "Native envelope caps at 100 patch operations, 2,097,152 serialized batch bytes, "
-                    + "or a 2,097,152-byte resulting document")));
+                    + "or a 2,097,152-byte resulting document"),
+            Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS_CAP.withNotes(
+                    "JSON property names preserve literal case-sensitive identity")));
 }

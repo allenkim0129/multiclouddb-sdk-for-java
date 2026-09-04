@@ -1,25 +1,29 @@
 # Feature Specification: Portable Partial Update
 
 **Branch**: `002-partial-update`
-**Status**: Portability-review blockers implemented; focused validation passes,
-DynamoDB Local regression and Spanner runtime reruns remain
+**Status**: Complete; all portability-review blockers are fixed and validated
 
 ## Scope decision
 
 `MulticloudDbClient.update()` becomes a shallow set/replace operation. Cosmos DB
 and DynamoDB move from full replacement to native partial update.
 
-Spanner is the behavioral baseline and its existing update data path is
-unchanged. It continues to:
+Spanner remains the fixed-schema behavioral baseline. Portability remediation
+adds one narrow data-path guard because GoogleSQL column identifiers are
+case-insensitive. Spanner now:
 
-- use its existing read-write transaction and `FIELD_DATA` merge;
-- map logical fields to already provisioned table columns;
-- reject an unknown column rather than creating schema;
-- bind Java null using its existing STRING-null mapping; and
-- preserve its existing provider error normalization.
+- retains its read-write transaction and `FIELD_DATA` merge;
+- maps logical fields only to already provisioned table columns;
+- compares requested spelling with existing logical metadata and, for newly
+  used fields, `INFORMATION_SCHEMA.COLUMNS`;
+- rejects a case-only alias as non-retryable `UNSUPPORTED_CAPABILITY` instead
+  of silently overwriting another logical field;
+- projects an accepted logical spelling from `FIELD_DATA`; and
+- retains its existing STRING-null/value mapping and provider error
+  normalization for all other paths.
 
-This feature does not add Spanner schema discovery, typed-null binding, DDL,
-schema helpers, provider-specific tests, or E2E schema provisioning.
+This feature still does not add typed-null binding, DDL, automatic columns,
+schema helpers, or E2E schema provisioning.
 
 ## User scenarios
 
@@ -63,6 +67,12 @@ Cosmos DB and DynamoDB callers that used `update()` as complete replacement
 move to `upsert(address, key, completeDocument)`. Documentation must warn that
 `upsert()` creates a missing document and is not an atomic guarded replacement.
 
+### US5 — Preserve or explicitly gate field-case identity
+
+Cosmos DB and DynamoDB retain distinct `title` and `TITLE` fields across an
+update. Spanner declares that guarantee unsupported and rejects the case-only
+alias before mutation with a portable capability error.
+
 ## Functional requirements
 
 - **FR-001**: `update()` MUST treat its map as literal top-level fields to set
@@ -95,9 +105,9 @@ move to `upsert(address, key, completeDocument)`. Documentation must warn that
   provider request or resulting-item envelope. It MUST NOT disable ordinary
   updates.
 - **FR-014**: Every built-in provider MUST declare every known capability.
-- **FR-015**: Spanner's existing provider implementation MUST remain unchanged.
-  Its fields map only to already provisioned columns; `update()` MUST NOT be
-  described as creating arbitrary missing Spanner columns.
+- **FR-015**: Spanner MUST remain fixed-schema and MUST NOT create arbitrary
+  missing columns. A requested field MUST exactly match either its established
+  logical `FIELD_DATA` spelling or an already provisioned column spelling.
 - **FR-016**: Cosmos DB MUST encode each raw field name as one RFC 6901 segment
   (`~` → `~0`, `/` → `~1`) and use `set`.
 - **FR-017**: Cosmos DB MUST issue one direct `patchItem` for up to 10 fields.
@@ -125,8 +135,8 @@ move to `upsert(address, key, completeDocument)`. Documentation must warn that
 - **FR-028**: Provider diagnostics MUST be concise and MUST NOT log field
   values, serialized request bodies, credentials, or authorization data.
 - **FR-029**: Shared conformance MUST use only existing three-provider fixture
-  field names/shapes. No new Spanner-specific test or schema fixture is part of
-  this feature.
+  field names/shapes. No new Spanner schema fixture is part of this feature;
+  focused Spanner unit coverage MAY verify logical-name projection.
 - **FR-030**: Migration documentation MUST direct replacement callers to
   `upsert()` and explain its create-on-missing behavior.
 - **FR-031**: On `update()` only, the DynamoDB `ValidationException` message
@@ -147,17 +157,26 @@ move to `upsert(address, key, completeDocument)`. Documentation must warn that
   where available. The failed native patch or batch MUST leave the item
   unchanged. HTTP 413 from other operations MUST retain the normal Cosmos
   provider-error mapping.
+- **FR-033**: Every provider MUST declare
+  `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS`. Cosmos DB and DynamoDB MUST preserve
+  case-distinct field identities. Spanner MUST declare the capability
+  unsupported and reject a requested spelling that aliases an existing logical
+  field or differently cased schema column with non-retryable
+  `UNSUPPORTED_CAPABILITY`,
+  `capability=partial_update_case_sensitive_fields`, and
+  `reason=spanner_case_insensitive_column_collision`, without mutation.
 
 ## Provider behavior matrix
 
 | Concern | Cosmos DB | DynamoDB | Spanner |
 |---|---|---|---|
-| Core partial update | Native patch | Native `UpdateItem` | Existing implementation, unchanged |
+| Core partial update | Native patch | Native `UpdateItem` | Existing fixed-schema transaction plus exact-case guard |
 | Missing item | 404 → `NOT_FOUND` | failed existence condition → `NOT_FOUND` | existing `NOT_FOUND` behavior |
 | Wide request | same-item transactional batch | one larger expression | existing fixed-schema mutation |
 | Lower native envelope | 100 batch ops / 2 MiB request; 2 MiB resulting item | 4,096-byte expression; 409,600-byte resulting item | none declared for supported fixed-schema mappings |
-| Schema | schemaless fields | schemaless attributes | pre-provisioned columns only |
-| Adapter read/retry | no read/retry; result-size rejection follows one attempted patch/batch | no read/retry; result-size rejection follows one attempted `UpdateItem` | existing transaction remains |
+| Case-distinct names | preserved | preserved | unsupported; case-only aliases rejected before mutation |
+| Schema | schemaless fields | schemaless attributes | pre-provisioned columns with exact spelling |
+| Adapter read/retry | no read/retry; result-size rejection follows one attempted patch/batch | no read/retry; result-size rejection follows one attempted `UpdateItem` | transaction reads metadata and schema casing as needed; no adapter retry |
 
 ## Edge cases
 
@@ -165,8 +184,10 @@ move to `upsert(address, key, completeDocument)`. Documentation must warn that
   case-insensitive collisions, update TTL, and 408,577-byte maps fail before
   provider delegation.
 - Names containing `.`, `/`, `~`, or surrounding spaces remain literal. Cosmos
-  escapes them and Dynamo aliases them. Spanner can use such a name only if a
-  matching column already exists; this feature provisions no such columns.
+  escapes them and Dynamo aliases them. Spanner can use such a name only if an
+  exactly matching column already exists; this feature provisions no columns.
+- Across calls, Cosmos and Dynamo preserve case-distinct names. Spanner rejects
+  a case-only alias with the declared capability error and leaves state intact.
 - More than 10 Cosmos fields use one atomic batch, never independent patch
   calls.
 - All-424 or empty failed Cosmos batch result lists use the aggregate fallback
@@ -190,7 +211,7 @@ move to `upsert(address, key, completeDocument)`. Documentation must warn that
 - **NFR-003**: Local validation failures perform zero provider I/O.
 - **NFR-004**: No unsafe casts, swallowed failures, private vendor SDK imports,
   or read/replace emulation may be introduced.
-- **NFR-005**: No Spanner provider data-path or provider-test diff may remain.
+- **NFR-005**: Spanner changes MUST stay limited to exact-case validation, logical-name projection, capability declaration, and focused coverage; no DDL, schema helper, typed-null, or unrelated data-path change may be introduced.
 
 ## Success criteria
 
@@ -204,15 +225,16 @@ move to `upsert(address, key, completeDocument)`. Documentation must warn that
   structured values, exact expression measurement, `NOT_FOUND`, zero-I/O
   expression rejection, narrow result-item-size error normalization, cause
   preservation, and unchanged state after the failed native update.
-- **SC-004**: Shared conformance later passes for existing baseline fields and
-  shapes on all three providers without any new Spanner-specific tests.
-- **SC-005**: `git diff --check` passes and
-  `SpannerProviderClient.java` has no diff.
+- **SC-004**: Shared conformance passes on all three providers for baseline
+  fields/shapes, complete invalid-input coverage, capability-gated case
+  identity, and exact-limit execution where extended payload is advertised.
+- **SC-005**: `git diff --check` passes; the only Spanner data-path changes are
+  the approved casing guard/projection, and `multiclouddb-perf/` is untouched.
 
 ## Out of scope
 
-- Spanner data-path changes, typed-null work, schema discovery, DDL, new
-  Spanner tests, or Spanner E2E schema helpers
+- broader Spanner data-path work, typed-null work, DDL, automatic schema
+  changes, new schema fixtures, or Spanner E2E schema helpers
 - remove/increment/nested-path patch operations
 - a new `replace()` API or compatibility mode
 - native-client escape hatch, cancellation, or retry-policy work tracked by

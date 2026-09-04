@@ -20,8 +20,9 @@ state, and provider-native plans.
 - unique ignoring case; and
 - never trimmed or rewritten.
 
-Punctuation remains literal. A Spanner name is usable only if the corresponding
-column is already provisioned.
+Punctuation remains literal. A Spanner name is usable only if it matches the
+row's established logical spelling or, when new, an exactly matching
+provisioned column. A case-only alias is rejected before mutation.
 
 ### Value rules
 
@@ -138,30 +139,33 @@ The result-size path is state-dependent and has no adapter read/merge preflight.
 Only the matching update `ValidationException` is normalized; other validation
 errors remain `INVALID_REQUEST`.
 
-## 6. Existing Spanner mapping
+## 6. Spanner fixed-schema mapping and casing guard
 
-No new Spanner plan is introduced. The existing model remains:
+The existing transaction/value model remains, with one casing preflight:
 
-| Component | Existing behavior |
+| Component | Behavior |
 |---|---|
 | row lookup | reads `FIELD_DATA` in a read-write transaction |
-| schema | every field must map to a provisioned column |
+| logical casing | compares request names with established metadata ignoring case |
+| schema casing | queries `INFORMATION_SCHEMA.COLUMNS` for previously unseen names and requires exact spelling |
 | values | existing scalar conversion; maps/lists encoded in STRING columns |
 | null | null STRING binding |
-| metadata | valid `FIELD_DATA` is unioned with updated names |
+| metadata | valid `FIELD_DATA` is unioned with updated names and controls logical output spelling |
 | missing row | existing `NOT_FOUND` behavior |
 
-An update mutation cannot create an arbitrary missing Spanner column.
+An update mutation cannot create a missing Spanner column. A case-only alias
+returns `UNSUPPORTED_CAPABILITY` before the mutation is buffered.
 
 ## 7. Capabilities
 
-| Provider | `partial_update` | `partial_update_extended_payload` |
-|---|---|---|
-| Cosmos DB | supported | unsupported |
-| DynamoDB | supported | unsupported |
-| Spanner | supported | supported for existing fixed-schema mappings |
+| Provider | `partial_update` | `partial_update_extended_payload` | `partial_update_case_sensitive_fields` |
+|---|---|---|---|
+| Cosmos DB | supported | unsupported | supported |
+| DynamoDB | supported | unsupported | supported |
+| Spanner | supported | supported for fixed-schema mappings | unsupported |
 
-The extension describes request/result-envelope reach, not schema breadth.
+The payload extension describes request/result-envelope reach, not schema
+breadth. The case capability describes literal identity across calls.
 
 ## 8. Structured provider-limit errors
 
@@ -219,5 +223,6 @@ the failed native operation leaves the item unchanged.
 
 Shared tests use only names/shapes already present in all three provider
 fixtures. Existing Spanner STRING columns cover null, map, and list baselines;
-existing ordinary columns cover wider updates. No new Spanner fixture column or
-provider-specific test is introduced.
+existing ordinary columns cover wider updates and the exact common-size call.
+No new Spanner fixture column is introduced; focused row-mapper coverage checks
+logical casing without changing schema.

@@ -1,14 +1,14 @@
 # Specification Quality Checklist: Portable Partial Update
 
 **Reviewed**: 2026-09-02
-**Scope**: Cosmos DB and DynamoDB implementation; unchanged Spanner baseline
+**Scope**: Cosmos DB and DynamoDB implementation; fixed-schema Spanner baseline with a narrow casing guard
 
 ## Scope and consistency
 
-- [x] The artifacts state that `SpannerProviderClient` is unchanged.
-- [x] No artifact requires schema-aware typed nulls, requested-column reads, DDL,
-  automatic column creation, or schema/row precedence changes.
-- [x] No artifact requires a new Spanner provider test or E2E schema helper.
+- [x] The artifacts limit `SpannerProviderClient` changes to exact-case validation inside the existing update transaction.
+- [x] No artifact requires typed-null discovery, DDL, automatic column creation,
+  new schema fixtures, or unrelated schema/row precedence changes.
+- [x] Focused Spanner coverage is limited to logical-name projection; no E2E schema helper is required.
 - [x] Spanner is described as fixed-schema with existing STRING-null and
   encoded STRING map/list mappings.
 - [x] Shared conformance is limited to fields/shapes in the existing
@@ -30,7 +30,7 @@
   explicit.
 - [x] `partial_update_extended_payload` covers native request and
   resulting-item envelopes for supported provider mappings.
-- [x] All providers must declare all 19 known capabilities.
+- [x] All providers declare all 20 known capabilities, including explicit case-sensitive partial-update support.
 
 ## Cosmos DB
 
@@ -70,15 +70,14 @@
   wide missing-item update without provider branches.
 - [x] Concrete Cosmos and Dynamo emulator regressions cover result-item
   overflow and unchanged stored state.
-- [x] No Spanner test is added or run in the focused unit phase.
-- [x] Remaining Cosmos/Spanner runtime and all-provider E2E work is explicitly
-  left unchecked in `tasks.md`.
+- [x] Spanner unit coverage verifies `FIELD_DATA` logical-case projection
+  without adding a schema fixture.
+- [x] Shared conformance covers case identity/capability gating and exact-limit
+  provider execution; all three emulator reruns pass.
 - [x] `multiclouddb-perf/` is excluded.
 - [x] Issues #102–#104 remain out of scope.
 
 ## Notes
 
-The feature artifacts describe both completed focused work and remaining
-delivery phases. A checked specification-quality item does not imply that its
-corresponding implementation task is complete; `tasks.md` is authoritative for
-execution status.
+The feature artifacts describe the completed original implementation and final
+portability-review remediation. `tasks.md` records all validation as complete.

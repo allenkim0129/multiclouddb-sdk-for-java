@@ -53,34 +53,37 @@ For a provider-supported field mapping on an existing document:
 
 A missing document returns `NOT_FOUND` and is not created.
 
-## Existing Spanner contract
+## Spanner fixed-schema contract
 
-This feature does not modify the Spanner update data path.
+Spanner retains its read-write transaction, `FIELD_DATA` merge, null-STRING
+binding, and encoded STRING map/list mapping, with one explicit casing guard.
 
-- Fields map to already provisioned columns.
+- Fields map only to already provisioned columns and must use exact spelling.
 - `update()` cannot create a missing column.
-- The existing read-write transaction and `FIELD_DATA` merge remain.
-- Java null retains the existing null-STRING binding.
-- Maps/lists retain the existing encoded STRING mapping.
-- Existing Spanner error and missing-row behavior remain.
+- Existing metadata establishes the logical spelling for a row.
+- Previously unseen names are checked against `INFORMATION_SCHEMA.COLUMNS`.
+- A case-only alias returns non-retryable `UNSUPPORTED_CAPABILITY` with
+  `capability=partial_update_case_sensitive_fields` and
+  `reason=spanner_case_insensitive_column_collision` before mutation.
+- Reads project the accepted logical spelling stored in `FIELD_DATA`.
 
 Shared conformance uses only existing Spanner fixture columns/shapes. No
-typed-null contract, schema discovery, DDL, new provider test, or E2E schema
-helper is part of this feature.
+typed-null contract, DDL, new schema fixture, or E2E schema helper is part of
+this feature.
 
 ## Capability contract
 
-| Provider | `partial_update` | `partial_update_extended_payload` |
-|---|---|---|
-| Cosmos DB | supported | unsupported |
-| DynamoDB | supported | unsupported |
-| Spanner | supported | supported for existing fixed-schema mappings |
+| Provider | `partial_update` | `partial_update_extended_payload` | `partial_update_case_sensitive_fields` |
+|---|---|---|---|
+| Cosmos DB | supported | unsupported | supported |
+| DynamoDB | supported | unsupported | supported |
+| Spanner | supported | supported for fixed-schema mappings | unsupported |
 
 The extension means that supported provider field mappings do not hit a lower
 native request or resulting-item envelope before the common size limit. It is
 not a claim that arbitrary Spanner columns or value types exist.
 
-Every built-in provider declares all 19 known capability names.
+Every built-in provider declares all 20 known capability names.
 
 ## Provider execution
 
@@ -88,7 +91,7 @@ Every built-in provider declares all 19 known capability names.
 |---|---|---|
 | Cosmos DB | one direct patch through 10 fields; otherwise one same-item transactional batch | direct/batch root 404 → `NOT_FOUND` |
 | DynamoDB | one aliased conditional `UpdateItem` | failed existence guard → `NOT_FOUND` |
-| Spanner | existing read-write transaction and partial mutation | existing behavior |
+| Spanner | read-write transaction, exact-case guard, and partial mutation | existing behavior |
 
 Cosmos and Dynamo add no adapter read, replacement write, or retry loop.
 

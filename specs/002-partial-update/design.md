@@ -17,8 +17,8 @@ void update(
 ```
 
 Cosmos DB and DynamoDB move to native partial-update operations. Spanner's
-existing partial-update implementation is the baseline and remains byte-for-byte
-unchanged in `SpannerProviderClient.java`.
+fixed-schema implementation remains the baseline, with a narrow exact-case
+validation and logical-name projection fix to prevent silent field aliasing.
 
 ## 2. Portable contract
 
@@ -34,32 +34,38 @@ For field names and value shapes supported by the provider mapping:
 The operation does not support nested paths, remove, increment, conditional
 field predicates, or update TTL.
 
-### 2.1 Spanner baseline
+### 2.1 Spanner fixed-schema baseline and casing guard
 
-No Spanner data-path change is part of this design.
+The existing transaction/value mapping remains, but exact-case validation is
+added because GoogleSQL resolves column identifiers case-insensitively.
 
-The current implementation:
+The implementation:
 
-1. reads `FIELD_DATA` in its existing read-write transaction;
+1. reads `FIELD_DATA` in the existing read-write transaction;
 2. returns `NOT_FOUND` when that row read finds no row;
-3. writes requested values through the existing `setMutationValue` mapping;
-4. unions valid `FIELD_DATA` metadata with the requested fields; and
-5. commits one update mutation.
+3. compares each request name with existing logical metadata ignoring case;
+4. queries `INFORMATION_SCHEMA.COLUMNS` only for names not established in
+   metadata and verifies their exact provisioned spelling;
+5. rejects a case-only alias with non-retryable `UNSUPPORTED_CAPABILITY` tied
+   to `partial_update_case_sensitive_fields` before buffering a mutation;
+6. writes accepted values through the existing `setMutationValue` mapping,
+   unions valid metadata, and commits one mutation; and
+7. projects the exact logical spelling recorded in `FIELD_DATA` when the
+   physical column has different case.
 
 Consequences:
 
-- every logical field must already be a provisioned Spanner column;
+- an established logical field must retain its metadata spelling, while a new
+  logical field must exactly match an already provisioned Spanner column;
 - a row mutation cannot create a missing column;
-- an unknown column on an existing row is normalized by the existing Spanner
-  error mapper;
-- Java null uses the existing null-STRING binding;
-- maps/lists use the existing marker-prefixed JSON STRING representation; and
-- no schema-aware typed-null behavior is claimed.
+- Java null keeps the null-STRING binding;
+- maps/lists keep the marker-prefixed JSON STRING representation; and
+- no DDL or schema-aware typed-null behavior is claimed.
 
 Shared conformance uses existing ordinary fixture columns such as STRING-backed
-`nullField`, `nestedObj`, and `arrayField`. It does not add quoted punctuation
-columns, typed-null columns, wide-field columns, a Spanner-specific suite, or an
-E2E schema helper.
+`nullField`, `nestedObj`, and `arrayField`. It adds no quoted punctuation,
+typed-null, or wide-field schema column and no E2E schema helper. Focused row
+mapper coverage verifies logical spelling projection.
 
 ## 3. Shared preflight
 
@@ -93,23 +99,24 @@ provider I/O. Exactly 408,576 serialized bytes passes; 408,577 fails.
 
 ## 4. Capabilities
 
-Two declarations are retained:
+Three declarations are retained:
 
 | Capability | Meaning |
 |---|---|
 | `partial_update` | Provider implements the core shallow set/replace operation. |
 | `partial_update_extended_payload` | Supported provider field mappings do not encounter a lower native request or resulting-item envelope before the common 408,576-byte field-map limit. |
+| `partial_update_case_sensitive_fields` | Case-distinct field names retain separate literal identities rather than aliasing one provider column. |
 
-The default client gates only `partial_update`. The extension is descriptive
-and never disables ordinary updates.
+The default client gates only `partial_update`. The two extensions are
+descriptive and never disable ordinary updates.
 
-| Provider | Core | Extended payload |
-|---|---|---|
-| Cosmos DB | supported | unsupported |
-| DynamoDB | supported | unsupported |
-| Spanner | supported | supported for its existing fixed-schema mappings |
+| Provider | Core | Extended payload | Case-sensitive fields |
+|---|---|---|---|
+| Cosmos DB | supported | unsupported | supported |
+| DynamoDB | supported | unsupported | supported |
+| Spanner | supported | supported for its fixed-schema mappings | unsupported |
 
-After these additions every built-in provider declares all 19 known capability
+After these additions every built-in provider declares all 20 known capability
 names.
 
 ## 5. Cosmos DB design
@@ -289,8 +296,7 @@ needed by the pinned SDK so a clean module-path compilation succeeds.
   response-body configuration, update-only 413 normalization, and updated
   consistency tests
 - Dynamo planner, provider, and structured mapper tests
-
-No Spanner tests are added or run in this layer.
+- Spanner row-mapper coverage for exact logical spelling projection
 
 ### Shared layer
 
@@ -305,16 +311,19 @@ present in the three-provider baseline:
 - existing map/list encoding;
 - replay and disjoint-field concurrency; and
 - a wider-than-10-field update using already provisioned ordinary columns;
-- update-TTL, invalid/reserved-field, and 408,577-byte rejection with unchanged
-  stored state; and
+- complete null/empty/name/reserved/collision validation, update-TTL, and
+  408,577-byte rejection with unchanged stored state;
 - a wider-than-10-field update against a missing item returning `NOT_FOUND`
-  without create.
+  without create;
+- case-distinct identity when supported, otherwise an explicit capability
+  error with unchanged state; and
+- an exact 408,576-byte provider update when
+  `partial_update_extended_payload` is advertised (currently Spanner only).
 
-The exact 408,576-byte positive boundary remains an API validator test. A
-provider-runtime positive assertion would not be portable because native
-request/result envelopes and Spanner's fixed schema can bind independently.
-The shared suite therefore tests the portable 408,577-byte rejection without
-inventing a false runtime acceptance guarantee.
+The exact 408,576-byte boundary remains covered at the API validator and now
+also executes through providers that advertise the extension. Providers with a
+lower native envelope skip that positive runtime assertion via capability, so
+the suite does not invent a false guarantee for Cosmos or DynamoDB.
 
 `CosmosConformanceTest` and `DynamoConformanceTest` additionally seed native
 items below their service limits, apply small portable updates that would push
@@ -347,5 +356,5 @@ client.upsert(
 ## 9. Scope boundaries
 
 This design does not add a `replace()` method, general patch model, Spanner
-typed-null/schema work, native-client escape hatch, cancellation, configurable
-retry policy, or changes under `multiclouddb-perf/`.
+typed-null/DDL/automatic-schema work, native-client escape hatch, cancellation,
+configurable retry policy, or changes under `multiclouddb-perf/`.

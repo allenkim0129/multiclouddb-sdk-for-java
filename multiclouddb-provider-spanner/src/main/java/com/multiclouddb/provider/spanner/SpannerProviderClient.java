@@ -3,6 +3,7 @@
 
 package com.multiclouddb.provider.spanner;
 
+import com.multiclouddb.api.Capability;
 import com.multiclouddb.api.CapabilitySet;
 import com.multiclouddb.api.DocumentMetadata;
 import com.multiclouddb.api.DocumentResult;
@@ -68,6 +69,11 @@ import java.util.regex.Pattern;
 public class SpannerProviderClient implements MulticloudDbProviderClient {
 
     private static final Logger LOG = LoggerFactory.getLogger(SpannerProviderClient.class);
+    private static final String PARTIAL_UPDATE_CASE_COLLISION_PREFIX =
+            "SPANNER_PARTIAL_UPDATE_CASE_COLLISION:";
+    private static final String QUERY_TABLE_COLUMNS =
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                    + "WHERE TABLE_NAME = @tableName";
 
     /**
      * Detects an {@code ORDER BY} clause already present in caller-supplied SQL
@@ -275,14 +281,12 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * merged metadata together with the partial column updates in a single
      * atomic commit.
      * <p>
-     * <strong>Cross-provider asymmetry.</strong> This makes Spanner
-     * {@code update()} a partial update that preserves unrelated fields. The
-     * sibling providers do not: Cosmos {@code update()} calls
-     * {@code replaceItem} (full-document replace) and DynamoDB
-     * {@code update()} calls {@code PutItem} with an {@code attribute_exists}
-     * guard (full-item replace). The portable SPI contract for {@code update()}
-     * partial-vs-full semantics is currently undefined; aligning the three
-     * providers is tracked as follow-up work.
+     * <strong>Cross-provider parity.</strong> Cosmos and DynamoDB now expose the same
+     * shallow update behavior. Spanner additionally validates the exact spelling of
+     * fixed-schema columns. A case-only alias that cannot retain an independent logical
+     * identity is rejected with {@code UNSUPPORTED_CAPABILITY} tied to
+     * {@code partial_update_case_sensitive_fields}, rather than silently overwriting a
+     * differently cased field.
      *
      * @param address  the logical database + collection
      * @param key      the document key identifying the row to update
@@ -348,6 +352,8 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                     }
                 }
 
+                validateExactUpdateFieldNames(txn, table, mergedFields, document.keySet());
+
                 // 2) Build the partial-update mutation. Document fields go in via
                 //    writeDocumentFields; the merged FIELD_DATA is set explicitly
                 //    after, so previously-written columns remain visible on read.
@@ -374,6 +380,9 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
 
             logItemDiagnostics(OperationNames.UPDATE, address);
         } catch (SpannerException e) {
+            if (isPartialUpdateCaseCollision(e)) {
+                throw mapPartialUpdateCaseCollision(e);
+            }
             throw SpannerErrorMapper.map(e, OperationNames.UPDATE);
         }
     }
@@ -423,6 +432,79 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
         } catch (SpannerException e) {
             throw SpannerErrorMapper.map(e, OperationNames.UPSERT);
         }
+    }
+
+    private static void validateExactUpdateFieldNames(
+            com.google.cloud.spanner.TransactionContext txn,
+            String table,
+            Set<String> existingFields,
+            Set<String> requestedFields) {
+        Set<String> unresolvedFields = new LinkedHashSet<>();
+        for (String requestedField : requestedFields) {
+            String existingField = findCaseInsensitiveField(existingFields, requestedField);
+            if (existingField == null) {
+                unresolvedFields.add(requestedField);
+            } else if (!existingField.equals(requestedField)) {
+                throw newPartialUpdateCaseCollision(requestedField, existingField);
+            }
+        }
+        if (unresolvedFields.isEmpty()) {
+            return;
+        }
+
+        Map<String, String> columnsByLowerName = new HashMap<>();
+        Statement statement = Statement.newBuilder(QUERY_TABLE_COLUMNS)
+                .bind("tableName").to(table)
+                .build();
+        try (ResultSet columns = txn.executeQuery(statement)) {
+            while (columns.next()) {
+                String columnName = columns.getString("COLUMN_NAME");
+                columnsByLowerName.put(columnName.toLowerCase(Locale.ROOT), columnName);
+            }
+        }
+
+        for (String requestedField : unresolvedFields) {
+            String columnName = columnsByLowerName.get(requestedField.toLowerCase(Locale.ROOT));
+            if (columnName != null && !columnName.equals(requestedField)) {
+                throw newPartialUpdateCaseCollision(requestedField, columnName);
+            }
+        }
+    }
+
+    private static String findCaseInsensitiveField(Set<String> fields, String requestedField) {
+        for (String field : fields) {
+            if (field.equalsIgnoreCase(requestedField)) return field;
+        }
+        return null;
+    }
+
+    private static SpannerException newPartialUpdateCaseCollision(
+            String requestedField, String existingField) {
+        return com.google.cloud.spanner.SpannerExceptionFactory.newSpannerException(
+                ErrorCode.UNIMPLEMENTED,
+                PARTIAL_UPDATE_CASE_COLLISION_PREFIX + " field '" + requestedField
+                        + "' aliases existing field/column '" + existingField + "'");
+    }
+
+    private static boolean isPartialUpdateCaseCollision(SpannerException exception) {
+        return exception.getErrorCode() == ErrorCode.UNIMPLEMENTED
+                && exception.getMessage() != null
+                && exception.getMessage().contains(PARTIAL_UPDATE_CASE_COLLISION_PREFIX);
+    }
+
+    private static MulticloudDbException mapPartialUpdateCaseCollision(SpannerException exception) {
+        Map<String, String> details = new LinkedHashMap<>();
+        details.put("capability", Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS);
+        details.put("reason", "spanner_case_insensitive_column_collision");
+        MulticloudDbError error = new MulticloudDbError(
+                MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                exception.getMessage(),
+                ProviderId.SPANNER,
+                OperationNames.UPDATE,
+                false,
+                12,
+                details);
+        return new MulticloudDbException(error, exception);
     }
 
     /**

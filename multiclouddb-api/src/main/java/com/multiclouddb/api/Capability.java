@@ -75,6 +75,12 @@ public final class Capability {
      */
     public static final String PARTIAL_UPDATE_EXTENDED_PAYLOAD = "partial_update_extended_payload";
 
+    /**
+     * Guarantee that partial-update field names differing only by case retain
+     * distinct literal identities instead of aliasing one provider column.
+     */
+    public static final String PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS = "partial_update_case_sensitive_fields";
+
     // ── Pre-built singleton instances ─────────────────────────────────────────
     // Each well-known capability has a SUPPORTED and an _UNSUPPORTED singleton.
     // Use these in provider CapabilitySet declarations instead of constructing
@@ -159,6 +165,11 @@ public final class Capability {
     public static final Capability PARTIAL_UPDATE_EXTENDED_PAYLOAD_CAP         = intern(PARTIAL_UPDATE_EXTENDED_PAYLOAD, true);
     /** Unsupported singleton — a provider request or resulting-item envelope may bind first. */
     public static final Capability PARTIAL_UPDATE_EXTENDED_PAYLOAD_UNSUPPORTED = intern(PARTIAL_UPDATE_EXTENDED_PAYLOAD, false);
+
+    /** Supported singleton — case-variant partial-update fields remain distinct. */
+    public static final Capability PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS_CAP = intern(PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS, true);
+    /** Unsupported singleton — case-variant fields can alias one provider column. */
+    public static final Capability PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS_UNSUPPORTED = intern(PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS, false);
 
     // ── Instance fields ───────────────────────────────────────────────────────
 

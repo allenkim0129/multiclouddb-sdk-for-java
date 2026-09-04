@@ -5,8 +5,8 @@ endpoint. An OpenAPI document would therefore invent a transport that the
 repository does not provide.
 
 - [partial-update-contract.md](partial-update-contract.md) is the normative Java
-  API behavior, capability gate, Cosmos/Dynamo mechanics, and unchanged
-  fixed-schema Spanner baseline.
+  API behavior, capability gates, Cosmos/Dynamo mechanics, and fixed-schema
+  Spanner casing behavior.
 - [provider-limit-details.schema.json](provider-limit-details.schema.json)
   defines the structured, string-valued `providerDetails` carried by
   provider-envelope errors tied to `partial_update_extended_payload`. Local

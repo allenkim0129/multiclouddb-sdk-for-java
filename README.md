@@ -480,6 +480,7 @@ for (Capability cap : caps.all()) {
 | **Write timestamp / metadata** | ✓ | ✗ | ✗ |
 | **Partial update** | ✓ | ✓ | ✓ (fixed schema) |
 | **Partial update extended payload** | ✗ | ✗ | ✓ (supported fixed-schema mappings only) |
+| **Case-sensitive partial-update fields** | ✓ | ✓ | ✗ (case-only aliases are rejected) |
 
 ---
 
@@ -495,8 +496,12 @@ client.update(address, key, Map.of("status", "shipped"));
 
 Cosmos uses one direct patch for up to 10 fields or one same-item transactional
 batch for wider updates. DynamoDB uses one conditional `UpdateItem`. Spanner
-keeps its existing read-write transaction and requires every field to be an
-already provisioned column.
+uses a read-write transaction and requires a field to match its established
+logical spelling or, when new to the row, the provisioned column's exact
+spelling. Because GoogleSQL identifiers are case-insensitive,
+Spanner declares `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` unsupported and rejects
+a case-only alias with `UNSUPPORTED_CAPABILITY` instead of silently overwriting
+another logical field.
 
 Cosmos can reject one attempted patch or batch with HTTP 413 if the resulting
 document would exceed 2,097,152 bytes; the SDK surfaces that atomic failure as

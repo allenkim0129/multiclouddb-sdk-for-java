@@ -69,9 +69,11 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      * <p>
      * A fixed-schema provider (Spanner) maps each field name to an already provisioned column
      * and may reject a missing column as non-retryable
-     * {@link MulticloudDbErrorCategory#INVALID_REQUEST}. Its existing data path and value
-     * mapping are not changed by the partial-update migration. A local request-envelope
-     * rejection tied to
+     * {@link MulticloudDbErrorCategory#INVALID_REQUEST}. A provider whose identifier model
+     * cannot preserve case-distinct logical fields must declare
+     * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS} unsupported
+     * and reject a case-only alias as {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}
+     * rather than silently overwriting another field. A local request-envelope rejection tied to
      * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE_EXTENDED_PAYLOAD} must perform
      * zero provider I/O. A state-dependent resulting-item limit may instead be returned by
      * the provider after the single native update attempt and must be normalized to the same

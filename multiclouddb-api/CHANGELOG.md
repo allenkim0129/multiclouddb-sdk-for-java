@@ -9,7 +9,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
-- Well-known `PARTIAL_UPDATE` and `PARTIAL_UPDATE_EXTENDED_PAYLOAD` capabilities; the latter covers lower native request or resulting-item envelopes for supported field mappings. All built-in providers now declare all 19 known capability names.
+- Well-known `PARTIAL_UPDATE`, `PARTIAL_UPDATE_EXTENDED_PAYLOAD`, and `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` capabilities. The latter two describe lower native envelopes and literal case-sensitive field identity, respectively. All built-in providers now declare all 20 known capability names.
 
 ### Changed
 

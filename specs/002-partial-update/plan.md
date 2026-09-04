@@ -6,7 +6,8 @@
 ## Summary
 
 Change Cosmos DB and DynamoDB `update()` from full replacement to native shallow
-partial update while leaving Spanner's existing implementation unchanged.
+partial update, then add a narrow Spanner casing guard so fixed-schema column
+aliasing cannot silently diverge from the schemaless providers.
 
 The work is intentionally split:
 
@@ -21,17 +22,17 @@ The work is intentionally split:
 | Area | Status |
 |---|---|
 | T001–T015 shared API/preflight | Complete and passing |
-| Restore `.gitignore` and `SpannerProviderClient.java` to HEAD | Complete |
+| Original pre-review no-Spanner-diff checkpoint | Complete |
 | Cosmos production/unit work | Complete and passing |
 | Dynamo production/unit work | Complete and passing |
-| Spanner provider implementation | Unchanged |
+| Spanner provider implementation | Narrow exact-case validation and logical-name projection implemented |
 | Dynamo result-item-size normalization | Implemented with focused unit coverage |
 | Cosmos result-item-size normalization | Implemented with focused unit coverage |
-| Feature artifacts/docs/contracts | Reconciled for request and result envelopes |
-| Shared conformance | Provider-neutral coverage implemented; Cosmos and Dynamo runtime reruns complete |
+| Feature artifacts/docs/contracts | Reconciled and validated for envelopes, field-case capability, and shipped status |
+| Shared conformance | Expanded invalid-input, case-identity, and exact-limit coverage passes on all providers |
 | Provider-native result-size regressions | Cosmos and Dynamo emulator regressions pass |
-| Spanner runtime validation | Existing shared conformance passed in PR CI |
-| Emulator/full-suite validation | Clean unit plus Cosmos, Dynamo, and Spanner CI suites passed; complete E2E remains |
+| Spanner runtime validation | Local emulator rerun passes casing and exact-limit paths |
+| Emulator/full-suite validation | Unit reactor, all three emulator profiles, Javadocs, and artifact checks pass |
 
 ## Technical context
 
@@ -75,9 +76,10 @@ unresolved-error bytecode.
 
 ### Spanner
 
-- `SpannerProviderClient.java`: no diff permitted
-- `SpannerCapabilities.java`: only the two capability declarations/notes
-- no new Spanner source or test file
+- `SpannerProviderClient.java`: exact-case validation inside the update transaction
+- `SpannerRowMapper.java`: project the logical `FIELD_DATA` spelling
+- `SpannerCapabilities.java`: declare case-sensitive partial-update fields unsupported
+- focused row-mapper tests; no schema fixture or E2E schema helper
 
 ## Implementation stages
 
@@ -89,7 +91,9 @@ unresolved-error bytecode.
 4. Gate `Capability.PARTIAL_UPDATE` before delegation.
 5. Define `PARTIAL_UPDATE_EXTENDED_PAYLOAD` as a lower native request/result
    envelope declaration for supported provider mappings.
-6. Update Javadocs without claiming new Spanner behavior.
+6. Define `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` and declare it in every
+   provider.
+7. Update Javadocs with the fixed-schema Spanner case limitation.
 
 ### Stage 2 — Cosmos DB
 
@@ -127,8 +131,9 @@ inherit it. Also assert unchanged state for invalid/reserved fields and the
 update.
 
 The exact 408,576-byte positive boundary remains in the API validator unit
-suite. Native provider envelopes and fixed schema make a provider-runtime
-positive assertion non-portable.
+suite and executes in shared conformance only when the provider advertises
+`PARTIAL_UPDATE_EXTENDED_PAYLOAD` (currently Spanner). Cosmos and Dynamo skip
+that positive runtime assertion because their declared native envelopes bind.
 
 Run named Cosmos and Dynamo emulator suites first. A later Spanner emulator run
 uses the existing concrete conformance class and existing schema only.
@@ -176,32 +181,33 @@ tests, and Dynamo 46 tests, all with zero failures/errors/skips. The Cosmos 413
 mapper additions also pass focused unit tests. Final clean unit totals are API
 182, Cosmos 180, Dynamo 115, Spanner 109, and conformance-unit 105, all with
 zero failures/errors/skips. The conformance module and its 41 test sources
-compile successfully. No Spanner runtime validation is claimed.
+compile successfully. The earlier provider-neutral E2E completed against all
+three emulators.
 
-### Remaining
+### Final blocker-remediation validation
 
-1. complete provider-neutral E2E across configured Cosmos, Dynamo, and Spanner
-   environments.
+The clean unit reactor and Cosmos, DynamoDB, and Spanner emulator profiles pass.
+The Spanner profile executes the case-collision rejection and exact 408,576-byte
+provider call; Cosmos and Dynamo execute case-distinct identity and skip the
+exact-limit positive assertion under their declared payload capability. API and
+provider Javadocs, changed Markdown links, 20-capability declarations,
+43-requirement traceability, and the protected-path/diff audit pass. The prior
+PR CI run passed all provider jobs; updated CI will run after this commit is
+pushed.
 
-The exact CI Dynamo emulator profile passed all 88 discovered tests, including
-the concrete result-item-size regression. The exact Cosmos profile passed all
-78 discovered tests, including its concrete result-item-size regression, with
-zero failures/errors and one expected emulator skip. Javadocs and feature
-artifact/link/schema/traceability checks pass. PR CI also passes the unchanged
-Spanner shared conformance suite.
-
-## Planned parity matrix
+## Parity matrix
 
 | Behavior | Cosmos DB | DynamoDB | Spanner |
 |---|---|---|---|
-| Shallow set/replace | direct/batch patch | `UpdateItem SET` | existing partial mutation |
+| Shallow set/replace | direct/batch patch | `UpdateItem SET` | fixed-schema partial mutation |
 | Omitted fields preserved | yes | yes | yes |
 | Missing item | 404 | condition failure | existing row-read behavior |
 | Null shared baseline | JSON null | Dynamo NULL | existing STRING-null column |
 | Map/list shared baseline | native JSON | M/L | existing encoded STRING columns |
 | Wide request | one atomic batch | one expression | existing mutation |
 | Lower native envelope | local request or attempted result-size rejection | local expression or attempted result-size rejection | none declared for supported mappings |
-| New provider data path | yes | yes | no |
+| Case-distinct fields | preserved | preserved | capability-gated; aliases rejected |
+| New provider data path | yes | yes | narrow casing guard only |
 
 ## Cost matrix
 
@@ -209,7 +215,7 @@ Spanner shared conformance suite.
 |---|---|
 | Cosmos DB | one attempted point patch, or `ceil(fieldCount/10)` patch operations inside one atomic batch |
 | DynamoDB | one attempted `UpdateItem`; accepted WCU is based on resulting item size |
-| Spanner | unchanged existing read-write transaction |
+| Spanner | existing transaction plus metadata/schema-casing reads and one mutation |
 
 No implementation may add an adapter read/replace cycle for Cosmos or Dynamo.
 
@@ -217,8 +223,8 @@ No implementation may add an adapter read/replace cycle for Cosmos or Dynamo.
 
 Do not:
 
-- modify `SpannerProviderClient.java`;
-- add Spanner tests, typed-null logic, DDL, or E2E schema helpers;
+- add broader Spanner data-path work beyond the casing guard/projection;
+- add Spanner typed-null logic, DDL, schema fixtures, or E2E schema helpers;
 - add a public patch model or `replace()` method;
 - implement issues #102–#104; or
 - touch/stage `multiclouddb-perf/`.

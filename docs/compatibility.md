@@ -32,13 +32,18 @@ atomically, preserves omitted fields, and treats map/list values as complete
 top-level replacements. Non-null update TTL is rejected before provider I/O
 with `INVALID_REQUEST`.
 
-All built-in providers declare all 19 known capability names.
+All built-in providers declare all 20 known capability names.
 
-| Provider | `PARTIAL_UPDATE` | `PARTIAL_UPDATE_EXTENDED_PAYLOAD` | Native mechanism / request count | Cost and limits |
-|----------|:----------------:|:---------------------------------:|----------------------------------|-----------------|
-| Cosmos DB | ✅ | ❌ | One `patchItem` for up to 10 fields; otherwise one same-item transactional-batch request | RU cost follows patch chunks; 100 batch operations / 2,097,152 serialized bytes; 2,097,152-byte resulting document after one attempted update |
-| DynamoDB | ✅ | ❌ | One conditional aliased `UpdateItem SET` | 4,096-byte generated expression (pre-I/O); 409,600-byte resulting item (after one attempted update); accepted calls consume one item update's write capacity |
-| Spanner | ✅ | ✅, fixed-schema mappings only | Existing read-write transaction and one partial row mutation | Transaction read + write; every field must already be a column |
+| Provider | `PARTIAL_UPDATE` | `PARTIAL_UPDATE_EXTENDED_PAYLOAD` | `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` | Native mechanism / request count | Cost and limits |
+|----------|:----------------:|:---------------------------------:|:--------------------------------------:|----------------------------------|-----------------|
+| Cosmos DB | ✅ | ❌ | ✅ | One `patchItem` for up to 10 fields; otherwise one same-item transactional-batch request | RU cost follows patch chunks; 100 batch operations / 2,097,152 serialized bytes; 2,097,152-byte resulting document after one attempted update |
+| DynamoDB | ✅ | ❌ | ✅ | One conditional aliased `UpdateItem SET` | 4,096-byte generated expression (pre-I/O); 409,600-byte resulting item (after one attempted update); accepted calls consume one item update's write capacity |
+| Spanner | ✅ | ✅, fixed-schema mappings only | ❌ | One read-write transaction with field metadata read, schema-casing validation for unseen names, and one partial row mutation | Transaction reads + write; fields match established logical spelling or, when new to the row, exact column spelling |
+
+Spanner rejects a case-only field alias with non-retryable
+`UNSUPPORTED_CAPABILITY`, `capability=partial_update_case_sensitive_fields`,
+and `reason=spanner_case_insensitive_column_collision`. The rejected update
+does not mutate the document.
 
 For full replacement, use `upsert()` with the complete document. It creates a
 missing item; read-then-upsert is not an atomic update-only replacement and can
@@ -111,9 +116,9 @@ The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 | `CONFLICT` (409 - duplicate key)  | HTTP 409  | `ConditionalCheckFailedException` from `create()` - `attribute_not_exists` guard fails when the item already exists  | ALREADY_EXISTS  |
 | `CONFLICT` (412 - precondition)  | HTTP 412  | Other conditional-write precondition failures¹  | ABORTED  |
 | `THROTTLED`  | HTTP 429  | ProvisionedThroughputExceededException, ThrottlingException  | RESOURCE_EXHAUSTED  |
-| `TRANSIENT_FAILURE`  | HTTP 449, 500, 502, 503  | HTTP 500–5xx  | UNAVAILABLE  |
+| `TRANSIENT_FAILURE`  | CRUD/update HTTP 408, 410 (substatus retained), 449, 500, 502, 503  | HTTP 500–5xx  | UNAVAILABLE  |
 | `PERMANENT_FAILURE`  | -  | ItemCollectionSizeLimitExceededException  | -  |
-| `UNSUPPORTED_CAPABILITY`  | HTTP 400 with AVAD-not-enabled fingerprint (`providerDetails.reason="avad_not_enabled"`); update HTTP 413 (`reason="cosmos_result_item_size_limit"`, `maximumResultBytes="2097152"`)  | `InvalidArgumentException` / `ResourceNotFoundException` for streams not enabled (`reason="stream_not_enabled"`); update result-item-size `ValidationException` (`reason="dynamodb_result_item_size_limit"`, `maximumResultBytes="409600"`)  | UNIMPLEMENTED, plus change-stream-not-provisioned (`reason="stream_not_enabled"`)  |
+| `UNSUPPORTED_CAPABILITY`  | HTTP 400 with AVAD-not-enabled fingerprint (`providerDetails.reason="avad_not_enabled"`); update HTTP 413 (`reason="cosmos_result_item_size_limit"`, `maximumResultBytes="2097152"`)  | `InvalidArgumentException` / `ResourceNotFoundException` for streams not enabled (`reason="stream_not_enabled"`); update result-item-size `ValidationException` (`reason="dynamodb_result_item_size_limit"`, `maximumResultBytes="409600"`)  | UNIMPLEMENTED, change-stream-not-provisioned (`reason="stream_not_enabled"`), or partial-update case alias (`reason="spanner_case_insensitive_column_collision"`)  |
 | `CURSOR_EXPIRED` (change-feed) | HTTP 410 GONE (`reason="PROVIDER_TRIMMED"`)  | `TrimmedDataAccessException` (`reason="PROVIDER_TRIMMED"`), `ExpiredIteratorException` (`reason="ITERATOR_EXPIRED"`)  | `INVALID_ARGUMENT` / `OUT_OF_RANGE` / `NOT_FOUND` for partition outside retention (`reason="PROVIDER_TRIMMED"`)  |
 | `PROVIDER_ERROR`  | Other  | Other  | INTERNAL, Other  |
 
@@ -128,6 +133,13 @@ overflow remains a local zero-I/O rejection. No read/merge preflight is
 performed. Cosmos HTTP 413 from other operations retains the general provider
 mapping, and other Dynamo `ValidationException` messages remain
 `INVALID_REQUEST`.
+
+For failed Cosmos update batches, HTTP 424 operation results are dependent
+rollback fallout and are skipped. The mapper selects the first usable non-424
+operation failure, then a usable non-424 aggregate status, and finally a
+sanitized `PROVIDER_ERROR` if the response supplies no root status. Change-feed
+HTTP 410 remains `CURSOR_EXPIRED`; the transient 410 mapping above is for CRUD
+and update operations.
 
 ## Change-Feed History Retention
 

@@ -5,6 +5,7 @@ package com.multiclouddb.conformance;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.multiclouddb.api.Capability;
 import com.multiclouddb.api.CapabilitySet;
 import com.multiclouddb.api.DocumentResult;
 import com.multiclouddb.api.MulticloudDbClient;
@@ -23,6 +24,7 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -35,6 +37,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -772,9 +775,23 @@ public abstract class CrudConformanceTests {
             client.upsert(getAddress(), key,
                     Map.of("title", "before", "status", "preserved"));
 
-            for (Map<String, Object> invalidFields : List.<Map<String, Object>>of(
-                    Map.of(" ", "blank"),
-                    Map.of("ttl", "reserved"))) {
+            List<Map<String, Object>> invalidFieldMaps = new ArrayList<>();
+            invalidFieldMaps.add(null);
+            invalidFieldMaps.add(Map.of());
+
+            Map<String, Object> nullName = new LinkedHashMap<>();
+            nullName.put(null, "null-name");
+            invalidFieldMaps.add(nullName);
+
+            invalidFieldMaps.add(Map.of("", "empty"));
+            invalidFieldMaps.add(Map.of(" ", "blank"));
+            invalidFieldMaps.add(Map.of("_hidden", "reserved-prefix"));
+            invalidFieldMaps.add(Map.of("foo", "first", "Foo", "collision"));
+            for (String reserved : List.of("id", "ID", "partitionKey", "PARTITIONKEY",
+                    "sortKey", "SORTKEY", "ttl", "TTL", "ttlExpiry", "TTLEXPIRY", "data", "DATA")) {
+                invalidFieldMaps.add(Map.of(reserved, "reserved"));
+            }
+            for (Map<String, Object> invalidFields : invalidFieldMaps) {
                 MulticloudDbException ex = assertThrows(MulticloudDbException.class,
                         () -> client.update(getAddress(), key, invalidFields));
                 assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST,
@@ -831,6 +848,90 @@ public abstract class CrudConformanceTests {
                 "A failed wide update must not create the missing item");
     }
 
+    @Test @Order(31)
+    @DisplayName("case-variant update fields are preserved or explicitly capability-gated")
+    void partialUpdateCaseVariantFieldIdentityIsExplicit() {
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-case");
+
+        try {
+            client.upsert(getAddress(), key, Map.of("title", "lowercase"));
+
+            if (client.capabilities().isSupported(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS)) {
+                client.update(getAddress(), key, Map.of("TITLE", "uppercase"));
+
+                JsonNode doc = client.read(getAddress(), key).document();
+                assertEquals("lowercase", doc.path("title").asText());
+                assertEquals("uppercase", doc.path("TITLE").asText());
+            } else {
+                MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                        () -> client.update(getAddress(), key, Map.of("TITLE", "uppercase")));
+                assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                        ex.error().category());
+                assertFalse(ex.error().retryable());
+                assertEquals(client.providerId(), ex.error().provider());
+                assertEquals(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS,
+                        ex.error().providerDetails().get("capability"));
+
+                JsonNode doc = client.read(getAddress(), key).document();
+                assertEquals("lowercase", doc.path("title").asText());
+                assertFalse(doc.has("TITLE"), "rejected case variant must not mutate the item");
+            }
+        } finally {
+            safeDelete(key);
+        }
+    }
+
+    @Test @Order(32)
+    @DisplayName("case variant of an unwritten schema field is preserved or capability-gated")
+    void partialUpdateUnwrittenSchemaFieldCaseIsExplicit() {
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-schema-case");
+
+        try {
+            client.upsert(getAddress(), key, Map.of("title", "preserved"));
+
+            if (client.capabilities().isSupported(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS)) {
+                client.update(getAddress(), key, Map.of("STATUS", "uppercase"));
+
+                JsonNode doc = client.read(getAddress(), key).document();
+                assertEquals("preserved", doc.path("title").asText());
+                assertEquals("uppercase", doc.path("STATUS").asText());
+                assertFalse(doc.has("status"));
+            } else {
+                MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                        () -> client.update(getAddress(), key, Map.of("STATUS", "uppercase")));
+                assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                        ex.error().category());
+                assertFalse(ex.error().retryable());
+                assertEquals(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS,
+                        ex.error().providerDetails().get("capability"));
+
+                JsonNode doc = client.read(getAddress(), key).document();
+                assertEquals("preserved", doc.path("title").asText());
+                assertFalse(doc.has("STATUS"));
+                assertFalse(doc.has("status"));
+            }
+        } finally {
+            safeDelete(key);
+        }
+    }
+
+    @Test @Order(33)
+    @DisplayName("the exact common payload limit executes when extended payload is advertised")
+    void partialUpdateExactCommonLimitExecutesWhenAdvertised() throws Exception {
+        assumeTrue(client.capabilities().isSupported(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD));
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-exact-limit");
+        Map<String, Object> fields = fieldsOfSerializedSize("title", 408_576);
+
+        try {
+            client.upsert(getAddress(), key, Map.of("title", "before"));
+            assertDoesNotThrow(() -> client.update(getAddress(), key, fields));
+
+            JsonNode doc = client.read(getAddress(), key).document();
+            assertEquals(fields.get("title"), doc.path("title").asText());
+        } finally {
+            safeDelete(key);
+        }
+    }
     // ── Portable expression runtime parity ────────────────────────────────────
     //
     // The us1b ExpressionTranslationTest already covers translation. These tests
