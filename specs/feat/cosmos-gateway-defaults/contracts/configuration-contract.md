@@ -10,7 +10,7 @@ GraphQL endpoint. This document is the external configuration contract.
 | `multiclouddb.connection.endpoint` | yes | Non-blank Cosmos account URI | none |
 | `multiclouddb.connection.key` | no | Cosmos account key | Azure identity |
 | `multiclouddb.connection.tenantId` | no | Azure tenant ID | credential-chain default |
-| `multiclouddb.connection.thinClientEnabled` | no | `true` or `false`, case-insensitive | unset / SDK auto-probe |
+| `multiclouddb.connection.gatewayV2Enable` | no | `true` or `false`, case-insensitive | unset / SDK auto-probe |
 
 ## Fixed output contract
 
@@ -26,7 +26,26 @@ CosmosClientBuilder
 
 `directMode(...)` is never selected.
 
-## Thin-client precedence contract
+## Deployment profiles
+
+| Profile | Endpoint | Gateway V2 preference | Cache behavior |
+|---|---|---|---|
+| Standard Gateway (V2 default) | Standard `documents.azure.com` endpoint | Unset for probe/fallback; `true` to force V2; `false` to use V1 | No Integrated Cache |
+| Dedicated Gateway | Provisioned `sqlx.cosmos.azure.com` endpoint | `false` | Provider-native Integrated Cache for eligible reads |
+
+Using Gateway V2 with Integrated Cache is not recommended. The recommended
+Dedicated Gateway profile therefore sets `gatewayV2Enable=false` and uses
+`EVENTUAL` consistency in Multicloud DB examples for forward compatibility
+with the planned portable cache contract. The service-side default cache
+staleness applies because this release does not expose
+`MaxIntegratedCacheStaleness`.
+
+The Dedicated Gateway profile is provider-native deployment guidance, not a
+portable cache capability. Clients that require different Gateway V2
+preferences use separate JVM processes because the native thin-client setting
+is global and read lazily.
+
+## Gateway V2 precedence contract
 
 | SDK system property | SDK environment variable | Connection property | Effective behavior |
 |---|---|---|---|
@@ -37,7 +56,13 @@ CosmosClientBuilder
 | empty/absent | empty/absent | absent | SDK probe and fallback |
 
 The connection property is mapped to the SDK system property only when no
-operator-level value exists.
+native system-property or environment value already exists. Conflicting values
+are not overwritten. An unset connection value also logs when a global value
+has already disabled the documented AUTO behavior.
+
+A recognized Dedicated Gateway `sqlx` endpoint logs an actionable warning when
+Gateway V2 is enabled or eligible. The warning recommends `gatewayV2Enable=false`
+to keep requests on the Integrated Cache path.
 
 ## Rejected input
 
@@ -45,7 +70,8 @@ operator-level value exists.
 |---|---|
 | `multiclouddb.connection.connectionMode` | `IllegalArgumentException`: Gateway mode is always used |
 | `multiclouddb.connection.gatewayHttp2Enabled` | `IllegalArgumentException`: Gateway HTTP/2 is always enabled |
-| `multiclouddb.connection.thinClientEnabled=<other>` | `IllegalArgumentException`: value must be `true` or `false` |
+| `multiclouddb.connection.gatewayV2Enable=<other>` | `IllegalArgumentException`: value must be `true` or `false` |
+| `multiclouddb.connection.thinClientEnabled` | `IllegalArgumentException`: renamed to `gatewayV2Enable` |
 
 All validation occurs before native client construction and before network
 I/O.
@@ -54,6 +80,10 @@ I/O.
 
 - Provider-neutral interfaces and operation semantics are unchanged.
 - The public Cosmos constants for connection-mode selection are removed.
-- Existing pre-release configuration containing a removed key must be updated.
-- `thinClientEnabled` is process-wide due to the native SDK contract, even
+- Existing pre-release configuration containing a removed or renamed key must be updated.
+- `gatewayV2Enable` is process-wide due to the native SDK contract, even
   though it is accepted through the standard connection-property map.
+- Integrated Cache support here is limited to a Cosmos-native endpoint and
+  routing profile; no portable cache capability or configurable staleness is
+  introduced.
+- The native SDK reads the JVM-wide value controlling Gateway V2 lazily per request.

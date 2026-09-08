@@ -41,9 +41,9 @@ class CosmosConstantsTest {
 
 
     @Test
-    @DisplayName("CONFIG_THIN_CLIENT_ENABLED key value")
-    void configThinClientEnabledKey() {
-        assertEquals("thinClientEnabled", CosmosConstants.CONFIG_THIN_CLIENT_ENABLED);
+    @DisplayName("CONFIG_GATEWAY_V2_ENABLE key value")
+    void configGatewayV2EnableKey() {
+        assertEquals("gatewayV2Enable", CosmosConstants.CONFIG_GATEWAY_V2_ENABLE);
     }
 
     // ── Consistency ───────────────────────────────────────────────────────────

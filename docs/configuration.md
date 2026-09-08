@@ -47,7 +47,7 @@ Select a provider and supply its connection and auth properties.
 | `multiclouddb.connection.endpoint` | Cosmos DB account URI or emulator URI |
 | `multiclouddb.connection.key` | Master key (omit for Azure Identity auth) |
 | `multiclouddb.connection.tenantId` | Azure AD tenant ID (optional, for Entra ID) |
-| `multiclouddb.connection.thinClientEnabled` | Gateway V2 thin-client override: unset for automatic probe/fallback (default), `false` to opt out, or `true` to force opt-in |
+| `multiclouddb.connection.gatewayV2Enable` | Gateway V2 routing override: unset for automatic probe/fallback (default), `false` for Gateway V1 or Dedicated Gateway with Integrated Cache, or `true` to force Gateway V2 |
 | `multiclouddb.connection.consistencyLevel` | Read consistency override (optional — see below) |
 
 ### Authentication Modes
@@ -64,22 +64,67 @@ Select a provider and supply its connection and auth properties.
 - **Master key** - when `connection.key` is provided, uses shared-key authentication.
   Suitable for local emulator development only.
 
-### Transport
+### Transport Profiles
 
 The provider always uses **Gateway mode over HTTP/2**. Direct mode and HTTP/2
 enablement are intentionally not configurable.
 
-Gateway V2 thin-client proxy routing is eligible by default. With
-`thinClientEnabled` unset, the Azure Cosmos DB SDK probes Gateway V2
-connectivity and uses it when available; otherwise it automatically falls back
-to Gateway V1. Set `multiclouddb.connection.thinClientEnabled=false` for a hard
-opt-out, or `true` for a hard opt-in that bypasses the probe.
+Choose one recommended deployment profile per JVM process:
 
-The Azure SDK implements this switch as a JVM-wide setting. An existing
+| Profile | Endpoint | `gatewayV2Enable` | Recommended consistency |
+|---------|----------|---------------------|-------------------------|
+| Standard Gateway (V2 default) | Standard `documents.azure.com` account endpoint | Unset for probe/fallback; `true` to force V2; `false` to use V1 | Account default |
+| Dedicated Gateway with Integrated Cache | Provisioned `sqlx.cosmos.azure.com` Dedicated Gateway endpoint | `false` (required to keep requests off Gateway V2) | `EVENTUAL` |
+
+#### Gateway V2 (default)
+
+With `gatewayV2Enable` unset, Azure Cosmos DB SDK 4.82 probes Gateway V2
+connectivity and uses it when available; otherwise it automatically falls back
+to Gateway V1. Set `multiclouddb.connection.gatewayV2Enable=true` only for a
+hard opt-in that bypasses the probe.
+
+The earlier draft key `thinClientEnabled` is rejected with guidance to use
+`gatewayV2Enable`, preventing a stale opt-out from silently reverting to AUTO.
+
+#### Dedicated Gateway with Integrated Cache
+
+[Integrated Cache](https://learn.microsoft.com/azure/cosmos-db/integrated-cache)
+is an Azure-managed, in-memory read cache deployed on paid
+[Dedicated Gateway](https://learn.microsoft.com/azure/cosmos-db/dedicated-gateway)
+compute. Cosmos guidance does not recommend using Gateway V2 with Integrated
+Cache because the extra routing path does not improve cache hits.
+
+After provisioning a Dedicated Gateway, configure its endpoint and force the
+non-V2 path:
+
+```properties
+multiclouddb.connection.endpoint=https://your-account.sqlx.cosmos.azure.com:443/
+multiclouddb.connection.gatewayV2Enable=false
+multiclouddb.connection.consistencyLevel=EVENTUAL
+```
+
+Only cache-hit point reads and queries can return with 0 RU. Writes, cache
+misses, and Dedicated Gateway compute still incur their normal costs. This is a
+Cosmos-specific deployment profile, not a portable read-through-cache
+capability. This release does not expose `MaxIntegratedCacheStaleness`; the
+Dedicated Gateway service-side default applies. Custom portable cache policy,
+including configurable staleness and cross-provider capability gating, remains
+future work.
+
+The provider logs a warning when it recognizes a Dedicated Gateway `sqlx`
+endpoint while Gateway V2 is enabled or eligible. Set `gatewayV2Enable=false`
+to keep eligible requests on the Integrated Cache path and remove the warning.
+
+#### JVM-wide selection
+
+The Azure SDK implements Gateway V2 selection through a JVM-wide native
+thin-client setting. An existing
 `COSMOS.THINCLIENT_ENABLED` system property or `COSMOS_THINCLIENT_ENABLED`
 environment variable takes precedence over the connection property. When
 multiple Cosmos clients run in one JVM, configure the same value for all of
-them.
+them. The SDK reads this value lazily, so setting it for a later client can also
+change routing for an existing client. Gateway V2 and Integrated Cache clients
+therefore require separate JVM processes.
 
 ### Consistency Level
 

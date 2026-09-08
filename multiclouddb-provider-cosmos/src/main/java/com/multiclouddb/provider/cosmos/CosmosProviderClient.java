@@ -33,8 +33,9 @@ import java.util.regex.Pattern;
  * <li>{@code endpoint} — Cosmos account endpoint URL (required)</li>
  * <li>{@code key} — Cosmos account key (optional; omit to use
  *     {@link DefaultAzureCredentialBuilder})</li>
- * <li>{@code thinClientEnabled} — optional Gateway V2 thin-client override;
- *     omit for automatic probe and fallback, or set {@code false} to opt out</li>
+ * <li>{@code gatewayV2Enable} — optional Gateway V2 routing override;
+ *     omit for automatic probe and fallback, set {@code false} to opt out or
+ *     use Dedicated Gateway with Integrated Cache, or set {@code true} to force opt-in</li>
  * <li>{@code consistencyLevel} — read consistency override (optional; omit to
  *     inherit the Cosmos account's default consistency level). Accepted values
  *     (case-insensitive): {@code STRONG}, {@code BOUNDED_STALENESS},
@@ -49,6 +50,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
     private static final String REMOVED_CONNECTION_MODE_CONFIG = "connectionMode";
     private static final String REMOVED_GATEWAY_HTTP2_CONFIG = "gatewayHttp2Enabled";
+    private static final String RENAMED_THIN_CLIENT_CONFIG = "thinClientEnabled";
 
     private final CosmosClient cosmosClient;
     private final MulticloudDbClientConfig config;
@@ -79,8 +81,10 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      * @param config client configuration carrying connection, auth, and options
      * @throws IllegalArgumentException if {@code connection.endpoint} is missing or blank,
      *                                  or if {@code connection.consistencyLevel} is present
-     *                                  but not a valid consistency level value, or if a removed
-     *                                  transport option is present
+     *                                  but not a valid consistency level value, if
+     *                                  {@code connection.gatewayV2Enable} is not {@code true}
+     *                                  or {@code false}, or if a removed or renamed transport option is
+     *                                  present
      */
     public CosmosProviderClient(MulticloudDbClientConfig config) {
         this.config = config;
@@ -91,8 +95,12 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             throw new IllegalArgumentException(CosmosConstants.ERR_ENDPOINT_REQUIRED);
         }
 
-        validateFixedTransportConfig(config);
-        configureThinClient(config);
+        validateTransportConfig(config);
+        String gatewayV2Preference = parseGatewayV2Preference(config);
+        String consistencyStr = config.connection().get(CosmosConstants.CONFIG_CONSISTENCY_LEVEL);
+        ConsistencyLevel readConsistencyOverride = consistencyStr == null
+                ? null
+                : CosmosConstants.parseConsistencyLevel(consistencyStr);
 
         CosmosClientBuilder builder = new CosmosClientBuilder()
                 .endpoint(endpoint)
@@ -116,10 +124,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
                 .setHttp2ConnectionConfig(new Http2ConnectionConfig().setEnabled(true));
         builder.gatewayMode(gatewayConfig);
 
-        String consistencyStr = config.connection().get(CosmosConstants.CONFIG_CONSISTENCY_LEVEL);
-        ConsistencyLevel readConsistencyOverride = null;
-        if (consistencyStr != null) {
-            readConsistencyOverride = CosmosConstants.parseConsistencyLevel(consistencyStr);
+        if (readConsistencyOverride != null) {
             builder.consistencyLevel(readConsistencyOverride);
             LOG.warn("Cosmos read consistency override set to '{}'. " +
                     "This must be equal to or weaker than the account's default consistency level; " +
@@ -129,6 +134,8 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
 
         builder.userAgentSuffix(SdkUserAgent.userAgent(config));
 
+        configureGatewayV2(gatewayV2Preference);
+        warnIfGatewayV2MayBypassIntegratedCache(endpoint, gatewayV2Preference);
         this.cosmosClient = builder.buildClient();
         // Stamp the configured extendedRetention onto every minted cursor so a
         // persisted token can outlive the 24h portable baseline up to the
@@ -143,7 +150,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         LOG.info("Cosmos read consistency: {}", readConsistencyOverride != null ? readConsistencyOverride : "account default");
     }
 
-    private static void validateFixedTransportConfig(MulticloudDbClientConfig config) {
+    private static void validateTransportConfig(MulticloudDbClientConfig config) {
         if (config.connection().containsKey(REMOVED_CONNECTION_MODE_CONFIG)) {
             throw new IllegalArgumentException(
                     "Cosmos connection property 'connectionMode' is no longer supported; "
@@ -154,44 +161,86 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
                     "Cosmos connection property 'gatewayHttp2Enabled' is not supported; "
                             + "Gateway HTTP/2 is always enabled");
         }
+        if (config.connection().containsKey(RENAMED_THIN_CLIENT_CONFIG)) {
+            throw new IllegalArgumentException(
+                    "Cosmos connection property 'thinClientEnabled' has been renamed to "
+                            + "'gatewayV2Enable'");
+        }
     }
 
-    private static void configureThinClient(MulticloudDbClientConfig config) {
+    private static String parseGatewayV2Preference(MulticloudDbClientConfig config) {
         String configuredValue =
-                config.connection().get(CosmosConstants.CONFIG_THIN_CLIENT_ENABLED);
+                config.connection().get(CosmosConstants.CONFIG_GATEWAY_V2_ENABLE);
         if (configuredValue == null) {
-            return;
+            return null;
         }
 
-        String normalizedValue;
         if ("true".equalsIgnoreCase(configuredValue)) {
-            normalizedValue = Boolean.TRUE.toString();
-        } else if ("false".equalsIgnoreCase(configuredValue)) {
-            normalizedValue = Boolean.FALSE.toString();
-        } else {
-            throw new IllegalArgumentException(
-                    "Cosmos connection property 'thinClientEnabled' must be 'true' or 'false'");
+            return Boolean.TRUE.toString();
         }
+        if ("false".equalsIgnoreCase(configuredValue)) {
+            return Boolean.FALSE.toString();
+        }
+        throw new IllegalArgumentException(
+                "Cosmos connection property 'gatewayV2Enable' must be 'true' or 'false'");
+    }
 
+    private static void configureGatewayV2(String configuredValue) {
         synchronized (CosmosProviderClient.class) {
-            String sdkProperty =
-                    System.getProperty(CosmosConstants.SDK_THIN_CLIENT_ENABLED_PROPERTY);
-            String sdkEnvironment = System.getenv(
-                    CosmosConstants.SDK_THIN_CLIENT_ENABLED_ENVIRONMENT_VARIABLE);
-            if ((sdkProperty == null || sdkProperty.isEmpty())
-                    && (sdkEnvironment == null || sdkEnvironment.isEmpty())) {
-                System.setProperty(
-                        CosmosConstants.SDK_THIN_CLIENT_ENABLED_PROPERTY, normalizedValue);
-            } else {
-                String operatorValue =
-                        sdkProperty != null && !sdkProperty.isEmpty() ? sdkProperty : sdkEnvironment;
-                if (!normalizedValue.equalsIgnoreCase(operatorValue)) {
-                    LOG.warn("Ignoring thinClientEnabled='{}' because the Azure Cosmos DB SDK "
-                                    + "system property or environment variable is set to '{}'",
-                            normalizedValue, operatorValue);
+            String sdkSetting = effectiveSdkThinClientSetting();
+            if (configuredValue == null) {
+                if (sdkSetting != null) {
+                    LOG.warn("gatewayV2Enable is unset, but the JVM-wide Azure Cosmos DB "
+                                    + "thin-client setting is already '{}'; SDK AUTO probe/fallback "
+                                    + "is not active for this client",
+                            sdkSetting);
                 }
+                return;
+            }
+            if (sdkSetting == null) {
+                System.setProperty(
+                        CosmosConstants.SDK_THIN_CLIENT_ENABLED_PROPERTY, configuredValue);
+            } else if (!configuredValue.equalsIgnoreCase(sdkSetting)) {
+                LOG.warn("Ignoring gatewayV2Enable='{}' because the JVM-wide Azure Cosmos DB "
+                                + "thin-client setting is already '{}'; all Cosmos clients in this "
+                                + "process share the existing value",
+                        configuredValue, sdkSetting);
             }
         }
+    }
+
+    private static void warnIfGatewayV2MayBypassIntegratedCache(
+            String endpoint, String configuredValue) {
+        if (!isDedicatedGatewayEndpoint(endpoint)) {
+            return;
+        }
+        String sdkSetting = effectiveSdkThinClientSetting();
+        String effectiveValue = sdkSetting != null ? sdkSetting : configuredValue;
+        if (!Boolean.FALSE.toString().equalsIgnoreCase(effectiveValue)) {
+            LOG.warn("Dedicated Gateway endpoint detected while Gateway V2 is enabled or eligible. "
+                            + "Using Gateway V2 with Azure Cosmos DB Integrated Cache is not "
+                            + "recommended; set gatewayV2Enable=false before creating any Cosmos "
+                            + "client in this JVM to keep requests on the Integrated Cache path");
+        }
+    }
+
+    private static boolean isDedicatedGatewayEndpoint(String endpoint) {
+        try {
+            String host = java.net.URI.create(endpoint).getHost();
+            return host != null && host.toLowerCase(Locale.ROOT).contains(".sqlx.cosmos.");
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        }
+    }
+
+    private static String effectiveSdkThinClientSetting() {
+        String sdkProperty = System.getProperty(CosmosConstants.SDK_THIN_CLIENT_ENABLED_PROPERTY);
+        if (sdkProperty != null && !sdkProperty.isEmpty()) {
+            return sdkProperty;
+        }
+        String sdkEnvironment =
+                System.getenv(CosmosConstants.SDK_THIN_CLIENT_ENABLED_ENVIRONMENT_VARIABLE);
+        return sdkEnvironment == null || sdkEnvironment.isEmpty() ? null : sdkEnvironment;
     }
 
     /**

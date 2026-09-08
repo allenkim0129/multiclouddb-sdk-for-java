@@ -9,16 +9,25 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
-- `thinClientEnabled` connection setting for explicit Gateway V2 thin-client
-  opt-in or opt-out. When unset, Gateway V2 is eligible by default and the
-  Azure Cosmos DB SDK probes connectivity before routing, with automatic
+- `gatewayV2Enable` connection setting for explicit Gateway V2 routing opt-in
+  or opt-out. When unset, Gateway V2 is eligible by default and the Azure
+  Cosmos DB SDK probes connectivity before routing, with automatic
   fallback to Gateway V1. Existing `COSMOS.THINCLIENT_ENABLED` system-property
   or `COSMOS_THINCLIENT_ENABLED` environment-variable settings take precedence.
+- A documented Dedicated Gateway with Integrated Cache profile using the
+  Dedicated Gateway `sqlx` endpoint, `EVENTUAL` consistency, and
+  `gatewayV2Enable=false`. Using Gateway V2 with this provider-native cache
+  profile is not recommended.
 
 ### Changed
 
 - Cosmos clients now always use Gateway mode with HTTP/2 enabled. Upgraded
   `azure-cosmos` from 4.78.0 to 4.82.0 for probe-gated Gateway V2 routing.
+- Renamed the pre-release `thinClientEnabled` connection setting to
+  `gatewayV2Enable`; the stale name now fails with migration guidance.
+- Wrapper-owned settings are validated before the JVM-wide Gateway V2 value is
+  published. Dedicated Gateway endpoints without an effective Gateway V2
+  opt-out now emit a warning about the non-recommended combination.
 
 ### Removed
 

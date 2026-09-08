@@ -33,11 +33,11 @@ This document records the decisions that support the design in
 
 - **Decision**: Upgrade `com.azure:azure-cosmos` from 4.78.0 to 4.82.0.
 - **Rationale**: Version 4.82.0 makes Gateway V2 eligible by default for
-  Gateway HTTP/2 clients. With no explicit thin-client value, it performs a
+  Gateway HTTP/2 clients. With no explicit Gateway V2 value, it performs a
   connectivity probe and routes to Gateway V2 only after an affirmative
   result; otherwise it stays on Gateway V1.
 - **Alternatives considered**:
-  - Stay on 4.78.0 or 4.81.0 and force thin client on: rejected because those
+  - Stay on 4.78.0 or 4.81.0 and force Gateway V2 on: rejected because those
     versions do not provide the requested safe default with automatic fallback.
   - Implement a wrapper-owned probe: rejected by the thin-wrapper principle and
     would duplicate provider SDK networking logic.
@@ -57,14 +57,14 @@ This document records the decisions that support the design in
   - Support only `false`: rejected because a strict Boolean override is easier
     to operate and preserves the Azure SDK's explicit opt-in path.
 
-## Decision 5: Treat thin-client selection as process-wide
+## Decision 5: Treat Gateway V2 selection as process-wide
 
-- **Decision**: Map `thinClientEnabled` to the Azure SDK's JVM-wide setting
-  before native client construction. Preserve this precedence:
+- **Decision**: Map `gatewayV2Enable` to the Azure SDK's JVM-wide native
+  thin-client setting before native client construction. Preserve this precedence:
   non-empty system property, non-empty environment variable, connection
   property, then unset SDK default.
-- **Rationale**: Azure SDK 4.82.0 does not expose a per-client thin-client
-  builder API. It reads `COSMOS.THINCLIENT_ENABLED` or
+- **Rationale**: Azure SDK 4.82.0 does not expose a per-client Gateway V2
+  builder API. It reads the internally named `COSMOS.THINCLIENT_ENABLED` or
   `COSMOS_THINCLIENT_ENABLED` from static configuration. Synchronizing the
   check-and-set prevents two wrapper client constructors from overwriting each
   other, but applications must still use one value per JVM.
@@ -91,12 +91,34 @@ This document records the decisions that support the design in
 ## Decision 7: Fail fast on removed switches
 
 - **Decision**: Reject `connectionMode` and `gatewayHttp2Enabled` whenever
-  present, even when their values equal the fixed behavior.
+  present, even when their values equal the fixed behavior. Reject the earlier
+  draft key `thinClientEnabled` with guidance to use `gatewayV2Enable`.
 - **Rationale**: This makes migration explicit and prevents configuration files
   from carrying ineffective settings indefinitely.
 - **Alternatives considered**:
   - Accept `gateway` and `true` for compatibility: rejected because they would
     remain misleading no-op controls.
+
+## Decision 8: Treat Integrated Cache as an alternate deployment profile
+
+- **Decision**: Keep Gateway V2 as the zero-configuration standard-endpoint
+  profile. Dedicated Gateway with Integrated Cache uses its `sqlx` endpoint,
+  `gatewayV2Enable=false`, and `EVENTUAL` consistency in Multicloud DB
+  examples.
+- **Rationale**: Cosmos team guidance does not recommend Gateway V2 with
+  Integrated Cache. Integrated Cache is server-side memory on dedicated compute
+  and forwards cache misses to backend nodes; Gateway V2 adds another routing
+  path without improving cache hits.
+- **Scope**: This PR documents a Cosmos-native deployment profile only. It does
+  not add the planned portable cache capability, configurable staleness, or
+  provisioning. The Dedicated Gateway service-side staleness default applies.
+- **Alternatives considered**:
+  - Keep Gateway V2 enabled with Integrated Cache: rejected as the recommended
+    profile because the combination adds no cache benefit.
+  - Make Dedicated Gateway the default: rejected because its paid compute and
+    bounded-staleness cache suit read-heavy workloads, not every workload.
+  - Add a portable cache API in this PR: rejected because that requires a
+    separate cross-provider design covering DynamoDB DAX and Spanner.
 
 ## Official Sources
 
@@ -110,3 +132,7 @@ This document records the decisions that support the design in
   <https://github.com/Azure/azure-sdk-for-java/blob/com.azure%2Bazure-cosmos_4.82.0/sdk/cosmos/azure-cosmos/src/main/java/com/azure/cosmos/implementation/Configs.java>
 - Query-plan Gateway V2 gate:
   <https://github.com/Azure/azure-sdk-for-java/blob/com.azure%2Bazure-cosmos_4.82.0/sdk/cosmos/azure-cosmos/src/main/java/com/azure/cosmos/implementation/query/QueryPlanRetriever.java>
+- Dedicated Gateway overview:
+  <https://learn.microsoft.com/azure/cosmos-db/dedicated-gateway>
+- Configure Integrated Cache:
+  <https://learn.microsoft.com/azure/cosmos-db/how-to-configure-integrated-cache>

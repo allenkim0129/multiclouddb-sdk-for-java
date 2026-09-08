@@ -32,12 +32,13 @@ public final class CosmosConstants {
 
 
     /**
-     * Optional Gateway V2 thin-client routing override.
+     * Optional Gateway V2 routing override.
      *
      * <p>When absent, the Azure Cosmos DB SDK probes Gateway V2 and falls back to Gateway V1 when
-     * necessary. Set to {@code false} to opt out, or {@code true} to force the SDK opt-in.
+     * necessary. Set to {@code false} to opt out or use Dedicated Gateway with Integrated Cache,
+     * or set to {@code true} to force the SDK opt-in. The setting is JVM-wide.
      */
-    public static final String CONFIG_THIN_CLIENT_ENABLED = "thinClientEnabled";
+    public static final String CONFIG_GATEWAY_V2_ENABLE = "gatewayV2Enable";
 
     static final String SDK_THIN_CLIENT_ENABLED_PROPERTY = "COSMOS.THINCLIENT_ENABLED";
     static final String SDK_THIN_CLIENT_ENABLED_ENVIRONMENT_VARIABLE = "COSMOS_THINCLIENT_ENABLED";

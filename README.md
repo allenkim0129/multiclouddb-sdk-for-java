@@ -370,7 +370,7 @@ See the [developer guide](docs/guide.md#why-key-is-an-explicit-parameter) for th
 | Provider | Module | Status | Native SDK |
 |----------|--------|--------|------------|
 | **Azure Cosmos DB** | `multiclouddb-provider-cosmos` | Full | Azure Cosmos Java SDK 4.82.0 |
-| **Amazon DynamoDB** | `multiclouddb-provider-dynamo` | Full | AWS SDK for Java 2.25.16 |
+| **Amazon DynamoDB** | `multiclouddb-provider-dynamo` | Full | AWS SDK for Java 2.34.0 |
 | **Google Cloud Spanner** | `multiclouddb-provider-spanner` | Full | Google Cloud Spanner 6.62.0 |
 
 ---
@@ -382,7 +382,7 @@ All configuration flows through `MulticloudDbClientConfig` or a `.properties` fi
 | Property | Description | Example |
 |----------|-------------|---------|
 | `multiclouddb.provider` | Provider ID | `cosmos`, `dynamo`, `spanner` |
-| `multiclouddb.connection.*` | Connection properties | `endpoint`, `key`, `region`, `thinClientEnabled` |
+| `multiclouddb.connection.*` | Connection properties | `endpoint`, `key`, `region`, `gatewayV2Enable` |
 | `multiclouddb.auth.*` | Authentication properties | `accessKeyId`, `secretAccessKey` |
 | `multiclouddb.feature.*` | Feature flags | Provider-specific opt-ins |
 
@@ -392,10 +392,26 @@ All configuration flows through `MulticloudDbClientConfig` or a `.properties` fi
 |-----|-------|
 | `multiclouddb.connection.endpoint` | `https://localhost:8081` (emulator) or your Cosmos account URI |
 | `multiclouddb.connection.key` | Master key or Cosmos emulator well-known key |
-| `multiclouddb.connection.thinClientEnabled` | Unset for automatic Gateway V2 probe/fallback (default), `false` to opt out, or `true` to force opt-in |
+| `multiclouddb.connection.gatewayV2Enable` | Unset for automatic Gateway V2 probe/fallback (default), `false` for Gateway V1 or Dedicated Gateway with Integrated Cache, or `true` to force Gateway V2 |
 
 Cosmos clients always use Gateway mode over HTTP/2. Direct mode and HTTP/2
 enablement are not configurable.
+
+Gateway V2 is the default profile for standard Cosmos account endpoints. Azure
+Cosmos DB Integrated Cache is an alternative, provider-native profile and does
+not benefit from being combined with Gateway V2; Cosmos guidance recommends
+using the non-V2 path. To use Integrated Cache, provision a
+[Dedicated Gateway](https://learn.microsoft.com/azure/cosmos-db/dedicated-gateway),
+use its `sqlx.cosmos.azure.com` endpoint, select `EVENTUAL` consistency, and set:
+
+```properties
+multiclouddb.connection.gatewayV2Enable=false
+```
+
+Gateway V2 selection maps to a JVM-wide native SDK setting. Run the two profiles
+in separate processes if an application needs Gateway V2 and Integrated Cache
+simultaneously. See the [configuration guide](docs/configuration.md#transport-profiles)
+for constraints.
 
 ### DynamoDB connection properties
 

@@ -18,9 +18,26 @@ Relationships:
 - It owns one Azure `GatewayConnectionConfig`.
 - The gateway configuration owns one Azure `Http2ConnectionConfig`.
 
-## ThinClientPreference
+## GatewayDeploymentProfile
 
-Represents the requested Gateway V2 thin-client proxy behavior.
+Represents the supported Cosmos-native deployment topology. It is derived from
+the endpoint and Gateway V2 preference rather than a new configuration key.
+
+| Profile | Endpoint | Gateway V2 state | Intended path |
+|---|---|---|---|
+| `STANDARD_GATEWAY` | Standard account endpoint | Any valid state | Gateway V2 when eligible, or Gateway V1 when disabled |
+| `DEDICATED_CACHE` | Dedicated Gateway `sqlx` endpoint | `DISABLED` | Gateway V1 and Integrated Cache |
+
+Using Gateway V2 with Integrated Cache is not recommended. A Dedicated Gateway
+endpoint in `AUTO` or `FORCE_ENABLED` state is accepted but emits a warning;
+the recommended `DEDICATED_CACHE` profile uses `DISABLED` and `EVENTUAL`
+consistency. Cache staleness remains the Dedicated Gateway service default and
+is not represented in this feature's model. This is provider-native deployment
+guidance, not a portable cache capability.
+
+## GatewayV2Preference
+
+Represents the requested Gateway V2 routing behavior.
 
 | State | Connection value | SDK property written | Routing behavior |
 |---|---|---|---|
@@ -34,7 +51,7 @@ Validation:
 - Only `true` and `false` are accepted when the key is present.
 - Any other value fails client construction before network I/O.
 
-## ThinClientConfigurationSource
+## GatewayV2ConfigurationSource
 
 Represents the source of the effective process-wide preference.
 
@@ -42,7 +59,7 @@ Precedence:
 
 1. Non-empty JVM system property `COSMOS.THINCLIENT_ENABLED`
 2. Non-empty environment variable `COSMOS_THINCLIENT_ENABLED`
-3. `thinClientEnabled` Multicloud DB connection property
+3. `gatewayV2Enable` Multicloud DB connection property
 4. Unset SDK default (`AUTO`)
 
 Relationships and constraints:
@@ -53,6 +70,10 @@ Relationships and constraints:
 - Once a non-empty process value exists, later client construction does not
   overwrite it.
 - All Cosmos clients in one JVM must use a compatible preference.
+- The Azure SDK reads the setting lazily, so publishing a later value can alter
+  routing for an existing AUTO client.
+- Clients that require different Gateway V2 preferences use separate JVM
+  processes.
 
 ## RemovedTransportSetting
 
@@ -62,6 +83,7 @@ Represents a stale configuration key that is no longer supported.
 |---|---|---|
 | `connectionMode` | Select Gateway or Direct | Reject: Gateway is fixed |
 | `gatewayHttp2Enabled` | Enable or disable Gateway HTTP/2 | Reject: HTTP/2 is fixed |
+| `thinClientEnabled` | Draft name for Gateway V2 override | Reject: renamed to `gatewayV2Enable` |
 
 ## State Transitions
 
@@ -70,18 +92,19 @@ raw connection config
         |
         +-- removed key present --------> REJECTED
         |
-        +-- thin value malformed -------> REJECTED
+        +-- Gateway V2 value malformed -> REJECTED
         |
         +-- operator override present --> OPERATOR_CONTROLLED
         |
-        +-- thin=true -------------------> FORCE_ENABLED
+        +-- gatewayV2=true -------------> FORCE_ENABLED
         |
-        +-- thin=false ------------------> DISABLED
+        +-- gatewayV2=false ------------> DISABLED
         |
-        `-- thin absent -----------------> AUTO
+        `-- gatewayV2 absent -----------> AUTO
 
 AUTO -- probe success ------------------> GATEWAY_V2
 AUTO -- probe failure/no verdict -------> GATEWAY_V1
+DISABLED + dedicated sqlx endpoint ------> DEDICATED_CACHE
 ```
 
 The fixed Gateway/HTTP2 policy applies in every non-rejected state.
