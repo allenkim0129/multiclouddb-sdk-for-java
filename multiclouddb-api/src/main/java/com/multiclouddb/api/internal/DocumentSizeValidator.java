@@ -16,24 +16,24 @@ import java.util.Map;
 /**
  * Validates document payload sizes against the uniform maximum defined by FR-061.
  * <p>
- * The limit is 400 KB (409_600 bytes) — the most restrictive of the three providers:
+ * The limit is 400 KiB (409_600 bytes) — the most restrictive of the three providers:
  * <ul>
- *   <li>Amazon DynamoDB: 400 KB per item (hard limit)</li>
- *   <li>Cosmos DB: 2 MB per document</li>
+ *   <li>Amazon DynamoDB: 400 KiB per item (hard limit)</li>
+ *   <li>Cosmos DB: 2 MiB per document</li>
  *   <li>Cloud Spanner: no per-row limit</li>
  * </ul>
  * By enforcing the lowest common denominator at the SDK layer, documents remain
  * portable across all providers without surprise failures on write.
  * <p>
- * A 1 KB safety margin is subtracted from the raw DynamoDB limit to account for
+ * A 1 KiB safety margin is subtracted from the raw DynamoDB limit to account for
  * system fields injected by providers before writing ({@code partitionKey},
- * {@code sortKey}, {@code id}, {@code ttlExpiry}, etc.).  DynamoDB's 400 KB cap
+ * {@code sortKey}, {@code id}, {@code ttlExpiry}, etc.).  DynamoDB's 400 KiB cap
  * is measured against its internal wire format, which can be slightly larger than
  * the raw JSON.  The effective validated limit is therefore exactly 408,576 bytes (399 KiB).
  */
 public final class DocumentSizeValidator {
 
-    /** Maximum document size in bytes — DynamoDB hard limit minus 1 KB safety margin. */
+    /** Maximum document size in bytes — DynamoDB hard limit minus 1 KiB safety margin. */
     public static final int MAX_BYTES = 400 * 1024 - 1024; // 408,576 bytes (399 KiB)
 
     private static final ObjectMapper MAPPER = new ObjectMapper();

@@ -70,11 +70,8 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      * Only adapters that advertise
      * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE} receive this call. Feature 002
      * leaves the Spanner adapter unchanged and unadvertised, so the default client rejects
-     * Spanner calls before delegation. A participating provider whose identifier model
-     * cannot preserve case-distinct logical fields must declare
-     * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS} unsupported
-     * and reject a case-only alias as {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}
-     * rather than silently overwriting another field. A local request-envelope rejection tied to
+     * Spanner calls before delegation. Participating providers must preserve case-distinct
+     * logical fields rather than silently overwriting another field. A local request-envelope rejection tied to
      * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE_EXTENDED_PAYLOAD} must perform
      * zero provider I/O. A state-dependent resulting-item limit may instead be returned by
      * the provider after the single native update attempt and must be normalized to the same

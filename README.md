@@ -501,11 +501,11 @@ a valid call fails at the shared capability gate with non-retryable
 `UNSUPPORTED_CAPABILITY` before provider delegation.
 
 Cosmos can reject one attempted patch or batch with HTTP 413 if the resulting
-document would exceed 2,097,152 bytes; the SDK surfaces that atomic failure as
+document would exceed 2 MiB (2,097,152 bytes); the SDK surfaces that atomic failure as
 `UNSUPPORTED_CAPABILITY` with `reason=cosmos_result_item_size_limit`.
-DynamoDB's generated expression is capped at 4,096 UTF-8 bytes before I/O. A
+DynamoDB's generated expression is capped at 4 KiB (4,096 UTF-8 bytes) before I/O. A
 small update can also be rejected after the one attempted `UpdateItem` if the
-existing item plus fields would exceed 409,600 bytes, reported with
+existing item plus fields would exceed 400 KiB (409,600 bytes), reported with
 `reason=dynamodb_result_item_size_limit`.
 
 For complete replacement, use `upsert()` with the complete document; it creates
@@ -589,7 +589,7 @@ if (meta != null) {
 
 ## Document Size Enforcement
 
-All write operations are validated against a **399 KB** limit before any network
+All write operations are validated against a **399 KiB** limit before any network
 call is made. Documents that exceed the limit are rejected with
 `MulticloudDbErrorCategory.INVALID_REQUEST`:
 
@@ -598,12 +598,12 @@ try {
     client.create(address, key, largeDoc);
 } catch (MulticloudDbException e) {
     if (e.error().category() == MulticloudDbErrorCategory.INVALID_REQUEST) {
-        System.out.println("Document exceeds 399 KB limit");
+        System.out.println("Document exceeds 399 KiB limit");
     }
 }
 ```
 
-The limit is 399 KB (not 400 KB) because providers inject additional fields
+The limit is 399 KiB (not 400 KiB) because providers inject additional fields
 before writing — see [Developer Guide](docs/guide.md#document-size-enforcement)
 for details.
 

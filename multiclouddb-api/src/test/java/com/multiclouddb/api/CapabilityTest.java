@@ -93,11 +93,9 @@ class CapabilityTest {
         assertTrue(registered.contains(Capability.PARTIAL_UPDATE_UNSUPPORTED));
         assertTrue(registered.contains(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD_CAP));
         assertTrue(registered.contains(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD_UNSUPPORTED));
-        assertTrue(registered.contains(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS_CAP));
-        assertTrue(registered.contains(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS_UNSUPPORTED));
-        // 17 pre-built names × supported/unsupported.
-        assertTrue(registered.size() >= 34,
-                "expected at least 34 entries (17 × 2), got " + registered.size());
+        // 16 pre-built names × supported/unsupported.
+        assertTrue(registered.size() >= 32,
+                "expected at least 32 entries (16 × 2), got " + registered.size());
     }
 
     @Test

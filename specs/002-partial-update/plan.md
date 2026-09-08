@@ -84,8 +84,8 @@ before provider delegation.
 4. Gate `Capability.PARTIAL_UPDATE` before delegation.
 5. Define `PARTIAL_UPDATE_EXTENDED_PAYLOAD` as a lower native request/result
    envelope declaration for supported provider mappings.
-6. Define `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` for participating providers.
-7. Document unchanged Spanner as unsupported at the core capability gate.
+6. Require case-distinct field identity as part of `PARTIAL_UPDATE` and document
+   unchanged Spanner as unsupported at the core capability gate.
 
 ### Stage 2 — Cosmos DB
 

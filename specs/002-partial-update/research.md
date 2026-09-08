@@ -65,19 +65,17 @@ punctuation through escaping and aliases.
 **Why**: provider-specific TTL mutation would break portable behavior and make
 replay time-relative.
 
-## Decision 6 — Keep three capability declarations
+## Decision 6 — Keep two capability declarations
 
 - `partial_update`: core shallow set/replace behavior, internally gated.
 - `partial_update_extended_payload`: no lower provider request or
   resulting-item envelope for field mappings already supported by that
   provider.
-- `partial_update_case_sensitive_fields`: case-distinct names retain separate
-  literal identities.
 
-Cosmos and Dynamo declare the payload extension unsupported and case-sensitive
-identity supported. Spanner declares none of the three capabilities because it
-is outside the feature release. Cosmos and Dynamo therefore expose 20 known
-names while unchanged Spanner retains 17.
+Cosmos and Dynamo declare the payload extension unsupported and preserve
+case-distinct identity as part of the base operation. Spanner declares neither
+capability because it is outside the feature release. Cosmos and Dynamo
+therefore expose 19 known names while unchanged Spanner retains 17.
 
 ## Decision 7 — Cosmos uses direct patch plus one atomic wide batch
 
@@ -165,8 +163,8 @@ only where `partial_update` is advertised. A dedicated assertion verifies that
 unchanged Spanner fails locally with `UNSUPPORTED_CAPABILITY` and
 `capability=partial_update`.
 
-Case-distinct identity runs on Cosmos and Dynamo, which advertise the case
-capability. The exact 408,576-byte positive runtime assertion remains gated by
+Case-distinct identity runs directly on Cosmos and Dynamo as part of the base
+contract. The exact 408,576-byte positive runtime assertion remains gated by
 `partial_update_extended_payload`; no participating provider currently
 advertises it, while API tests lock the shared boundary.
 

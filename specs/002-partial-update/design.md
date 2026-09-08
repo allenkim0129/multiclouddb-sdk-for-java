@@ -82,24 +82,24 @@ provider I/O. Exactly 408,576 serialized bytes passes; 408,577 fails.
 
 ## 4. Capabilities
 
-Three declarations are retained:
+Two declarations are retained:
 
 | Capability | Meaning |
 |---|---|
 | `partial_update` | Provider implements the core shallow set/replace operation. |
 | `partial_update_extended_payload` | Supported provider field mappings do not encounter a lower native request or resulting-item envelope before the common 408,576-byte field-map limit. |
-| `partial_update_case_sensitive_fields` | Case-distinct field names retain separate literal identities rather than aliasing one provider column. |
 
-The default client gates only `partial_update`. The two extensions are
-descriptive and never disable ordinary updates.
+The default client gates only `partial_update`. The payload extension is
+descriptive and never disables ordinary updates. Case-distinct field identity
+is required by the base operation.
 
-| Provider | Core | Extended payload | Case-sensitive fields |
-|---|---|---|---|
-| Cosmos DB | supported | unsupported | supported |
-| DynamoDB | supported | unsupported | supported |
-| Spanner | not advertised | not advertised | not advertised |
+| Provider | Core | Extended payload |
+|---|---|---|
+| Cosmos DB | supported | unsupported |
+| DynamoDB | supported | unsupported |
+| Spanner | not advertised | not advertised |
 
-Cosmos DB and DynamoDB declare all 20 known capability names. Unchanged Spanner
+Cosmos DB and DynamoDB declare all 19 known capability names. Unchanged Spanner
 retains its existing 17 declarations.
 
 ## 5. Cosmos DB design

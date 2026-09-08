@@ -28,15 +28,14 @@ The native partial-update ceilings are not configurable:
 
 | Provider | Partial-update envelope |
 |----------|-------------------------|
-| Cosmos DB | One direct patch for up to 10 fields; one same-item transactional batch for wider updates, capped at 100 operations and 2,097,152 serialized bytes; resulting document capped at 2,097,152 bytes by Cosmos DB after the attempted update |
-| DynamoDB | One `UpdateItem`; generated expression capped at 4,096 UTF-8 bytes before I/O, and resulting item capped at 409,600 bytes by DynamoDB after the attempted update |
+| Cosmos DB | One direct patch for up to 10 fields; one same-item transactional batch for wider updates, capped at 100 operations and 2 MiB (2,097,152 serialized bytes); resulting document capped at 2 MiB by Cosmos DB after the attempted update |
+| DynamoDB | One `UpdateItem`; generated expression capped at 4 KiB (4,096 UTF-8 bytes) before I/O, and resulting item capped at 400 KiB (409,600 bytes) by DynamoDB after the attempted update |
 | Spanner | Not part of this release; the unchanged provider does not advertise `PARTIAL_UPDATE` |
 
-Cosmos and Dynamo report `Capability.PARTIAL_UPDATE=true`,
-`PARTIAL_UPDATE_EXTENDED_PAYLOAD=false`, and
-`PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS=true`. Spanner retains its existing
-capability set; a valid update is rejected by the shared core gate before any
-Spanner I/O.
+Cosmos and Dynamo report `Capability.PARTIAL_UPDATE=true` and
+`PARTIAL_UPDATE_EXTENDED_PAYLOAD=false`. Case-distinct field names are part of
+the base partial-update contract. Spanner retains its existing capability set;
+a valid update is rejected by the shared core gate before any Spanner I/O.
 ---
 
 ## Azure Cosmos DB

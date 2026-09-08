@@ -63,15 +63,15 @@ non-retryable `UNSUPPORTED_CAPABILITY`,
 operations.
 ## Capability contract
 
-| Provider | `partial_update` | `partial_update_extended_payload` | `partial_update_case_sensitive_fields` |
-|---|---|---|---|
-| Cosmos DB | supported | unsupported | supported |
-| DynamoDB | supported | unsupported | supported |
-| Spanner | not advertised | not advertised | not advertised |
+| Provider | `partial_update` | `partial_update_extended_payload` |
+|---|---|---|
+| Cosmos DB | supported | unsupported |
+| DynamoDB | supported | unsupported |
+| Spanner | not advertised | not advertised |
 
 The extension means that participating provider mappings do not hit a lower
 native request or resulting-item envelope before the common size limit. Cosmos
-DB and DynamoDB declare all 20 known names; unchanged Spanner retains 17.
+DB and DynamoDB declare all 19 known names; unchanged Spanner retains 17.
 
 ## Provider execution
 

@@ -29,15 +29,15 @@ item. It replaces supplied top-level values atomically, preserves omitted
 fields, and treats map/list values as complete top-level replacements. Non-null
 update TTL is rejected before provider I/O with `INVALID_REQUEST`.
 
-Cosmos DB and DynamoDB declare all 20 known capability names. The unchanged
+Cosmos DB and DynamoDB declare all 19 known capability names. The unchanged
 Spanner provider retains its existing 17 declarations and does not advertise
 any feature-002 partial-update capability.
 
-| Provider | `PARTIAL_UPDATE` | `PARTIAL_UPDATE_EXTENDED_PAYLOAD` | `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` | Native mechanism / request count | Cost and limits |
-|----------|:----------------:|:---------------------------------:|:--------------------------------------:|----------------------------------|-----------------|
-| Cosmos DB | ✅ | ❌ | ✅ | One `patchItem` for up to 10 fields; otherwise one same-item transactional-batch request | RU cost follows patch chunks; 100 batch operations / 2,097,152 serialized bytes; 2,097,152-byte resulting document after one attempted update |
-| DynamoDB | ✅ | ❌ | ✅ | One conditional aliased `UpdateItem SET` | 4,096-byte generated expression (pre-I/O); 409,600-byte resulting item (after one attempted update); accepted calls consume one item update's write capacity |
-| Spanner | ❌ | — | — | No provider call; rejected by the shared capability gate | Zero Spanner I/O |
+| Provider | `PARTIAL_UPDATE` | `PARTIAL_UPDATE_EXTENDED_PAYLOAD` | Native mechanism / request count | Cost and limits |
+|----------|:----------------:|:---------------------------------:|----------------------------------|-----------------|
+| Cosmos DB | ✅ | ❌ | One `patchItem` for up to 10 fields; otherwise one same-item transactional-batch request | RU cost follows patch chunks; 100 batch operations / 2 MiB (2,097,152 serialized bytes); 2 MiB resulting-document limit after one attempted update |
+| DynamoDB | ✅ | ❌ | One conditional aliased `UpdateItem SET` | 4 KiB (4,096 bytes) generated-expression limit (pre-I/O); 400 KiB (409,600 bytes) resulting-item limit after one attempted update; accepted calls consume one item update's write capacity |
+| Spanner | ❌ | — | No provider call; rejected by the shared capability gate | Zero Spanner I/O |
 
 A valid Spanner `update()` call returns non-retryable `UNSUPPORTED_CAPABILITY`
 with `capability=partial_update`. Shared invalid-request validation still runs
@@ -115,7 +115,7 @@ The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 | `THROTTLED`  | HTTP 429  | ProvisionedThroughputExceededException, ThrottlingException  | RESOURCE_EXHAUSTED  |
 | `TRANSIENT_FAILURE`  | CRUD/update HTTP 408, 410 (substatus retained), 449, 500, 502, 503  | HTTP 500–5xx  | UNAVAILABLE  |
 | `PERMANENT_FAILURE`  | -  | ItemCollectionSizeLimitExceededException  | -  |
-| `UNSUPPORTED_CAPABILITY`  | HTTP 400 with AVAD-not-enabled fingerprint (`providerDetails.reason="avad_not_enabled"`); update HTTP 413 (`reason="cosmos_result_item_size_limit"`, `maximumResultBytes="2097152"`)  | `InvalidArgumentException` / `ResourceNotFoundException` for streams not enabled (`reason="stream_not_enabled"`); update result-item-size `ValidationException` (`reason="dynamodb_result_item_size_limit"`, `maximumResultBytes="409600"`)  | UNIMPLEMENTED, change-stream-not-provisioned (`reason="stream_not_enabled"`), or partial-update case alias (`reason="spanner_case_insensitive_column_collision"`)  |
+| `UNSUPPORTED_CAPABILITY`  | HTTP 400 with AVAD-not-enabled fingerprint (`providerDetails.reason="avad_not_enabled"`); update HTTP 413 (`reason="cosmos_result_item_size_limit"`, `maximumResultBytes="2097152"` / 2 MiB)  | `InvalidArgumentException` / `ResourceNotFoundException` for streams not enabled (`reason="stream_not_enabled"`); update result-item-size `ValidationException` (`reason="dynamodb_result_item_size_limit"`, `maximumResultBytes="409600"` / 400 KiB)  | UNIMPLEMENTED, change-stream-not-provisioned (`reason="stream_not_enabled"`), or partial-update case alias (`reason="spanner_case_insensitive_column_collision"`)  |
 | `CURSOR_EXPIRED` (change-feed) | HTTP 410 GONE (`reason="PROVIDER_TRIMMED"`)  | `TrimmedDataAccessException` (`reason="PROVIDER_TRIMMED"`), `ExpiredIteratorException` (`reason="ITERATOR_EXPIRED"`)  | `INVALID_ARGUMENT` / `OUT_OF_RANGE` / `NOT_FOUND` for partition outside retention (`reason="PROVIDER_TRIMMED"`)  |
 | `PROVIDER_ERROR`  | Other  | Other  | INTERNAL, Other  |
 

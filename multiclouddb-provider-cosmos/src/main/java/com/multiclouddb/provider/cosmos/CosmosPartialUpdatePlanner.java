@@ -165,7 +165,8 @@ final class CosmosPartialUpdatePlanner {
                 MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
                 "Cosmos transactional batch exceeds the native envelope for partial_update_extended_payload: "
                         + "operations=" + operationCount + " (max " + MAX_BATCH_OPERATIONS + "), "
-                        + "serializedBytes=" + serializedBytes + " (max " + MAX_BATCH_BYTES + ").",
+                        + "serializedBytes=" + serializedBytes + " (max 2 MiB / "
+                        + MAX_BATCH_BYTES + " bytes).",
                 ProviderId.COSMOS, OperationNames.UPDATE, false, details));
     }
 

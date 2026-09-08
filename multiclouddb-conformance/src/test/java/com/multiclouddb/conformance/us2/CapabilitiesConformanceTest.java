@@ -21,12 +21,6 @@ public abstract class CapabilitiesConformanceTest {
     private static final Map<ProviderId, Boolean> EXTENDED_PARTIAL_UPDATE_SUPPORT = Map.of(
             ProviderId.COSMOS, false,
             ProviderId.DYNAMO, false);
-    private static final Map<ProviderId, Boolean> CASE_SENSITIVE_PARTIAL_UPDATE_SUPPORT = Map.of(
-            ProviderId.COSMOS, true,
-            ProviderId.DYNAMO, true);
-    private static final Map<ProviderId, String> CASE_SENSITIVE_PARTIAL_UPDATE_NOTE = Map.of(
-            ProviderId.COSMOS, "JSON property",
-            ProviderId.DYNAMO, "Attribute names");
     private static final Map<ProviderId, String> EXTENDED_PARTIAL_UPDATE_NOTE = Map.of(
             ProviderId.COSMOS, "100 patch operations",
             ProviderId.DYNAMO, "update expression");
@@ -66,13 +60,11 @@ public abstract class CapabilitiesConformanceTest {
                     Capability.ROW_LEVEL_TTL,
                     Capability.WRITE_TIMESTAMP,
                     Capability.PARTIAL_UPDATE,
-                    Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD,
-                    Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS
+                    Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD
             };
             for (String name : knownNames) {
                 boolean partialUpdateCapability = name.equals(Capability.PARTIAL_UPDATE)
-                        || name.equals(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD)
-                        || name.equals(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS);
+                        || name.equals(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD);
                 if (!caps.isSupported(Capability.PARTIAL_UPDATE) && partialUpdateCapability) {
                     assertNull(caps.get(name),
                             "A non-participating provider must not advertise feature 002 capability: " + name);
@@ -88,7 +80,7 @@ public abstract class CapabilitiesConformanceTest {
     void capabilityCountMatchesReleaseScope() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            int expected = caps.isSupported(Capability.PARTIAL_UPDATE) ? 20 : 17;
+            int expected = caps.isSupported(Capability.PARTIAL_UPDATE) ? 19 : 17;
             assertEquals(expected, caps.all().size(),
                     "Provider " + provider().id() + " should declare exactly " + expected + " capabilities");
         }
@@ -102,7 +94,6 @@ public abstract class CapabilitiesConformanceTest {
                 assertFalse(caps.isSupported(Capability.PARTIAL_UPDATE));
                 assertNull(caps.get(Capability.PARTIAL_UPDATE));
                 assertNull(caps.get(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD));
-                assertNull(caps.get(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS));
                 return;
             }
 
@@ -117,15 +108,6 @@ public abstract class CapabilitiesConformanceTest {
             assertNotNull(extended.notes());
             assertTrue(extended.notes().contains(EXTENDED_PARTIAL_UPDATE_NOTE.get(provider())),
                     "Extended partial-update notes must describe the provider envelope");
-
-            Capability caseSensitive = caps.get(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS);
-            assertNotNull(caseSensitive);
-            assertEquals(CASE_SENSITIVE_PARTIAL_UPDATE_SUPPORT.get(provider()).booleanValue(),
-                    caseSensitive.supported(),
-                    "Unexpected case-sensitive partial-update declaration for " + provider().id());
-            assertNotNull(caseSensitive.notes());
-            assertTrue(caseSensitive.notes().contains(CASE_SENSITIVE_PARTIAL_UPDATE_NOTE.get(provider())),
-                    "Case-sensitive partial-update notes must describe field identity");
         }
     }
 

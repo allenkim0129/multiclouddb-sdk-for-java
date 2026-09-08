@@ -47,7 +47,7 @@ final class DynamoPartialUpdatePlanner {
      * Builds a deterministic plan for the given validated fields.
      *
      * @throws MulticloudDbException non-retryable {@code UNSUPPORTED_CAPABILITY} if the completed
-     *                               update expression exceeds 4,096 UTF-8 bytes; no DynamoDB call
+     *                               update expression exceeds 4 KiB (4,096 UTF-8 bytes); no DynamoDB call
      *                               is performed.
      */
     static Plan plan(Map<String, Object> fields) {
@@ -91,8 +91,8 @@ final class DynamoPartialUpdatePlanner {
         return new MulticloudDbException(new MulticloudDbError(
                 MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
                 "DynamoDB update expression exceeds the native envelope for "
-                        + "partial_update_extended_payload: " + expressionBytes + " bytes (max "
-                        + MAX_EXPRESSION_BYTES + ").",
+                        + "partial_update_extended_payload: " + expressionBytes
+                        + " bytes (max 4 KiB / " + MAX_EXPRESSION_BYTES + " bytes).",
                 ProviderId.DYNAMO, OperationNames.UPDATE, false, details));
     }
 

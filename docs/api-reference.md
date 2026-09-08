@@ -51,16 +51,15 @@ non-retryable `UNSUPPORTED_CAPABILITY` with `capability=partial_update` before
 provider delegation.
 
 Cosmos and Dynamo report `PARTIAL_UPDATE_EXTENDED_PAYLOAD=false` because a
-native request or resulting-item envelope can bind first, and
-`PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS=true` because both preserve literal field
-case. Spanner does not declare either extension because it does not participate
-in this feature release.
+native request or resulting-item envelope can bind first. Both preserve literal
+field case as part of the base `PARTIAL_UPDATE` contract. Spanner does not
+declare the extension because it does not participate in this feature release.
 The Cosmos result-size case is non-retryable `UNSUPPORTED_CAPABILITY` with
 `reason=cosmos_result_item_size_limit` and
-`maximumResultBytes=2097152`.
+`maximumResultBytes=2097152` (2 MiB).
 The Dynamo result-size case is non-retryable `UNSUPPORTED_CAPABILITY` with
 `reason=dynamodb_result_item_size_limit` and
-`maximumResultBytes=409600`. Other Dynamo `ValidationException` errors remain
+`maximumResultBytes=409600` (400 KiB). Other Dynamo `ValidationException` errors remain
 `INVALID_REQUEST`.
 
 For complete replacement, call `upsert()` with the complete desired document.

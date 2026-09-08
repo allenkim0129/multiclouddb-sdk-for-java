@@ -147,14 +147,14 @@ client rejects valid calls before provider delegation; no row, schema, metadata,
 or mapping behavior is changed by this feature.
 ## 7. Capabilities
 
-| Provider | `partial_update` | `partial_update_extended_payload` | `partial_update_case_sensitive_fields` |
-|---|---|---|---|
-| Cosmos DB | supported | unsupported | supported |
-| DynamoDB | supported | unsupported | supported |
-| Spanner | not advertised | not advertised | not advertised |
+| Provider | `partial_update` | `partial_update_extended_payload` |
+|---|---|---|
+| Cosmos DB | supported | unsupported |
+| DynamoDB | supported | unsupported |
+| Spanner | not advertised | not advertised |
 
-The payload extension describes request/result-envelope reach, not schema
-breadth. The case capability describes literal identity across calls.
+The payload extension describes request/result-envelope reach, not schema breadth.
+Case-distinct field identity is part of the base partial-update contract.
 
 ## 8. Structured provider-limit errors
 

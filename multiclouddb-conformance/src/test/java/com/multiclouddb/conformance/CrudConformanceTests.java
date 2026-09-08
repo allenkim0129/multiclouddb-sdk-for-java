@@ -878,69 +878,37 @@ public abstract class CrudConformanceTests {
     }
 
     @Test @Order(32)
-    @DisplayName("case-variant update fields are preserved or explicitly capability-gated")
+    @DisplayName("case-variant update fields remain distinct")
     void partialUpdateCaseVariantFieldIdentityIsExplicit() {
         assumePartialUpdateSupported();
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-case");
 
         try {
             client.upsert(getAddress(), key, Map.of("title", "lowercase"));
+            client.update(getAddress(), key, Map.of("TITLE", "uppercase"));
 
-            if (client.capabilities().isSupported(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS)) {
-                client.update(getAddress(), key, Map.of("TITLE", "uppercase"));
-
-                JsonNode doc = client.read(getAddress(), key).document();
-                assertEquals("lowercase", doc.path("title").asText());
-                assertEquals("uppercase", doc.path("TITLE").asText());
-            } else {
-                MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                        () -> client.update(getAddress(), key, Map.of("TITLE", "uppercase")));
-                assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
-                        ex.error().category());
-                assertFalse(ex.error().retryable());
-                assertEquals(client.providerId(), ex.error().provider());
-                assertEquals(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS,
-                        ex.error().providerDetails().get("capability"));
-
-                JsonNode doc = client.read(getAddress(), key).document();
-                assertEquals("lowercase", doc.path("title").asText());
-                assertFalse(doc.has("TITLE"), "rejected case variant must not mutate the item");
-            }
+            JsonNode doc = client.read(getAddress(), key).document();
+            assertEquals("lowercase", doc.path("title").asText());
+            assertEquals("uppercase", doc.path("TITLE").asText());
         } finally {
             safeDelete(key);
         }
     }
 
     @Test @Order(33)
-    @DisplayName("case variant of an unwritten schema field is preserved or capability-gated")
+    @DisplayName("case variant of an unwritten field retains exact identity")
     void partialUpdateUnwrittenSchemaFieldCaseIsExplicit() {
         assumePartialUpdateSupported();
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-schema-case");
 
         try {
             client.upsert(getAddress(), key, Map.of("title", "preserved"));
+            client.update(getAddress(), key, Map.of("STATUS", "uppercase"));
 
-            if (client.capabilities().isSupported(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS)) {
-                client.update(getAddress(), key, Map.of("STATUS", "uppercase"));
-
-                JsonNode doc = client.read(getAddress(), key).document();
-                assertEquals("preserved", doc.path("title").asText());
-                assertEquals("uppercase", doc.path("STATUS").asText());
-                assertFalse(doc.has("status"));
-            } else {
-                MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                        () -> client.update(getAddress(), key, Map.of("STATUS", "uppercase")));
-                assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
-                        ex.error().category());
-                assertFalse(ex.error().retryable());
-                assertEquals(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS,
-                        ex.error().providerDetails().get("capability"));
-
-                JsonNode doc = client.read(getAddress(), key).document();
-                assertEquals("preserved", doc.path("title").asText());
-                assertFalse(doc.has("STATUS"));
-                assertFalse(doc.has("status"));
-            }
+            JsonNode doc = client.read(getAddress(), key).document();
+            assertEquals("preserved", doc.path("title").asText());
+            assertEquals("uppercase", doc.path("STATUS").asText());
+            assertFalse(doc.has("status"));
         } finally {
             safeDelete(key);
         }

@@ -50,9 +50,7 @@ public final class DynamoCapabilities {
             Capability.PARTIAL_UPDATE_CAP.withNotes(
                     "One conditional aliased UpdateItem SET expression per update"),
             Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD_UNSUPPORTED.withNotes(
-                    "Generated update expressions are capped at 4,096 UTF-8 bytes before I/O; "
+                    "Generated update expressions are capped at 4 KiB (4,096 UTF-8 bytes) before I/O; "
                     + "DynamoDB may reject the attempted UpdateItem when the resulting item "
-                    + "would exceed 409,600 bytes"),
-            Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS_CAP.withNotes(
-                    "Attribute names preserve literal case-sensitive identity")));
+                    + "would exceed 400 KiB (409,600 bytes)")));
 }

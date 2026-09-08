@@ -93,7 +93,7 @@ a valid update is rejected before provider delegation.
   provider field mappings can reach the common size limit without a lower
   provider request or resulting-item envelope. It MUST NOT disable ordinary
   updates.
-- **FR-014**: Cosmos DB and DynamoDB MUST declare all 20 known capabilities.
+- **FR-014**: Cosmos DB and DynamoDB MUST declare all 19 known capabilities.
   Unchanged Spanner MUST retain its existing 17 declarations and MUST NOT
   advertise any feature-002 partial-update capability.
 - **FR-015**: A valid `update()` against a provider that does not advertise
@@ -148,9 +148,8 @@ a valid update is rejected before provider delegation.
   where available. The failed native patch or batch MUST leave the item
   unchanged. HTTP 413 from other operations MUST retain the normal Cosmos
   provider-error mapping.
-- **FR-033**: Providers advertising `PARTIAL_UPDATE` MUST also declare
-  `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS`. Cosmos DB and DynamoDB MUST declare it
-  supported and preserve case-distinct field identities.
+- **FR-033**: Providers advertising `PARTIAL_UPDATE` MUST preserve case-distinct
+  field identities. Cosmos DB and DynamoDB MUST satisfy this base behavior.
 
 ## Provider behavior matrix
 

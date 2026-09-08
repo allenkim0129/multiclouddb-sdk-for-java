@@ -311,10 +311,10 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      * the default client owns the core {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE}
      * gate. A failed existence guard maps to
      * {@link com.multiclouddb.api.MulticloudDbErrorCategory#NOT_FOUND}; an update expression
-     * above 4,096 UTF-8 bytes fails locally with
+     * above 4 KiB (4,096 UTF-8 bytes) fails locally with
      * {@link com.multiclouddb.api.MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} and zero
      * DynamoDB I/O. If the existing item plus accepted fields would exceed DynamoDB's
-     * 409,600-byte result-item limit, the single attempted {@code UpdateItem} returns a
+     * 400 KiB (409,600 bytes) result-item limit, the single attempted {@code UpdateItem} returns a
      * size-specific {@code ValidationException}; that variant is normalized to the same
      * non-retryable capability error without an adapter read/merge preflight.
      *

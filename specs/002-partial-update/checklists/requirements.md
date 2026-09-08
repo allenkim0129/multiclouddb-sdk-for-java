@@ -29,7 +29,7 @@
   explicit.
 - [x] `partial_update_extended_payload` covers native request and
   resulting-item envelopes for supported provider mappings.
-- [x] Cosmos and Dynamo declare all 20 known capabilities; unchanged Spanner retains 17 and advertises no feature-002 capability.
+- [x] Cosmos and Dynamo declare all 19 known capabilities; unchanged Spanner retains 17 and advertises no feature-002 capability.
 
 ## Cosmos DB
 

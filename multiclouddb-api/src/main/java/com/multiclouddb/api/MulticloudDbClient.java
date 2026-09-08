@@ -93,16 +93,14 @@ public interface MulticloudDbClient extends AutoCloseable {
      * {@link Capability#PARTIAL_UPDATE}. Cosmos DB and DynamoDB advertise it in this release.
      * The unchanged Spanner provider does not, so a valid call returns non-retryable
      * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} after shared validation and
-     * before provider delegation. A participating provider whose identifier model cannot
-     * preserve case-distinct fields must declare
-     * {@link Capability#PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS} unsupported and reject the
-     * alias explicitly.
+     * before provider delegation. Participating providers preserve case-distinct field names
+     * as separate literal top-level fields.
      * <p>
      * The separate {@link Capability#PARTIAL_UPDATE_EXTENDED_PAYLOAD} models only
      * whether supported provider field mappings can reach the common limit without a lower
      * native request or resulting-item envelope. DynamoDB can reject after one attempted
      * {@code UpdateItem} when the existing item plus otherwise-valid fields would exceed
-     * 409,600 bytes; that state-dependent failure is non-retryable
+     * 400 KiB (409,600 bytes); that state-dependent failure is non-retryable
      * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}.
      *
      * @param address  target database + collection

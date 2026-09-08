@@ -103,7 +103,7 @@ is excluded through capability gating and has zero provider-module diff.
 
 ## Phase 9: Final portability-review blocker remediation
 
-- [X] T055 Add `PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS` to the API and participating Cosmos/Dynamo providers; keep Spanner at its existing 17 capabilities
+- [X] T055 Make case-distinct field identity part of the base `PARTIAL_UPDATE` contract for Cosmos/Dynamo; keep Spanner at its existing 17 capabilities
 - [X] T056 Restore every Spanner provider path to the PR base and rely on the shared `PARTIAL_UPDATE` gate
 - [X] T057 Expand shared invalid-map/name conformance, gate supported behavior by `PARTIAL_UPDATE`, and assert Spanner core rejection
 - [X] T058 Retain the capability-gated exact 408,576-byte runtime assertion; no participating provider currently advertises the extension

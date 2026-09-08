@@ -92,15 +92,9 @@ boolean noLowerEnvelope = client.capabilities()
 Cosmos and Dynamo report false. Spanner does not declare this extension because
 it does not advertise the core operation.
 
-Field-case identity is separately discoverable:
-
-```java
-boolean preservesCaseDistinctNames = client.capabilities()
-    .isSupported(Capability.PARTIAL_UPDATE_CASE_SENSITIVE_FIELDS);
-```
-
-Cosmos and Dynamo report true. Spanner does not declare this extension because
-it is outside the feature release.
+Case-distinct field identity is part of the base `PARTIAL_UPDATE` contract.
+Across calls, names such as `status` and `STATUS` remain separate fields; a
+single request containing both variants is rejected as a collision.
 
 ## Provider-envelope errors
 
