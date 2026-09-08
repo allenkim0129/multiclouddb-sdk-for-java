@@ -14,9 +14,11 @@ Select a provider and supply its connection and auth properties.
 
 ## Partial Update and Operation Options
 
-Partial update has no provider-specific configuration switch. All built-in
-providers declare `Capability.PARTIAL_UPDATE`, and `update()` always uses
-shallow top-level set/replace semantics.
+Partial update has no provider-specific configuration switch. Cosmos DB and
+DynamoDB declare `Capability.PARTIAL_UPDATE`, and `update()` uses shallow
+top-level set/replace semantics for those providers. The unchanged Spanner
+provider does not advertise this capability, so the shared client rejects a
+valid update before provider I/O.
 
 `OperationOptions.ttlSeconds()` is valid only for `create()` and `upsert()`.
 Supplying it to `update()` returns non-retryable `INVALID_REQUEST` before

@@ -14,12 +14,14 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * Deterministic, package-private planner that converts a validated partial-update field map
  * into one conditional DynamoDB {@code UpdateItem} request.
  * <p>
- * Every user field becomes one {@code SET #fN = :vN} clause using stable ordinal aliases, so
+ * Field names are sorted by natural {@link String} order before every user field becomes one
+ * {@code SET #fN = :vN} clause using stable ordinal aliases, so
  * reserved words and literal names such as {@code .}, {@code /}, and {@code ~} remain literal
  * and no user field name appears in the expression string. An aliased
  * {@code attribute_exists(#pk)} condition preserves the missing-document guard. Values are
@@ -53,7 +55,7 @@ final class DynamoPartialUpdatePlanner {
         Map<String, AttributeValue> values = new LinkedHashMap<>();
         StringBuilder set = new StringBuilder("SET ");
         int i = 0;
-        for (Map.Entry<String, Object> e : fields.entrySet()) {
+        for (Map.Entry<String, Object> e : new TreeMap<>(fields).entrySet()) {
             String nameAlias = "#f" + i;
             String valueAlias = ":v" + i;
             names.put(nameAlias, e.getKey());

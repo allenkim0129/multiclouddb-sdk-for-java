@@ -33,18 +33,38 @@ class DynamoPartialUpdatePlannerTest {
         assertEquals("SET #f0 = :v0, #f1 = :v1, #f2 = :v2, #f3 = :v3",
                 plan.updateExpression());
         assertFalse(plan.updateExpression().contains("size"));
-        assertEquals("size", plan.names().get("#f0"));
-        assertEquals(".", plan.names().get("#f1"));
-        assertEquals("/", plan.names().get("#f2"));
+        assertEquals(".", plan.names().get("#f0"));
+        assertEquals("/", plan.names().get("#f1"));
+        assertEquals("size", plan.names().get("#f2"));
         assertEquals("~", plan.names().get("#f3"));
         assertEquals(DynamoConstants.ATTR_PARTITION_KEY,
                 plan.names().get(DynamoPartialUpdatePlanner.PARTITION_KEY_ALIAS));
         assertEquals("attribute_exists(#pk)", plan.conditionExpression());
 
-        assertEquals(AttributeValue.Type.S, plan.values().get(":v0").type());
-        assertEquals(AttributeValue.Type.NUL, plan.values().get(":v1").type());
-        assertEquals(AttributeValue.Type.M, plan.values().get(":v2").type());
+        assertEquals(AttributeValue.Type.NUL, plan.values().get(":v0").type());
+        assertEquals(AttributeValue.Type.M, plan.values().get(":v1").type());
+        assertEquals(AttributeValue.Type.S, plan.values().get(":v2").type());
         assertEquals(AttributeValue.Type.L, plan.values().get(":v3").type());
+    }
+
+    @Test
+    void planDoesNotDependOnCallerMapIterationOrder() {
+        Map<String, Object> reverseOrder = new LinkedHashMap<>();
+        reverseOrder.put("beta", 2);
+        reverseOrder.put("alpha", 1);
+        Map<String, Object> forwardOrder = new LinkedHashMap<>();
+        forwardOrder.put("alpha", 1);
+        forwardOrder.put("beta", 2);
+
+        DynamoPartialUpdatePlanner.Plan reversePlan =
+                DynamoPartialUpdatePlanner.plan(reverseOrder);
+        DynamoPartialUpdatePlanner.Plan forwardPlan =
+                DynamoPartialUpdatePlanner.plan(forwardOrder);
+
+        assertEquals("alpha", reversePlan.names().get("#f0"));
+        assertEquals("beta", reversePlan.names().get("#f1"));
+        assertEquals(reversePlan.names(), forwardPlan.names());
+        assertEquals(reversePlan.values(), forwardPlan.values());
     }
 
     @Test
