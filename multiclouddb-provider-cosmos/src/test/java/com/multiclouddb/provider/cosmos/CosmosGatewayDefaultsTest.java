@@ -30,6 +30,7 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -88,13 +89,13 @@ class CosmosGatewayDefaultsTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("gatewayV2EndpointCombinations")
-    void gatewayV2EndpointCombinationUsesExpectedSettingAndWarning(
+    void gatewayV2EndpointCombinationUsesExpectedSettingAndLogsTransport(
             String scenario,
             String endpoint,
             String gatewayV2Enable,
             String existingSdkSetting,
             String expectedSdkSetting,
-            boolean integratedCacheWarningExpected) {
+            String expectedGatewayV2Preference) {
         assumeNoSdkThinClientEnvironmentOverride();
 
         if (existingSdkSetting != null) {
@@ -127,13 +128,28 @@ class CosmosGatewayDefaultsTest {
             appender.stop();
         }
 
-        boolean warningLogged = appender.list.stream().anyMatch(
-                event -> event.getLevel() == Level.WARN
+        long transportConfigurationLogCount = appender.list.stream().filter(
+                event -> event.getLevel() == Level.INFO
                         && event.getFormattedMessage().contains(
-                                "Gateway V2 with Azure Cosmos DB Integrated Cache is not "
-                                        + "recommended")
-                        && event.getFormattedMessage().contains("gatewayV2Enable=false"));
-        assertEquals(integratedCacheWarningExpected, warningLogged, scenario);
+                                "Gateway mode, HTTP/2 enabled, Gateway V2 preference at client "
+                                        + "creation: " + expectedGatewayV2Preference)
+                        && event.getFormattedMessage().contains(
+                                "accounts with Integrated Cache use Gateway V1"))
+                .count();
+        assertEquals(1L, transportConfigurationLogCount, scenario);
+
+        boolean integratedCacheWarningLogged = appender.list.stream().anyMatch(
+                event -> event.getLevel() == Level.WARN
+                        && event.getFormattedMessage().contains("Integrated Cache"));
+        assertFalse(integratedCacheWarningLogged, scenario);
+
+        if (expectedGatewayV2Preference.startsWith("AUTO (invalid native value")) {
+            boolean autoInactiveWarningLogged = appender.list.stream().anyMatch(
+                    event -> event.getLevel() == Level.WARN
+                            && event.getFormattedMessage().contains(
+                                    "SDK AUTO probe/fallback is not active"));
+            assertFalse(autoInactiveWarningLogged, scenario);
+        }
     }
 
     @Test
@@ -211,46 +227,69 @@ class CosmosGatewayDefaultsTest {
 
     private static Stream<Arguments> gatewayV2EndpointCombinations() {
         return Stream.of(
-                Arguments.of("standard / AUTO", STANDARD_ENDPOINT, null, null, null, false),
+                Arguments.of(
+                        "standard / AUTO",
+                        STANDARD_ENDPOINT,
+                        null,
+                        null,
+                        null,
+                        "AUTO (probe/fallback)"),
+                Arguments.of(
+                        "standard / invalid native setting",
+                        STANDARD_ENDPOINT,
+                        null,
+                        "yes",
+                        "yes",
+                        "AUTO (invalid native value is treated as unset by Azure SDK)"),
                 Arguments.of(
                         "standard / disabled",
                         STANDARD_ENDPOINT,
                         "false",
                         null,
                         "false",
-                        false),
+                        "DISABLED (Gateway V1)"),
                 Arguments.of(
-                        "standard / forced", STANDARD_ENDPOINT, "TRUE", null, "true", false),
+                        "standard / enabled",
+                        STANDARD_ENDPOINT,
+                        "TRUE",
+                        null,
+                        "true",
+                        "ENABLED (probe bypassed)"),
                 Arguments.of(
-                        "Dedicated / AUTO", DEDICATED_GATEWAY_ENDPOINT, null, null, null, true),
+                        "Dedicated / AUTO",
+                        DEDICATED_GATEWAY_ENDPOINT,
+                        null,
+                        null,
+                        null,
+                        "AUTO (probe/fallback)"),
                 Arguments.of(
                         "Dedicated / disabled",
                         DEDICATED_GATEWAY_ENDPOINT,
                         "false",
                         null,
                         "false",
-                        false),
+                        "DISABLED (Gateway V1)"),
                 Arguments.of(
-                        "Dedicated / forced",
+                        "Dedicated / enabled",
                         DEDICATED_GATEWAY_ENDPOINT,
                         "true",
                         null,
                         "true",
-                        true),
+                        "ENABLED (probe bypassed)"),
                 Arguments.of(
-                        "Dedicated / disabled request / native forced",
+                        "Dedicated / disabled request / native enabled",
                         DEDICATED_GATEWAY_ENDPOINT,
                         "false",
                         "true",
                         "true",
-                        true),
+                        "ENABLED (probe bypassed)"),
                 Arguments.of(
-                        "Dedicated / forced request / native disabled",
+                        "Dedicated / enabled request / native disabled",
                         DEDICATED_GATEWAY_ENDPOINT,
                         "true",
                         "false",
                         "false",
-                        false));
+                        "DISABLED (Gateway V1)"));
     }
 
     private static MulticloudDbClientConfig config(String property, String value) {

@@ -47,7 +47,7 @@ Select a provider and supply its connection and auth properties.
 | `multiclouddb.connection.endpoint` | Cosmos DB account URI or emulator URI |
 | `multiclouddb.connection.key` | Master key (omit for Azure Identity auth) |
 | `multiclouddb.connection.tenantId` | Azure AD tenant ID (optional, for Entra ID) |
-| `multiclouddb.connection.gatewayV2Enable` | Gateway V2 routing override: unset for automatic probe/fallback (default), `false` for Gateway V1 or Dedicated Gateway with Integrated Cache, or `true` to force Gateway V2 |
+| `multiclouddb.connection.gatewayV2Enable` | Gateway V2 routing override: unset for automatic probe/fallback (default), `false` to disable Gateway V2, or `true` to enable it without the connectivity probe |
 | `multiclouddb.connection.consistencyLevel` | Read consistency override (optional — see below) |
 
 ### Authentication Modes
@@ -67,21 +67,24 @@ Select a provider and supply its connection and auth properties.
 ### Transport Profiles
 
 The provider always uses **Gateway mode over HTTP/2**. Direct mode and HTTP/2
-enablement are intentionally not configurable.
+enablement are intentionally not configurable. HTTP/2 is required for Gateway
+V2, Integrated Cache, and newer Cosmos features supported by Multicloud DB.
 
-Choose one recommended deployment profile per JVM process:
+Both deployment profiles use this fixed HTTP/2 transport:
 
 | Profile | Endpoint | `gatewayV2Enable` | Recommended consistency |
 |---------|----------|---------------------|-------------------------|
-| Standard Gateway (V2 default) | Standard `documents.azure.com` account endpoint | Unset for probe/fallback; `true` to force V2; `false` to use V1 | Account default |
-| Dedicated Gateway with Integrated Cache | Provisioned `sqlx.cosmos.azure.com` Dedicated Gateway endpoint | `false` (required to keep requests off Gateway V2) | `EVENTUAL` |
+| Standard Gateway (V2 default) | Standard `documents.azure.com` account endpoint | Unset for probe/fallback; `true` to enable without probing; `false` to disable V2 | Account default |
+| Dedicated Gateway with Integrated Cache | Provisioned `sqlx.cosmos.azure.com` Dedicated Gateway endpoint | Any; Integrated Cache automatically routes through V1 | `SESSION` or `EVENTUAL`; examples use `EVENTUAL` |
 
 #### Gateway V2 (default)
 
 With `gatewayV2Enable` unset, Azure Cosmos DB SDK 4.82 probes Gateway V2
 connectivity and uses it when available; otherwise it automatically falls back
-to Gateway V1. Set `multiclouddb.connection.gatewayV2Enable=true` only for a
-hard opt-in that bypasses the probe.
+to Gateway V1. Set `multiclouddb.connection.gatewayV2Enable=true` only for an
+explicit enablement that bypasses the connectivity probe. This preference does not
+override service-side routing decisions; Integrated Cache requests still use
+Gateway V1.
 
 The earlier draft key `thinClientEnabled` is rejected with guidance to use
 `gatewayV2Enable`, preventing a stale opt-out from silently reverting to AUTO.
@@ -89,17 +92,17 @@ The earlier draft key `thinClientEnabled` is rejected with guidance to use
 #### Dedicated Gateway with Integrated Cache
 
 [Integrated Cache](https://learn.microsoft.com/azure/cosmos-db/integrated-cache)
-is an Azure-managed, in-memory read cache deployed on paid
+is an account-level Azure-managed, in-memory read cache enabled by provisioning
+paid
 [Dedicated Gateway](https://learn.microsoft.com/azure/cosmos-db/dedicated-gateway)
-compute. Cosmos guidance does not recommend using Gateway V2 with Integrated
-Cache because the extra routing path does not improve cache hits.
+compute. Integrated Cache requires HTTP/2 and automatically routes eligible
+cache requests through Gateway V1, even when Gateway V2 is enabled.
 
-After provisioning a Dedicated Gateway, configure its endpoint and force the
-non-V2 path:
+After provisioning a Dedicated Gateway, configure its endpoint and an eligible
+consistency level. No `gatewayV2Enable=false` setting is required:
 
 ```properties
 multiclouddb.connection.endpoint=https://your-account.sqlx.cosmos.azure.com:443/
-multiclouddb.connection.gatewayV2Enable=false
 multiclouddb.connection.consistencyLevel=EVENTUAL
 ```
 
@@ -111,9 +114,10 @@ Dedicated Gateway service-side default applies. Custom portable cache policy,
 including configurable staleness and cross-provider capability gating, remains
 future work.
 
-The provider logs a warning when it recognizes a Dedicated Gateway `sqlx`
-endpoint while Gateway V2 is enabled or eligible. Set `gatewayV2Enable=false`
-to keep eligible requests on the Integrated Cache path and remove the warning.
+After successful client construction, the provider logs Gateway mode, HTTP/2
+enablement, and the effective Gateway V2 preference at that moment. This is a
+configuration snapshot, not a negotiated route: Azure Cosmos DB selects the
+actual route per request, and accounts with Integrated Cache use Gateway V1.
 
 #### JVM-wide selection
 
@@ -123,8 +127,12 @@ thin-client setting. An existing
 environment variable takes precedence over the connection property. When
 multiple Cosmos clients run in one JVM, configure the same value for all of
 them. The SDK reads this value lazily, so setting it for a later client can also
-change routing for an existing client. Gateway V2 and Integrated Cache clients
-therefore require separate JVM processes.
+change routing for an existing client. Clients that require different Gateway
+V2 preferences must use separate JVM processes.
+
+Native values should be `true` or `false`. Azure Cosmos DB SDK warns and treats
+any other native value as unset/AUTO; the construction snapshot reports that
+effective preference without also claiming AUTO is disabled.
 
 ### Consistency Level
 

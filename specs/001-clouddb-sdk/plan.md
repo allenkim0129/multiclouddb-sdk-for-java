@@ -34,10 +34,13 @@ This eliminates cross-partition scans when the application data model co-locates
 ### 2026-08-31 Cosmos Transport Amendment
 
 The Cosmos adapter now has one supported transport policy: Gateway mode with
-HTTP/2 explicitly enabled. Azure Cosmos Java SDK 4.82.0 supplies probe-gated
-Gateway V2 routing with automatic Gateway V1 fallback. `gatewayV2Enable`
-remains an explicit JVM-wide hard opt-in/opt-out, while
-the former `connectionMode` and `gatewayHttp2Enabled` switches are rejected.
+HTTP/2 explicitly enabled because Gateway V2, Integrated Cache, and newer
+supported Cosmos features require it. Azure Cosmos Java SDK 4.82.0 supplies
+probe-gated Gateway V2 routing with automatic Gateway V1 fallback.
+`gatewayV2Enable` remains an explicit JVM-wide override, while the former
+`connectionMode` and `gatewayHttp2Enabled` switches are rejected. Integrated
+Cache is account-level and automatically uses Gateway V1 even when Gateway V2
+is enabled; construction logs preference rather than a negotiated route.
 
 The feature specification, research, configuration contract, and detailed
 design are in

@@ -3,11 +3,11 @@
 **Feature Branch**: `feat/cosmos-gateway-defaults`
 **Created**: 2026-08-31
 **Status**: In review
-**Input**: Cosmos must use Gateway mode only, HTTP/2 must be fixed on, and
-Gateway V2 routing must be eligible by default with an explicit user opt-out.
-Dedicated Gateway with Integrated Cache is an alternate profile that recommends
-the non-Gateway-V2 path; enabling or leaving Gateway V2 eligible with that
-endpoint emits a warning. Direct mode remains unavailable.
+**Input**: Cosmos must use Gateway mode only, HTTP/2 must be fixed on for newer
+features, and Gateway V2 routing must be eligible by default with an explicit
+user opt-out. Integrated Cache is an account-level option that requires HTTP/2
+and automatically uses Gateway V1 even when Gateway V2 is enabled. Direct mode
+remains unavailable.
 
 ## User Scenarios & Testing
 
@@ -29,7 +29,8 @@ HTTP/2 enabled and never receives Direct mode.
 1. **Given** valid Cosmos endpoint and authentication settings, **When** a
    client is created, **Then** Gateway mode is selected.
 2. **Given** no transport settings, **When** a client is created, **Then**
-   HTTP/2 is explicitly enabled.
+   HTTP/2 is explicitly enabled because Gateway V2, Integrated Cache, and newer
+   Multicloud DB Cosmos features require it.
 3. **Given** no Gateway V2 override, **When** Gateway V2 is reachable, **Then**
    the provider SDK may route through Gateway V2 after its connectivity probe.
 4. **Given** no Gateway V2 override, **When** Gateway V2 is not reachable,
@@ -38,40 +39,40 @@ HTTP/2 enabled and never receives Direct mode.
 
 ---
 
-### User Story 2 - Explicit Gateway V2 Opt-Out (Priority: P2)
+### User Story 2 - Gateway V2 Control and Transport Visibility (Priority: P2)
 
-As an operator, I want to disable Gateway V2 routing through configuration so
-that I can mitigate a regional, account, or intermediary compatibility issue
-or use Dedicated Gateway with Integrated Cache without
-changing application code.
+As an operator, I want to control Gateway V2 routing through configuration and
+see the effective transport preference when each client is created so that I
+can diagnose routing without confusing configuration with the actual
+per-request route selected by Cosmos DB.
 
 **Why this priority**: Gateway V2 is the preferred default, but operators need
-a deterministic kill switch for incident response and the recommended
-Dedicated Gateway cache topology.
+a deterministic kill switch for incident response and accurate visibility into
+the fixed transport and effective process-wide preference.
 
-**Independent Test**: Create a client with `gatewayV2Enable=false` and verify
-that the provider supplies the Azure SDK hard opt-out before native client
-construction.
+**Independent Test**: Create clients for standard and Dedicated Gateway
+endpoints with `gatewayV2Enable` absent, `false`, and `true`; verify native
+property publication and the INFO transport snapshot after successful native
+client construction.
 
 **Acceptance Scenarios**:
 
 1. **Given** `gatewayV2Enable=false`, **When** a Cosmos client is created,
    **Then** Gateway V2 is disabled process-wide through the Azure SDK setting.
 2. **Given** `gatewayV2Enable=true`, **When** a Cosmos client is created,
-   **Then** the Azure SDK receives an explicit hard opt-in.
-3. **Given** an operator-supplied Azure SDK system property or environment
-   variable, **When** the connection property disagrees, **Then** the
-   operator-supplied value wins.
-4. **Given** a provisioned Dedicated Gateway `sqlx` endpoint, `EVENTUAL`
-   consistency, and `gatewayV2Enable=false`, **When** a Cosmos client is
-   created, **Then** the provider remains in Gateway mode with Gateway V2
-   disabled so eligible reads can use the provider-native Integrated Cache.
-
----
-5. **Given** a Dedicated Gateway `sqlx` endpoint with `gatewayV2Enable` absent
-   or `true`, **When** a Cosmos client is created, **Then** the provider warns
-   that Gateway V2 with Integrated Cache is not recommended and identifies
-   `gatewayV2Enable=false` as the corrective action.
+   **Then** the Azure SDK receives an explicit opt-in that bypasses its
+   connectivity probe, while service-side routing remains authoritative.
+3. **Given** an existing Azure SDK system property or environment variable,
+   **When** the connection property disagrees, **Then** the existing native
+   value wins.
+4. **Given** Integrated Cache is enabled for the account, **When** eligible
+   requests execute with any Gateway V2 preference, **Then** HTTP/2 remains
+   enabled and Cosmos DB automatically routes the cache path through Gateway
+   V1 without requiring a Gateway V2 opt-out.
+5. **Given** any valid Gateway V2 preference, **When** native client construction
+   succeeds, **Then** the provider logs Gateway mode, HTTP/2 enablement, and the
+   effective preference, and identifies that the actual route is selected per
+   request by Cosmos DB.
 
 ### User Story 3 - Actionable Migration Failure (Priority: P3)
 
@@ -109,11 +110,17 @@ verify that it fails before network I/O with migration guidance.
   property, because doing so would bypass SDK 4.82's safe connectivity probe.
 - Gateway V2 is unsupported by the account or network path: the SDK probe must
   leave traffic on Gateway V1.
+- A native Gateway V2 value is non-empty but not Boolean: the Azure SDK owns
+  validation, warns, and treats it as unset/AUTO; the provider snapshot must not
+  contradict that behavior by claiming AUTO is inactive.
 - A stale transport key uses the value that is now fixed (`gateway` or `true`):
   it still fails so the removed configuration surface cannot persist.
-- A Dedicated Gateway `sqlx` endpoint is configured while Gateway V2 is enabled
-  or eligible: construction warns that the combination is not recommended and
-  directs the operator to `gatewayV2Enable=false`.
+- Integrated Cache is enabled while Gateway V2 is enabled or eligible: no
+  wrapper warning or opt-out is needed because Cosmos DB automatically routes
+  eligible cache requests through Gateway V1.
+- The logged Gateway V2 preference can change after construction because the
+  native value is read lazily; the log is explicitly a construction-time
+  configuration snapshot and never claims to be the negotiated request route.
 - Dedicated Gateway is configured with a consistency level other than
   `SESSION` or `EVENTUAL`: eligible reads bypass Integrated Cache, and an
   override stronger than the account default can also fail at the service; the
@@ -127,7 +134,8 @@ verify that it fails before network I/O with migration guidance.
 - **FR-002**: The Cosmos provider MUST NOT expose a supported Direct-mode
   configuration option.
 - **FR-003**: The Cosmos provider MUST explicitly enable HTTP/2 on every native
-  Cosmos client.
+  Cosmos client because Gateway V2, Integrated Cache, and newer supported
+  Cosmos features require it.
 - **FR-004**: The Cosmos provider MUST NOT expose a supported HTTP/2 enablement
   toggle.
 - **FR-005**: The provider MUST use an Azure Cosmos SDK version whose unset
@@ -136,7 +144,8 @@ verify that it fails before network I/O with migration guidance.
   Azure SDK native thin-client property unset.
 - **FR-007**: `gatewayV2Enable=false` MUST provide a hard Gateway V2 opt-out.
 - **FR-008**: `gatewayV2Enable=true` MUST provide an explicit Gateway V2
-  opt-in.
+  opt-in that bypasses the connectivity probe without overriding service-side
+  routing decisions.
 - **FR-009**: Only case-insensitive `true` and `false` values are valid for
   `gatewayV2Enable`; all other values MUST fail before native client
   construction.
@@ -152,15 +161,15 @@ verify that it fails before network I/O with migration guidance.
 - **FR-014**: Cosmos emulator and provider unit coverage MUST continue to pass
   under the fixed Gateway transport.
 - **FR-015**: Documentation MUST present Gateway V2 as the default standard
-  endpoint profile and Dedicated Gateway with Integrated Cache as an explicit
-  provider-native profile where Gateway V2 is not recommended.
+  endpoint profile and Integrated Cache as an account-level provider-native
+  option that automatically uses Gateway V1 even when Gateway V2 is enabled.
 - **FR-016**: Documentation MUST define the Dedicated Gateway profile with its
-  `sqlx` endpoint and `gatewayV2Enable=false`, and SHOULD recommend
-  `EVENTUAL` consistency for forward compatibility with the planned portable
-  cache contract.
-- **FR-017**: A recognized Dedicated Gateway endpoint where Gateway V2 is
-  enabled or eligible MUST warn that the combination with Integrated Cache is
-  not recommended and identify `gatewayV2Enable=false` as corrective action.
+  `sqlx` endpoint and eligible consistency level, MUST state that HTTP/2 is
+  required, and MUST NOT require `gatewayV2Enable=false` for cache routing.
+- **FR-017**: After successful native client construction, the provider MUST
+  log Gateway mode, HTTP/2 enablement, and the effective Gateway V2 preference
+  as a configuration snapshot, while stating that Cosmos DB selects the actual
+  route per request and Integrated Cache uses Gateway V1.
 - **FR-018**: All wrapper-owned configuration values MUST be parsed before the
   provider publishes an explicit JVM-wide Gateway V2 preference.
 - **FR-019**: Documentation MUST state that clients requiring different Gateway
@@ -174,13 +183,16 @@ verify that it fails before network I/O with migration guidance.
 - **FixedTransportPolicy**: The non-configurable Cosmos transport decision:
   Gateway mode with HTTP/2 enabled.
 - **GatewayV2Preference**: Tri-state Gateway V2 routing preference:
-  `AUTO` (unset), `FORCE_ENABLED` (`true`), or `DISABLED` (`false`).
+  `AUTO` (unset), `ENABLED` (`true`), or `DISABLED` (`false`).
 - **GatewayV2ConfigurationSource**: The effective source ordered by
   precedence: Azure SDK system property, Azure SDK environment variable, then
   Multicloud DB connection property.
 - **GatewayDeploymentProfile**: Either a standard account endpoint with the
   selected tri-state Gateway routing behavior or a Dedicated Gateway endpoint
-  with Gateway V2 disabled for Integrated Cache.
+  whose account-level Integrated Cache automatically uses Gateway V1.
+- **TransportConfigurationSnapshot**: The successful-construction INFO record
+  of fixed transport and the effective Gateway V2 preference, explicitly not a
+  negotiated per-request route.
 - **RemovedTransportSetting**: A stale `connectionMode` or
   `gatewayHttp2Enabled` key, or the renamed draft `thinClientEnabled` key, that
   causes construction-time rejection.
@@ -197,14 +209,19 @@ verify that it fails before network I/O with migration guidance.
   the provider SDK's probe-and-fallback behavior.
 - **SC-004**: Standard and Dedicated Gateway endpoints each have automated
   coverage for `gatewayV2Enable` absent, `false`, and `true`, including native
-  property publication and Integrated Cache warning presence or absence.
+  property publication, transport snapshot content, and absence of an
+  endpoint-based Integrated Cache warning.
 - **SC-005**: Active configuration examples contain no `connectionMode` or
   `gatewayHttp2Enabled` setting.
 - **SC-006**: Provider unit tests and all three emulator conformance jobs pass.
 - **SC-007**: User documentation contains one complete Dedicated Gateway cache
-  example and states the endpoint, consistency, process-isolation, cost, and
-  staleness constraints.
+  example and states the account-level routing, HTTP/2, endpoint, consistency,
+  cost, and staleness constraints.
 - **SC-008**: Invalid consistency plus an explicit Gateway V2 preference does
   not publish the JVM-wide preference.
-- **SC-009**: Malformed, removed, renamed, and operator-precedence settings each
-  have automated construction-time coverage.
+- **SC-009**: Malformed, removed, renamed, native-precedence, and invalid-native
+  settings each have automated construction-time coverage without contradictory
+  diagnostics.
+- **SC-010**: 100% of successful client-construction matrix cases emit one INFO
+  snapshot that distinguishes effective Gateway V2 preference from actual
+  request routing.

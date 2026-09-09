@@ -392,26 +392,29 @@ All configuration flows through `MulticloudDbClientConfig` or a `.properties` fi
 |-----|-------|
 | `multiclouddb.connection.endpoint` | `https://localhost:8081` (emulator) or your Cosmos account URI |
 | `multiclouddb.connection.key` | Master key or Cosmos emulator well-known key |
-| `multiclouddb.connection.gatewayV2Enable` | Unset for automatic Gateway V2 probe/fallback (default), `false` for Gateway V1 or Dedicated Gateway with Integrated Cache, or `true` to force Gateway V2 |
+| `multiclouddb.connection.gatewayV2Enable` | Unset for automatic Gateway V2 probe/fallback (default), `false` to disable Gateway V2, or `true` to enable it without the connectivity probe |
 
 Cosmos clients always use Gateway mode over HTTP/2. Direct mode and HTTP/2
-enablement are not configurable.
+enablement are not configurable. HTTP/2 is required for Gateway V2, Integrated
+Cache, and newer Cosmos features supported by Multicloud DB.
 
 Gateway V2 is the default profile for standard Cosmos account endpoints. Azure
-Cosmos DB Integrated Cache is an alternative, provider-native profile and does
-not benefit from being combined with Gateway V2; Cosmos guidance recommends
-using the non-V2 path. To use Integrated Cache, provision a
-[Dedicated Gateway](https://learn.microsoft.com/azure/cosmos-db/dedicated-gateway),
-use its `sqlx.cosmos.azure.com` endpoint, select `EVENTUAL` consistency, and set:
+Cosmos DB Integrated Cache is an account-level, provider-native option enabled
+by provisioning paid
+[Dedicated Gateway](https://learn.microsoft.com/azure/cosmos-db/dedicated-gateway)
+compute. When enabled, cache requests automatically use Gateway V1 even when
+Gateway V2 is enabled. No Gateway V2 opt-out is required. Configure the
+Dedicated Gateway endpoint and an eligible consistency level, such as:
 
 ```properties
-multiclouddb.connection.gatewayV2Enable=false
+multiclouddb.connection.endpoint=https://your-account.sqlx.cosmos.azure.com:443/
+multiclouddb.connection.consistencyLevel=EVENTUAL
 ```
 
-Gateway V2 selection maps to a JVM-wide native SDK setting. Run the two profiles
-in separate processes if an application needs Gateway V2 and Integrated Cache
-simultaneously. See the [configuration guide](docs/configuration.md#transport-profiles)
-for constraints.
+At client creation, the provider logs Gateway mode, HTTP/2 enablement, and the
+effective Gateway V2 preference. Azure Cosmos DB selects the actual route per
+request. See the [configuration guide](docs/configuration.md#transport-profiles)
+for details.
 
 ### DynamoDB connection properties
 

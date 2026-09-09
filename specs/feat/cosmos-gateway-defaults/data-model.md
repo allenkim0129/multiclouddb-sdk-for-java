@@ -17,23 +17,24 @@ Relationships:
 - One `FixedTransportPolicy` is applied to every Cosmos provider client.
 - It owns one Azure `GatewayConnectionConfig`.
 - The gateway configuration owns one Azure `Http2ConnectionConfig`.
+- HTTP/2 remains enabled for Gateway V2, Integrated Cache, and newer supported
+  Cosmos features.
 
 ## GatewayDeploymentProfile
 
-Represents the supported Cosmos-native deployment topology. It is derived from
-the endpoint and Gateway V2 preference rather than a new configuration key.
+Represents the supported Cosmos-native deployment topology. Integrated Cache is
+enabled at the account level rather than through a new SDK configuration key.
 
 | Profile | Endpoint | Gateway V2 state | Intended path |
 |---|---|---|---|
 | `STANDARD_GATEWAY` | Standard account endpoint | Any valid state | Gateway V2 when eligible, or Gateway V1 when disabled |
-| `DEDICATED_CACHE` | Dedicated Gateway `sqlx` endpoint | `DISABLED` | Gateway V1 and Integrated Cache |
+| `DEDICATED_CACHE` | Dedicated Gateway `sqlx` endpoint | Any valid state | Account-level Integrated Cache automatically uses Gateway V1 |
 
-Using Gateway V2 with Integrated Cache is not recommended. A Dedicated Gateway
-endpoint in `AUTO` or `FORCE_ENABLED` state is accepted but emits a warning;
-the recommended `DEDICATED_CACHE` profile uses `DISABLED` and `EVENTUAL`
-consistency. Cache staleness remains the Dedicated Gateway service default and
-is not represented in this feature's model. This is provider-native deployment
-guidance, not a portable cache capability.
+The `DEDICATED_CACHE` profile requires HTTP/2 but does not require a Gateway V2
+opt-out. Examples use `EVENTUAL` consistency. Cache staleness remains the
+Dedicated Gateway service default and is not represented in this feature's
+model. This is provider-native deployment guidance, not a portable cache
+capability.
 
 ## GatewayV2Preference
 
@@ -42,7 +43,7 @@ Represents the requested Gateway V2 routing behavior.
 | State | Connection value | SDK property written | Routing behavior |
 |---|---|---|---|
 | `AUTO` | absent | none | SDK connectivity probe; V2 on success, V1 otherwise |
-| `FORCE_ENABLED` | `true` | `true` | Hard opt-in; probe bypassed |
+| `ENABLED` | `true` | `true` | Probe bypassed; service-side routing still applies |
 | `DISABLED` | `false` | `false` | Hard opt-out; no probe |
 
 Validation:
@@ -74,6 +75,22 @@ Relationships and constraints:
   routing for an existing AUTO client.
 - Clients that require different Gateway V2 preferences use separate JVM
   processes.
+- Invalid non-empty native values remain authoritative as the configuration
+  source but are warned on and treated as `AUTO` by the Azure SDK.
+
+## TransportConfigurationSnapshot
+
+Represents the INFO record emitted after successful native client construction.
+
+| Field | Value |
+|---|---|
+| `connectionMode` | `GATEWAY` |
+| `http2Enabled` | `true` |
+| `gatewayV2Preference` | `AUTO`, `ENABLED`, or `DISABLED` from the effective native value |
+| `routingQualification` | Actual routing is selected per request; Integrated Cache uses Gateway V1 |
+
+This snapshot is not a negotiated route and can become stale if the lazily read
+native Gateway V2 value changes after construction.
 
 ## RemovedTransportSetting
 
@@ -96,7 +113,7 @@ raw connection config
         |
         +-- operator override present --> OPERATOR_CONTROLLED
         |
-        +-- gatewayV2=true -------------> FORCE_ENABLED
+        +-- gatewayV2=true -------------> ENABLED
         |
         +-- gatewayV2=false ------------> DISABLED
         |
@@ -104,7 +121,9 @@ raw connection config
 
 AUTO -- probe success ------------------> GATEWAY_V2
 AUTO -- probe failure/no verdict -------> GATEWAY_V1
-DISABLED + dedicated sqlx endpoint ------> DEDICATED_CACHE
+ENABLED + eligible service topology ----> GATEWAY_V2
+INTEGRATED_CACHE + any preference ------> GATEWAY_V1_CACHE
 ```
 
-The fixed Gateway/HTTP2 policy applies in every non-rejected state.
+The fixed Gateway/HTTP2 policy applies in every non-rejected state. The actual
+per-request route is not a construction-time state.

@@ -22,8 +22,9 @@ This document records the decisions that support the design in
 - **Decision**: Attach `new Http2ConnectionConfig().setEnabled(true)` to the
   fixed `GatewayConnectionConfig`.
 - **Rationale**: Azure Cosmos SDK 4.82.0 still defaults Gateway HTTP/2 to
-  disabled internally. Gateway V2 requires Gateway mode plus HTTP/2, so relying
-  on the native default would not satisfy the feature.
+  disabled internally. Gateway V2, Integrated Cache, and newer Cosmos features
+  require HTTP/2, so relying on the native default would not satisfy the
+  Multicloud DB transport contract.
 - **Alternatives considered**:
   - Rely on the SDK default: rejected because it remains HTTP/2-off.
   - Set only `COSMOS.HTTP2_ENABLED`: rejected because it introduces ambient
@@ -47,7 +48,7 @@ This document records the decisions that support the design in
 - **Decision**:
   - unset -> leave `COSMOS.THINCLIENT_ENABLED` unset (`AUTO`);
   - `false` -> set the SDK hard opt-out;
-  - `true` -> set the SDK hard opt-in.
+  - `true` -> enable Gateway V2 without the connectivity probe.
 - **Rationale**: Writing `true` as the wrapper default would skip the 4.82.0
   connectivity probe. Leaving the property absent is the only way to obtain
   probe-gated Gateway V2 with Gateway V1 fallback.
@@ -99,26 +100,41 @@ This document records the decisions that support the design in
   - Accept `gateway` and `true` for compatibility: rejected because they would
     remain misleading no-op controls.
 
-## Decision 8: Treat Integrated Cache as an alternate deployment profile
+## Decision 8: Treat Integrated Cache as account-level service routing
 
 - **Decision**: Keep Gateway V2 as the zero-configuration standard-endpoint
-  profile. Dedicated Gateway with Integrated Cache uses its `sqlx` endpoint,
-  `gatewayV2Enable=false`, and `EVENTUAL` consistency in Multicloud DB
-  examples.
-- **Rationale**: Cosmos team guidance does not recommend Gateway V2 with
-  Integrated Cache. Integrated Cache is server-side memory on dedicated compute
-  and forwards cache misses to backend nodes; Gateway V2 adds another routing
-  path without improving cache hits.
+  profile. Dedicated Gateway with Integrated Cache uses its `sqlx` endpoint and
+  `EVENTUAL` consistency in Multicloud DB examples, with no Gateway V2 opt-out.
+- **Rationale**: Integrated Cache is enabled at the Cosmos account level by
+  provisioning paid Dedicated Gateway compute. It requires HTTP/2 and
+  automatically routes eligible cache requests through Gateway V1 even when
+  Gateway V2 is enabled. The wrapper should not infer account configuration
+  from an endpoint or issue a warning for a combination the service resolves.
 - **Scope**: This PR documents a Cosmos-native deployment profile only. It does
   not add the planned portable cache capability, configurable staleness, or
   provisioning. The Dedicated Gateway service-side staleness default applies.
 - **Alternatives considered**:
-  - Keep Gateway V2 enabled with Integrated Cache: rejected as the recommended
-    profile because the combination adds no cache benefit.
+  - Require `gatewayV2Enable=false`: rejected because Integrated Cache selects
+    Gateway V1 automatically and the opt-out would unnecessarily affect other
+    requests in the JVM.
   - Make Dedicated Gateway the default: rejected because its paid compute and
     bounded-staleness cache suit read-heavy workloads, not every workload.
   - Add a portable cache API in this PR: rejected because that requires a
     separate cross-provider design covering DynamoDB DAX and Spanner.
+
+## Decision 9: Log configuration, not a negotiated route
+
+- **Decision**: After successful native client construction, log Gateway mode,
+  fixed HTTP/2 enablement, and the effective Gateway V2 preference. State that
+  Azure Cosmos DB chooses the actual route per request and Integrated Cache uses
+  Gateway V1.
+- **Rationale**: Azure Cosmos SDK 4.82.0 exposes no public client-construction
+  API for the negotiated Gateway version. Gateway V2 eligibility depends on a
+  connectivity probe, service topology, and request type after construction.
+- **Alternatives considered**:
+  - Log that the client "uses Gateway V1/V2": rejected because that would turn
+    a configuration preference into a false negotiated-route claim.
+  - Inspect SDK internals via reflection: rejected as unsupported and brittle.
 
 ## Official Sources
 

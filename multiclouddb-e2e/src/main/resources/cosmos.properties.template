@@ -25,15 +25,15 @@ multiclouddb.collection=products
 multiclouddb.connection.endpoint=https://<your-account>.documents.azure.com:443/
 multiclouddb.connection.key=<your-primary-key>
 multiclouddb.connection.requestTimeoutSeconds=30
-# Gateway mode and HTTP/2 are always enabled. Gateway V2 is selected automatically.
+# Gateway mode and required HTTP/2 are always enabled. Gateway V2 is selected automatically.
 # To opt out of Gateway V2 routing:
 # multiclouddb.connection.gatewayV2Enable=false
 #
-# Alternative: Dedicated Gateway with Integrated Cache (Gateway V2 not recommended).
+# Alternative: account-level Dedicated Gateway with Integrated Cache.
 # Provision Dedicated Gateway compute, replace the endpoint value above with
-# https://<your-account>.sqlx.cosmos.azure.com:443/, and uncomment both settings
-# below. Use a separate JVM process if another Cosmos client requires Gateway V2.
-# multiclouddb.connection.gatewayV2Enable=false
+# https://<your-account>.sqlx.cosmos.azure.com:443/, and uncomment the setting
+# below. Integrated Cache requires HTTP/2 and automatically uses Gateway V1,
+# even when Gateway V2 is enabled; no Gateway V2 opt-out is required.
 # multiclouddb.connection.consistencyLevel=EVENTUAL
 
 # --- Alternative: Azure AD / Managed Identity (no key needed) ------------------

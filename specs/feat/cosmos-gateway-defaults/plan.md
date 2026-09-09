@@ -10,12 +10,13 @@
 Standardize the Cosmos provider on Gateway mode with HTTP/2 explicitly enabled,
 upgrade Azure Cosmos Java SDK from 4.78.0 to 4.82.0, and use the SDK's
 probe-gated Gateway V2 routing as the zero-configuration default.
-Retain `gatewayV2Enable` as a strict process-wide hard opt-in/opt-out, honor
-operator-supplied Azure SDK settings, and fail fast when removed
+Retain `gatewayV2Enable` as a strict process-wide enable/disable preference,
+honor existing native Azure SDK settings, and fail fast when removed
 `connectionMode`, `gatewayHttp2Enabled`, or draft `thinClientEnabled` keys are
-present. Document Dedicated Gateway with Integrated Cache as a provider-native
-profile that recommends the existing hard opt-out and warns when Gateway V2 is
-enabled or eligible; no portable cache API or capability is introduced.
+present. Document Integrated Cache as an account-level provider-native option
+that requires HTTP/2 and automatically uses Gateway V1 even when Gateway V2 is
+enabled. Log fixed transport and the effective preference after successful
+client construction; no portable cache API or capability is introduced.
 
 The change is isolated to Cosmos client construction, provider configuration,
 tests, examples, changelogs, and design artifacts. It does not alter the
@@ -35,11 +36,12 @@ emulator endpoints
 **Performance Goals**: Add no wrapper-owned request path or network probe;
 delegate Gateway V2 probing/fallback to the Azure SDK and perform wrapper
 selection only during client construction
-**Constraints**: Gateway and HTTP/2 are fixed; Direct/RNTBD is unavailable
-through wrapper configuration; Gateway V2 with Integrated Cache is not
-recommended; native Gateway V2 selection is JVM-global and read lazily;
-portable cache policy and configurable staleness are out of scope;
-provider-neutral API and behavior must remain unchanged
+**Constraints**: Gateway and required HTTP/2 are fixed; Direct/RNTBD is
+unavailable through wrapper configuration; Integrated Cache automatically uses
+Gateway V1; native Gateway V2 selection is JVM-global and read lazily; actual
+routing is decided per request; portable cache policy and configurable
+staleness are out of scope; provider-neutral API and behavior must remain
+unchanged
 **Scale/Scope**: One dependency update, two Cosmos production classes, focused
 provider tests, four conformance/example fixtures, user documentation,
 changelogs, and feature design artifacts
@@ -57,9 +59,9 @@ There are no unresolved technical clarifications.
 | **2 - Capability-Based API** | PASS | No provider-neutral cache capability is promised or changed. Dedicated Gateway is explicitly provider-native deployment guidance. |
 | **3 - Consistent Surface** | PASS | CRUD/query inputs, outputs, errors, and diagnostics are unchanged. The SDK-global Gateway V2 limitation is documented explicitly rather than presented as truly per-client. |
 | **3.1 - Configuration-Only Portability** | PASS | Default behavior requires no code or transport setting. The operational opt-out is configuration-driven. |
-| **4 - Explicit Reliability Controls** | PASS | Unset Gateway V2 state uses the provider SDK's connectivity probe and Gateway V1 fallback. Explicit hard opt-in failures remain visible. |
-| **5 - Diagnostics Without Secrets** | PASS | Configuration conflicts fail with actionable, non-secret messages. Endpoint keys and credentials are never logged by this change. |
-| **5.1 - Layered Diagnostics** | PASS | Wrapper validation identifies the invalid setting; native SDK connectivity failures remain available for explicit hard opt-in troubleshooting. |
+| **4 - Explicit Reliability Controls** | PASS | Unset Gateway V2 state uses the provider SDK's connectivity probe and Gateway V1 fallback. Explicit probe-bypass failures remain visible. |
+| **5 - Diagnostics Without Secrets** | PASS | Configuration conflicts remain actionable, while successful construction logs only fixed transport and effective preference. Endpoint keys and credentials are never logged by this change. |
+| **5.1 - Layered Diagnostics** | PASS | Wrapper logs distinguish configuration from per-request service routing; native SDK connectivity failures remain available for explicit probe-bypass troubleshooting. |
 | **Provider Adapter Requirements** | PASS | The adapter continues to delegate to the official SDK and exposes no new provider type through the portable API. |
 | **Testing Minimum** | PASS | Provider construction behavior has focused unit coverage and existing Cosmos emulator conformance remains the integration gate. |
 | **Versioning & Compatibility** | PASS | The provider changelog states SDK 4.82.0 and the pre-release breaking configuration/constant removal. |
@@ -72,15 +74,16 @@ exception.
 Phase 0 research is captured in [research.md](research.md):
 
 1. Gateway mode is the only supported wrapper path.
-2. HTTP/2 must be explicitly enabled because SDK 4.82.0 does not enable it by
-   default.
+2. HTTP/2 must be explicitly enabled because Gateway V2, Integrated Cache, and
+   newer supported Cosmos features require it and SDK 4.82.0 defaults it off.
 3. SDK 4.82.0 supplies probe-gated Gateway V2 with Gateway V1 fallback.
 4. Unset, `true`, and `false` must preserve the native SDK tri-state.
-5. Gateway V2 selection is process-wide and follows operator-first precedence.
+5. Gateway V2 selection is process-wide and follows native-setting precedence.
 6. The narrower query-plan kill switch does not require wrapper exposure.
 7. Removed switches fail fast instead of becoming silent no-ops.
-8. Gateway V2 with Dedicated Gateway Integrated Cache is not recommended; the
-   recommended cache profile uses the existing hard opt-out.
+8. Integrated Cache is account-level, requires HTTP/2, and automatically uses
+   Gateway V1 without a Gateway V2 opt-out.
+9. Construction logs configuration preference, not a negotiated request route.
 
 ## Design
 
@@ -101,8 +104,9 @@ the construction-time entities and transitions are in
 6. Apply consistency and user-agent configuration.
 7. Preserve an existing native setting or publish the explicit connection
    preference; leave an absent value untouched.
-8. Warn when a Dedicated Gateway endpoint has Gateway V2 enabled or eligible.
-9. Build the native Cosmos client.
+8. Build the native Cosmos client.
+9. Log Gateway mode, HTTP/2, and the effective Gateway V2 preference as a
+   construction snapshot, while qualifying that actual routing is per request.
 
 ### Configuration Precedence
 
@@ -156,7 +160,7 @@ multiclouddb-conformance/src/test/java/com/multiclouddb/conformance/
     # Cosmos fixtures no longer set connectionMode
 
 multiclouddb-e2e/src/main/resources/cosmos.properties.template
-    # Fixed transport and optional Gateway V2 opt-out example
+    # Fixed HTTP/2 transport, Gateway V2 override, and Integrated Cache example
 
 docs/
 |-- configuration.md
@@ -181,8 +185,8 @@ package is added.
 - Verify Gateway V2 behavior for unset, `false`, and `true`.
 - Verify system-property and environment-variable names and precedence.
 - Verify query-plan routing follows the main Gateway V2 eligibility gate.
-- Record Cosmos team guidance that Gateway V2 with Dedicated Gateway Integrated
-  Cache is not recommended.
+- Record Cosmos team guidance that Integrated Cache requires HTTP/2 and
+  automatically uses Gateway V1 regardless of Gateway V2 preference.
 - Record decisions and rejected alternatives in `research.md`.
 
 ### Phase 1 - Design and Contract
@@ -193,8 +197,8 @@ package is added.
 - Define the external configuration contract and migration errors.
 - Document architecture, global-state boundary, rollout, rollback, and PR
   dependency in `design.md`.
-- Provide default, opt-out, force, migration, and Dedicated Gateway cache
-  examples in `quickstart.md`.
+- Provide default, opt-out, probe-bypass, migration, and Dedicated Gateway
+  cache examples in `quickstart.md`.
 - Update the original SDK plan with the Cosmos transport amendment.
 
 ### Phase 2 - Implementation
@@ -205,7 +209,8 @@ package is added.
 - Reject removed and renamed transport keys.
 - Parse wrapper-owned settings before publishing JVM-wide state.
 - Always construct Gateway mode with HTTP/2 enabled.
-- Warn when a Dedicated Gateway endpoint has Gateway V2 enabled or eligible.
+- Log fixed transport and effective Gateway V2 preference after successful
+  client construction without claiming an actual route.
 - Preserve SDK tri-state and native-setting precedence.
 - Update active examples, conformance fixtures, and changelogs.
 - Add focused unit tests.
@@ -216,8 +221,9 @@ package is added.
 |---|---|
 | Unit | Gateway overload selected, HTTP/2 enabled, Direct never selected |
 | Unit | Standard endpoint x Gateway V2 AUTO/false/true matrix |
-| Unit | Dedicated endpoint x Gateway V2 AUTO/false/true matrix and warning |
-| Unit | Operator SDK property is not overwritten |
+| Unit | Dedicated endpoint x Gateway V2 AUTO/false/true matrix, INFO snapshot, and no cache warning |
+| Unit | Existing native SDK property is not overwritten |
+| Unit | Invalid native Gateway V2 value reports SDK-treated AUTO without an AUTO-inactive warning |
 | Unit | Malformed Boolean and removed/renamed keys fail before builder creation |
 | Unit | Invalid consistency does not publish a Gateway V2 preference |
 | Build | Cosmos provider and upstream API reactor |
@@ -232,10 +238,11 @@ package is added.
 - Document JVM-wide semantics and operator precedence.
 - Add SDK 4.82.0 and breaking pre-release cleanup to both Cosmos and aggregate
   changelogs.
-- Document Gateway V2 as the default and Dedicated Gateway with Integrated
-  Cache as a provider-native profile where Gateway V2 is not recommended.
-- Document the Dedicated Gateway endpoint, `EVENTUAL` consistency, native
-  staleness default, cache-hit cost, and JVM process-isolation constraints.
+- Document Gateway V2 as the default and Integrated Cache as an account-level,
+  provider-native option that automatically uses Gateway V1.
+- Document required HTTP/2, the Dedicated Gateway endpoint, eligible
+  consistency, native staleness default, cache-hit cost, and distinction
+  between Gateway V2 preference and actual request routing.
 - Preserve historical changelog statements as historical records.
 
 ## Post-Design Constitution Re-check
@@ -246,10 +253,10 @@ profile is explicitly Cosmos-native deployment guidance and does not claim the
 planned portable cache capability.
 
 The only ambient state is imposed by the official Azure SDK's Gateway V2
-switch. The design uses synchronized no-overwrite publication, warns on the
-non-recommended Gateway V2 and Integrated Cache combination, and validates
-wrapper-owned values before publication. Because the SDK reads the value
-lazily, clients requiring different Gateway V2 values use separate processes.
+switch. The design uses synchronized no-overwrite publication, validates
+wrapper-owned values before publication, and logs configuration without
+claiming a negotiated route. Because the SDK reads the value lazily, clients
+requiring different Gateway V2 values use separate processes.
 
 **Post-design gate result**: PASS. Implementation may proceed without a
 constitution exception.

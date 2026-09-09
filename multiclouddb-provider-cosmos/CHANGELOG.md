@@ -15,9 +15,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   fallback to Gateway V1. Existing `COSMOS.THINCLIENT_ENABLED` system-property
   or `COSMOS_THINCLIENT_ENABLED` environment-variable settings take precedence.
 - A documented Dedicated Gateway with Integrated Cache profile using the
-  Dedicated Gateway `sqlx` endpoint, `EVENTUAL` consistency, and
-  `gatewayV2Enable=false`. Using Gateway V2 with this provider-native cache
-  profile is not recommended.
+  Dedicated Gateway `sqlx` endpoint and `EVENTUAL` consistency. Integrated
+  Cache is an account-level option that requires HTTP/2 and automatically uses
+  Gateway V1, even when Gateway V2 is enabled.
 
 ### Changed
 
@@ -26,8 +26,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Renamed the pre-release `thinClientEnabled` connection setting to
   `gatewayV2Enable`; the stale name now fails with migration guidance.
 - Wrapper-owned settings are validated before the JVM-wide Gateway V2 value is
-  published. Dedicated Gateway endpoints without an effective Gateway V2
-  opt-out now emit a warning about the non-recommended combination.
+  published. Successful construction logs Gateway mode, fixed HTTP/2
+  enablement, and the effective Gateway V2 preference without claiming a
+  negotiated request route.
 
 ### Removed
 

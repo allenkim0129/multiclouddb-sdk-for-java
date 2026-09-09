@@ -34,8 +34,8 @@ import java.util.regex.Pattern;
  * <li>{@code key} — Cosmos account key (optional; omit to use
  *     {@link DefaultAzureCredentialBuilder})</li>
  * <li>{@code gatewayV2Enable} — optional Gateway V2 routing override;
- *     omit for automatic probe and fallback, set {@code false} to opt out or
- *     use Dedicated Gateway with Integrated Cache, or set {@code true} to force opt-in</li>
+ *     omit for automatic probe and fallback, set {@code false} to opt out, or
+ *     set {@code true} to enable Gateway V2 without the connectivity probe</li>
  * <li>{@code consistencyLevel} — read consistency override (optional; omit to
  *     inherit the Cosmos account's default consistency level). Accepted values
  *     (case-insensitive): {@code STRONG}, {@code BOUNDED_STALENESS},
@@ -135,8 +135,8 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         builder.userAgentSuffix(SdkUserAgent.userAgent(config));
 
         configureGatewayV2(gatewayV2Preference);
-        warnIfGatewayV2MayBypassIntegratedCache(endpoint, gatewayV2Preference);
         this.cosmosClient = builder.buildClient();
+        logTransportConfiguration();
         // Stamp the configured extendedRetention onto every minted cursor so a
         // persisted token can outlive the 24h portable baseline up to the
         // server-side AVAD retention window. Defaults to the baseline when
@@ -189,7 +189,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         synchronized (CosmosProviderClient.class) {
             String sdkSetting = effectiveSdkThinClientSetting();
             if (configuredValue == null) {
-                if (sdkSetting != null) {
+                if (isBooleanSdkThinClientSetting(sdkSetting)) {
                     LOG.warn("gatewayV2Enable is unset, but the JVM-wide Azure Cosmos DB "
                                     + "thin-client setting is already '{}'; SDK AUTO probe/fallback "
                                     + "is not active for this client",
@@ -209,28 +209,28 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         }
     }
 
-    private static void warnIfGatewayV2MayBypassIntegratedCache(
-            String endpoint, String configuredValue) {
-        if (!isDedicatedGatewayEndpoint(endpoint)) {
-            return;
-        }
+    private static void logTransportConfiguration() {
         String sdkSetting = effectiveSdkThinClientSetting();
-        String effectiveValue = sdkSetting != null ? sdkSetting : configuredValue;
-        if (!Boolean.FALSE.toString().equalsIgnoreCase(effectiveValue)) {
-            LOG.warn("Dedicated Gateway endpoint detected while Gateway V2 is enabled or eligible. "
-                            + "Using Gateway V2 with Azure Cosmos DB Integrated Cache is not "
-                            + "recommended; set gatewayV2Enable=false before creating any Cosmos "
-                            + "client in this JVM to keep requests on the Integrated Cache path");
+        String preference;
+        if (sdkSetting == null) {
+            preference = "AUTO (probe/fallback)";
+        } else if (Boolean.TRUE.toString().equalsIgnoreCase(sdkSetting)) {
+            preference = "ENABLED (probe bypassed)";
+        } else if (Boolean.FALSE.toString().equalsIgnoreCase(sdkSetting)) {
+            preference = "DISABLED (Gateway V1)";
+        } else {
+            preference = "AUTO (invalid native value is treated as unset by Azure SDK)";
         }
+        LOG.info("Cosmos transport configured: Gateway mode, HTTP/2 enabled, "
+                        + "Gateway V2 preference at client creation: {}. Actual routing is selected "
+                        + "per request by Azure Cosmos DB; accounts with Integrated Cache use "
+                        + "Gateway V1.",
+                preference);
     }
 
-    private static boolean isDedicatedGatewayEndpoint(String endpoint) {
-        try {
-            String host = java.net.URI.create(endpoint).getHost();
-            return host != null && host.toLowerCase(Locale.ROOT).contains(".sqlx.cosmos.");
-        } catch (IllegalArgumentException ignored) {
-            return false;
-        }
+    private static boolean isBooleanSdkThinClientSetting(String value) {
+        return Boolean.TRUE.toString().equalsIgnoreCase(value)
+                || Boolean.FALSE.toString().equalsIgnoreCase(value);
     }
 
     private static String effectiveSdkThinClientSetting() {
