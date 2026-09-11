@@ -569,16 +569,16 @@ client.update(addr, MulticloudDbKey.of("customer-456", "order-123"), fields);
 
 | Provider | Native path and request count | Native envelope and cost |
 |----------|-------------------------------|--------------------------|
-| **Cosmos DB** | Up to 10 fields use one `patchItem`; wider updates use one same-item transactional-batch request containing patch chunks of at most 10 fields. | At most 100 batch operations and 2 MiB (2,097,152 serialized bytes). The resulting document is capped at 2 MiB. RU cost grows with the patch operations/chunks. |
-| **DynamoDB** | One conditional, aliased `UpdateItem SET ...` request with `attribute_exists(partitionKey)`. | Generated update expressions above 4 KiB (4,096 UTF-8 bytes) fail before I/O. DynamoDB can reject the one attempted update if the resulting item would exceed 400 KiB (409,600 bytes). Accepted calls consume one item update's write capacity. |
-| **Spanner** | No provider call in this release. | The unchanged provider does not advertise `PARTIAL_UPDATE`; the shared client rejects valid calls before Spanner I/O. |
+| **Cosmos DB** | One `patchItem` for every accepted update. | The portable API accepts at most 10 fields per call; the resulting document is capped at 2 MiB. |
+| **DynamoDB** | One conditional, aliased `UpdateItem SET ...` request with `attribute_exists(partitionKey)`. | The portable API accepts at most 10 fields per call. DynamoDB can reject the one attempted update if the resulting item would exceed 400 KiB (409,600 bytes). Accepted calls consume one item update's write capacity. |
+| **Spanner** | No provider call in this release. | The provider explicitly declares `PARTIAL_UPDATE` unsupported; the shared client rejects valid calls before Spanner I/O. |
 
-Cosmos and Dynamo declare all 19 known capability names, including
-`Capability.PARTIAL_UPDATE`. Both preserve case-distinct field names and declare
-`PARTIAL_UPDATE_EXTENDED_PAYLOAD` unsupported because their native envelopes
-can bind before the SDK's common 399 KiB (408,576 bytes) limit.
+All three providers declare all 18 known capability names. Cosmos and Dynamo support
+`Capability.PARTIAL_UPDATE`. Both preserve case-distinct field names. Their
+native request and resulting-item limits are surfaced through non-retryable
+`UNSUPPORTED_CAPABILITY` errors with stable reasons and limit values.
 
-Spanner retains its existing 17 capability declarations. Because it does not
+Spanner declares `PARTIAL_UPDATE` unsupported. Because it does not
 advertise `PARTIAL_UPDATE`, valid calls fail locally with non-retryable
 `UNSUPPORTED_CAPABILITY` and `capability=partial_update`; shared invalid-request
 validation still runs first.
@@ -591,7 +591,7 @@ the SDK does not add a read/merge preflight. Other DynamoDB
 For Cosmos DB, HTTP 413 from an attempted update maps to
 `reason=cosmos_result_item_size_limit` with
 `maximumResultBytes=2097152` (2 MiB). The SDK does not read the existing document
-before the patch or batch; the failed native write leaves it unchanged.
+before the patch; the failed native write leaves it unchanged.
 
 Cosmos CRUD/update HTTP 408 and 410 failures map to retryable
 `TRANSIENT_FAILURE`, with 410 substatus retained. For a failed transactional

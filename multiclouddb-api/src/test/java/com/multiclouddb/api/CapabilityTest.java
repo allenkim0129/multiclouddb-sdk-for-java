@@ -91,11 +91,9 @@ class CapabilityTest {
         assertTrue(registered.contains(Capability.CROSS_PARTITION_QUERY_UNSUPPORTED));
         assertTrue(registered.contains(Capability.PARTIAL_UPDATE_CAP));
         assertTrue(registered.contains(Capability.PARTIAL_UPDATE_UNSUPPORTED));
-        assertTrue(registered.contains(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD_CAP));
-        assertTrue(registered.contains(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD_UNSUPPORTED));
-        // 16 pre-built names × supported/unsupported.
-        assertTrue(registered.size() >= 32,
-                "expected at least 32 entries (16 × 2), got " + registered.size());
+        // 15 pre-built names × supported/unsupported.
+        assertTrue(registered.size() >= 30,
+                "expected at least 30 entries (15 × 2), got " + registered.size());
     }
 
     @Test

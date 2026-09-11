@@ -1,7 +1,7 @@
 # Specification Quality Checklist: Portable Partial Update
 
 **Reviewed**: 2026-09-02
-**Scope**: Cosmos DB and DynamoDB implementation; unchanged Spanner excluded by the core capability gate
+**Scope**: Cosmos DB and DynamoDB implementation; Spanner explicitly unsupported at the core capability gate
 
 ## Scope and consistency
 
@@ -24,24 +24,24 @@
 - [x] Reserved names, underscore prefixes, case-insensitive collisions, and
   no-trimming behavior are explicit.
 - [x] Update TTL rejection is explicit and create/upsert migration is clear.
-- [x] The common limit is exactly 408,576 bytes with pass/fail boundaries.
+- [x] The common limits are 10 fields and exactly 408,576 serialized bytes, with pass/fail boundaries.
 - [x] The core `partial_update` gate and future unsupported-provider error are
   explicit.
-- [x] `partial_update_extended_payload` covers native request and
-  resulting-item envelopes for supported provider mappings.
-- [x] Cosmos and Dynamo declare all 19 known capabilities; unchanged Spanner retains 17 and advertises no feature-002 capability.
+- [x] Native request and resulting-item limit failures use stable reasons and
+  limit details without defining another capability.
+- [x] All providers declare all 18 known capabilities; Spanner marks `PARTIAL_UPDATE` unsupported.
 
 ## Cosmos DB
 
 - [x] Literal RFC 6901 `set` paths are specified.
-- [x] Direct patch through 10 fields is specified.
-- [x] One same-item transactional batch for wider requests is specified.
+- [x] Every accepted update uses one direct patch.
+- [x] Maps above 10 fields fail shared validation before Cosmos I/O.
 - [x] No read, replace, independent patch loop, or adapter retry is allowed.
-- [x] The 100-operation and 2,097,152-byte local limits and details are complete.
+- [x] The planner defensively enforces the 10-field limit for direct SPI calls.
 - [x] Update HTTP 413 is a state-dependent 2,097,152-byte result-item
-  capability error after one attempted patch/batch; non-update 413 behavior is
+  capability error after one attempted patch; non-update 413 behavior is
   unchanged.
-- [x] Batch root selection skips 424 and has aggregate/no-root fallbacks.
+- [x] Field names are sorted so map iteration order cannot change the native plan.
 - [x] Exact 408/410 transient mapping is specified.
 - [x] Diagnostics exclude payloads and secrets.
 - [x] Disabling write response bodies is conditioned on preserving metadata used

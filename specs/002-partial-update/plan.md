@@ -6,7 +6,7 @@
 ## Summary
 
 Change Cosmos DB and DynamoDB `update()` from full replacement to native shallow
-partial update. Keep the Spanner provider unchanged and exclude it through the
+partial update. Keep the Spanner data path unchanged, declare the capability unsupported, and exclude it through the
 shared `partial_update` capability gate.
 
 The work is intentionally split:
@@ -71,8 +71,8 @@ unresolved-error bytecode.
 
 ### Spanner
 
-No path under `multiclouddb-provider-spanner/` is changed. The existing 17-name
-capability set omits feature 002, so the shared client rejects valid updates
+Spanner data paths remain unchanged. Its 18-name
+capability set explicitly marks feature 002 unsupported, so the shared client rejects valid updates
 before provider delegation.
 ## Implementation stages
 
@@ -82,18 +82,18 @@ before provider delegation.
 2. Validate field map/names and reject update TTL.
 3. Enforce the exact 408,576-byte common limit.
 4. Gate `Capability.PARTIAL_UPDATE` before delegation.
-5. Define `PARTIAL_UPDATE_EXTENDED_PAYLOAD` as a lower native request/result
-   envelope declaration for supported provider mappings.
+5. Surface lower native request/result envelopes through stable reason and limit
+   details without defining another capability.
 6. Require case-distinct field identity as part of `PARTIAL_UPDATE` and document
-   unchanged Spanner as unsupported at the core capability gate.
+   Spanner as explicitly unsupported at the core capability gate.
 
 ### Stage 2 — Cosmos DB
 
 1. Build literal RFC 6901 `set` operations.
-2. Use one direct patch for at most 10 fields.
-3. For wider maps, build one same-item transactional batch.
-4. Preflight the 100-operation and 2-MiB batch limits.
-5. Select the first non-424 root failure, then aggregate fallback.
+2. Use one direct patch for every accepted update.
+3. Reject maps above 10 fields in shared preflight before provider delegation.
+4. Sort literal field names before constructing deterministic patch operations.
+5. Normalize direct patch failures through the portable error mapper.
 6. Normalize 408 and 410 as retryable transient failures.
 7. Normalize update HTTP 413 as the state-dependent 2-MiB result-item
    capability limit without adding a read.
@@ -121,16 +121,16 @@ behavior on `PARTIAL_UPDATE`: Cosmos and Dynamo run preservation, missing-item,
 replay, concurrency, wide-update, and case-identity assertions; Spanner runs a
 dedicated `UNSUPPORTED_CAPABILITY` assertion with zero provider mutation.
 
-The exact 408,576-byte positive runtime assertion remains gated by
-`PARTIAL_UPDATE_EXTENDED_PAYLOAD`. Neither participating provider advertises
-that extension; API tests retain the exact positive boundary. Concrete Cosmos
-and Dynamo emulator tests retain native result-item regressions.
+API tests retain the exact 408,576-byte positive boundary. A shared
+provider-runtime success assertion is omitted because native envelopes may bind
+first. Concrete Cosmos and Dynamo emulator tests retain native result-item
+regressions.
 ### Stage 5 — Docs and E2E
 
 Document:
 
 - shallow set/replace semantics for Cosmos DB and DynamoDB;
-- unchanged Spanner and its core capability rejection;
+- Spanner and its explicit unsupported core capability;
 - Cosmos/Dynamo native request and resulting-item envelopes;
 - replacement migration to `upsert()` and its create-on-missing warning; and
 - create/upsert-only TTL.
@@ -170,19 +170,19 @@ three emulators.
 Run focused API tests plus complete Cosmos, DynamoDB, and Spanner emulator
 profiles. Cosmos and Dynamo execute supported partial-update behavior. Spanner
 executes shared validation and the core capability rejection only. Confirm the
-PR has zero diff under `multiclouddb-provider-spanner/`, then validate Javadocs,
+Spanner data path is unchanged apart from its capability declaration and changelog, then validate Javadocs,
 changed Markdown links, capability counts, requirement traceability, and the
 protected-path audit.
 ## Parity matrix
 
 | Behavior | Cosmos DB | DynamoDB | Spanner |
 |---|---|---|---|
-| Core partial update | supported: direct/batch patch | supported: `UpdateItem SET` | not advertised; shared gate rejects |
+| Core partial update | supported: one direct patch | supported: `UpdateItem SET` | explicitly unsupported; shared gate rejects |
 | Omitted fields preserved | yes | yes | not reached |
 | Missing item | 404 | condition failure | not reached |
 | Null/map/list | native JSON | Dynamo native values | not reached |
-| Wide request | one atomic batch | one expression | not reached |
-| Lower native envelope | local request or attempted result-size rejection | local expression or attempted result-size rejection | not declared |
+| More than 10 fields | shared `INVALID_REQUEST` | shared `INVALID_REQUEST` | shared `INVALID_REQUEST` |
+| Lower native envelope | attempted result-size rejection | local expression or attempted result-size rejection | not reached |
 | Case-distinct fields | preserved | preserved | not part of release |
 | New provider data path | yes | yes | none |
 
@@ -190,7 +190,7 @@ protected-path audit.
 
 | Provider | Cost driver |
 |---|---|
-| Cosmos DB | one attempted point patch, or `ceil(fieldCount/10)` patch operations inside one atomic batch |
+| Cosmos DB | one attempted point patch per accepted call |
 | DynamoDB | one attempted `UpdateItem`; accepted WCU is based on resulting item size |
 | Spanner | zero provider I/O; rejected by the shared capability gate |
 No implementation may add an adapter read/replace cycle for Cosmos or Dynamo.

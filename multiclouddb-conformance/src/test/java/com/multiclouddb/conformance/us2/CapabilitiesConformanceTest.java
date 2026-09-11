@@ -7,8 +7,6 @@ import com.multiclouddb.api.*;
 import com.multiclouddb.conformance.ConformanceHarness;
 import org.junit.jupiter.api.Test;
 
-import java.util.Map;
-
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -17,13 +15,6 @@ import static org.junit.jupiter.api.Assertions.*;
  * Subclasses specify the provider; tests verify the expected capability set.
  */
 public abstract class CapabilitiesConformanceTest {
-
-    private static final Map<ProviderId, Boolean> EXTENDED_PARTIAL_UPDATE_SUPPORT = Map.of(
-            ProviderId.COSMOS, false,
-            ProviderId.DYNAMO, false);
-    private static final Map<ProviderId, String> EXTENDED_PARTIAL_UPDATE_NOTE = Map.of(
-            ProviderId.COSMOS, "100 patch operations",
-            ProviderId.DYNAMO, "update expression");
 
     protected abstract ProviderId provider();
 
@@ -59,19 +50,11 @@ public abstract class CapabilitiesConformanceTest {
                     Capability.RESULT_LIMIT,
                     Capability.ROW_LEVEL_TTL,
                     Capability.WRITE_TIMESTAMP,
-                    Capability.PARTIAL_UPDATE,
-                    Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD
+                    Capability.PARTIAL_UPDATE
             };
             for (String name : knownNames) {
-                boolean partialUpdateCapability = name.equals(Capability.PARTIAL_UPDATE)
-                        || name.equals(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD);
-                if (!caps.isSupported(Capability.PARTIAL_UPDATE) && partialUpdateCapability) {
-                    assertNull(caps.get(name),
-                            "A non-participating provider must not advertise feature 002 capability: " + name);
-                } else {
-                    assertNotNull(caps.get(name),
-                            "Provider " + provider().id() + " must declare capability: " + name);
-                }
+                assertNotNull(caps.get(name),
+                        "Provider " + provider().id() + " must declare capability: " + name);
             }
         }
     }
@@ -80,34 +63,24 @@ public abstract class CapabilitiesConformanceTest {
     void capabilityCountMatchesReleaseScope() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            int expected = caps.isSupported(Capability.PARTIAL_UPDATE) ? 19 : 17;
+            int expected = 18;
             assertEquals(expected, caps.all().size(),
                     "Provider " + provider().id() + " should declare exactly " + expected + " capabilities");
         }
     }
 
     @Test
-    void partialUpdateCapabilitiesMatchProviderEnvelopes() throws Exception {
+    void partialUpdateCapabilityMatchesReleaseScope() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            if (!caps.isSupported(Capability.PARTIAL_UPDATE)) {
-                assertFalse(caps.isSupported(Capability.PARTIAL_UPDATE));
-                assertNull(caps.get(Capability.PARTIAL_UPDATE));
-                assertNull(caps.get(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD));
-                return;
-            }
-
-            assertTrue(caps.isSupported(Capability.PARTIAL_UPDATE),
-                    "Feature 002 providers must support PARTIAL_UPDATE");
-
-            Capability extended = caps.get(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD);
-            assertNotNull(extended);
-            assertEquals(EXTENDED_PARTIAL_UPDATE_SUPPORT.get(provider()).booleanValue(),
-                    extended.supported(),
-                    "Unexpected extended partial-update declaration for " + provider().id());
-            assertNotNull(extended.notes());
-            assertTrue(extended.notes().contains(EXTENDED_PARTIAL_UPDATE_NOTE.get(provider())),
-                    "Extended partial-update notes must describe the provider envelope");
+            Capability partialUpdate = caps.get(Capability.PARTIAL_UPDATE);
+            assertNotNull(partialUpdate);
+            boolean expectedSupported = provider() != ProviderId.SPANNER;
+            assertEquals(expectedSupported, partialUpdate.supported(),
+                    "Unexpected PARTIAL_UPDATE declaration for " + provider().id());
+            assertNotNull(partialUpdate.notes());
+            assertFalse(partialUpdate.notes().isBlank(),
+                    "PARTIAL_UPDATE notes must describe support or the unsupported boundary");
         }
     }
 

@@ -1,7 +1,7 @@
 # Phase 0 Research: Portable Partial Update
 
 **Branch**: `002-partial-update`
-**Reconciled**: 2026-09-04 for the Cosmos/Dynamo release scope and unchanged Spanner boundary
+**Reconciled**: 2026-09-04 for the Cosmos/Dynamo release scope and explicit Spanner unsupported boundary
 
 ## Decision 1 — Keep the existing Java API
 
@@ -13,9 +13,9 @@ would expand scope unnecessarily.
 
 ## Decision 2 — Exclude Spanner from this feature release
 
-Restore every file under `multiclouddb-provider-spanner/` to the PR base and do
-not advertise any feature-002 partial-update capability there. The default
-client already gates `partial_update`, so a valid Spanner update returns
+Keep the Spanner adapter data path unchanged and explicitly declare
+`partial_update` unsupported in its capability set. The default client gates the
+operation, so a valid Spanner update returns
 non-retryable `UNSUPPORTED_CAPABILITY` before provider delegation.
 
 **Why**: Spanner is not being released with this feature. Explicitly gating the
@@ -65,42 +65,31 @@ punctuation through escaping and aliases.
 **Why**: provider-specific TTL mutation would break portable behavior and make
 replay time-relative.
 
-## Decision 6 — Keep two capability declarations
+## Decision 6 — Keep one capability declaration
 
 - `partial_update`: core shallow set/replace behavior, internally gated.
-- `partial_update_extended_payload`: no lower provider request or
-  resulting-item envelope for field mappings already supported by that
-  provider.
 
-Cosmos and Dynamo declare the payload extension unsupported and preserve
-case-distinct identity as part of the base operation. Spanner declares neither
-capability because it is outside the feature release. Cosmos and Dynamo
-therefore expose 19 known names while unchanged Spanner retains 17.
+Native request and resulting-item limits use stable, structured error reasons
+instead of a second capability that no participating provider supports or
+consults. Cosmos and Dynamo preserve case-distinct identity as part of the base
+operation. Spanner explicitly declares `partial_update` unsupported because it is outside the
+feature release. All providers expose 18 known names;
+Spanner marks the feature capability unsupported.
 
-## Decision 7 — Cosmos uses direct patch plus one atomic wide batch
+## Decision 7 — Keep every accepted update to one native write
 
-- up to 10 fields: one `patchItem`;
-- wider maps: one same-item, same-partition `CosmosBatch` of patch chunks;
-- no adapter read, replace, or retry loop.
-
-Field names are encoded as one RFC 6901 segment.
-
-For wide requests, mirror the public SDK JSON shape and reject more than 100
-batch operations or more than 2,097,152 UTF-8 bytes before I/O.
+The portable contract accepts at most 10 fields per call. Shared preflight
+rejects wider maps before provider delegation. Cosmos uses one `patchItem`;
+DynamoDB uses one `UpdateItem`. The Cosmos planner sorts literal field names
+before constructing patch operations so caller map iteration order cannot change
+the native plan.
 
 **Rejected**:
 
-- read/merge/replace, because it adds RU cost and races;
-- independent patch requests, because they are not atomic; and
-- private SDK serialization APIs, because they are not stable public contract.
-
-## Decision 8 — Cosmos batch errors skip 424
-
-Select the first usable failed operation status other than 424, then a usable
-aggregate status, then return a sanitized no-root `PROVIDER_ERROR`.
-
-HTTP 424 represents rollback dependency, not root cause. HTTP 408 and 410 are
-transient/retryable for CRUD/update; 410 substatus is retained.
+- Cosmos transactional batches, because patch-chunk count creates unbounded RU
+ asymmetry and intermediate item states can depend on caller map order;
+- read/merge/replace, because it adds RU cost and races; and
+- independent patch requests, because they are not atomic.
 
 ## Decision 9 — Cosmos write bodies can be disabled
 
@@ -140,15 +129,14 @@ state and portability with one attempted write.
 
 ## Decision 12 — Normalize Cosmos DB's state-dependent result-item limit
 
-An update can have a small fields map and valid native request envelope but
+An update can have a small fields map and valid shared preflight but
 still push an existing Cosmos document above 2,097,152 bytes. Do not read and
-merge before the write. Attempt the one direct patch or atomic batch, then map
+merge before the write. Attempt the one direct patch, then map
 HTTP 413 from `update()` to non-retryable `UNSUPPORTED_CAPABILITY` with
 `reason=cosmos_result_item_size_limit` and
 `maximumResultBytes=2097152`.
 
-Direct exceptions retain their cause and sanitized native metadata; failed
-batches retain sanitized aggregate/result diagnostics. HTTP 413 from other
+Direct exceptions retain their cause and sanitized native metadata. HTTP 413 from other
 operations keeps the general provider-error mapping.
 
 **Why**: a read preflight adds RU cost and a race. Cosmos rejects the
@@ -160,13 +148,13 @@ state and portability with one attempted native write.
 Shared invalid-map/name, update-TTL, and 408,577-byte assertions run on all
 providers because validation precedes the core gate. Supported behavior runs
 only where `partial_update` is advertised. A dedicated assertion verifies that
-unchanged Spanner fails locally with `UNSUPPORTED_CAPABILITY` and
+Spanner explicitly declares the capability unsupported and fails locally with `UNSUPPORTED_CAPABILITY` and
 `capability=partial_update`.
 
 Case-distinct identity runs directly on Cosmos and Dynamo as part of the base
-contract. The exact 408,576-byte positive runtime assertion remains gated by
-`partial_update_extended_payload`; no participating provider currently
-advertises it, while API tests lock the shared boundary.
+contract. API tests lock the exact 408,576-byte positive boundary; a shared
+provider-runtime success assertion is omitted because native envelopes may bind
+first.
 
 Concrete Cosmos and Dynamo regressions continue to exercise their native
 result-item limits.

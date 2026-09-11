@@ -39,14 +39,11 @@ public final class CosmosCapabilities {
                     + "(set container default TTL to -1 or a positive value in the portal)"),
             Capability.of(Capability.WRITE_TIMESTAMP, true,
                     "ETag exposed as version field in DocumentMetadata on read"),
-            // Partial update (feature 002-partial-update): the core operation is universally
-            // supported and gated internally by DefaultMulticloudDbClient. The extended-payload
-            // guarantee is unsupported because a 100 patch-operation or 2 MiB
-            // transactional-batch limit, or the 2 MiB resulting-document limit,
-            // may bind before the common 399 KiB field limit.
+            // Partial update (feature 002-partial-update): the core operation is supported
+            // and gated internally by DefaultMulticloudDbClient. Native envelope failures
+            // surface through structured provider-limit errors.
             Capability.PARTIAL_UPDATE_CAP.withNotes(
-                    "Native patch: direct patchItem for <=10 fields, one same-item transactional batch for wider requests"),
-            Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD_UNSUPPORTED.withNotes(
-                    "Native envelope caps at 100 patch operations, 2 MiB serialized batches, "
-                    + "or a 2 MiB resulting document")));
+                    "Native patch: one direct patchItem for each accepted update; "
+                    + "portable limit: 10 fields; native limit: "
+                    + "resulting-document size")));
 }

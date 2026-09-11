@@ -28,6 +28,7 @@ import java.util.Set;
  * Rules enforced, in order, for the {@code fields} map:
  * <ol>
  *   <li>the map is non-null and contains at least one entry;</li>
+ *   <li>the map contains at most {@link #MAX_FIELDS} entries;</li>
  *   <li>every name is non-null, has non-zero length, and contains at least one
  *       non-whitespace character;</li>
  *   <li>no name equals, ignoring case, one of the reserved names
@@ -45,6 +46,9 @@ import java.util.Set;
  * comparisons use {@link Locale#ROOT} so validation is stable across locales.
  */
 public final class PartialUpdateValidator {
+
+    /** Portable upper bound that keeps every update to one native write operation. */
+    public static final int MAX_FIELDS = 10;
 
     /**
      * Reserved logical field names that partial update rejects (case-insensitive).
@@ -70,6 +74,10 @@ public final class PartialUpdateValidator {
     public static void validate(Map<String, Object> fields, OperationOptions options, String operation) {
         if (fields == null || fields.isEmpty()) {
             throw invalid("Partial update requires a non-empty fields map; no fields were supplied.", operation);
+        }
+        if (fields.size() > MAX_FIELDS) {
+            throw invalid("Partial update accepts at most " + MAX_FIELDS + " fields per call; received "
+                    + fields.size() + ".", operation);
         }
 
         Set<String> seenLower = new LinkedHashSet<>();

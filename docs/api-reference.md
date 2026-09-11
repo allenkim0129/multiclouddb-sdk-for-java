@@ -43,17 +43,17 @@ void update(
 - A missing item returns `NOT_FOUND` and is not created.
 - Non-null `options.ttlSeconds()` returns pre-I/O, non-retryable
   `INVALID_REQUEST`.
-- The shared serialized field-map limit is 408,576 bytes.
+- At most 10 fields may be supplied per call; the shared serialized field-map limit is 408,576 bytes.
 
 `Capability.PARTIAL_UPDATE` is supported by Cosmos DB and DynamoDB. The
-unchanged Spanner provider does not advertise it, so the default client returns
+Spanner provider declares it unsupported, so the default client returns
 non-retryable `UNSUPPORTED_CAPABILITY` with `capability=partial_update` before
 provider delegation.
 
-Cosmos and Dynamo report `PARTIAL_UPDATE_EXTENDED_PAYLOAD=false` because a
-native request or resulting-item envelope can bind first. Both preserve literal
-field case as part of the base `PARTIAL_UPDATE` contract. Spanner does not
-declare the extension because it does not participate in this feature release.
+Cosmos and Dynamo preserve literal field case as part of the base
+`PARTIAL_UPDATE` contract. Native request and resulting-item limits remain
+explicit through non-retryable `UNSUPPORTED_CAPABILITY` errors with stable
+`providerDetails.reason` and limit values.
 The Cosmos result-size case is non-retryable `UNSUPPORTED_CAPABILITY` with
 `reason=cosmos_result_item_size_limit` and
 `maximumResultBytes=2097152` (2 MiB).

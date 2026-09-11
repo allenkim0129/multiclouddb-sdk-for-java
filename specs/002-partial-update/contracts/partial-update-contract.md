@@ -24,15 +24,16 @@ The three-argument overload supplies `OperationOptions.defaults()`.
 After the closed-client guard and before provider planning:
 
 1. `fields` is non-null and non-empty.
-2. Names are non-null, non-empty, and non-blank.
-3. Names do not match reserved system names ignoring case.
-4. Names do not begin with `_`.
-5. Names are unique ignoring case.
-6. `options.ttlSeconds()` is null.
-7. serialized `fields` is at most 408,576 bytes.
-8. `partial_update` is supported.
+2. `fields` contains at most 10 entries.
+3. Names are non-null, non-empty, and non-blank.
+4. Names do not match reserved system names ignoring case.
+5. Names do not begin with `_`.
+6. Names are unique ignoring case.
+7. `options.ttlSeconds()` is null.
+8. serialized `fields` is at most 408,576 bytes.
+9. `partial_update` is supported.
 
-Preconditions 1–7 fail with non-retryable `INVALID_REQUEST`; precondition 8
+Preconditions 1–8 fail with non-retryable `INVALID_REQUEST`; precondition 9
 fails with non-retryable `UNSUPPORTED_CAPABILITY` and
 `providerDetails.capability=partial_update`. Every failure performs zero
 provider update operations.
@@ -56,28 +57,27 @@ A missing document returns `NOT_FOUND` and is not created.
 ## Provider release boundary
 
 Cosmos DB and DynamoDB advertise `partial_update` and enter their native update
-paths. Spanner is unchanged and does not advertise the capability. After shared
-preconditions 1–7 pass, the default client rejects a Spanner call with
+paths. Spanner explicitly declares the capability unsupported. After shared
+preconditions 1–8 pass, the default client rejects a Spanner call with
 non-retryable `UNSUPPORTED_CAPABILITY`,
 `providerDetails.capability=partial_update`, and zero provider update
 operations.
 ## Capability contract
 
-| Provider | `partial_update` | `partial_update_extended_payload` |
-|---|---|---|
-| Cosmos DB | supported | unsupported |
-| DynamoDB | supported | unsupported |
-| Spanner | not advertised | not advertised |
+| Provider | `partial_update` |
+|---|---|
+| Cosmos DB | supported |
+| DynamoDB | supported |
+| Spanner | explicitly unsupported |
 
-The extension means that participating provider mappings do not hit a lower
-native request or resulting-item envelope before the common size limit. Cosmos
-DB and DynamoDB declare all 19 known names; unchanged Spanner retains 17.
+Native request and resulting-item limits do not define another capability;
+they surface as non-retryable, reason-coded provider-limit errors. Cosmos DB, DynamoDB, and Spanner declare all 18 known names.
 
 ## Provider execution
 
 | Provider | Accepted plan | Missing document |
 |---|---|---|
-| Cosmos DB | one direct patch through 10 fields; otherwise one same-item transactional batch | direct/batch root 404 → `NOT_FOUND` |
+| Cosmos DB | one direct patch through 10 fields | direct 404 → `NOT_FOUND` |
 | DynamoDB | one aliased conditional `UpdateItem` | failed existence guard → `NOT_FOUND` |
 | Spanner | no provider plan; shared capability rejection | not reached |
 
@@ -85,41 +85,21 @@ Cosmos and Dynamo add no adapter read, replacement write, or retry loop.
 
 ## Cosmos envelope
 
-A prospective wide plan above 100 batch operations or 2,097,152 UTF-8 bytes
-fails locally with:
-
-- `reason=cosmos_transactional_batch_limit`
-- `capability=partial_update_extended_payload`
-- `actualOperations`
-- `maximumOperations=100`
-- `actualBytes`
-- `maximumBytes=2097152`
-
-Field names use one RFC 6901 segment and `set`.
+Maps above 10 fields fail shared preflight with `INVALID_REQUEST` before any
+provider call. The Cosmos planner repeats this check for direct SPI use. Field
+names use one RFC 6901 segment and are sorted before native plan construction.
 
 An otherwise-valid update can push an existing Cosmos document above the
 2,097,152-byte resulting-item limit. No read/merge preflight is performed. If
-the one attempted direct patch or batch reports HTTP 413 during `update()`, it
-maps to non-retryable `UNSUPPORTED_CAPABILITY` with:
+the one attempted direct patch reports HTTP 413 during `update()`, it maps to
+non-retryable `UNSUPPORTED_CAPABILITY` with:
 
 - `reason=cosmos_result_item_size_limit`
-- `capability=partial_update_extended_payload`
 - `maximumResultBytes=2097152`
 
 The failed write leaves the document unchanged. Direct exceptions preserve
-their cause and sanitized native metadata; batch failures preserve sanitized
-aggregate/result diagnostics. HTTP 413 from non-update operations retains the
-normal provider-error mapping.
-
-## Cosmos failed-batch selection
-
-1. first failed usable 4xx/5xx operation status other than 424;
-2. otherwise usable non-424 aggregate 4xx/5xx status;
-3. otherwise sanitized `PROVIDER_ERROR` stating no root status was supplied.
-
-Selected statuses use normal Cosmos mapping. HTTP 408 and 410 are retryable
-transient failures; 410 substatus is retained. During `update()`, selected HTTP
-413 uses the result-item capability mapping above.
+their cause and sanitized native metadata. HTTP 413 from non-update operations
+retains the normal provider-error mapping.
 
 ## Dynamo envelope
 
@@ -134,7 +114,6 @@ with `attribute_exists(#pk)`. Values preserve null/scalar/map/list shapes.
 An update expression above 4,096 UTF-8 bytes fails locally with:
 
 - `reason=dynamodb_update_expression_limit`
-- `capability=partial_update_extended_payload`
 - `actualExpressionBytes`
 - `maximumExpressionBytes=4096`
 
@@ -146,7 +125,6 @@ single attempted `UpdateItem` returns the size-specific `ValidationException`,
 only that variant maps to non-retryable `UNSUPPORTED_CAPABILITY` with:
 
 - `reason=dynamodb_result_item_size_limit`
-- `capability=partial_update_extended_payload`
 - `maximumResultBytes=409600`
 
 The original cause and sanitized native error code, HTTP status, request ID,

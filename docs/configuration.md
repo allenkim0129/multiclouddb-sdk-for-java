@@ -16,26 +16,27 @@ Select a provider and supply its connection and auth properties.
 
 Partial update has no provider-specific configuration switch. Cosmos DB and
 DynamoDB declare `Capability.PARTIAL_UPDATE`, and `update()` uses shallow
-top-level set/replace semantics for those providers. The unchanged Spanner
-provider does not advertise this capability, so the shared client rejects a
+top-level set/replace semantics for those providers. The Spanner
+provider explicitly declares this capability unsupported, so the shared client rejects a
 valid update before provider I/O.
 
 `OperationOptions.ttlSeconds()` is valid only for `create()` and `upsert()`.
 Supplying it to `update()` returns non-retryable `INVALID_REQUEST` before
 provider I/O.
 
-The native partial-update ceilings are not configurable:
+The portable 10-field partial-update limit and native result-item ceilings are not configurable:
 
 | Provider | Partial-update envelope |
 |----------|-------------------------|
-| Cosmos DB | One direct patch for up to 10 fields; one same-item transactional batch for wider updates, capped at 100 operations and 2 MiB (2,097,152 serialized bytes); resulting document capped at 2 MiB by Cosmos DB after the attempted update |
-| DynamoDB | One `UpdateItem`; generated expression capped at 4 KiB (4,096 UTF-8 bytes) before I/O, and resulting item capped at 400 KiB (409,600 bytes) by DynamoDB after the attempted update |
-| Spanner | Not part of this release; the unchanged provider does not advertise `PARTIAL_UPDATE` |
+| Cosmos DB | One direct patch for up to 10 fields; resulting document capped at 2 MiB by Cosmos DB after the attempted update |
+| DynamoDB | One `UpdateItem` for up to 10 fields; resulting item capped at 400 KiB (409,600 bytes) by DynamoDB after the attempted update |
+| Spanner | Explicitly declares `PARTIAL_UPDATE` unsupported |
 
-Cosmos and Dynamo report `Capability.PARTIAL_UPDATE=true` and
-`PARTIAL_UPDATE_EXTENDED_PAYLOAD=false`. Case-distinct field names are part of
-the base partial-update contract. Spanner retains its existing capability set;
-a valid update is rejected by the shared core gate before any Spanner I/O.
+Cosmos and Dynamo report `Capability.PARTIAL_UPDATE=true`. Case-distinct
+field names are part of that base contract, while provider-native limits are
+reported through structured error reasons and limit values. Spanner explicitly declares the operation unsupported in its
+existing capability set; a valid update is rejected by the shared core gate
+before any Spanner I/O.
 ---
 
 ## Azure Cosmos DB

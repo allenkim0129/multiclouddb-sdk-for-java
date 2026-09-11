@@ -349,7 +349,7 @@
                         <configuration>
                             <!--
                                 Feature 002 leaves the Spanner provider unchanged and
-                                does not advertise partial_update. Its legacy emulator
+                                explicitly declares partial_update unsupported. Its legacy emulator
                                 regression invokes update() through the shared client,
                                 which now rejects before provider delegation. Keep the
                                 source test unchanged for a future Spanner release while

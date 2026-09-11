@@ -36,7 +36,7 @@ values.
 ### Spanner release boundary
 
 Spanner is not part of this feature release. Its provider module remains
-unchanged and does not advertise `PARTIAL_UPDATE`. After shared validation, a
+unchanged and explicitly declares `PARTIAL_UPDATE` unsupported. After shared validation, a
 valid call returns non-retryable `UNSUPPORTED_CAPABILITY` with
 `capability=partial_update` before any Spanner provider I/O.
 ## Literal names
@@ -80,17 +80,9 @@ client.update(orders, key, fields);
 
 The default client internally gates `Capability.PARTIAL_UPDATE`.
 
-`Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD` describes whether mappings already
-supported by a provider can reach the shared size limit without a lower native
-request or resulting-item envelope:
-
-```java
-boolean noLowerEnvelope = client.capabilities()
-    .isSupported(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD);
-```
-
-Cosmos and Dynamo report false. Spanner does not declare this extension because
-it does not advertise the core operation.
+Native request and resulting-item limits do not define another capability.
+Callers handle them through non-retryable `UNSUPPORTED_CAPABILITY` errors with
+stable `providerDetails.reason` and limit values.
 
 Case-distinct field identity is part of the base `PARTIAL_UPDATE` contract.
 Across calls, names such as `status` and `STATUS` remain separate fields; a
@@ -105,7 +97,7 @@ try {
     if (ex.error().category()
             == MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY) {
         String reason = ex.error().providerDetails().get("reason");
-        // cosmos_transactional_batch_limit
+        // cosmos_result_item_size_limit
         // cosmos_result_item_size_limit
         // dynamodb_update_expression_limit
         // dynamodb_result_item_size_limit
@@ -113,8 +105,8 @@ try {
 }
 ```
 
-Cosmos request-envelope errors include operation and serialized-byte counts. A
-Cosmos HTTP 413 after one attempted patch/batch includes
+Maps above 10 fields fail shared preflight with `INVALID_REQUEST`. A
+Cosmos HTTP 413 after one attempted patch includes
 `maximumResultBytes=2097152`. Dynamo limit errors include update-expression
 bytes for local preflight, or
 `maximumResultBytes=409600` when DynamoDB rejects the one attempted

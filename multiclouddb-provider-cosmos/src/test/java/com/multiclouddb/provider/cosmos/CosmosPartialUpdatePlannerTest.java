@@ -3,9 +3,6 @@
 
 package com.multiclouddb.provider.cosmos;
 
-import com.azure.cosmos.models.CosmosItemOperationType;
-import com.azure.cosmos.models.PartitionKey;
-import com.multiclouddb.api.Capability;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
 import org.junit.jupiter.api.Test;
@@ -15,10 +12,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CosmosPartialUpdatePlannerTest {
 
@@ -32,62 +26,20 @@ class CosmosPartialUpdatePlannerTest {
 
     @Test
     void tenFieldsUseOneDirectPatch() {
-        CosmosPartialUpdatePlanner.Plan plan = CosmosPartialUpdatePlanner.plan(
-                "item", new PartitionKey("pk"), fields(10));
+        CosmosPartialUpdatePlanner.Plan plan = CosmosPartialUpdatePlanner.plan(fields(10));
 
-        assertTrue(plan.isDirect());
-        assertEquals(1, plan.patchChunks().size());
-        assertNull(plan.batch());
         assertEquals(10, plan.setCount());
-        assertEquals(1, plan.operationCount());
     }
 
     @Test
-    void elevenFieldsUseOneTwoOperationBatchForTheSameItem() {
-        CosmosPartialUpdatePlanner.Plan plan = CosmosPartialUpdatePlanner.plan(
-                "item", new PartitionKey("pk"), fields(11));
-
-        assertFalse(plan.isDirect());
-        assertNotNull(plan.batch());
-        assertEquals(2, plan.batch().getOperations().size());
-        assertEquals(2, plan.operationCount());
-        assertTrue(plan.serializedBytes() > 0);
-        plan.batch().getOperations().forEach(operation -> {
-            assertEquals("item", operation.getId());
-            assertEquals(CosmosItemOperationType.PATCH, operation.getOperationType());
-        });
-    }
-
-    @Test
-    void exactNativeEnvelopeBoundariesPass() {
-        CosmosPartialUpdatePlanner.validateBatchEnvelope(
-                CosmosPartialUpdatePlanner.MAX_BATCH_OPERATIONS,
-                CosmosPartialUpdatePlanner.MAX_BATCH_BYTES);
-    }
-
-    @Test
-    void operationCountOverNativeEnvelopeIsTypedAndComplete() {
+    void elevenFieldsAreRejected() {
         MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                () -> CosmosPartialUpdatePlanner.validateBatchEnvelope(
-                        CosmosPartialUpdatePlanner.MAX_BATCH_OPERATIONS + 1, 1234));
+                () -> CosmosPartialUpdatePlanner.plan(fields(11)));
 
-        assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY, ex.error().category());
+        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
         assertFalse(ex.error().retryable());
-        assertEquals(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD,
-                ex.error().providerDetails().get("capability"));
-        assertEquals("101", ex.error().providerDetails().get("actualOperations"));
-        assertEquals("1234", ex.error().providerDetails().get("actualBytes"));
-    }
-
-    @Test
-    void bytesOverNativeEnvelopeAreRejected() {
-        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                () -> CosmosPartialUpdatePlanner.validateBatchEnvelope(
-                        2, CosmosPartialUpdatePlanner.MAX_BATCH_BYTES + 1));
-
-        assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY, ex.error().category());
-        assertEquals(String.valueOf(CosmosPartialUpdatePlanner.MAX_BATCH_BYTES + 1),
-                ex.error().providerDetails().get("actualBytes"));
+        assertEquals("11", ex.error().providerDetails().get("actualFields"));
+        assertEquals("10", ex.error().providerDetails().get("maximumFields"));
     }
 
     private static Map<String, Object> fields(int count) {

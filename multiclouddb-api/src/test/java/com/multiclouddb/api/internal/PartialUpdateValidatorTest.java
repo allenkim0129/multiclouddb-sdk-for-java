@@ -48,6 +48,27 @@ class PartialUpdateValidatorTest {
     }
 
     @Test
+    @DisplayName("ten fields are accepted")
+    void maximumFieldCountAccepted() {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        for (int i = 0; i < PartialUpdateValidator.MAX_FIELDS; i++) {
+            fields.put("field" + i, i);
+        }
+        assertDoesNotThrow(() -> PartialUpdateValidator.validate(
+                fields, OperationOptions.defaults(), OperationNames.UPDATE));
+    }
+
+    @Test
+    @DisplayName("more than ten fields are rejected")
+    void fieldCountOverLimitRejected() {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        for (int i = 0; i <= PartialUpdateValidator.MAX_FIELDS; i++) {
+            fields.put("field" + i, i);
+        }
+        assertInvalidRequest(reject(fields, OperationOptions.defaults()));
+    }
+
+    @Test
     @DisplayName("null field name is rejected")
     void nullNameRejected() {
         Map<String, Object> f = new LinkedHashMap<>();

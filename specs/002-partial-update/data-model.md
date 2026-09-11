@@ -20,9 +20,9 @@ state, and provider-native plans.
 - unique ignoring case; and
 - never trimmed or rewritten.
 
-Punctuation remains literal. A Spanner name is usable only if it matches the
-row's established logical spelling or, when new, an exactly matching
-provisioned column. A case-only alias is rejected before mutation.
+Punctuation remains literal for participating Cosmos DB and DynamoDB mappings.
+Spanner never reaches field-name mapping in this release: after shared
+validation, the capability gate rejects every otherwise-valid update before provider delegation.
 
 ### Value rules
 
@@ -52,7 +52,7 @@ The transition is atomic and replay-idempotent.
 ```text
 RECEIVED
   -> closed                         CLIENT_CLOSED
-  -> invalid map/name/TTL           INVALID_REQUEST
+  -> invalid map/name/TTL/count           INVALID_REQUEST
   -> serialized bytes > 408,576     INVALID_REQUEST
   -> partial_update unsupported     UNSUPPORTED_CAPABILITY
   -> provider plan
@@ -74,40 +74,23 @@ All local failures delegate zero provider update operations.
 
 ```text
 fieldCount <= 10
-  -> DirectPlan(CosmosPatchOperations)
+ -> DirectPlan(CosmosPatchOperations)
 
 fieldCount > 10
-  -> chunks of <=10 sets
-  -> measure prospective batch
-  -> if operations >100 or bytes >2,097,152: local extension error
-  -> BatchPlan(CosmosBatch)
+ -> shared INVALID_REQUEST before provider delegation
 ```
-
-The batch contains repeated patch operations for the same item ID and partition
-key.
 
 ### Result-item limit
 
 ```text
 resulting document > 2,097,152 bytes
-  -> Cosmos reports HTTP 413 after one attempted patch/batch
-  -> extension UNSUPPORTED_CAPABILITY
+  -> Cosmos reports HTTP 413 after one attempted patch
+  -> reason-coded UNSUPPORTED_CAPABILITY
   -> stored document remains unchanged
 ```
 
 The state-dependent path has no adapter read/merge preflight. HTTP 413 is
 specialized only for `update()`.
-
-### Failed batch state
-
-```text
-first failed usable non-424 result
-  -> map result status/substatus
-else usable non-424 aggregate status
-  -> map aggregate status/substatus
-else
-  -> PROVIDER_ERROR(no root operation status)
-```
 
 ## 5. Dynamo plan
 
@@ -125,14 +108,14 @@ expressionBytes <= 4096
   -> one UpdateItem
 
 expressionBytes > 4096
-  -> local extension UNSUPPORTED_CAPABILITY
+  -> local reason-coded UNSUPPORTED_CAPABILITY
 
 condition failure
   -> NOT_FOUND
 
 resulting item > 409600 bytes
   -> DynamoDB rejects the one attempted UpdateItem atomically
-  -> extension UNSUPPORTED_CAPABILITY
+  -> reason-coded UNSUPPORTED_CAPABILITY
 ```
 
 The result-size path is state-dependent and has no adapter read/merge preflight.
@@ -141,20 +124,20 @@ errors remain `INVALID_REQUEST`.
 
 ## 6. Provider release boundary
 
-Spanner is not a feature-002 data model. Its provider module and capability set
-remain unchanged. Because it does not advertise `partial_update`, the default
+Spanner is not a feature-002 data model. Its data path remains
+unchanged, while its capability set explicitly declares `partial_update` unsupported. The default
 client rejects valid calls before provider delegation; no row, schema, metadata,
 or mapping behavior is changed by this feature.
-## 7. Capabilities
+## 7. Capability
 
-| Provider | `partial_update` | `partial_update_extended_payload` |
-|---|---|---|
-| Cosmos DB | supported | unsupported |
-| DynamoDB | supported | unsupported |
-| Spanner | not advertised | not advertised |
+| Provider | `partial_update` |
+|---|---|
+| Cosmos DB | supported |
+| DynamoDB | supported |
+| Spanner | explicitly unsupported |
 
-The payload extension describes request/result-envelope reach, not schema breadth.
-Case-distinct field identity is part of the base partial-update contract.
+Native request and resulting-item limits are reason-coded errors, not separate
+capabilities. Case-distinct field identity is part of the base contract.
 
 ## 8. Structured provider-limit errors
 
@@ -163,33 +146,20 @@ All values in `providerDetails` are strings.
 ### Cosmos
 
 ```text
-reason=cosmos_transactional_batch_limit
-capability=partial_update_extended_payload
-actualOperations
-maximumOperations=100
-actualBytes
-maximumBytes=2097152
-```
-
-This request-envelope rejection is local and performs zero Cosmos DB I/O.
-
-```text
 reason=cosmos_result_item_size_limit
-capability=partial_update_extended_payload
 maximumResultBytes=2097152
 subStatusCode
 requestId                          (when available)
 requestCharge
 ```
 
-The result-item rejection follows one attempted direct patch or transactional
-batch; the failed native operation leaves the document unchanged.
+The result-item rejection follows one attempted direct
+patch; the failed native operation leaves the document unchanged.
 
 ### Dynamo
 
 ```text
 reason=dynamodb_update_expression_limit
-capability=partial_update_extended_payload
 actualExpressionBytes
 maximumExpressionBytes=4096
 ```
@@ -198,7 +168,6 @@ This expression rejection is local and performs zero DynamoDB I/O.
 
 ```text
 reason=dynamodb_result_item_size_limit
-capability=partial_update_extended_payload
 maximumResultBytes=409600
 errorCode=ValidationException       (when available)
 requestId                          (when available)
@@ -212,5 +181,5 @@ the failed native operation leaves the item unchanged.
 
 Supported partial-update behavior runs only for providers advertising the core
 capability. Shared invalid-request checks still run on every provider because
-validation precedes the gate. Unchanged Spanner receives a dedicated assertion
+validation precedes the gate. Spanner receives a dedicated assertion for its explicit unsupported declaration and
 for non-retryable `UNSUPPORTED_CAPABILITY` with zero provider mutation.

@@ -479,7 +479,6 @@ for (Capability cap : caps.all()) {
 | **Row-level TTL** | ✓ | ✓ | ✗ |
 | **Write timestamp / metadata** | ✓ | ✗ | ✗ |
 | **Partial update** | ✓ | ✓ | ✗ (not in this release) |
-| **Partial update extended payload** | ✗ | ✗ | — |
 | **Case-sensitive partial-update fields** | ✓ | ✓ | — |
 
 ---
@@ -494,13 +493,13 @@ replace their complete top-level value, and Java `null` stores null.
 client.update(address, key, Map.of("status", "shipped"));
 ```
 
-Cosmos uses one direct patch for up to 10 fields or one same-item transactional
-batch for wider updates. DynamoDB uses one conditional `UpdateItem`. The Spanner
-provider is unchanged and does not advertise `PARTIAL_UPDATE` in this release;
+Cosmos and DynamoDB each use one native write for accepted updates. The portable
+`update()` contract accepts at most 10 fields per call. The Spanner
+provider explicitly declares `PARTIAL_UPDATE` unsupported in this release;
 a valid call fails at the shared capability gate with non-retryable
 `UNSUPPORTED_CAPABILITY` before provider delegation.
 
-Cosmos can reject one attempted patch or batch with HTTP 413 if the resulting
+Cosmos can reject one attempted patch with HTTP 413 if the resulting
 document would exceed 2 MiB (2,097,152 bytes); the SDK surfaces that atomic failure as
 `UNSUPPORTED_CAPABILITY` with `reason=cosmos_result_item_size_limit`.
 DynamoDB's generated expression is capped at 4 KiB (4,096 UTF-8 bytes) before I/O. A

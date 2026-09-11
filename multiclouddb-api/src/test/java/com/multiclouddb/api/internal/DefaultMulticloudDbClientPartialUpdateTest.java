@@ -29,7 +29,6 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -37,8 +36,7 @@ import static org.mockito.Mockito.when;
  * Locks the ordering and zero-I/O behaviour of the default client partial-update path:
  * closed-client precedence, every shared INVALID_REQUEST path with zero delegation, a
  * supported core gate followed by exactly one delegation, a future unsupported provider
- * producing a typed UNSUPPORTED_CAPABILITY, validation running before the gate, and no
- * consultation of the extended-payload capability.
+ * producing a typed UNSUPPORTED_CAPABILITY, and validation running before the gate.
  */
 class DefaultMulticloudDbClientPartialUpdateTest {
 
@@ -72,8 +70,7 @@ class DefaultMulticloudDbClientPartialUpdateTest {
     }
 
     private static CapabilitySet supported() {
-        return new CapabilitySet(List.of(Capability.PARTIAL_UPDATE_CAP,
-                Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD_UNSUPPORTED));
+        return new CapabilitySet(List.of(Capability.PARTIAL_UPDATE_CAP));
     }
 
     private static CapabilitySet coreUnsupported() {
@@ -119,9 +116,14 @@ class DefaultMulticloudDbClientPartialUpdateTest {
         Map<String, Object> collide = new LinkedHashMap<>();
         collide.put("foo", 1);
         collide.put("Foo", 2);
+        Map<String, Object> tooMany = new LinkedHashMap<>();
+        for (int i = 0; i <= PartialUpdateValidator.MAX_FIELDS; i++) {
+            tooMany.put("field" + i, i);
+        }
 
-        // null map, empty map, null/empty/blank name, reserved, underscore, collision
-        for (Map<String, Object> bad : List.of(Map.<String, Object>of(), reserved, underscore, collide)) {
+        // null map, empty map, null/empty/blank name, reserved, underscore, collision, field count
+        for (Map<String, Object> bad : List.of(
+                Map.<String, Object>of(), reserved, underscore, collide, tooMany)) {
             MulticloudDbException ex = assertThrows(MulticloudDbException.class,
                     () -> c.update(ADDRESS, KEY, bad));
             assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
@@ -206,17 +208,4 @@ class DefaultMulticloudDbClientPartialUpdateTest {
         assertEquals(0, provider.updateCount);
     }
 
-    @Test
-    @DisplayName("the default client never consults PARTIAL_UPDATE_EXTENDED_PAYLOAD")
-    void noExtendedPayloadLookup() {
-        CapabilitySet caps = mock(CapabilitySet.class);
-        when(caps.isSupported(Capability.PARTIAL_UPDATE)).thenReturn(true);
-        RecordingProvider provider = new RecordingProvider(caps);
-        DefaultMulticloudDbClient c = client(provider);
-
-        assertDoesNotThrow(() -> c.update(ADDRESS, KEY, validFields()));
-        assertEquals(1, provider.updateCount);
-        verify(caps).isSupported(Capability.PARTIAL_UPDATE);
-        verify(caps, never()).isSupported(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD);
-    }
 }

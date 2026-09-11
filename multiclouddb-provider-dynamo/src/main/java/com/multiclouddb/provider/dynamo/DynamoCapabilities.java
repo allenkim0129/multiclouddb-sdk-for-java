@@ -44,13 +44,10 @@ public final class DynamoCapabilities {
                     + "requires DynamoDB table TTL enabled on that attribute — silently ignored otherwise"),
             Capability.of(Capability.WRITE_TIMESTAMP, false,
                     "DynamoDB does not expose per-item write timestamps via GetItem"),
-            // Partial update (feature 002-partial-update): the core operation is universally
-            // supported and gated internally by DefaultMulticloudDbClient. The extended-payload
-            // guarantee is unsupported because the expression or resulting-item limit may bind.
+            // Partial update (feature 002-partial-update): the core operation is supported
+            // and gated internally by DefaultMulticloudDbClient. Native envelope failures
+            // surface through structured provider-limit errors.
             Capability.PARTIAL_UPDATE_CAP.withNotes(
-                    "One conditional aliased UpdateItem SET expression per update"),
-            Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD_UNSUPPORTED.withNotes(
-                    "Generated update expressions are capped at 4 KiB (4,096 UTF-8 bytes) before I/O; "
-                    + "DynamoDB may reject the attempted UpdateItem when the resulting item "
-                    + "would exceed 400 KiB (409,600 bytes)")));
+                    "One conditional aliased UpdateItem SET expression per update; limits: 4 KiB "
+                    + "expression and 400 KiB resulting item")));
 }

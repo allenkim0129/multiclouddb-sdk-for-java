@@ -12,7 +12,6 @@ import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -110,31 +109,9 @@ public class Main {
 
         if (client.capabilities().isSupported(Capability.PARTIAL_UPDATE)) {
             // ── PARTIAL UPDATE ────────────────────────────────────────
-            System.out.println("── PARTIAL UPDATE (prod-005: price + stock only) ─────────────");
-            update("prod-005", Map.of("price", 54.99, "inStock", true));
-            System.out.println();
-
-            // ── READ (verify update) ──────────────────────────────────
-            System.out.println("── READ (verify selected fields + omitted-field preservation) ─");
-            DocumentResult updateResult = read("prod-005");
-            if (updateResult == null) {
-                throw new AssertionError("Expected document for prod-005 after update but got null");
-            }
-            if (!"USB-C Hub".equals(updateResult.document().path("name").asText())
-                    || !"electronics".equals(updateResult.document().path("category").asText())
-                    || Math.abs(updateResult.document().path("price").asDouble() - 54.99) > 0.0001
-                    || !updateResult.document().path("inStock").asBoolean()) {
-                throw new AssertionError("Partial update did not preserve omitted product fields");
-            }
-            System.out.println("    → selected fields changed; name and category were preserved");
-            System.out.println();
-
-            System.out.println("── WIDE PARTIAL UPDATE (>10 fields, Cosmos/Dynamo) ───────────");
-            wideUpdate("prod-004");
-            System.out.println();
         } else {
             System.out.println("── PARTIAL UPDATE ─────────────────────────────────────────────");
-            System.out.printf("  Skipped: %s does not advertise partial_update.%n",
+            System.out.printf("  Skipped: %s does not support partial_update.%n",
                     client.providerId().displayName());
             System.out.println();
         }
@@ -226,40 +203,6 @@ public class Main {
         System.out.printf("  client.update(address, key(%s), fields=%s)%n", id, fields.keySet());
         client.update(address, key, fields);
         System.out.println("    → partial update applied");
-    }
-
-    private void wideUpdate(String id) {
-        Map<String, Object> fields = new LinkedHashMap<>();
-        fields.put("title", "wide-title");
-        fields.put("value", 101);
-        fields.put("active", true);
-        fields.put("version", 2);
-        fields.put("extra", "wide-extra");
-        fields.put("batch", "wide-batch");
-        fields.put("status", "wide-status");
-        fields.put("priority", 9);
-        fields.put("category", "wide-category");
-        fields.put("shared", "wide-shared");
-        fields.put("originalOnly", "wide-original");
-
-        update(id, fields);
-        DocumentResult result = read(id);
-        if (result == null) {
-            throw new AssertionError("Expected document for " + id + " after wide update");
-        }
-        fields.forEach((name, expected) -> {
-            String actual = result.document().path(name).asText();
-            if (!String.valueOf(expected).equals(actual)) {
-                throw new AssertionError("Wide update mismatch for " + name
-                        + ": expected=" + expected + ", actual=" + actual);
-            }
-        });
-        if (!"Notebook (paper)".equals(result.document().path("name").asText())
-                || Math.abs(result.document().path("price").asDouble() - 4.99) > 0.0001
-                || !result.document().path("inStock").asBoolean()) {
-            throw new AssertionError("Wide partial update did not preserve omitted product fields");
-        }
-        System.out.println("    → 11 fields changed in one logical update; omitted product fields preserved");
     }
 
     private void delete(String id) {

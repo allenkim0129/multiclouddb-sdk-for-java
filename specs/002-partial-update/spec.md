@@ -1,7 +1,7 @@
 # Feature Specification: Portable Partial Update
 
 **Branch**: `002-partial-update`
-**Status**: Complete; Cosmos DB and DynamoDB implementation validated, Spanner provider unchanged
+**Status**: Complete; Cosmos DB and DynamoDB implementation validated, Spanner explicitly unsupported
 
 ## Scope decision
 
@@ -9,10 +9,10 @@
 operation. Cosmos DB and DynamoDB move from full replacement to native partial
 update and advertise `PARTIAL_UPDATE`.
 
-The Spanner provider is not part of this feature release. Every file under
-`multiclouddb-provider-spanner/` remains identical to the PR base, and Spanner
-continues to expose its existing capability set without the three feature-002
-partial-update capabilities. After shared validation, a valid Spanner
+The Spanner provider data path is not part of this feature release. Files under
+`multiclouddb-provider-spanner/` remain unchanged except for the capability declaration and changelog. Spanner
+explicitly declares the sole feature-002
+partial-update capability unsupported. After shared validation, a valid Spanner
 `update()` call fails at the default client's core capability gate with
 non-retryable `UNSUPPORTED_CAPABILITY`, `capability=partial_update`, and zero
 Spanner I/O.
@@ -43,11 +43,11 @@ providers.
 ### US3 — Receive deterministic native-envelope failures
 
 Cosmos DB and DynamoDB normalize lower native partial-update envelopes to
-non-retryable `UNSUPPORTED_CAPABILITY` tied to
-`partial_update_extended_payload`, with structured size/count details.
-Prospective Cosmos batches and oversized Dynamo update expressions fail before
+non-retryable `UNSUPPORTED_CAPABILITY` with stable reasons and structured
+size/count details.
+Maps above 10 fields fail in shared preflight. Oversized Dynamo update expressions fail before
 provider I/O. Cosmos DB's state-dependent 2,097,152-byte resulting-document
-limit is reported after one attempted patch or batch request, and DynamoDB's
+limit is reported after one attempted patch request, and DynamoDB's
 state-dependent 409,600-byte result-item limit is reported after one attempted
 `UpdateItem`; no read/merge preflight is added.
 
@@ -60,7 +60,7 @@ move to `upsert(address, key, completeDocument)`. Documentation must warn that
 ### US5 — Respect the provider release boundary
 
 Cosmos DB and DynamoDB preserve distinct `title` and `TITLE` fields across an
-update. Spanner remains unchanged and does not advertise the core operation, so
+update. Spanner explicitly declares the core operation unsupported, so
 a valid update is rejected before provider delegation.
 ## Functional requirements
 
@@ -75,7 +75,7 @@ a valid update is rejected before provider delegation.
   created.
 - **FR-006**: All assignments in one call MUST commit atomically and replaying
   the same absolute assignments MUST be idempotent.
-- **FR-007**: Shared preflight MUST reject a null/empty map and null, empty, or
+- **FR-007**: Shared preflight MUST reject a null/empty map, a map above 10 fields, and null, empty, or
   blank field names as non-retryable `INVALID_REQUEST`.
 - **FR-008**: Shared preflight MUST reject, case-insensitively, `id`,
   `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, and `data`; names beginning
@@ -89,27 +89,26 @@ a valid update is rejected before provider delegation.
   gate `Capability.PARTIAL_UPDATE`; an unsupported provider receives
   non-retryable `UNSUPPORTED_CAPABILITY` with
   `providerDetails.capability=partial_update`.
-- **FR-013**: `PARTIAL_UPDATE_EXTENDED_PAYLOAD` MUST describe whether supported
-  provider field mappings can reach the common size limit without a lower
-  provider request or resulting-item envelope. It MUST NOT disable ordinary
-  updates.
-- **FR-014**: Cosmos DB and DynamoDB MUST declare all 19 known capabilities.
-  Unchanged Spanner MUST retain its existing 17 declarations and MUST NOT
-  advertise any feature-002 partial-update capability.
-- **FR-015**: A valid `update()` against a provider that does not advertise
+- **FR-013**: Lower native request or resulting-item envelope failures MUST be
+  non-retryable `UNSUPPORTED_CAPABILITY` errors with stable
+  `providerDetails.reason` and limit values. They MUST NOT define or require a
+  second partial-update capability.
+- **FR-014**: Cosmos DB, DynamoDB, and Spanner MUST declare all 18 known capabilities.
+  Spanner MUST explicitly declare `PARTIAL_UPDATE` unsupported.
+- **FR-015**: A valid `update()` against a provider that does not support
   `PARTIAL_UPDATE` MUST fail at the shared gate with non-retryable
   `UNSUPPORTED_CAPABILITY`, `capability=partial_update`, and zero provider I/O.
 - **FR-016**: Cosmos DB MUST encode each raw field name as one RFC 6901 segment
   (`~` → `~0`, `/` → `~1`) and use `set`.
-- **FR-017**: Cosmos DB MUST issue one direct `patchItem` for up to 10 fields.
-- **FR-018**: Cosmos DB MUST issue one same-item, same-partition transactional
-  batch of at-most-10-operation patch chunks for wider requests.
-- **FR-019**: Cosmos DB MUST reject a prospective batch over 100 batch
-  operations or 2,097,152 serialized UTF-8 bytes before I/O.
+- **FR-017**: Cosmos DB MUST issue one direct `patchItem` for every accepted update.
+- **FR-018**: Shared preflight MUST reject more than 10 fields with non-retryable
+  `INVALID_REQUEST` before provider delegation.
+- **FR-019**: The Cosmos planner MUST defensively reject direct SPI calls above 10
+  fields before I/O.
 - **FR-020**: Cosmos DB MUST NOT add an adapter read, replace, or retry loop.
-- **FR-021**: A failed Cosmos batch MUST surface the first non-424 operation
-  failure, otherwise a usable non-424 aggregate failure, otherwise a sanitized
-  `PROVIDER_ERROR`. HTTP 424 MUST NOT be presented as the root cause.
+- **FR-021**: Cosmos planner output MUST be deterministic regardless of the caller map's
+  iteration order. Field names MUST be ordered before native patch construction;
+  no transactional batch may be constructed for `update()`.
 - **FR-022**: Cosmos CRUD/update HTTP 408 and 410 failures MUST be transient and
   retryable; 410 substatus MUST be preserved.
 - **FR-023**: Cosmos write response bodies MAY be disabled only while status,
@@ -127,25 +126,23 @@ a valid update is rejected before provider delegation.
   values, serialized request bodies, credentials, or authorization data.
 - **FR-029**: Shared conformance MUST run supported partial-update behavior only
   when `PARTIAL_UPDATE` is advertised, while retaining provider-neutral
-  preflight and unsupported-gate assertions for unchanged Spanner.
+  preflight and unsupported-gate assertions for Spanner.
 - **FR-030**: Migration documentation MUST direct replacement callers to
   `upsert()` and explain its create-on-missing behavior.
 - **FR-031**: On `update()` only, the DynamoDB `ValidationException` message
   variant indicating that the resulting item exceeds the maximum item size MUST
   map to non-retryable `UNSUPPORTED_CAPABILITY` with
-  `capability=partial_update_extended_payload`,
-  `reason=dynamodb_result_item_size_limit`, and
+  `reason=dynamodb_result_item_size_limit` and
   `maximumResultBytes=409600`. Other `ValidationException` failures MUST remain
   `INVALID_REQUEST`. The original cause and sanitized native error code, status,
   request ID, and service details MUST be preserved where available, without
   payload data.
 - **FR-032**: On `update()` only, Cosmos DB HTTP 413 MUST map to
   non-retryable `UNSUPPORTED_CAPABILITY` with
-  `capability=partial_update_extended_payload`,
-  `reason=cosmos_result_item_size_limit`, and
+  `reason=cosmos_result_item_size_limit` and
   `maximumResultBytes=2097152`. The direct exception cause and sanitized
   native status, substatus, activity ID, and request charge MUST be preserved
-  where available. The failed native patch or batch MUST leave the item
+  where available. The failed native patch MUST leave the item
   unchanged. HTTP 413 from other operations MUST retain the normal Cosmos
   provider-error mapping.
 - **FR-033**: Providers advertising `PARTIAL_UPDATE` MUST preserve case-distinct
@@ -155,12 +152,12 @@ a valid update is rejected before provider delegation.
 
 | Concern | Cosmos DB | DynamoDB | Spanner |
 |---|---|---|---|
-| Core partial update | Native patch | Native `UpdateItem` | Not advertised; shared gate rejects |
+| Core partial update | Native patch | Native `UpdateItem` | Explicitly unsupported; shared gate rejects |
 | Missing item | 404 → `NOT_FOUND` | failed existence condition → `NOT_FOUND` | Not reached |
-| Wide request | same-item transactional batch | one larger expression | Not reached |
-| Lower native envelope | 100 batch ops / 2 MiB request; 2 MiB resulting item | 4,096-byte expression; 409,600-byte resulting item | Not declared |
+| More than 10 fields | shared `INVALID_REQUEST`; no provider call | shared `INVALID_REQUEST`; no provider call | shared `INVALID_REQUEST`; no provider call |
+| Lower native envelope | 2 MiB resulting item | 4,096-byte expression; 409,600-byte resulting item | Not reached |
 | Case-distinct names | preserved | preserved | Not part of this release |
-| Adapter read/retry | no read/retry; result-size rejection follows one attempted patch/batch | no read/retry; result-size rejection follows one attempted `UpdateItem` | zero provider I/O |
+| Adapter read/retry | no read/retry; result-size rejection follows one attempted patch | no read/retry; result-size rejection follows one attempted `UpdateItem` | zero provider I/O |
 ## Edge cases
 
 - Empty maps, blank names, reserved names, underscore-prefixed names,
@@ -171,20 +168,20 @@ a valid update is rejected before provider delegation.
 - Across calls, Cosmos and Dynamo preserve case-distinct names.
 - A valid Spanner update stops at the shared core capability gate and performs
   no provider I/O.
-- More than 10 Cosmos fields use one atomic batch, never independent patch
+- More than 10 fields fail shared validation before any provider
   calls.
-- All-424 or empty failed Cosmos batch result lists use the aggregate fallback
-  or the sanitized no-root error.
-- A small Cosmos update can pass shared and batch preflight but fail with HTTP
+- Cosmos planning sorts field names so caller map iteration order cannot alter
+  native patch order.
+- A small Cosmos update can pass shared preflight but fail with HTTP
   413 when the existing document plus assignments would exceed 2,097,152
-  bytes. The failure becomes the extended-payload capability error and leaves
+  bytes. The failure becomes a reason-coded native-limit error and leaves
   the document unchanged.
 - Dynamo reserved words and punctuation never appear directly in the update
   expression.
 - A small Dynamo update can pass shared and expression preflight but fail when
   the existing item plus assignments would exceed 409,600 bytes. Only the
-  item-size `ValidationException` variant becomes the extended-payload
-  capability error; the failed native update leaves the item unchanged.
+  item-size `ValidationException` variant becomes a reason-coded native-limit
+  error; the failed native update leaves the item unchanged.
 
 ## Non-functional requirements
 
@@ -194,14 +191,14 @@ a valid update is rejected before provider delegation.
 - **NFR-003**: Local validation failures perform zero provider I/O.
 - **NFR-004**: No unsafe casts, swallowed failures, private vendor SDK imports,
   or read/replace emulation may be introduced.
-- **NFR-005**: The PR MUST contain no changes under `multiclouddb-provider-spanner/`.
+- **NFR-005**: Spanner data-path code and fixtures MUST remain unchanged; only its explicit unsupported capability declaration and aligned changelog may change.
 
 ## Success criteria
 
 - **SC-001**: Focused API tests pass for validation order, capability gating,
   TTL rejection, and the exact common-size boundary.
-- **SC-002**: Focused Cosmos tests prove direct patch, wide batch, RFC 6901
-  escaping, local limits, batch failure fallback, exact 408/410 mapping,
+- **SC-002**: Focused Cosmos tests prove one direct patch, the 10-field limit, RFC 6901
+  escaping, deterministic planning, exact 408/410 mapping,
   update-only 413 result-size normalization, diagnostics, and the updated
   consistency test.
 - **SC-003**: Focused Dynamo tests prove one aliased conditional `UpdateItem`,
@@ -211,12 +208,12 @@ a valid update is rejected before provider delegation.
 - **SC-004**: Shared conformance passes supported behavior on Cosmos DB and
   DynamoDB, and verifies Spanner's shared-validation ordering plus core
   capability rejection without provider I/O.
-- **SC-005**: `git diff --check` passes; the Spanner provider has zero PR diff,
+- **SC-005**: `git diff --check` passes; the Spanner data path remains unchanged,
   and `multiclouddb-perf/` is untouched.
 
 ## Out of scope
 
-- any Spanner provider code, capability, changelog, schema, or fixture change
+- any Spanner data-path, schema, or fixture change beyond the explicit unsupported capability declaration and changelog alignment
 - remove/increment/nested-path patch operations
 - a new `replace()` API or compatibility mode
 - native-client escape hatch, cancellation, or retry-policy work tracked by

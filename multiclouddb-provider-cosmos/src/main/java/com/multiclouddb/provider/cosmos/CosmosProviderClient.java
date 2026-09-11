@@ -249,23 +249,19 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      * Applies a portable shallow, set/replace-only partial update to an existing document.
      * <p>
      * The provider converts each already validated field to one {@code set} patch operation
-     * whose path is the raw field name encoded as a single RFC 6901 JSON Pointer segment. At
-     * most {@link CosmosPartialUpdatePlanner#MAX_FIELDS_PER_PATCH} fields become one direct
-     * {@code patchItem}; wider requests become one same-item, same-partition transactional
-     * batch. No adapter-side read, key injection, update-TTL assignment, duplicate capability
-     * gate, or retry loop is performed — the default client owns the core
+     * whose path is the raw field name encoded as a single RFC 6901 JSON Pointer segment.
+     * Every accepted call becomes one direct {@code patchItem}. No adapter-side read, key
+     * injection, update-TTL assignment, duplicate capability gate, or retry loop is performed
+     * — the default client owns the core
      * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE} gate. A missing document is
-     * normalized to {@link com.multiclouddb.api.MulticloudDbErrorCategory#NOT_FOUND}; a wide
-     * request that exceeds the native transactional-batch envelope fails locally with
-     * {@link com.multiclouddb.api.MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} and zero
-     * Cosmos I/O.
+     * normalized to {@link com.multiclouddb.api.MulticloudDbErrorCategory#NOT_FOUND}.
      *
-     * @param address  the logical database + container
-     * @param key      the document key identifying the item to update
-     * @param fields   validated literal top-level fields to set/replace
-     * @param options  operation options (update TTL is rejected by shared preflight)
+     * @param address the logical database + container
+     * @param key the document key identifying the item to update
+     * @param fields validated literal top-level fields to set/replace
+     * @param options operation options (update TTL is rejected by shared preflight)
      * @throws com.multiclouddb.api.MulticloudDbException category {@code NOT_FOUND} (404) if the
-     *         item does not exist
+     * item does not exist
      */
     @Override
     public void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> fields, OperationOptions options) {
@@ -273,20 +269,12 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         try {
             String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
             PartitionKey pk = resolvePartitionKey(key);
-            CosmosPartialUpdatePlanner.Plan plan = CosmosPartialUpdatePlanner.plan(cosmosId, pk, fields);
+            CosmosPartialUpdatePlanner.Plan plan = CosmosPartialUpdatePlanner.plan(fields);
             CosmosContainer container = getContainer(address);
-            if (plan.isDirect()) {
-                CosmosItemResponse<ObjectNode> response = container.patchItem(
-                        cosmosId, pk, plan.patchChunks().get(0),
-                        new CosmosPatchItemRequestOptions(), ObjectNode.class);
-                logItemDiagnostics(OperationNames.UPDATE, address, response);
-            } else {
-                CosmosBatchResponse response = container.executeCosmosBatch(plan.batch());
-                CosmosDiagnosticsLogger.logBatch(OperationNames.UPDATE, address, response);
-                if (!response.isSuccessStatusCode()) {
-                    throw CosmosErrorMapper.mapFailedBatch(response, OperationNames.UPDATE);
-                }
-            }
+            CosmosItemResponse<ObjectNode> response = container.patchItem(
+                    cosmosId, pk, plan.operations(),
+                    new CosmosPatchItemRequestOptions(), ObjectNode.class);
+            logItemDiagnostics(OperationNames.UPDATE, address, response);
         } catch (CosmosException e) {
             logExceptionDiagnostics(OperationNames.UPDATE, address, e);
             throw CosmosErrorMapper.map(e, OperationNames.UPDATE);

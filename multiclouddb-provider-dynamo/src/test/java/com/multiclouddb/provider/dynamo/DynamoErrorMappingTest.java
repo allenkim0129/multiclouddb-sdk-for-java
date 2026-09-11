@@ -128,7 +128,7 @@ class DynamoErrorMappingTest {
             "Item size has exceeded the maximum allowed size "
                     + "(Service: DynamoDb, Status Code: 400, Request ID: req-size-1)"
     })
-    @DisplayName("Update item-size ValidationException maps to the extended-payload capability")
+    @DisplayName("Update item-size ValidationException maps to a structured native-limit error")
     void updateResultItemSizeLimitMapsToUnsupportedCapability(String message) {
         DynamoDbException ex = mockDynamoException(400, "ValidationException", message);
         when(ex.requestId()).thenReturn("req-size-1");
@@ -140,8 +140,7 @@ class DynamoErrorMappingTest {
         assertEquals(OperationNames.UPDATE, result.error().operation());
         assertFalse(result.error().retryable());
         assertEquals(400, result.error().statusCode());
-        assertEquals("partial_update_extended_payload",
-                result.error().providerDetails().get("capability"));
+        assertFalse(result.error().providerDetails().containsKey("capability"));
         assertEquals("dynamodb_result_item_size_limit",
                 result.error().providerDetails().get("reason"));
         assertEquals("409600",

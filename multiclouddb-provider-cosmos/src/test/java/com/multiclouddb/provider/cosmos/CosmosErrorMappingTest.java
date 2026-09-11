@@ -132,7 +132,7 @@ class CosmosErrorMappingTest {
     }
 
     @Test
-    @DisplayName("Update HTTP 413 is an extended-payload capability error")
+    @DisplayName("Update HTTP 413 is a structured native-limit error")
     void updateEntityTooLargeIsUnsupportedCapability() {
         CosmosException cosmosEx = mockCosmosException(413, 0);
 
@@ -142,8 +142,7 @@ class CosmosErrorMappingTest {
         assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
                 result.error().category());
         assertFalse(result.error().retryable());
-        assertEquals("partial_update_extended_payload",
-                result.error().providerDetails().get("capability"));
+        assertFalse(result.error().providerDetails().containsKey("capability"));
         assertEquals("cosmos_result_item_size_limit",
                 result.error().providerDetails().get("reason"));
         assertEquals("2097152",
@@ -194,7 +193,7 @@ class CosmosErrorMappingTest {
     }
 
     @Test
-    @DisplayName("Batch HTTP 413 is an extended-payload capability error")
+    @DisplayName("Batch HTTP 413 is a structured native-limit error")
     void batchEntityTooLargeIsUnsupportedCapability() {
         CosmosBatchResponse response = batchResponse(
                 424, 0, List.of(batchResult(413, 0), batchResult(424, 0)));

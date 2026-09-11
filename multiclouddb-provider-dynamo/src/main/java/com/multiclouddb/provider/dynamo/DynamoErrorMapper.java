@@ -3,7 +3,6 @@
 
 package com.multiclouddb.provider.dynamo;
 
-import com.multiclouddb.api.Capability;
 import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
@@ -48,7 +47,6 @@ public final class DynamoErrorMapper {
             details.put("requestId", e.requestId());
         }
         if (resultItemSizeLimit) {
-            details.put("capability", Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD);
             details.put("reason", "dynamodb_result_item_size_limit");
             details.put("maximumResultBytes", "409600");
         }

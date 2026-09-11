@@ -3,7 +3,6 @@
 
 package com.multiclouddb.provider.dynamo;
 
-import com.multiclouddb.api.Capability;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
 import org.junit.jupiter.api.Test;
@@ -87,8 +86,7 @@ class DynamoPartialUpdatePlannerTest {
 
         assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY, ex.error().category());
         assertFalse(ex.error().retryable());
-        assertEquals(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD,
-                ex.error().providerDetails().get("capability"));
+        assertFalse(ex.error().providerDetails().containsKey("capability"));
         assertEquals("4102", ex.error().providerDetails().get("actualExpressionBytes"));
         assertEquals("4096", ex.error().providerDetails().get("maximumExpressionBytes"));
     }

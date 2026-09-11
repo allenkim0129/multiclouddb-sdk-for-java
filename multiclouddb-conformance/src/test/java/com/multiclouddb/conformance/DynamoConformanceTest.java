@@ -152,9 +152,6 @@ class DynamoConformanceTest extends CrudConformanceTests {
                                                         ex.error().toString());
                                         assertEquals("update", ex.error().operation());
                                         assertFalse(ex.error().retryable());
-                                        assertEquals("partial_update_extended_payload",
-                                                        ex.error().providerDetails()
-                                                                        .get("capability"));
                                         assertEquals("dynamodb_result_item_size_limit",
                                                         ex.error().providerDetails().get("reason"));
                                         assertEquals("409600",

@@ -128,8 +128,6 @@ class DynamoPartialUpdateTest {
         assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
                 ex.error().category());
         assertFalse(ex.error().retryable());
-        assertEquals("partial_update_extended_payload",
-                ex.error().providerDetails().get("capability"));
         assertEquals("dynamodb_result_item_size_limit",
                 ex.error().providerDetails().get("reason"));
         assertEquals("409600",

@@ -56,8 +56,9 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      * Providers receive {@code fields} <em>already validated</em> by the default client:
      * the field map is non-null and non-empty, every name is non-null/non-blank, no name is
      * reserved, underscore-prefixed, or case-colliding, {@code options.ttlSeconds()} is null,
-     * and the serialized field map is at most 408,576 bytes. The default client also owns the
-     * core {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE} gate and checks it before
+     * the map contains at most 10 fields, and its serialized form is at most 408,576 bytes.
+     * The default client also owns the core
+     * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE} gate and checks it before
      * delegating, so provider adapters MUST NOT duplicate that gate.
      * <p>
      * For field names and value shapes supported by the provider mapping, every provider must
@@ -71,11 +72,12 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE} receive this call. Feature 002
      * leaves the Spanner adapter unchanged and unadvertised, so the default client rejects
      * Spanner calls before delegation. Participating providers must preserve case-distinct
-     * logical fields rather than silently overwriting another field. A local request-envelope rejection tied to
-     * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE_EXTENDED_PAYLOAD} must perform
-     * zero provider I/O. A state-dependent resulting-item limit may instead be returned by
-     * the provider after the single native update attempt and must be normalized to the same
-     * capability without adding a read/merge preflight.
+     * logical fields rather than silently overwriting another field. A local native
+     * request-envelope rejection must perform zero provider I/O and carry a stable reason
+     * plus limit details. A state-dependent resulting-item limit may instead be returned by
+     * the provider after the single native update attempt and must be normalized to
+     * non-retryable {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} without adding
+     * a read/merge preflight.
      *
      * @param fields validated literal top-level fields to set/replace
      * @throws MulticloudDbException with category NOT_FOUND if the key does not exist

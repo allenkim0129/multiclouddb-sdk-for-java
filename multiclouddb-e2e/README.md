@@ -2,8 +2,8 @@
 
 End-to-end portability tests for the Multicloud DB SDK. The portable CRUD/query
 baseline runs against Azure Cosmos DB, Amazon DynamoDB, or Google Cloud Spanner
-by switching one properties file. A separate wider-than-10-field update runs
-only on Cosmos DB and DynamoDB because the existing Spanner path is fixed-schema.
+by switching one properties file. Partial update is exercised within the portable
+10-field limit on Cosmos DB and DynamoDB; Spanner is capability-gated.
 
 ---
 
@@ -96,7 +96,7 @@ The E2E runner does not add application columns to Spanner. The configured
 `products` table must already contain the columns used by its existing CRUD and
 query scenario: `id`, `name`, `category`, `price`, and `inStock` (in addition to
 the SDK key and `data` columns). Partial-update steps are capability-gated and
-skipped because the unchanged Spanner provider does not advertise this feature.
+skipped because Spanner explicitly declares this feature unsupported.
 
 ---
 
@@ -110,17 +110,17 @@ Each run exercises the full CRUD surface on a `products` collection:
 | 2 | Read one by ID | `client.read(...)` |
 | 3 | Partially update price and stock (Cosmos/Dynamo only) | `client.update(...)` |
 | 4 | Verify changed fields and omitted name/category preservation (Cosmos/Dynamo only) | `client.read(...)` |
-| 5 | Update 11 ordinary fields (Cosmos/Dynamo only) and verify preservation | `client.update(...)`, `client.read(...)` |
-| 6 | List all (paged) | `client.query(...)` |
-| 7 | Filter by category | `client.query(expression)` |
-| 8 | Filter in-stock + price | `client.query(expression)` |
-| 9 | Delete one item | `client.delete(...)` |
-| 10 | Confirm deletion | `client.query(...)` |
-| 11 | Cleanup all items | `client.delete(...)` |
+| 5 | List all (paged) | `client.query(...)` |
+| 6 | Filter by category | `client.query(expression)` |
+| 7 | Filter in-stock + price | `client.query(expression)` |
+| 8 | Delete one item | `client.delete(...)` |
+| 9 | Confirm deletion | `client.query(...)` |
+| 10 | Cleanup all items | `client.delete(...)` |
 
-The partial-update cases exercise Cosmos's patch/batch paths and DynamoDB's
+
+The partial-update case exercises Cosmos's single-patch path and DynamoDB's
 single `UpdateItem`. They are skipped for providers that do not advertise
-`PARTIAL_UPDATE`, including unchanged Spanner in this release.
+`PARTIAL_UPDATE`, including explicitly unsupported Spanner in this release.
 
 ---
 

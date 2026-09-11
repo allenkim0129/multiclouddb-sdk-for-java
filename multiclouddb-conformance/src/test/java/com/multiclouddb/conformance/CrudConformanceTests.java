@@ -114,20 +114,12 @@ public abstract class CrudConformanceTests {
         return fields;
     }
 
-    private static Map<String, Object> wideUpdateFields() {
+    private static Map<String, Object> tooManyUpdateFields() {
         Map<String, Object> fields = new LinkedHashMap<>();
-        fields.put("title", "wide-title");
-        fields.put("value", 101);
-        fields.put("active", true);
-        fields.put("version", 2);
-        fields.put("extra", "wide-extra");
-        fields.put("batch", "wide-batch");
-        fields.put("status", "wide-status");
-        fields.put("priority", 9);
-        fields.put("category", "wide-category");
-        fields.put("shared", "wide-shared");
-        fields.put("originalOnly", "wide-original");
-        assertTrue(fields.size() > 10, "This case must remain wider than ten fields");
+        for (int i = 0; i < 11; i++) {
+            fields.put("field" + i, i);
+        }
+        assertEquals(11, fields.size());
         return fields;
     }
 
@@ -744,22 +736,23 @@ public abstract class CrudConformanceTests {
     }
 
     @Test @Order(27)
-    @DisplayName("partial update supports more than ten provisioned ordinary fields")
-    void partialUpdateSupportsMoreThanTenOrdinaryFields() {
-        assumePartialUpdateSupported();
-        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-wide");
-        Map<String, Object> fields = wideUpdateFields();
+    @DisplayName("partial update rejects more than ten fields before provider delegation")
+    void partialUpdateRejectsMoreThanTenFieldsWithoutMutation() {
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-field-count");
 
         try {
             client.upsert(getAddress(), key,
-                    Map.of("marker", "preserve-wide", "strField", "also-preserved"));
-            client.update(getAddress(), key, fields);
+                    Map.of("title", "before", "status", "preserved"));
+            MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                    () -> client.update(getAddress(), key, tooManyUpdateFields()));
 
+            assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
+            assertFalse(ex.error().retryable());
+            assertNull(ex.error().provider(),
+                    "Field-count rejection must come from shared preflight");
             JsonNode doc = client.read(getAddress(), key).document();
-            fields.forEach((name, expected) ->
-                    assertEquals(String.valueOf(expected), doc.path(name).asText(), name));
-            assertEquals("preserve-wide", doc.path("marker").asText());
-            assertEquals("also-preserved", doc.path("strField").asText());
+            assertEquals("before", doc.path("title").asText());
+            assertEquals("preserved", doc.path("status").asText());
         } finally {
             safeDelete(key);
         }
@@ -864,17 +857,29 @@ public abstract class CrudConformanceTests {
     }
 
     @Test @Order(31)
-    @DisplayName("a wide update of a missing item returns NOT_FOUND without creating it")
-    void partialUpdateWideMissingItemReturnsNotFoundWithoutCreate() {
+    @DisplayName("literal punctuation and surrounding spaces remain exact top-level names")
+    void partialUpdatePreservesLiteralFieldNames() {
         assumePartialUpdateSupported();
-        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-wide-missing");
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-literal-names");
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put(".", "dot");
+        fields.put("/", "slash");
+        fields.put("~", "tilde");
+        fields.put(" customer ", "spaced");
 
-        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                () -> client.update(getAddress(), key, wideUpdateFields()));
+        try {
+            client.upsert(getAddress(), key, Map.of("title", "preserved"));
+            client.update(getAddress(), key, fields);
 
-        assertEquals(MulticloudDbErrorCategory.NOT_FOUND, ex.error().category());
-        assertNull(client.read(getAddress(), key),
-                "A failed wide update must not create the missing item");
+            JsonNode doc = client.read(getAddress(), key).document();
+            assertEquals("dot", doc.path(".").asText());
+            assertEquals("slash", doc.path("/").asText());
+            assertEquals("tilde", doc.path("~").asText());
+            assertEquals("spaced", doc.path(" customer ").asText());
+            assertEquals("preserved", doc.path("title").asText());
+        } finally {
+            safeDelete(key);
+        }
     }
 
     @Test @Order(32)
@@ -914,23 +919,6 @@ public abstract class CrudConformanceTests {
         }
     }
 
-    @Test @Order(34)
-    @DisplayName("the exact common payload limit executes when extended payload is advertised")
-    void partialUpdateExactCommonLimitExecutesWhenAdvertised() throws Exception {
-        assumeTrue(client.capabilities().isSupported(Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD));
-        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-exact-limit");
-        Map<String, Object> fields = fieldsOfSerializedSize("title", 408_576);
-
-        try {
-            client.upsert(getAddress(), key, Map.of("title", "before"));
-            assertDoesNotThrow(() -> client.update(getAddress(), key, fields));
-
-            JsonNode doc = client.read(getAddress(), key).document();
-            assertEquals(fields.get("title"), doc.path("title").asText());
-        } finally {
-            safeDelete(key);
-        }
-    }
     // ── Portable expression runtime parity ────────────────────────────────────
     //
     // The us1b ExpressionTranslationTest already covers translation. These tests

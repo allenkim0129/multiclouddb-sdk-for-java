@@ -80,27 +80,27 @@ constraints apply only after the provider passes the core capability gate.
 All validation failures are non-retryable `INVALID_REQUEST` and perform zero
 provider I/O. Exactly 408,576 serialized bytes passes; 408,577 fails.
 
-## 4. Capabilities
+## 4. Capability
 
-Two declarations are retained:
+One declaration is introduced:
 
 | Capability | Meaning |
 |---|---|
 | `partial_update` | Provider implements the core shallow set/replace operation. |
-| `partial_update_extended_payload` | Supported provider field mappings do not encounter a lower native request or resulting-item envelope before the common 408,576-byte field-map limit. |
 
-The default client gates only `partial_update`. The payload extension is
-descriptive and never disables ordinary updates. Case-distinct field identity
-is required by the base operation.
+The default client gates `partial_update`. Native request and resulting-item
+limits remain explicit through non-retryable, reason-coded provider errors;
+they do not define another capability. Case-distinct field identity is required
+by the base operation.
 
-| Provider | Core | Extended payload |
-|---|---|---|
-| Cosmos DB | supported | unsupported |
-| DynamoDB | supported | unsupported |
-| Spanner | not advertised | not advertised |
+| Provider | Core |
+|---|---|
+| Cosmos DB | supported |
+| DynamoDB | supported |
+| Spanner | explicitly unsupported |
 
-Cosmos DB and DynamoDB declare all 19 known capability names. Unchanged Spanner
-retains its existing 17 declarations.
+All three providers declare all 18 known capability names. Spanner
+marks `partial_update` unsupported.
 
 ## 5. Cosmos DB design
 
@@ -115,104 +115,48 @@ Each raw field name becomes one RFC 6901 segment:
 Every assignment uses `CosmosPatchOperations.set`. No key or TTL operation is
 added.
 
-### 5.2 Direct and wide plans
+### 5.2 Single-patch plan
 
 ```text
 1..10 fields
-  -> one patchItem
+ -> sort literal names for deterministic operation order
+ -> one patchItem
 
 11+ fields
-  -> chunks of at most 10 set operations
-  -> one CosmosBatch
-  -> every batch operation targets the same item ID and partition key
-  -> one executeCosmosBatch
+ -> shared INVALID_REQUEST before provider delegation
 ```
 
-There is no read, merge, replace, independent patch loop, or adapter retry loop.
+There is no read, merge, replace, transactional batch, independent patch loop,
+or adapter retry loop.
 
-### 5.3 Local batch envelope
+### 5.3 Portable field-count envelope
 
-Before constructing an executable wide request, the package-private planner
-mirrors the public SDK JSON body shape:
-
-```json
-[
-  {
-    "operationType": "Patch",
-    "id": "item-id",
-    "resourceBody": {
-      "operations": [
-        {"op": "set", "path": "/field", "value": "value"}
-      ]
-    }
-  }
-]
-```
-
-The planner measures UTF-8 bytes and batch-operation count. It rejects:
-
-- more than 100 batch operations; or
-- more than 2,097,152 serialized bytes.
-
-The local error is non-retryable `UNSUPPORTED_CAPABILITY`,
-`capability=partial_update_extended_payload`, with:
-
-- `reason=cosmos_transactional_batch_limit`
-- `actualOperations`
-- `maximumOperations=100`
-- `actualBytes`
-- `maximumBytes=2097152`
-
-Both direct and wide accepted plans issue one adapter SDK call. Wide-plan cost
-is still proportional to the number of patch chunks.
+Shared preflight rejects more than 10 fields before any provider call. The
+package-private Cosmos planner repeats this check defensively for direct SPI
+integrators. Every accepted Cosmos update therefore incurs exactly one point
+patch request, bounding RU asymmetry with DynamoDB.
 
 ### 5.4 Service result-item envelope
 
-A fields map can pass shared and batch preflight but push the existing Cosmos
+A fields map can pass shared preflight but push the existing Cosmos
 document over the service's 2,097,152-byte item limit. No read/merge preflight
-is added. If the one attempted direct patch or transactional batch reports HTTP
+is added. If the one attempted direct patch reports HTTP
 413 during `update()`, it maps to non-retryable `UNSUPPORTED_CAPABILITY` with:
 
 - `reason=cosmos_result_item_size_limit`
-- `capability=partial_update_extended_payload`
 - `maximumResultBytes=2097152`
 
 A thrown direct-patch exception preserves its cause and sanitized native
-metadata. A failed batch preserves aggregate/result diagnostics. HTTP 413 from
+metadata.  HTTP 413 from
 other operations retains the normal Cosmos provider-error mapping.
 
-### 5.5 Failed batch selection
-
-For a non-success `CosmosBatchResponse`:
-
-1. select the first failed operation with a usable HTTP 4xx/5xx status other
-   than 424;
-2. otherwise use a usable non-424 aggregate 4xx/5xx status;
-3. otherwise return `PROVIDER_ERROR` stating that no root operation status was
-   supplied.
-
-The selected status uses the same category/retry policy as a thrown
-`CosmosException`. In particular:
-
-- 404 → `NOT_FOUND`, not retryable;
-- 408 → `TRANSIENT_FAILURE`, retryable;
-- 410 → `TRANSIENT_FAILURE`, retryable, substatus retained;
-- 413 during `update()` → `UNSUPPORTED_CAPABILITY`, not retryable;
-- 429 → `THROTTLED`, retryable; and
-- 5xx → `TRANSIENT_FAILURE`, retryable.
-
-HTTP 424 is rollback fallout and is never caller-facing root cause.
-
-### 5.6 Response bodies and diagnostics
+### 5.5 Response bodies and diagnostics
 
 `contentResponseOnWriteEnabled(false)` is safe because existing write methods
 return `void` and consume only response metadata. Tests retain status,
 activity ID, request charge, duration, and diagnostics for create, patch,
 upsert, and delete paths.
 
-Batch diagnostics log only operation/address, aggregate status/substatus,
-activity ID, charge, operation count, latency, and native diagnostics. They do
-not log field values or request bodies.
 
 ## 6. DynamoDB design
 
@@ -245,7 +189,6 @@ An expression above 4,096 bytes fails locally with non-retryable
 `UNSUPPORTED_CAPABILITY` and:
 
 - `reason=dynamodb_update_expression_limit`
-- `capability=partial_update_extended_payload`
 - `actualExpressionBytes`
 - `maximumExpressionBytes=4096`
 
@@ -259,7 +202,6 @@ single `UpdateItem` returns the size-specific `ValidationException` message,
 only that variant maps to non-retryable `UNSUPPORTED_CAPABILITY` with:
 
 - `reason=dynamodb_result_item_size_limit`
-- `capability=partial_update_extended_payload`
 - `maximumResultBytes=409600`
 
 Sanitized native error code, status, request ID, and service details remain
@@ -275,7 +217,7 @@ needed by the pinned SDK so a clean module-path compilation succeeds.
 ### Completed focused unit layer
 
 - API validator/default-client/size/public-contract/capability tests
-- Cosmos planner, direct provider, wide provider, error mapping, diagnostics,
+- Cosmos planner, direct provider, field-limit, error mapping, diagnostics,
   response-body configuration, update-only 413 normalization, and updated
   consistency tests
 - Dynamo planner, provider, and structured mapper tests
@@ -286,16 +228,15 @@ needed by the pinned SDK so a clean module-path compilation succeeds.
 All providers inherit shared validation coverage for invalid maps, names, TTL,
 and the 408,577-byte rejection because validation precedes the core gate.
 Supported behavior—preservation, missing-item handling, replay, concurrency,
-wide updates, and case identity—runs only when `partial_update` is advertised.
-A dedicated shared assertion verifies that unchanged Spanner returns
+field-count rejection, literal-name handling, and case identity—runs only when `partial_update` is advertised.
+A dedicated shared assertion verifies that Spanner explicitly declares the capability unsupported and returns
 `UNSUPPORTED_CAPABILITY` with `capability=partial_update` and does not mutate
 state.
 
-The exact 408,576-byte runtime assertion remains gated by
-`partial_update_extended_payload`. Neither participating provider advertises
-that extension, so the positive boundary is locked by API validator tests while
-Cosmos and Dynamo exercise their lower native envelopes in concrete emulator
-regressions.
+The exact 408,576-byte positive boundary is locked by API validator tests. A
+shared provider-runtime success assertion is intentionally omitted because a
+native request or resulting-item limit may reject an otherwise-valid map.
+Cosmos and Dynamo exercise those native limits in concrete emulator regressions.
 
 `CosmosConformanceTest` and `DynamoConformanceTest` seed native items below their
 service limits, apply small portable updates that would push the results above

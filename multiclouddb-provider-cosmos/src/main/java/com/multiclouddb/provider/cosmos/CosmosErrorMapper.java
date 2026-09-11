@@ -6,7 +6,6 @@ package com.multiclouddb.provider.cosmos;
 import com.azure.cosmos.CosmosException;
 import com.azure.cosmos.models.CosmosBatchOperationResult;
 import com.azure.cosmos.models.CosmosBatchResponse;
-import com.multiclouddb.api.Capability;
 import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
@@ -129,7 +128,6 @@ public final class CosmosErrorMapper {
     }
 
     private static void addResultItemSizeLimitDetails(Map<String, String> details) {
-        details.put("capability", Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD);
         details.put("reason", RESULT_ITEM_SIZE_LIMIT_REASON);
         details.put("maximumResultBytes", MAXIMUM_RESULT_BYTES);
     }

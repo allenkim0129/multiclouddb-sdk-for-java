@@ -86,22 +86,23 @@ public interface MulticloudDbClient extends AutoCloseable {
      * {@code sortKey}, {@code ttl}, {@code ttlExpiry}, or {@code data}; a name beginning with
      * {@code _}; two names that collide ignoring case (for example {@code foo} and
      * {@code Foo}); a non-null {@link OperationOptions#ttlSeconds()} (TTL is supported only by
-     * {@code create()}/{@code upsert()}); and a serialized field map larger than exactly
-     * 408,576 bytes (399 KiB).
+     * {@code create()}/{@code upsert()}); more than 10 fields in one call; and a serialized
+     * field map larger than exactly 408,576 bytes (399 KiB). The 10-field portable bound keeps
+     * every accepted update to one atomic native write operation.
      * <p>
      * The operation is available only when the provider advertises
      * {@link Capability#PARTIAL_UPDATE}. Cosmos DB and DynamoDB advertise it in this release.
-     * The unchanged Spanner provider does not, so a valid call returns non-retryable
+     * The Spanner provider explicitly does not, so a valid call returns non-retryable
      * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} after shared validation and
      * before provider delegation. Participating providers preserve case-distinct field names
      * as separate literal top-level fields.
      * <p>
-     * The separate {@link Capability#PARTIAL_UPDATE_EXTENDED_PAYLOAD} models only
-     * whether supported provider field mappings can reach the common limit without a lower
-     * native request or resulting-item envelope. DynamoDB can reject after one attempted
-     * {@code UpdateItem} when the existing item plus otherwise-valid fields would exceed
-     * 400 KiB (409,600 bytes); that state-dependent failure is non-retryable
-     * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}.
+     * Provider-native request or resulting-item limits can still reject an otherwise-valid
+     * update. These failures are non-retryable
+     * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} with a stable
+     * {@code providerDetails.reason} and limit details. State-dependent resulting-item
+     * failures may follow one attempted native update; providers do not add a read/merge
+     * preflight.
      *
      * @param address  target database + collection
      * @param key      document key identifying an existing document
@@ -109,7 +110,7 @@ public interface MulticloudDbClient extends AutoCloseable {
      * @param options  operation options; {@code ttlSeconds} must be null for {@code update()}
      * @throws MulticloudDbException category {@link MulticloudDbErrorCategory#NOT_FOUND} if the
      *         key does not exist, or {@link MulticloudDbErrorCategory#INVALID_REQUEST} for an
-     *         invalid field map, name, collision, update TTL, or over-size payload;
+     *         invalid field map, name, collision, update TTL, field count, or over-size payload;
      *         {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} if the provider does
      *         not advertise partial update or a native envelope rejects the request
      */

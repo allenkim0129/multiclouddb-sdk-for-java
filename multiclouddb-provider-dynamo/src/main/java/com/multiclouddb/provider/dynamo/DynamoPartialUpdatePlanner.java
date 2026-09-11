@@ -8,7 +8,6 @@ import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.OperationNames;
 import com.multiclouddb.api.ProviderId;
-import com.multiclouddb.api.Capability;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
 import java.nio.charset.StandardCharsets;
@@ -29,8 +28,8 @@ import java.util.TreeMap;
  * shapes are preserved. No TTL assignment is ever added.
  * <p>
  * The completed update expression is measured in UTF-8: 4,096 bytes is accepted; 4,097 bytes is
- * rejected before any DynamoDB call with a non-retryable {@code UNSUPPORTED_CAPABILITY} tied to
- * {@code partial_update_extended_payload}.
+ * rejected before any DynamoDB call with a non-retryable {@code UNSUPPORTED_CAPABILITY}
+ * carrying structured reason and limit details.
  */
 final class DynamoPartialUpdatePlanner {
 
@@ -85,13 +84,12 @@ final class DynamoPartialUpdatePlanner {
     static MulticloudDbException limitError(int expressionBytes) {
         Map<String, String> details = new LinkedHashMap<>();
         details.put("reason", EXPRESSION_LIMIT_REASON);
-        details.put("capability", Capability.PARTIAL_UPDATE_EXTENDED_PAYLOAD);
         details.put("actualExpressionBytes", String.valueOf(expressionBytes));
         details.put("maximumExpressionBytes", String.valueOf(MAX_EXPRESSION_BYTES));
         return new MulticloudDbException(new MulticloudDbError(
                 MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
-                "DynamoDB update expression exceeds the native envelope for "
-                        + "partial_update_extended_payload: " + expressionBytes
+                "DynamoDB update expression exceeds the native partial-update envelope: "
+                        + expressionBytes
                         + " bytes (max 4 KiB / " + MAX_EXPRESSION_BYTES + " bytes).",
                 ProviderId.DYNAMO, OperationNames.UPDATE, false, details));
     }

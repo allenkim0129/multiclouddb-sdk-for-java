@@ -7,8 +7,6 @@ import com.azure.cosmos.CosmosClient;
 import com.azure.cosmos.CosmosContainer;
 import com.azure.cosmos.CosmosDatabase;
 import com.azure.cosmos.CosmosException;
-import com.azure.cosmos.models.CosmosBatch;
-import com.azure.cosmos.models.CosmosBatchResponse;
 import com.azure.cosmos.models.CosmosItemResponse;
 import com.azure.cosmos.models.CosmosPatchItemRequestOptions;
 import com.azure.cosmos.models.CosmosPatchOperations;
@@ -36,7 +34,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -87,19 +84,14 @@ class CosmosPartialUpdateTest {
     }
 
     @Test
-    void wideUpdateUsesOneAtomicBatch() {
-        CosmosBatchResponse response = mock(CosmosBatchResponse.class);
-        when(response.isSuccessStatusCode()).thenReturn(true);
-        when(response.getResults()).thenReturn(List.of());
-        when(container.executeCosmosBatch(any(CosmosBatch.class))).thenReturn(response);
+    void moreThanTenFieldsAreRejectedWithoutCosmosCall() {
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> provider.update(ADDRESS, KEY, fields(11), OperationOptions.defaults()));
 
-        provider.update(ADDRESS, KEY, fields(11), OperationOptions.defaults());
-
-        ArgumentCaptor<CosmosBatch> batch = ArgumentCaptor.forClass(CosmosBatch.class);
-        verify(container).executeCosmosBatch(batch.capture());
-        assertEquals(2, batch.getValue().getOperations().size());
-        batch.getValue().getOperations().forEach(operation -> assertEquals("item", operation.getId()));
-        verifyNoMoreInteractions(container);
+        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
+        assertEquals("partial_update_field_count_limit",
+                ex.error().providerDetails().get("reason"));
+        verifyNoInteractions(cosmosClient);
     }
 
     @Test
@@ -118,16 +110,6 @@ class CosmosPartialUpdateTest {
         assertEquals(MulticloudDbErrorCategory.NOT_FOUND, ex.error().category());
         assertFalse(ex.error().retryable());
         assertSame(failure, ex.getCause());
-    }
-
-    @Test
-    void nativeEnvelopeFailurePerformsNoCosmosCall() {
-        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                () -> provider.update(ADDRESS, KEY, fields(1001), OperationOptions.defaults()));
-
-        assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY, ex.error().category());
-        verifyNoInteractions(cosmosClient);
-        verify(container, never()).executeCosmosBatch(any(CosmosBatch.class));
     }
 
     private static Map<String, Object> fields(int count) {
