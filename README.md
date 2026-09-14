@@ -382,7 +382,7 @@ All configuration flows through `MulticloudDbClientConfig` or a `.properties` fi
 | Property | Description | Example |
 |----------|-------------|---------|
 | `multiclouddb.provider` | Provider ID | `cosmos`, `dynamo`, `spanner` |
-| `multiclouddb.connection.*` | Connection properties | `endpoint`, `key`, `region`, `gatewayV2Enable` |
+| `multiclouddb.connection.*` | Connection properties | `endpoint`, `key`, `region` |
 | `multiclouddb.auth.*` | Authentication properties | `accessKeyId`, `secretAccessKey` |
 | `multiclouddb.feature.*` | Feature flags | Provider-specific opt-ins |
 
@@ -392,29 +392,15 @@ All configuration flows through `MulticloudDbClientConfig` or a `.properties` fi
 |-----|-------|
 | `multiclouddb.connection.endpoint` | `https://localhost:8081` (emulator) or your Cosmos account URI |
 | `multiclouddb.connection.key` | Master key or Cosmos emulator well-known key |
-| `multiclouddb.connection.gatewayV2Enable` | Unset for automatic Gateway V2 probe/fallback (default), `false` to disable Gateway V2, or `true` to enable it without the connectivity probe |
 
-Cosmos clients always use Gateway mode over HTTP/2. Direct mode and HTTP/2
-enablement are not configurable. HTTP/2 is required for Gateway V2, Integrated
-Cache, and newer Cosmos features supported by Multicloud DB.
+Cosmos clients always use Gateway mode with HTTP/2 enabled. Connection mode,
+HTTP version, and Gateway version are not configurable through Multicloud DB.
+Azure Cosmos DB account configuration and SDK connectivity checks automatically
+select Gateway V1 or V2 for each eligible request.
 
-Gateway V2 is the default profile for standard Cosmos account endpoints. Azure
-Cosmos DB Integrated Cache is an account-level, provider-native option enabled
-by provisioning paid
-[Dedicated Gateway](https://learn.microsoft.com/azure/cosmos-db/dedicated-gateway)
-compute. When enabled, cache requests automatically use Gateway V1 even when
-Gateway V2 is enabled. No Gateway V2 opt-out is required. Configure the
-Dedicated Gateway endpoint and an eligible consistency level, such as:
-
-```properties
-multiclouddb.connection.endpoint=https://your-account.sqlx.cosmos.azure.com:443/
-multiclouddb.connection.consistencyLevel=EVENTUAL
-```
-
-At client creation, the provider logs Gateway mode, HTTP/2 enablement, and the
-effective Gateway V2 preference. Azure Cosmos DB selects the actual route per
-request. See the [configuration guide](docs/configuration.md#transport-profiles)
-for details.
+At client creation, the provider logs the fixed transport and automatic route
+selection policy, not a negotiated Gateway version. See the
+[configuration guide](docs/configuration.md#transport-defaults) for details.
 
 ### DynamoDB connection properties
 

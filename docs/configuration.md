@@ -47,7 +47,6 @@ Select a provider and supply its connection and auth properties.
 | `multiclouddb.connection.endpoint` | Cosmos DB account URI or emulator URI |
 | `multiclouddb.connection.key` | Master key (omit for Azure Identity auth) |
 | `multiclouddb.connection.tenantId` | Azure AD tenant ID (optional, for Entra ID) |
-| `multiclouddb.connection.gatewayV2Enable` | Gateway V2 routing override: unset for automatic probe/fallback (default), `false` to disable Gateway V2, or `true` to enable it without the connectivity probe |
 | `multiclouddb.connection.consistencyLevel` | Read consistency override (optional — see below) |
 
 ### Authentication Modes
@@ -64,75 +63,38 @@ Select a provider and supply its connection and auth properties.
 - **Master key** - when `connection.key` is provided, uses shared-key authentication.
   Suitable for local emulator development only.
 
-### Transport Profiles
+### Transport Defaults
 
-The provider always uses **Gateway mode over HTTP/2**. Direct mode and HTTP/2
-enablement are intentionally not configurable. HTTP/2 is required for Gateway
-V2, Integrated Cache, and newer Cosmos features supported by Multicloud DB.
+The provider always uses **Gateway mode with HTTP/2 enabled**. Connection mode
+and HTTP version are intentionally not configurable. HTTP/2 is required for
+Gateway V2 and newer Cosmos features supported by Multicloud DB.
 
-Both deployment profiles use this fixed HTTP/2 transport:
+#### Automatic Gateway version selection
 
-| Profile | Endpoint | `gatewayV2Enable` | Recommended consistency |
-|---------|----------|---------------------|-------------------------|
-| Standard Gateway (V2 default) | Standard `documents.azure.com` account endpoint | Unset for probe/fallback; `true` to enable without probing; `false` to disable V2 | Account default |
-| Dedicated Gateway with Integrated Cache | Provisioned `sqlx.cosmos.azure.com` Dedicated Gateway endpoint | Any; Integrated Cache automatically routes through V1 | `SESSION` or `EVENTUAL`; examples use `EVENTUAL` |
+Multicloud DB does not expose a Gateway V1/V2 selector. The Cosmos account
+response advertises whether Gateway V2 endpoints are available. With Gateway
+mode and HTTP/2 enabled, Azure Cosmos DB SDK 4.82 probes an advertised endpoint
+and routes eligible data-plane requests through Gateway V2 only after a
+successful probe. If the account does not advertise Gateway V2 or the probe
+does not succeed, routing remains on Gateway V1. Metadata and other ineligible
+operations may also continue to use Gateway V1.
 
-#### Gateway V2 (default)
-
-With `gatewayV2Enable` unset, Azure Cosmos DB SDK 4.82 probes Gateway V2
-connectivity and uses it when available; otherwise it automatically falls back
-to Gateway V1. Set `multiclouddb.connection.gatewayV2Enable=true` only for an
-explicit enablement that bypasses the connectivity probe. This preference does not
-override service-side routing decisions; Integrated Cache requests still use
-Gateway V1.
-
-The earlier draft key `thinClientEnabled` is rejected with guidance to use
-`gatewayV2Enable`, preventing a stale opt-out from silently reverting to AUTO.
-
-#### Dedicated Gateway with Integrated Cache
-
-[Integrated Cache](https://learn.microsoft.com/azure/cosmos-db/integrated-cache)
-is an account-level Azure-managed, in-memory read cache enabled by provisioning
-paid
-[Dedicated Gateway](https://learn.microsoft.com/azure/cosmos-db/dedicated-gateway)
-compute. Integrated Cache requires HTTP/2 and automatically routes eligible
-cache requests through Gateway V1, even when Gateway V2 is enabled.
-
-After provisioning a Dedicated Gateway, configure its endpoint and an eligible
-consistency level. No `gatewayV2Enable=false` setting is required:
-
-```properties
-multiclouddb.connection.endpoint=https://your-account.sqlx.cosmos.azure.com:443/
-multiclouddb.connection.consistencyLevel=EVENTUAL
-```
-
-Only cache-hit point reads and queries can return with 0 RU. Writes, cache
-misses, and Dedicated Gateway compute still incur their normal costs. This is a
-Cosmos-specific deployment profile, not a portable read-through-cache
-capability. This release does not expose `MaxIntegratedCacheStaleness`; the
-Dedicated Gateway service-side default applies. Custom portable cache policy,
-including configurable staleness and cross-provider capability gating, remains
-future work.
+The wrapper neither reads nor writes Azure SDK internal thin-client flags.
+Gateway version remains controlled by Cosmos account configuration and native
+SDK routing logic rather than a Multicloud DB connection property.
 
 After successful client construction, the provider logs Gateway mode, HTTP/2
-enablement, and the effective Gateway V2 preference at that moment. This is a
-configuration snapshot, not a negotiated route: Azure Cosmos DB selects the
-actual route per request, and accounts with Integrated Cache use Gateway V1.
+enablement, and that Gateway routing is selected automatically. This is a
+configuration snapshot, not a negotiated route, because selection occurs after
+construction and may vary by request.
 
-#### JVM-wide selection
+#### Removed transport settings
 
-The Azure SDK implements Gateway V2 selection through a JVM-wide native
-thin-client setting. An existing
-`COSMOS.THINCLIENT_ENABLED` system property or `COSMOS_THINCLIENT_ENABLED`
-environment variable takes precedence over the connection property. When
-multiple Cosmos clients run in one JVM, configure the same value for all of
-them. The SDK reads this value lazily, so setting it for a later client can also
-change routing for an existing client. Clients that require different Gateway
-V2 preferences must use separate JVM processes.
-
-Native values should be `true` or `false`. Azure Cosmos DB SDK warns and treats
-any other native value as unset/AUTO; the construction snapshot reports that
-effective preference without also claiming AUTO is disabled.
+`connectionMode`, `gatewayHttp2Enabled`, and the pre-release
+`gatewayV2Enable`/`thinClientEnabled` keys are rejected instead of being
+silently ignored. Remove them from existing configuration. Gateway mode and
+HTTP/2 are fixed, while Gateway version selection belongs to the account and
+Azure SDK.
 
 ### Consistency Level
 

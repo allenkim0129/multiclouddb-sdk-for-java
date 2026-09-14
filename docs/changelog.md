@@ -62,13 +62,6 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Added:**
 
-- `gatewayV2Enable` Cosmos connection setting for explicit Gateway V2 routing
-  opt-in or opt-out. When unset, the Azure Cosmos DB SDK probes Gateway V2 and
-  automatically falls back to Gateway V1 when unavailable.
-- A documented, provider-native Dedicated Gateway with Integrated Cache profile
-  using its `sqlx` endpoint and `EVENTUAL` consistency. Integrated Cache is an
-  account-level option that requires HTTP/2 and automatically uses Gateway V1,
-  even when Gateway V2 is enabled.
 - Change-feed reader backed by `CosmosContainer.queryChangeFeed(...)` and `getFeedRanges()`. `listCursors` mints one cursor per feed range at the live tip via a one-item warmup query that captures a real continuation token (with a `@@PIT:<epoch-millis>` fallback for older SDKs). `readChanges` drains one page per call, rotates the partition list across ranges so multi-range cursors are not starved, and uses All-Versions-and-Deletes (AVAD) mode so `ChangeEvent.type()` distinguishes `CREATE` / `UPDATE` / `DELETE`. The target container must be provisioned with an AVAD `ChangeFeedPolicy`. HTTP 410 GONE on `queryChangeFeed` is mapped to `CursorExpiredException(reason=PROVIDER_TRIMMED)`.
 - Extended-retention provisioning: `CosmosProviderClient.ensureContainer(address)` provisions an AVAD `ChangeFeedPolicy` carrying the duration from `ChangeFeedConfig.extendedRetention(...)` when the user opted in, and reads back the active policy — throwing `UNSUPPORTED_CAPABILITY(reason="extended_retention_not_enacted")` when a pre-existing container''s retention does not match. A 400 BadRequest whose message fingerprint indicates the Cosmos account lacks Continuous Backup is re-mapped to `UNSUPPORTED_CAPABILITY(reason="continuous_backup_required")`. `CosmosCapabilities` declares `EXTENDED_CHANGE_FEED_HISTORY_CAP` (up to 30 days via Continuous Backup; 7d minimum).
 - `consistencyLevel` connection config key for opt-in client-level read consistency override (`STRONG`, `BOUNDED_STALENESS`, `SESSION`, `CONSISTENT_PREFIX`, `EVENTUAL`). When absent, reads inherit the account''s configured default.
@@ -77,21 +70,20 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 **Changed:**
 
 - Cosmos clients now always use Gateway mode with HTTP/2 enabled. The
-  `azure-cosmos` dependency is upgraded from 4.78.0 to 4.82.0.
-- Renamed the pre-release Cosmos setting `thinClientEnabled` to
-  `gatewayV2Enable`; the stale name now fails with migration guidance.
-- Cosmos construction now parses wrapper-owned settings before publishing the
-  JVM-wide Gateway V2 preference. Successful construction logs Gateway mode,
-  fixed HTTP/2 enablement, and the effective Gateway V2 preference without
-  claiming a negotiated request route.
+  `azure-cosmos` dependency is upgraded from 4.78.0 to 4.82.0 so account-advertised
+  Gateway V2 endpoints and the SDK connectivity probe select routing automatically.
+- Gateway version selection is left to Cosmos account configuration and the
+  Azure SDK. Successful construction logs the fixed Gateway/HTTP2 policy and
+  automatic selection without claiming a negotiated request route.
 - Removed the hardcoded `ConsistencyLevel.SESSION` override from `CosmosClientBuilder`. Accounts with a default of `STRONG` or `BOUNDED_STALENESS` will now serve reads at their configured level. To restore the previous behaviour, set `multiclouddb.connection.consistencyLevel=SESSION`.
 - `BETWEEN` translation now wraps in parentheses (`(c.field BETWEEN @lo AND @hi)`) to avoid a Cosmos NoSQL parser ambiguity with trailing `AND`.
 
 **Removed:**
 
 - `connectionMode` and its public constants; Direct mode is no longer
-  selectable. Stale `connectionMode` and `gatewayHttp2Enabled` settings fail
-  fast.
+  selectable. Stale `connectionMode`, `gatewayHttp2Enabled`, and pre-release
+  `gatewayV2Enable`/`thinClientEnabled` settings fail fast. Multicloud DB
+  exposes no HTTP-version or Gateway-version selector.
 - `CosmosConstants.CONSISTENCY_LEVEL_DEFAULT` — removed without a deprecation cycle (pre-release). Callers should use `ConsistencyLevel.SESSION` directly.
 
 **Documentation:**

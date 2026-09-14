@@ -22,9 +22,9 @@ This document records the decisions that support the design in
 - **Decision**: Attach `new Http2ConnectionConfig().setEnabled(true)` to the
   fixed `GatewayConnectionConfig`.
 - **Rationale**: Azure Cosmos SDK 4.82.0 still defaults Gateway HTTP/2 to
-  disabled internally. Gateway V2, Integrated Cache, and newer Cosmos features
-  require HTTP/2, so relying on the native default would not satisfy the
-  Multicloud DB transport contract.
+  disabled internally. Gateway V2 and newer Cosmos features require HTTP/2, so
+  relying on the native default would not satisfy the Multicloud DB transport
+  contract.
 - **Alternatives considered**:
   - Rely on the SDK default: rejected because it remains HTTP/2-off.
   - Set only `COSMOS.HTTP2_ENABLED`: rejected because it introduces ambient
@@ -43,97 +43,58 @@ This document records the decisions that support the design in
   - Implement a wrapper-owned probe: rejected by the thin-wrapper principle and
     would duplicate provider SDK networking logic.
 
-## Decision 4: Preserve the SDK tri-state
+## Decision 4: Expose no Gateway version selector
 
-- **Decision**:
-  - unset -> leave `COSMOS.THINCLIENT_ENABLED` unset (`AUTO`);
-  - `false` -> set the SDK hard opt-out;
-  - `true` -> enable Gateway V2 without the connectivity probe.
-- **Rationale**: Writing `true` as the wrapper default would skip the 4.82.0
-  connectivity probe. Leaving the property absent is the only way to obtain
-  probe-gated Gateway V2 with Gateway V1 fallback.
+- **Decision**: Do not expose a Multicloud DB Gateway V1/V2 option and do not
+  read or write the Azure SDK's internal thin-client flags.
+- **Rationale**: Gateway V2 availability is advertised by the Cosmos account,
+  and SDK 4.82.0 performs its own connectivity probe. The SDK has no supported
+  public per-client Gateway V2 builder API; its JVM flags are implementation
+  details that were introduced for internal testing and emergency control.
+  Promoting them into the wrapper would create an unsupported, process-wide
+  public contract and could bypass the safe probe.
 - **Alternatives considered**:
-  - Default the wrapper property to `true`: rejected because it bypasses the
-    probe.
-  - Support only `false`: rejected because a strict Boolean override is easier
-    to operate and preserves the Azure SDK's explicit opt-in path.
+  - Map a connection property to the internal JVM flag: rejected because it is
+    unsupported, global, and not account provisioning.
+  - Expose only an opt-out: rejected for the same reason; account/service and
+    SDK controls remain authoritative.
+  - Use reflection to mutate SDK internals: rejected as brittle and unsupported.
 
-## Decision 5: Treat Gateway V2 selection as process-wide
+## Decision 5: Delegate Gateway V1/V2 selection
 
-- **Decision**: Map `gatewayV2Enable` to the Azure SDK's JVM-wide native
-  thin-client setting before native client construction. Preserve this precedence:
-  non-empty system property, non-empty environment variable, connection
-  property, then unset SDK default.
-- **Rationale**: Azure SDK 4.82.0 does not expose a per-client Gateway V2
-  builder API. It reads the internally named `COSMOS.THINCLIENT_ENABLED` or
-  `COSMOS_THINCLIENT_ENABLED` from static configuration. Synchronizing the
-  check-and-set prevents two wrapper client constructors from overwriting each
-  other, but applications must still use one value per JVM.
+- **Decision**: Enable Gateway mode and HTTP/2, then leave version selection to
+  the Cosmos account response and Azure SDK connectivity probe.
+- **Rationale**: The account response supplies Gateway V2 readable/writable
+  locations. The SDK starts conservatively on V1, probes an advertised V2
+  endpoint, and enables V2 only after success. Eligible data-plane requests may
+  then use V2; metadata, unsupported operations, missing endpoints, and failed
+  probes remain on V1.
 - **Alternatives considered**:
-  - Pretend the setting is per-client: rejected because that contract would be
-    false.
-  - Remove the Multicloud DB setting and require only a JVM flag: rejected
-    because configuration-only operation is a project principle.
-  - Use reflection to mutate SDK internals: rejected as unsupported and brittle.
+  - Implement wrapper routing or probing: rejected by the thin-wrapper
+    principle and because it would duplicate SDK behavior.
+  - Claim V2 for every request after a successful probe: rejected because route
+    eligibility remains request-specific.
 
-## Decision 6: The query-plan switch needs no wrapper setting
+## Decision 6: Fail fast on removed switches
 
-- **Decision**: Do not expose
-  `COSMOS.THINCLIENT_QUERY_PLAN_ENABLED`.
-- **Rationale**: Query-plan routing first checks the main thin-client
-  eligibility decision. The main `COSMOS.THINCLIENT_ENABLED=false` opt-out
-  therefore prevents Gateway V2 use for query-plan requests as well. The
-  separate Azure setting is a narrower SDK kill switch, not required to meet
-  this feature's all-thin-client opt-out contract.
-- **Alternatives considered**:
-  - Set both flags: rejected because the second flag is redundant for the
-    requested opt-out and would expand wrapper configuration without need.
-
-## Decision 7: Fail fast on removed switches
-
-- **Decision**: Reject `connectionMode` and `gatewayHttp2Enabled` whenever
-  present, even when their values equal the fixed behavior. Reject the earlier
-  draft key `thinClientEnabled` with guidance to use `gatewayV2Enable`.
+- **Decision**: Reject `connectionMode`, `gatewayHttp2Enabled`, and the
+  pre-release `gatewayV2Enable`/`thinClientEnabled` keys whenever present.
 - **Rationale**: This makes migration explicit and prevents configuration files
   from carrying ineffective settings indefinitely.
 - **Alternatives considered**:
-  - Accept `gateway` and `true` for compatibility: rejected because they would
-    remain misleading no-op controls.
+  - Ignore the removed keys: rejected because they would look effective while
+    having no effect.
 
-## Decision 8: Treat Integrated Cache as account-level service routing
-
-- **Decision**: Keep Gateway V2 as the zero-configuration standard-endpoint
-  profile. Dedicated Gateway with Integrated Cache uses its `sqlx` endpoint and
-  `EVENTUAL` consistency in Multicloud DB examples, with no Gateway V2 opt-out.
-- **Rationale**: Integrated Cache is enabled at the Cosmos account level by
-  provisioning paid Dedicated Gateway compute. It requires HTTP/2 and
-  automatically routes eligible cache requests through Gateway V1 even when
-  Gateway V2 is enabled. The wrapper should not infer account configuration
-  from an endpoint or issue a warning for a combination the service resolves.
-- **Scope**: This PR documents a Cosmos-native deployment profile only. It does
-  not add the planned portable cache capability, configurable staleness, or
-  provisioning. The Dedicated Gateway service-side staleness default applies.
-- **Alternatives considered**:
-  - Require `gatewayV2Enable=false`: rejected because Integrated Cache selects
-    Gateway V1 automatically and the opt-out would unnecessarily affect other
-    requests in the JVM.
-  - Make Dedicated Gateway the default: rejected because its paid compute and
-    bounded-staleness cache suit read-heavy workloads, not every workload.
-  - Add a portable cache API in this PR: rejected because that requires a
-    separate cross-provider design covering DynamoDB DAX and Spanner.
-
-## Decision 9: Log configuration, not a negotiated route
+## Decision 7: Log configuration, not a negotiated route
 
 - **Decision**: After successful native client construction, log Gateway mode,
-  fixed HTTP/2 enablement, and the effective Gateway V2 preference. State that
-  Azure Cosmos DB chooses the actual route per request and Integrated Cache uses
-  Gateway V1.
+  fixed HTTP/2 enablement, and automatic account/SDK route selection.
 - **Rationale**: Azure Cosmos SDK 4.82.0 exposes no public client-construction
-  API for the negotiated Gateway version. Gateway V2 eligibility depends on a
-  connectivity probe, service topology, and request type after construction.
+  API for a negotiated Gateway version. V2 eligibility depends on account
+  topology, a connectivity probe, and request type after construction.
 - **Alternatives considered**:
   - Log that the client "uses Gateway V1/V2": rejected because that would turn
-    a configuration preference into a false negotiated-route claim.
+    a fixed configuration into a false negotiated-route claim.
   - Inspect SDK internals via reflection: rejected as unsupported and brittle.
 
 ## Official Sources
@@ -144,11 +105,11 @@ This document records the decisions that support the design in
   <https://github.com/Azure/azure-sdk-for-java/blob/com.azure%2Bazure-cosmos_4.82.0/sdk/cosmos/azure-cosmos/src/main/java/com/azure/cosmos/GatewayConnectionConfig.java>
 - `Http2ConnectionConfig` source:
   <https://github.com/Azure/azure-sdk-for-java/blob/com.azure%2Bazure-cosmos_4.82.0/sdk/cosmos/azure-cosmos/src/main/java/com/azure/cosmos/Http2ConnectionConfig.java>
-- SDK global configuration and tri-state parsing:
+- Account-response model carrying Gateway V2 locations:
+  <https://github.com/Azure/azure-sdk-for-java/blob/com.azure%2Bazure-cosmos_4.82.0/sdk/cosmos/azure-cosmos/src/main/java/com/azure/cosmos/implementation/DatabaseAccount.java>
+- SDK Gateway V2 connectivity configuration and probe:
+  <https://github.com/Azure/azure-sdk-for-java/blob/com.azure%2Bazure-cosmos_4.82.0/sdk/cosmos/azure-cosmos/src/main/java/com/azure/cosmos/implementation/ThinClientConnectivityConfig.java>
+  and
+  <https://github.com/Azure/azure-sdk-for-java/blob/com.azure%2Bazure-cosmos_4.82.0/sdk/cosmos/azure-cosmos/src/main/java/com/azure/cosmos/implementation/EndpointProbeClient.java>
+- Internal SDK flags (not a public builder contract):
   <https://github.com/Azure/azure-sdk-for-java/blob/com.azure%2Bazure-cosmos_4.82.0/sdk/cosmos/azure-cosmos/src/main/java/com/azure/cosmos/implementation/Configs.java>
-- Query-plan Gateway V2 gate:
-  <https://github.com/Azure/azure-sdk-for-java/blob/com.azure%2Bazure-cosmos_4.82.0/sdk/cosmos/azure-cosmos/src/main/java/com/azure/cosmos/implementation/query/QueryPlanRetriever.java>
-- Dedicated Gateway overview:
-  <https://learn.microsoft.com/azure/cosmos-db/dedicated-gateway>
-- Configure Integrated Cache:
-  <https://learn.microsoft.com/azure/cosmos-db/how-to-configure-integrated-cache>

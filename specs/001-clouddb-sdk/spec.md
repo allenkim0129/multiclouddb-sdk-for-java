@@ -510,7 +510,7 @@ As an application developer, I can enable request hedging (a portable "availabil
 
 As an application developer, I can opt into a read-through cache for hot, repeatedly-read items so that repeated point reads of the same item are served from a provider-managed cache, reducing request cost and read latency.
 
-**Why this priority**: Workloads that repeatedly read the same records (reference/matrix data, configuration) incur disproportionate request-unit/capacity cost. Providers offer managed caches (Cosmos DB integrated cache, DynamoDB DAX) that are transparent to application code; exposing this as a portable, capability-gated opt-in materially improves cost and latency without changing read/write code.
+**Why this priority**: Workloads that repeatedly read the same records (reference/matrix data, configuration) incur disproportionate request-unit/capacity cost. Provider-managed caches can be transparent to application code; exposing caching as a portable, capability-gated opt-in materially improves cost and latency without changing read/write code.
 
 **Independent Test**: A sample repeatedly reads the same item with caching enabled and observes reduced request cost/latency on cache hits (verifiable via diagnostics), with a configurable staleness/eviction bound. Same opt-in works on providers that support it.
 
@@ -934,8 +934,8 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 #### Read-Through Caching Requirements
 
 - **FR-173**: The SDK MUST provide an opt-in, configuration-only read-through caching capability for point reads, transparent to the data-plane API (no read/write code changes required to benefit).
-- **FR-174**: Each provider adapter MUST map read-through caching to the provider's managed cache where available (e.g., Cosmos DB integrated cache, DynamoDB DAX) and MUST document the mapping. Enabling caching on an unsupported provider/topology MUST fail before reads execute. Uncached execution requires a separate explicit fallback policy and MUST be reported in diagnostics.
-- **FR-175**: Portable cache hits MUST be limited to `EVENTUAL` reads because Cosmos DB integrated cache and DynamoDB DAX cannot serve stronger reads from cache. Read-through caching MUST expose a configurable staleness/eviction bound. Combining caching with `LOCAL_QUORUM` or `GLOBAL_STRONG` MUST fail before execution unless the application explicitly selects the diagnosed uncached-fallback policy.
+- **FR-174**: Each provider adapter MUST map read-through caching to a provider-managed cache where available and MUST document the mapping. Enabling caching on an unsupported provider/topology MUST fail before reads execute. Uncached execution requires a separate explicit fallback policy and MUST be reported in diagnostics.
+- **FR-175**: Portable cache hits MUST be limited to `EVENTUAL` reads to preserve the weakest common consistency guarantee across supported provider-managed caches. Read-through caching MUST expose a configurable staleness/eviction bound. Combining caching with `LOCAL_QUORUM` or `GLOBAL_STRONG` MUST fail before execution unless the application explicitly selects the diagnosed uncached-fallback policy.
 - **FR-176**: Cache hits and misses MUST be observable via diagnostics (e.g., a diagnostic flag or metric) so applications can verify cost/latency benefit and tune the configuration.
 
 #### Portable Secondary Lookup and Text Search Requirements
@@ -996,7 +996,7 @@ The following operators and functions form the portable query subset, available 
 | Preferred portable consistency levels (`EVENTUAL` / `LOCAL_QUORUM` / `GLOBAL_STRONG`) | Cosmos DB, DynamoDB, Spanner (capability-gated by level, operation, SDK mode/version, index, and topology) |
 | Global strong consistency (cross-region) | Cosmos DB (global strong), DynamoDB (MRSC global tables only), Spanner (external consistency) |
 | Request hedging / availability strategy | Cosmos DB (cross-region availability strategy); DynamoDB / Spanner where a native mechanism exists (capability-gated) |
-| Read-through caching (hot reads) | Cosmos DB (integrated cache), DynamoDB (DAX); Spanner not supported (capability-gated) |
+| Read-through caching (hot reads) | Provider/topology support declared through capability gating |
 | `SECONDARY_SEARCH` | Cosmos DB (range index), DynamoDB (secondary-index Query), Spanner (secondary index) |
 | `TEXT_SEARCH` | Cosmos DB (full-text index), Spanner Enterprise/Enterprise Plus (search index); DynamoDB unsupported |
 
@@ -1038,7 +1038,7 @@ The following operators and functions form the portable query subset, available 
 - **External Change Store Reader**: A portable, read-only abstraction for consuming change events from a customer-configured external store (Kafka, Kinesis, Event Hubs, Pub/Sub) that the customer's own source connector populates from the database. Exposes the same change-event model and checkpoint/resume semantics as the native change feed. Note: the SDK deliberately does not provide a *sink* that pushes events into such stores — landing data there is the customer's responsibility (see FR-144).
 - **Telemetry Span**: An OpenTelemetry span emitted for each SDK data-plane operation when telemetry is enabled. Contains standard attributes (operation type, provider, database, collection, duration, status) and participates in distributed tracing via W3C Trace Context propagation.
 - **Availability Strategy (Request Hedging)**: A configuration-only, opt-in optimization that reduces read tail latency by issuing at most one secondary request after a configurable threshold. It is capability-gated and exposes hedge rate, physical request count, request amplification, and native cost diagnostics.
-- **Read-Through Cache**: A provider-managed cache for `EVENTUAL` point reads (e.g., Cosmos DB integrated cache, DynamoDB DAX), exposed as a transparent, opt-in, capability-gated feature with a configurable staleness/eviction bound. Unsupported providers, topologies, or consistency combinations fail unless an explicit uncached-fallback policy is configured.
+- **Read-Through Cache**: A provider-managed cache for `EVENTUAL` point reads, exposed as a transparent, opt-in, capability-gated feature with a configurable staleness/eviction bound. Unsupported providers, topologies, or consistency combinations fail unless an explicit uncached-fallback policy is configured.
 - **Secondary Search Index**: A provider-neutral structured index with a scalar equality lookup key and optional scalar range sort field. It is governed by the independent `SECONDARY_SEARCH` capability.
 - **Text Search Index**: A provider-neutral tokenized index with a canonical analyzer profile and portable `ALL_TERMS` / `ANY_TERM` operators. It is governed by `TEXT_SEARCH`; scoring, fuzzy, phrase/proximity, semantic, and vector behavior require separate capabilities.
 
@@ -1175,7 +1175,7 @@ The following operators and functions form the portable query subset, available 
 - **Portable consistency abstraction — current status**: As of this revision, the only consistency selection shipped is a provider-specific connection override (Cosmos DB `consistencyLevel`); a portable, per-operation consistency enumeration (`EVENTUAL` / `LOCAL_QUORUM` / `GLOBAL_STRONG`) and cross-region `GLOBAL_STRONG` support are specified here (FR-163–FR-168) but not yet fully implemented. `GLOBAL_STRONG` is prioritized because it is required by global multi-region use cases.
 - **Consistency cost and latency**: Cosmos DB quorum reads use approximately twice the RU of weaker single-replica reads and global strong increases write latency. DynamoDB strong reads consume twice the capacity of eventual reads, and MRSC trades higher latency/topology restrictions for zero-RPO global reads. Spanner stale reads can reduce latency; strong reads may require cross-region coordination or configured read leases. Actual charges and latency remain provider/topology dependent and are exposed through diagnostics where available.
 - **Request hedging — cost/benefit**: Hedging requires at least two eligible targets. One hedge bounds hedge-attributable branches at 2× logical reads, but retries can raise total physical attempts above 2×. Operators tune it using separate hedge-attributable and total-attempt amplification, latency, and cost diagnostics; cancelled attempts count in total attempts.
-- **Read-through caching — trade-offs**: Portable caching applies to `EVENTUAL` point reads because Cosmos integrated cache and DAX cannot serve strong reads from cache. It trades bounded staleness for reduced cost/latency. Spanner and unsupported consistency/topology combinations fail fast unless the application explicitly configures uncached fallback.
+- **Read-through caching — trade-offs**: Portable caching applies to `EVENTUAL` point reads to preserve a common guarantee across provider-managed cache implementations. It trades bounded staleness for reduced cost/latency. Unsupported providers and consistency/topology combinations fail fast unless the application explicitly configures uncached fallback.
 - **Search capability separation**: Structured alternate-key lookup and tokenized full-text retrieval are separate contracts. `SECONDARY_SEARCH` is available across all three providers. `TEXT_SEARCH` requires a canonical analyzer conformance profile and is available only where the adapter passes that corpus; DynamoDB does not advertise it.
 - **Non-goal — unified single instance across clouds**: The SDK provides cross-cloud **code portability** (the same application code running against Cosmos DB, DynamoDB, or Spanner instances), not a single unified database instance that spans multiple clouds. The SDK does not replicate data between different providers as one logical cluster.
 - **Non-goal — hybrid cloud + on-premises clusters**: Running a single cluster that spans cloud and on-premises data centers (a capability of some source systems) is out of scope for the multicloud DB SDK. None of Cosmos DB, DynamoDB, or Spanner has an on-premises equivalent; hybrid/on-prem topologies remain the domain of the source system.
@@ -1455,7 +1455,7 @@ This checklist is used to accept the feature as “done” at the spec level.
 ### Read-Through Caching
 
 - [ ] Read-through caching is an opt-in, transparent, capability-gated feature (no read/write code changes required).
-- [ ] Mapped to the provider's managed cache (Cosmos DB integrated cache, DynamoDB DAX); unsupported providers/topologies fail before reads execute unless explicit uncached fallback is configured.
+- [ ] Mapped to a provider-managed cache; unsupported providers/topologies fail before reads execute unless explicit uncached fallback is configured.
 - [ ] Portable cache hits are limited to `EVENTUAL` reads; stronger consistency levels fail or use an explicitly configured, diagnosed uncached fallback.
 - [ ] A configurable staleness/eviction bound is exposed and its consistency trade-off documented.
 - [ ] Cache hits/misses are observable via diagnostics.

@@ -7,34 +7,23 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-### Added
-
-- `gatewayV2Enable` connection setting for explicit Gateway V2 routing opt-in
-  or opt-out. When unset, Gateway V2 is eligible by default and the Azure
-  Cosmos DB SDK probes connectivity before routing, with automatic
-  fallback to Gateway V1. Existing `COSMOS.THINCLIENT_ENABLED` system-property
-  or `COSMOS_THINCLIENT_ENABLED` environment-variable settings take precedence.
-- A documented Dedicated Gateway with Integrated Cache profile using the
-  Dedicated Gateway `sqlx` endpoint and `EVENTUAL` consistency. Integrated
-  Cache is an account-level option that requires HTTP/2 and automatically uses
-  Gateway V1, even when Gateway V2 is enabled.
-
 ### Changed
 
 - Cosmos clients now always use Gateway mode with HTTP/2 enabled. Upgraded
-  `azure-cosmos` from 4.78.0 to 4.82.0 for probe-gated Gateway V2 routing.
-- Renamed the pre-release `thinClientEnabled` connection setting to
-  `gatewayV2Enable`; the stale name now fails with migration guidance.
-- Wrapper-owned settings are validated before the JVM-wide Gateway V2 value is
-  published. Successful construction logs Gateway mode, fixed HTTP/2
-  enablement, and the effective Gateway V2 preference without claiming a
-  negotiated request route.
+  `azure-cosmos` from 4.78.0 to 4.82.0 so account-advertised Gateway V2
+  endpoints and the SDK connectivity probe can select routing automatically.
+- Gateway version selection is now left entirely to Cosmos account
+  configuration and the Azure SDK. Successful construction logs the fixed
+  Gateway/HTTP2 policy and automatic selection without claiming a negotiated
+  request route.
 
 ### Removed
 
 - Removed `connectionMode` and its public constants. Direct mode is no longer
-  selectable. Stale `connectionMode` and `gatewayHttp2Enabled` settings now
-  fail fast instead of being silently ignored.
+  selectable. Stale `connectionMode`, `gatewayHttp2Enabled`, and pre-release
+  `gatewayV2Enable`/`thinClientEnabled` settings now fail fast instead of being
+  silently ignored. Multicloud DB exposes no HTTP-version or Gateway-version
+  selector.
 
 ## [0.1.0-beta.2] — 2026-06-17
 

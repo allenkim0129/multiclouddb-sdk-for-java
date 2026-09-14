@@ -39,13 +39,6 @@ class CosmosConstantsTest {
         assertEquals("tenantId", CosmosConstants.CONFIG_TENANT_ID);
     }
 
-
-    @Test
-    @DisplayName("CONFIG_GATEWAY_V2_ENABLE key value")
-    void configGatewayV2EnableKey() {
-        assertEquals("gatewayV2Enable", CosmosConstants.CONFIG_GATEWAY_V2_ENABLE);
-    }
-
     // ── Consistency ───────────────────────────────────────────────────────────
 
     @Test
