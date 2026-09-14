@@ -6,8 +6,9 @@
 ## Summary
 
 Change Cosmos DB and DynamoDB `update()` from full replacement to native shallow
-partial update. Keep the Spanner data path unchanged, declare the capability unsupported, and exclude it through the
-shared `partial_update` capability gate.
+partial update. Keep the Spanner data path unchanged, declare the capability
+unsupported, and exclude it through the shared `partial_update` capability gate
+until release-grade live-account validation is available.
 
 The work is intentionally split:
 
@@ -24,7 +25,7 @@ The work is intentionally split:
 | Shared API/preflight | Complete; capability gate rejects non-participating providers |
 | Cosmos production/unit work | Complete and passing |
 | Dynamo production/unit work | Complete and passing |
-| Spanner provider implementation | Unchanged; zero PR diff and no feature-002 capabilities |
+| Spanner provider implementation | Data path unchanged; unsupported capability declaration and changelog aligned pending live-account validation |
 | Feature artifacts/docs/contracts | Reconciled to Cosmos/Dynamo release scope |
 | Shared conformance | Supported behavior on Cosmos/Dynamo; preflight and unsupported gate on Spanner |
 | Provider-native result-size regressions | Cosmos and Dynamo emulator regressions pass |
@@ -80,7 +81,7 @@ before provider delegation.
 
 1. Keep both existing `update()` overloads and `Map<String,Object>`.
 2. Validate field map/names and reject update TTL.
-3. Enforce the exact 408,576-byte common limit.
+3. Enforce the portable 390 KiB common limit.
 4. Gate `Capability.PARTIAL_UPDATE` before delegation.
 5. Surface lower native request/result envelopes through stable reason and limit
    details without defining another capability.
@@ -118,10 +119,11 @@ before provider delegation.
 Keep provider-neutral invalid-map/name, update-TTL, and oversize preflight tests
 on all providers because validation runs before the core gate. Gate supported
 behavior on `PARTIAL_UPDATE`: Cosmos and Dynamo run preservation, missing-item,
-replay, concurrency, wide-update, and case-identity assertions; Spanner runs a
-dedicated `UNSUPPORTED_CAPABILITY` assertion with zero provider mutation.
+replay, concurrency, and case-identity assertions. All three providers run the
+shared field-count rejection; Spanner additionally runs a dedicated
+`UNSUPPORTED_CAPABILITY` assertion with zero provider mutation.
 
-API tests retain the exact 408,576-byte positive boundary. A shared
+API tests retain the portable 390 KiB positive boundary. A shared
 provider-runtime success assertion is omitted because native envelopes may bind
 first. Concrete Cosmos and Dynamo emulator tests retain native result-item
 regressions.

@@ -56,7 +56,7 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      * Providers receive {@code fields} <em>already validated</em> by the default client:
      * the field map is non-null and non-empty, every name is non-null/non-blank, no name is
      * reserved, underscore-prefixed, or case-colliding, {@code options.ttlSeconds()} is null,
-     * the map contains at most 10 fields, and its serialized form is at most 408,576 bytes.
+     * the map contains at most 10 fields and stays within the portable 390 KiB limit.
      * The default client also owns the core
      * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE} gate and checks it before
      * delegating, so provider adapters MUST NOT duplicate that gate.

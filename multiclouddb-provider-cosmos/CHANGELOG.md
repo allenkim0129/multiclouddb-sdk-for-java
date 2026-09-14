@@ -11,7 +11,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - `update()` now uses one native `patchItem` instead of `replaceItem` for accepted updates of up to 10 fields. Omitted fields are preserved and HTTP 404 remains portable `NOT_FOUND`.
 - Accepted updates issue one Cosmos SDK request. Maps above the portable 10-field limit are rejected by shared preflight before Cosmos I/O, keeping request count and RU cost bounded.
-- Update HTTP 413 is normalized to non-retryable `UNSUPPORTED_CAPABILITY` with `reason=cosmos_result_item_size_limit` and `maximumResultBytes=2097152` (2 MiB); it follows one attempted patch and leaves the document unchanged.
+- Update HTTP 413 is normalized to non-retryable `UNSUPPORTED_CAPABILITY` with `reason=cosmos_result_item_size_limit` and a `maximumResultBytes` detail describing the native ceiling; it follows one attempted patch and leaves the document unchanged.
 - CRUD/update HTTP 408 and 410 are retryable `TRANSIENT_FAILURE` responses, with 410 substatus retained.
 - Declares `PARTIAL_UPDATE` supported; native request and resulting-document limits are surfaced through explicit provider-limit reasons and values.
 

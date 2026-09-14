@@ -122,7 +122,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
             // order and performs zero provider I/O on failure:
             //   1) field-map / 10-field bound / name / reserved / underscore / case-collision
             //      validation and rejection of a non-null update TTL (PartialUpdateValidator),
-            //   2) the common serialized-size check (max 408,576 bytes), then
+            //   2) the portable 390 KiB serialized-size check, then
             //   3) the internal core PARTIAL_UPDATE capability gate.
             PartialUpdateValidator.validate(fields, options, OperationNames.UPDATE);
             DocumentSizeValidator.validate(fields, OperationNames.UPDATE);

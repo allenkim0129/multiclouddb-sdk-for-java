@@ -16,6 +16,7 @@ import com.multiclouddb.api.OperationOptions;
 import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
+import com.multiclouddb.api.internal.DocumentSizeValidator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -831,10 +832,10 @@ public abstract class CrudConformanceTests {
     }
 
     @Test @Order(30)
-    @DisplayName("a 408,577-byte update is rejected and leaves the document unchanged")
+    @DisplayName("an update over the portable 390 KiB limit is rejected without mutation")
     void partialUpdateOneByteOverCommonLimitDoesNotMutateExistingDocument() throws Exception {
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-size");
-        Map<String, Object> fields = fieldsOfSerializedSize("title", 408_577);
+        Map<String, Object> fields = fieldsOfSerializedSize("title", DocumentSizeValidator.MAX_BYTES + 1);
 
         try {
             client.upsert(getAddress(), key,

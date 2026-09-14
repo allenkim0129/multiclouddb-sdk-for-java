@@ -53,7 +53,7 @@ The transition is atomic and replay-idempotent.
 RECEIVED
   -> closed                         CLIENT_CLOSED
   -> invalid map/name/TTL/count           INVALID_REQUEST
-  -> serialized bytes > 408,576     INVALID_REQUEST
+  -> serialized bytes > 390 KiB     INVALID_REQUEST
   -> partial_update unsupported     UNSUPPORTED_CAPABILITY
   -> provider plan
 ```
@@ -104,16 +104,14 @@ specialized only for `update()`.
 | `expressionBytes` | UTF-8 size of the update expression |
 
 ```text
-expressionBytes <= 4096
-  -> one UpdateItem
-
-expressionBytes > 4096
-  -> local reason-coded UNSUPPORTED_CAPABILITY
+shared field count <= 10
+ -> generated expression remains safely below the native ceiling
+ -> one UpdateItem
 
 condition failure
   -> NOT_FOUND
 
-resulting item > 409600 bytes
+resulting item exceeds the native ceiling
   -> DynamoDB rejects the one attempted UpdateItem atomically
   -> reason-coded UNSUPPORTED_CAPABILITY
 ```
@@ -147,7 +145,7 @@ All values in `providerDetails` are strings.
 
 ```text
 reason=cosmos_result_item_size_limit
-maximumResultBytes=2097152
+maximumResultBytes
 subStatusCode
 requestId                          (when available)
 requestCharge
@@ -158,17 +156,14 @@ patch; the failed native operation leaves the document unchanged.
 
 ### Dynamo
 
-```text
-reason=dynamodb_update_expression_limit
-actualExpressionBytes
-maximumExpressionBytes=4096
-```
-
-This expression rejection is local and performs zero DynamoDB I/O.
+The shared 10-field limit keeps the generated expression below the DynamoDB
+native expression ceiling. The planner retains a defensive internal guard for
+direct SPI misuse, but that guard is not part of the portable caller-visible
+envelope.
 
 ```text
 reason=dynamodb_result_item_size_limit
-maximumResultBytes=409600
+maximumResultBytes
 errorCode=ValidationException       (when available)
 requestId                          (when available)
 serviceName                        (when available)

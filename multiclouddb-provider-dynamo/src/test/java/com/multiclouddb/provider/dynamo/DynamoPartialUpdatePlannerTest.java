@@ -67,6 +67,14 @@ class DynamoPartialUpdatePlannerTest {
     }
 
     @Test
+    void portableTenFieldRequestStaysBelowNativeExpressionLimit() {
+        DynamoPartialUpdatePlanner.Plan plan = DynamoPartialUpdatePlanner.plan(fields(10));
+
+        assertEquals(112, plan.expressionBytes());
+        assertTrue(plan.expressionBytes() < DynamoPartialUpdatePlanner.MAX_EXPRESSION_BYTES);
+    }
+
+    @Test
     void expressionByteMeasurementUsesUtf8Exactly() {
         assertEquals(4096, DynamoPartialUpdatePlanner.expressionBytes("a".repeat(4096)));
         assertEquals(4097, DynamoPartialUpdatePlanner.expressionBytes("a".repeat(4097)));

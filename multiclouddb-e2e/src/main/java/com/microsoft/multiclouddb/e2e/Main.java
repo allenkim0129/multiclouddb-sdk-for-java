@@ -109,6 +109,17 @@ public class Main {
 
         if (client.capabilities().isSupported(Capability.PARTIAL_UPDATE)) {
             // ── PARTIAL UPDATE ────────────────────────────────────────
+            update("prod-001", Map.of("price", 1199.00, "inStock", false));
+            DocumentResult updatedResult = read("prod-001");
+            if (updatedResult == null
+                    || updatedResult.document().path("price").asDouble() != 1199.00
+                    || updatedResult.document().path("inStock").asBoolean()
+                    || !"Laptop Pro 15".equals(updatedResult.document().path("name").asText())
+                    || !"electronics".equals(updatedResult.document().path("category").asText())) {
+                throw new AssertionError(
+                        "Partial update did not update selected fields and preserve omitted fields");
+            }
+            System.out.println();
         } else {
             System.out.println("── PARTIAL UPDATE ─────────────────────────────────────────────");
             System.out.printf("  Skipped: %s does not support partial_update.%n",

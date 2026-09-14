@@ -30,7 +30,7 @@ After the closed-client guard and before provider planning:
 5. Names do not begin with `_`.
 6. Names are unique ignoring case.
 7. `options.ttlSeconds()` is null.
-8. serialized `fields` is at most 408,576 bytes.
+8. serialized `fields` is at most 390 KiB.
 9. `partial_update` is supported.
 
 Preconditions 1–8 fail with non-retryable `INVALID_REQUEST`; precondition 9
@@ -111,21 +111,20 @@ SET #f0 = :v0, #f1 = :v1, ...
 
 with `attribute_exists(#pk)`. Values preserve null/scalar/map/list shapes.
 
-An update expression above 4,096 UTF-8 bytes fails locally with:
-
-- `reason=dynamodb_update_expression_limit`
-- `actualExpressionBytes`
-- `maximumExpressionBytes=4096`
-
-That expression rejection performs zero DynamoDB I/O.
+The shared 10-field limit keeps generated expressions safely below the DynamoDB
+native expression ceiling. The planner retains a defensive local guard for
+direct SPI misuse, but it is not part of the portable caller-visible envelope.
 
 An otherwise-valid update can push an existing item above DynamoDB's
-409,600-byte resulting-item limit. No read/merge preflight is performed. If the
+provider-native resulting-item limit. No read/merge preflight is performed. If the
 single attempted `UpdateItem` returns the size-specific `ValidationException`,
 only that variant maps to non-retryable `UNSUPPORTED_CAPABILITY` with:
 
 - `reason=dynamodb_result_item_size_limit`
 - `maximumResultBytes=409600`
+
++[Environment]::NewLine+documentation presents them as 2 MiB and 390 KiB for readability.
+documentation presents them as 2 MiB and 390 KiB for readability.
 
 The original cause and sanitized native error code, HTTP status, request ID,
 and service details are retained where available. Other

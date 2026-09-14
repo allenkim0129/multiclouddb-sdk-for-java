@@ -16,25 +16,16 @@ import java.util.Map;
 /**
  * Validates document payload sizes against the uniform maximum defined by FR-061.
  * <p>
- * The limit is 400 KiB (409_600 bytes) — the most restrictive of the three providers:
- * <ul>
- *   <li>Amazon DynamoDB: 400 KiB per item (hard limit)</li>
- *   <li>Cosmos DB: 2 MiB per document</li>
- *   <li>Cloud Spanner: no per-row limit</li>
- * </ul>
- * By enforcing the lowest common denominator at the SDK layer, documents remain
- * portable across all providers without surprise failures on write.
- * <p>
- * A 1 KiB safety margin is subtracted from the raw DynamoDB limit to account for
- * system fields injected by providers before writing ({@code partitionKey},
- * {@code sortKey}, {@code id}, {@code ttlExpiry}, etc.).  DynamoDB's 400 KiB cap
- * is measured against its internal wire format, which can be slightly larger than
- * the raw JSON.  The effective validated limit is therefore exactly 408,576 bytes (399 KiB).
+ * The portable limit is 390 KiB, below the DynamoDB native 400 KiB item limit.
+ * Cosmos DB and Cloud Spanner accept larger items,
+ * but enforcing the lowest common denominator keeps writes portable. The portable
+ * limit also leaves headroom for provider-injected key and TTL fields
+ * and for DynamoDB internal wire-format overhead.
  */
 public final class DocumentSizeValidator {
 
-    /** Maximum document size in bytes — DynamoDB hard limit minus 1 KiB safety margin. */
-    public static final int MAX_BYTES = 400 * 1024 - 1024; // 408,576 bytes (399 KiB)
+    /** Portable 390 KiB serialized payload limit. */
+    public static final int MAX_BYTES = 390 * 1024;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -57,10 +48,11 @@ public final class DocumentSizeValidator {
         try {
             byte[] bytes = MAPPER.writeValueAsBytes(document);
             if (bytes.length > MAX_BYTES) {
+                long actualKiB = (bytes.length + 1023L) / 1024L;
                 throw new MulticloudDbException(new MulticloudDbError(
                         MulticloudDbErrorCategory.INVALID_REQUEST,
-                        "Document size " + bytes.length + " bytes exceeds the maximum of "
-                                + MAX_BYTES + " bytes (399 KiB). Reduce the document size to "
+                        "Document size " + actualKiB
+                                + " KiB exceeds the portable 390 KiB limit. Reduce the document size to "
                                 + "maintain portability across all providers.",
                         null,
                         operation,

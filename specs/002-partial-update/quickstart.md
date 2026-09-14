@@ -35,10 +35,13 @@ values.
 
 ### Spanner release boundary
 
-Spanner is not part of this feature release. Its provider module remains
-unchanged and explicitly declares `PARTIAL_UPDATE` unsupported. After shared validation, a
+Spanner is not part of this feature release because release-grade behavior
+cannot yet be validated against a live account. Its data path remains unchanged,
+and it explicitly declares `PARTIAL_UPDATE` unsupported. After shared validation, a
 valid call returns non-retryable `UNSUPPORTED_CAPABILITY` with
-`capability=partial_update` before any Spanner provider I/O.
+`capability=partial_update` before any Spanner provider I/O. Support can be
+enabled after live-account validation is available.
+
 ## Literal names
 
 Shared validation does not trim accepted names. Cosmos escapes `/` and `~` as
@@ -68,7 +71,7 @@ client.update(
 ```
 
 Reserved names, underscore-prefixed names, blank names, and case-insensitive
-duplicates also fail. The exact shared serialized limit is 408,576 bytes.
+duplicates also fail. The shared serialized limit is 390 KiB.
 
 ## Capabilities
 
@@ -98,21 +101,17 @@ try {
             == MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY) {
         String reason = ex.error().providerDetails().get("reason");
         // cosmos_result_item_size_limit
-        // cosmos_result_item_size_limit
-        // dynamodb_update_expression_limit
         // dynamodb_result_item_size_limit
     }
 }
 ```
 
-Maps above 10 fields fail shared preflight with `INVALID_REQUEST`. A
-Cosmos HTTP 413 after one attempted patch includes
-`maximumResultBytes=2097152`. Dynamo limit errors include update-expression
-bytes for local preflight, or
-`maximumResultBytes=409600` when DynamoDB rejects the one attempted
-`UpdateItem` because the existing item plus fields would be too large. The
-local request/expression paths perform zero provider I/O; result-item paths do
-not add a read and are returned after the failed native update.
+Maps above 10 fields fail shared preflight with `INVALID_REQUEST`. A Cosmos HTTP
+413 after one attempted patch includes `maximumResultBytes`. DynamoDB
+includes `maximumResultBytes` when it rejects the one attempted
+`UpdateItem` because the existing item plus fields would be too large. These
+result-item paths do not add a read and are returned after the failed atomic
+native update.
 
 ## Migrate replacement and TTL-bearing updates
 

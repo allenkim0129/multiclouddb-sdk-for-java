@@ -22,7 +22,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Changed:**
 
-- `update()` now has one portable contract: shallow top-level set/replace, omitted-field preservation, mapping-aware null/map/list replacement, replay idempotence, and `NOT_FOUND` without create. Update TTL is rejected before provider I/O with non-retryable `INVALID_REQUEST`; at most 10 fields are accepted per call, and the shared serialized field-map limit is 408,576 bytes.
+- `update()` now has one portable contract: shallow top-level set/replace, omitted-field preservation, mapping-aware null/map/list replacement, replay idempotence, and `NOT_FOUND` without create. Update TTL is rejected before provider I/O with non-retryable `INVALID_REQUEST`; at most 10 fields are accepted per call, and the shared serialized field-map limit is 390 KiB.
 - Callers that need full-document replacement must use `upsert()` with the complete desired document. `upsert()` creates a missing item, so it is not an update-only replacement.
 
 **Documentation:**
@@ -53,7 +53,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `MulticloudDbException` - structured error model with portable categories
 - `OperationDiagnostics` - latency, request charge, request ID
 - `DocumentMetadata` - last modified, TTL expiry, version/ETag
-- Document size enforcement (399 KiB limit)
+- Document size enforcement (390 KiB limit)
 
 **Validation:**
 
@@ -78,7 +78,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Removed the hardcoded `ConsistencyLevel.SESSION` override from `CosmosClientBuilder`. Accounts with a default of `STRONG` or `BOUNDED_STALENESS` will now serve reads at their configured level. To restore the previous behaviour, set `multiclouddb.connection.consistencyLevel=SESSION`.
 - `BETWEEN` translation now wraps in parentheses (`(c.field BETWEEN @lo AND @hi)`) to avoid a Cosmos NoSQL parser ambiguity with trailing `AND`.
 - `update()` now uses one native `patchItem` for accepted updates of up to 10 fields. Omitted fields are preserved, missing items return `NOT_FOUND`, and larger maps are rejected by shared preflight before Cosmos I/O.
-- Update HTTP 413 is normalized to non-retryable `UNSUPPORTED_CAPABILITY` with `reason=cosmos_result_item_size_limit` and `maximumResultBytes=2097152` (2 MiB); it follows one attempted patch and leaves the document unchanged.
+- Update HTTP 413 is normalized to non-retryable `UNSUPPORTED_CAPABILITY` with `reason=cosmos_result_item_size_limit` and a `maximumResultBytes` detail describing the native ceiling; it follows one attempted patch and leaves the document unchanged.
 - CRUD/update HTTP 408 and 410 map to retryable `TRANSIENT_FAILURE`, retaining 410 substatus.
 - Declares `PARTIAL_UPDATE` supported; native request and resulting-item limits are surfaced through explicit provider-limit reasons and values.
 
@@ -124,8 +124,8 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `SORT_KEY_ASC` comparator handles numeric sort keys with type-aware comparison (Long/Integer use native compare; mixed numerics fall back to `BigDecimal`) so integers beyond `2^53` are no longer truncated.
 - `BETWEEN` translation wraps in parentheses (`(field BETWEEN ? AND ?)`) for cross-provider consistency.
 - `update()` now emits one conditional, aliased `UpdateItem SET` request instead of replacing the item with `PutItem`. Omitted fields are preserved and a failed existence guard maps to `NOT_FOUND`.
-- Declares `PARTIAL_UPDATE` supported; generated update expressions above 4 KiB (4,096 UTF-8 bytes) fail locally before DynamoDB I/O with an explicit provider-limit reason.
-- If an otherwise-valid update would push the existing item above 400 KiB (409,600 bytes), the size-specific DynamoDB `ValidationException` is normalized to non-retryable `UNSUPPORTED_CAPABILITY` with `reason=dynamodb_result_item_size_limit` and `maximumResultBytes=409600` (400 KiB). The error follows one attempted `UpdateItem`; no read/merge preflight is added, and other validation failures remain `INVALID_REQUEST`.
+- Declares `PARTIAL_UPDATE` supported; the shared 10-field limit keeps every public update within one conditional `UpdateItem` and safely below DynamoDB's native expression ceiling.
+- If DynamoDB rejects an otherwise-valid update because the resulting item is too large, the size-specific `ValidationException` is normalized to non-retryable `UNSUPPORTED_CAPABILITY` with `reason=dynamodb_result_item_size_limit` and a `maximumResultBytes` detail describing the native ceiling. The error follows one attempted `UpdateItem`; no read/merge preflight is added, and other validation failures remain `INVALID_REQUEST`.
 
 **Documentation:**
 
@@ -167,7 +167,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Breaking changes:**
 
-- Through `MulticloudDbClient`, Spanner `update()` is unavailable in this release. `SpannerCapabilities` explicitly declares `PARTIAL_UPDATE` unsupported, so valid calls fail before provider delegation with non-retryable `UNSUPPORTED_CAPABILITY` (`capability=partial_update`). Cosmos DB and DynamoDB implement native shallow partial update.
+- Through `MulticloudDbClient`, Spanner `update()` is unavailable in this release because live-account validation is not currently available. `SpannerCapabilities` explicitly declares `PARTIAL_UPDATE` unsupported, so valid calls fail before provider delegation with non-retryable `UNSUPPORTED_CAPABILITY` (`capability=partial_update`). Cosmos DB and DynamoDB implement native shallow partial update; Spanner support can follow after release-grade live validation.
 - Document field named `data` is rejected with `MulticloudDbException(INVALID_REQUEST)` (case-insensitive — Spanner resolves column names case-insensitively). The `data` column is reserved for the internal `FIELD_DATA` metadata.
 - `upsert()` is a full document replace; columns absent from the upserted document become NULL on read (matches the Cosmos / DynamoDB upsert contract).
 - Customer-managed tables require a `data STRING(MAX)` column. Tables created by `ensureContainer()` already include it; tables provisioned outside the SDK must run `ALTER TABLE <table> ADD COLUMN data STRING(MAX);`.

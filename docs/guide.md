@@ -569,29 +569,33 @@ client.update(addr, MulticloudDbKey.of("customer-456", "order-123"), fields);
 
 | Provider | Native path and request count | Native envelope and cost |
 |----------|-------------------------------|--------------------------|
-| **Cosmos DB** | One `patchItem` for every accepted update. | The portable API accepts at most 10 fields per call; the resulting document is capped at 2 MiB. |
-| **DynamoDB** | One conditional, aliased `UpdateItem SET ...` request with `attribute_exists(partitionKey)`. | The portable API accepts at most 10 fields per call. DynamoDB can reject the one attempted update if the resulting item would exceed 400 KiB (409,600 bytes). Accepted calls consume one item update's write capacity. |
+| **Cosmos DB** | One `patchItem` for every accepted update. | The portable API accepts at most 10 fields per call; the resulting document is subject to the provider-native ceiling. |
+| **DynamoDB** | One conditional, aliased `UpdateItem SET ...` request with `attribute_exists(partitionKey)`. | The portable API accepts at most 10 fields per call. DynamoDB can reject the one attempted update if the resulting item would exceed the provider-native ceiling. Accepted calls consume one item update's write capacity. |
 | **Spanner** | No provider call in this release. | The provider explicitly declares `PARTIAL_UPDATE` unsupported; the shared client rejects valid calls before Spanner I/O. |
 
-All three providers declare all 18 known capability names. Cosmos and Dynamo support
-`Capability.PARTIAL_UPDATE`. Both preserve case-distinct field names. Their
-native request and resulting-item limits are surfaced through non-retryable
-`UNSUPPORTED_CAPABILITY` errors with stable reasons and limit values.
+All three providers declare all 18 known capability names. Cosmos DB and
+DynamoDB support `Capability.PARTIAL_UPDATE` and share the same normalized
+contract: at most 10 fields, literal top-level set/replace semantics, one atomic
+native write, and `NOT_FOUND` for a missing item. Both preserve case-distinct
+field names.
 
-Spanner declares `PARTIAL_UPDATE` unsupported. Because it does not
-advertise `PARTIAL_UPDATE`, valid calls fail locally with non-retryable
-`UNSUPPORTED_CAPABILITY` and `capability=partial_update`; shared invalid-request
-validation still runs first.
-For DynamoDB, `reason=dynamodb_update_expression_limit` is a local, zero-I/O
-rejection. `reason=dynamodb_result_item_size_limit` includes
-`maximumResultBytes=409600` (400 KiB) and is returned after one attempted `UpdateItem`;
-the SDK does not add a read/merge preflight. Other DynamoDB
-`ValidationException` failures remain `INVALID_REQUEST`.
+Spanner declares `PARTIAL_UPDATE` unsupported because release-grade behavior
+cannot yet be validated against a live Spanner account. Valid calls fail locally
+with non-retryable `UNSUPPORTED_CAPABILITY` and `capability=partial_update`;
+shared invalid-request validation still runs first. Support can be enabled after
+live-account validation is available.
+
+Provider-native resulting-item limits remain explicit. DynamoDB returns
+`reason=dynamodb_result_item_size_limit` with a `maximumResultBytes` detail
+describing the native ceiling after one failed atomic `UpdateItem`; Cosmos DB uses
+`reason=cosmos_result_item_size_limit` for its native ceiling. The SDK does not
+add a read/merge preflight, and other DynamoDB `ValidationException` failures
+remain `INVALID_REQUEST`.
 
 For Cosmos DB, HTTP 413 from an attempted update maps to
 `reason=cosmos_result_item_size_limit` with
-`maximumResultBytes=2097152` (2 MiB). The SDK does not read the existing document
-before the patch; the failed native write leaves it unchanged.
+a `maximumResultBytes` detail describing the native ceiling. The SDK does not read the
+existing document before the patch; the failed native write leaves it unchanged.
 
 Cosmos CRUD/update HTTP 408 and 410 failures map to retryable
 `TRANSIENT_FAILURE`, with 410 substatus retained. For a failed transactional
@@ -1688,20 +1692,23 @@ system properties (`_ts`, `_etag`, `_rid`, `_self`, `_attachments`, `partitionKe
 
 ## Document Size Enforcement
 
-The SDK enforces a **399 KiB** (408,576 bytes) maximum serialized write payload
-before any data leaves the client. This applies to the full document passed to
+The SDK enforces a **390 KiB** maximum serialized write payload before any
+data leaves the client. This applies to the full document passed to
 `create()`/`upsert()` and to the field map passed to `update()`.
 
 For `update()`, this measures only the incoming field map, not the existing
 item plus those fields. DynamoDB can therefore reject an otherwise-valid update
-when the resulting item would exceed 400 KiB (409,600 bytes). That atomic native
+when the resulting item would exceed its provider-native limit. That atomic
 rejection is surfaced as non-retryable `UNSUPPORTED_CAPABILITY` with
 `reason=dynamodb_result_item_size_limit`; it occurs after one attempted
 `UpdateItem`, not during the zero-I/O shared preflight.
 
-### Why 399 KiB, not 400 KiB?
+### Why round down?
 
-Providers inject additional fields (`partitionKey`, `sortKey`, `id`, `ttlExpiry`) before writing. DynamoDB measures its 400 KiB limit against the internal wire format, which can be larger than raw JSON bytes. The 1 KiB safety margin prevents valid-looking documents from exceeding the wire limit after field injection.
+Providers inject key, identity, and TTL fields before writing, and DynamoDB
+measures its item limit against an internal wire format that can be larger than
+the raw JSON. The round 390 KiB portable ceiling leaves safety headroom for that
+overhead.
 
 ### Validation Behaviour
 

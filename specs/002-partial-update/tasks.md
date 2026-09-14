@@ -22,14 +22,14 @@ All tasks are complete.
 
 - [X] T004 Add `PartialUpdateValidatorTest` coverage for null/empty/over-10 maps; null, empty, and blank names; non-trimmed names; reserved names; underscore prefixes; case collisions; punctuation acceptance; and update TTL rejection
 - [X] T005 Add `DefaultMulticloudDbClientPartialUpdateTest` coverage for closed-client precedence, zero delegation, validation order, core capability gating, and the 10-field limit
-- [X] T006 Add `DocumentSizeValidatorTest` coverage proving 408,576 bytes passes and 408,577 bytes fails
+- [X] T006 Add `DocumentSizeValidatorTest` coverage proving the 390 KiB boundary passes and a larger payload fails
 - [X] T007 Add `MulticloudDbClientPartialUpdateContractTest` coverage for both existing overloads, `Map<String,Object>`, default options, and TTL rejection
 - [X] T008 Rewrite `MulticloudDbClient.update()` Javadocs for shallow set/replace, omitted-field preservation, mapping-aware null semantics, missing-item `NOT_FOUND`, exact validation, capability gating, and replacement migration
 - [X] T009 Rewrite `MulticloudDbProviderClient.update()` Javadocs for the validated SPI contract and participating-provider boundary
 - [X] T010 Update `OperationOptions` Javadocs so TTL is create/upsert-only and `update()` rejects it
 - [X] T011 Implement `PartialUpdateValidator` with `Locale.ROOT`, literal names, reserved/collision checks, underscore rejection, and update TTL rejection
 - [X] T012 Add `PARTIAL_UPDATE`, declare it in Cosmos/Dynamo, gate it in `DefaultMulticloudDbClient`, and represent native limits with structured reasons
-- [X] T013 State and test the exact 408,576-byte common limit without changing the existing serializer
+- [X] T013 State and test the portable 390 KiB common limit without changing the existing serializer
 - [X] T014 Remove stale full-replacement wording from API update/delete documentation
 - [X] T015 Run the focused API suite (`PartialUpdateValidatorTest`, `DefaultMulticloudDbClientPartialUpdateTest`, `DocumentSizeValidatorTest`, `MulticloudDbClientPartialUpdateContractTest`, `CapabilityTest`) successfully
 
@@ -64,7 +64,7 @@ is excluded through capability gating; only its capability declaration and chang
 ## Phase 4: Shared baseline conformance
 
 - [X] T030 Put update-TTL rejection in `CrudConformanceTests` so all three concrete providers inherit the zero-I/O `INVALID_REQUEST` assertion, and remove the unreachable duplicate from `TtlAndMetadataConformanceTest`
-- [X] T031 Add capability-gated partial-update behavior assertions for Cosmos/Dynamo plus provider-neutral update-TTL, invalid/reserved-field, and 408,577-byte preflight assertions that also run before the Spanner gate
+- [X] T031 Add capability-gated partial-update behavior assertions for Cosmos/Dynamo plus provider-neutral update-TTL, invalid/reserved-field, and over-limit preflight assertions that also run before the Spanner gate
 - [X] T032 Verify Cosmos/Dynamo run supported behavior, while Spanner advertises 18 capabilities with `PARTIAL_UPDATE` unsupported and runs the core unsupported assertion
 - [X] T033 Run the named Cosmos emulator/conformance tests and verify positive Surefire discovery
 - [X] T034 Re-run the exact Dynamo emulator/conformance profile, including the concrete result-item-size regression; all 88 discovered tests pass with zero failures/errors/skips
@@ -87,7 +87,7 @@ is excluded through capability gating; only its capability declaration and chang
 
 ## Phase 7: Portability-review blocker remediation
 
-- [X] T045 Normalize only DynamoDB update result-item-size `ValidationException` failures to non-retryable `UNSUPPORTED_CAPABILITY` with `dynamodb_result_item_size_limit`, `maximumResultBytes=409600`, native metadata, and cause preservation
+- [X] T045 Normalize only DynamoDB update result-item-size `ValidationException` failures to non-retryable `UNSUPPORTED_CAPABILITY` with `dynamodb_result_item_size_limit`, `maximumResultBytes`, native metadata, and cause preservation
 - [X] T046 Add focused matching/non-matching Dynamo error-mapper tests and provider update-path coverage
 - [X] T047 Add the runnable DynamoDB Local result-item overflow regression and keep it out of the shared abstract suite
 - [X] T048 Move update-TTL coverage into `CrudConformanceTests`, remove the unreachable duplicate, and add shared unchanged-state/field-count and literal-name coverage without provider branches
@@ -96,8 +96,8 @@ is excluded through capability gating; only its capability declaration and chang
 
 ## Phase 8: Final Cosmos result-envelope remediation
 
-- [X] T051 Normalize update-only Cosmos HTTP 413 from direct patch to non-retryable `UNSUPPORTED_CAPABILITY` with `cosmos_result_item_size_limit`, `maximumResultBytes=2097152`, sanitized native metadata, and direct-exception cause preservation
-- [X] T052 Add focused direct-patch mapper coverage and a concrete Cosmos emulator regression that seeds below 2 MiB, attempts a small overflowing update, and verifies unchanged stored state
+- [X] T051 Normalize update-only Cosmos HTTP 413 from direct patch to non-retryable `UNSUPPORTED_CAPABILITY` with `cosmos_result_item_size_limit`, `maximumResultBytes`, sanitized native metadata, and direct-exception cause preservation
+- [X] T052 Add focused direct-patch mapper coverage and a concrete Cosmos emulator regression that seeds below the Cosmos native ceiling, attempts a small overflowing update, and verifies unchanged stored state
 - [X] T053 Reconcile the binding spec/design, plan, research, data model, contracts/schema, checklist, user docs, capability notes, and changelogs for the Cosmos state-dependent result-item envelope
 - [X] T054 Run the exact Cosmos emulator profile and verify the concrete result-item-size regression; all 78 tests are discovered with zero failures/errors and one expected emulator skip
 
@@ -106,7 +106,7 @@ is excluded through capability gating; only its capability declaration and chang
 - [X] T055 Make literal and case-distinct field identity part of the base `PARTIAL_UPDATE` contract for Cosmos/Dynamo; declare Spanner explicitly unsupported
 - [X] T056 Keep every Spanner data-path file at the PR base while adding only the explicit unsupported capability declaration and changelog
 - [X] T057 Expand shared invalid-map/name conformance, gate supported behavior by `PARTIAL_UPDATE`, and assert Spanner core rejection
-- [X] T058 Retain the 10-field and exact 408,576-byte API validator boundaries and omit a shared provider-runtime size success assertion because native result envelopes may bind first
+- [X] T058 Retain the 10-field and portable 390 KiB API validator boundaries and omit a shared provider-runtime size success assertion because native result envelopes may bind first
 - [X] T059 Document Cosmos CRUD/update 408/410 normalization and direct-patch result limits in compatibility docs and changelogs
 - [X] T060 Reconcile all feature artifacts and user docs with the Cosmos/Dynamo release scope and explicit Spanner unsupported declaration
 - [X] T061 Run targeted/full validation, verify all three emulator profiles with Spanner capability gating, confirm unchanged Spanner data paths, and complete documentation/traceability audits

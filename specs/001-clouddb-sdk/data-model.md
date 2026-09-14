@@ -254,7 +254,7 @@ New constants added to `Capability`:
 Location: `multiclouddb-api/src/main/java/com/multiclouddb/api/internal/DocumentSizeValidator.java`
 
 Static utility:
-- `MAX_BYTES = 400 * 1024` (400 KB — DynamoDB hard limit, lowest common denominator)
+- `MAX_BYTES = 390 * 1024` (390 KiB portable limit, below the DynamoDB native ceiling)
 - `validate(JsonNode document, String operation)` — throws `MulticloudDbException(INVALID_REQUEST)` when serialized UTF-8 size exceeds limit
 
 Applied in `DefaultMulticloudDbClient.create()` and `upsert()` before provider delegation.

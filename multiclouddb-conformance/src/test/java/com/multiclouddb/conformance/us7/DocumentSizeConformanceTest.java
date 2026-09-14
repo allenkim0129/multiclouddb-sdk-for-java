@@ -17,8 +17,8 @@ import static org.junit.jupiter.api.Assertions.*;
  * <p>
  * Verifies that:
  * <ul>
- *   <li>FR-061: Documents within the 400 KB limit are accepted by all providers.</li>
- *   <li>FR-062: Documents exceeding 400 KB are rejected at the SDK layer with
+ *   <li>FR-061: Documents within the 390 KiB limit are accepted by all providers.</li>
+ *   <li>FR-062: Documents exceeding 390 KiB are rejected at the SDK layer with
  *       {@link MulticloudDbErrorCategory#INVALID_REQUEST} before reaching the provider.</li>
  *   <li>FR-063: The rejection is consistent across {@code create()} and {@code upsert()}.</li>
  * </ul>
@@ -28,18 +28,18 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public class DocumentSizeConformanceTest {
 
-    /** 399 KB limit — same as {@code DocumentSizeValidator.MAX_BYTES}. */
+    /** 390 KiB limit — same as {@code DocumentSizeValidator.MAX_BYTES}. */
     private static final int MAX_BYTES = DocumentSizeValidator.MAX_BYTES;
 
     // -------------------------------------------- FR-061: within limit
 
     @Test
-    @DisplayName("FR-061: document within 399 KB limit is accepted on upsert")
+    @DisplayName("FR-061: document within 390 KiB limit is accepted on upsert")
     void documentWithinLimitIsAccepted() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(ProviderId.DYNAMO)) {
             ResourceAddress address = ConformanceHarness.defaultAddress(ProviderId.DYNAMO);
 
-            // Build a document just under 400 KB
+            // Build a document just under 390 KiB
             Map<String, Object> doc = Map.of("payload", "A".repeat(MAX_BYTES - 200));
             MulticloudDbKey key = MulticloudDbKey.of("size-test-within", "size-test-within");
 
@@ -51,7 +51,7 @@ public class DocumentSizeConformanceTest {
                 client.upsert(address, key, doc);
             } catch (MulticloudDbException e) {
                 assertNotEquals(MulticloudDbErrorCategory.INVALID_REQUEST, e.error().category(),
-                        "Document within 400 KB limit must not be rejected with INVALID_REQUEST");
+                        "Document within 390 KiB limit must not be rejected with INVALID_REQUEST");
             }
         }
     }
@@ -59,18 +59,18 @@ public class DocumentSizeConformanceTest {
     // -------------------------------------------- FR-062: exceeds limit on upsert
 
     @Test
-    @DisplayName("FR-062: document exceeding 400 KB is rejected on upsert")
+    @DisplayName("FR-062: document exceeding 390 KiB is rejected on upsert")
     void documentExceedingLimitIsRejectedOnUpsert() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(ProviderId.DYNAMO)) {
             ResourceAddress address = ConformanceHarness.defaultAddress(ProviderId.DYNAMO);
 
-            // Build a document well over 400 KB
+            // Build a document well over 390 KiB
             Map<String, Object> doc = Map.of("payload", "B".repeat(MAX_BYTES + 1000));
             MulticloudDbKey key = MulticloudDbKey.of("size-test-over", "size-test-over");
 
             MulticloudDbException ex = assertThrows(MulticloudDbException.class,
                     () -> client.upsert(address, key, doc),
-                    "Document exceeding 400 KB must throw MulticloudDbException");
+                    "Document exceeding 390 KiB must throw MulticloudDbException");
             assertNotNull(ex.error(), "Exception must carry structured error");
             assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category(),
                     "Category must be INVALID_REQUEST for oversized documents");
@@ -80,7 +80,7 @@ public class DocumentSizeConformanceTest {
     // -------------------------------------------- FR-063: consistent on create
 
     @Test
-    @DisplayName("FR-063: document exceeding 400 KB is rejected on create")
+    @DisplayName("FR-063: document exceeding 390 KiB is rejected on create")
     void documentExceedingLimitIsRejectedOnCreate() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(ProviderId.DYNAMO)) {
             ResourceAddress address = ConformanceHarness.defaultAddress(ProviderId.DYNAMO);

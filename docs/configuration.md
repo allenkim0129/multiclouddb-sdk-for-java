@@ -28,8 +28,8 @@ The portable 10-field partial-update limit and native result-item ceilings are n
 
 | Provider | Partial-update envelope |
 |----------|-------------------------|
-| Cosmos DB | One direct patch for up to 10 fields; resulting document capped at 2 MiB by Cosmos DB after the attempted update |
-| DynamoDB | One `UpdateItem` for up to 10 fields; resulting item capped at 400 KiB (409,600 bytes) by DynamoDB after the attempted update |
+| Cosmos DB | One direct patch for up to 10 fields; resulting document subject to the Cosmos DB native ceiling after the attempted update |
+| DynamoDB | One `UpdateItem` for up to 10 fields; resulting item subject to the DynamoDB native ceiling after the attempted update |
 | Spanner | Explicitly declares `PARTIAL_UPDATE` unsupported |
 
 Cosmos and Dynamo report `Capability.PARTIAL_UPDATE=true`. Case-distinct

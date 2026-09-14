@@ -10,9 +10,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Changed
 
 - `update()` now sends one conditional, aliased `UpdateItem SET` request instead of replacing the item with `PutItem`. Omitted fields are preserved; a failed `attribute_exists(partitionKey)` guard maps to `NOT_FOUND` without create.
-- Structured null/map/list values use native DynamoDB `NULL`/`M`/`L` shapes. The generated update expression is rejected before I/O above 4 KiB (4,096 UTF-8 bytes); an accepted call consumes one item update's write capacity.
-- A size-specific update `ValidationException` is normalized to non-retryable `UNSUPPORTED_CAPABILITY` with `reason=dynamodb_result_item_size_limit` and `maximumResultBytes=409600` (400 KiB) when the existing item plus fields would exceed DynamoDB's 400 KiB result-item limit. This path follows one attempted `UpdateItem`, preserves the native cause/metadata, and adds no read/merge preflight; other validation failures remain `INVALID_REQUEST`.
-- Declares `PARTIAL_UPDATE` supported; the 4 KiB (4,096 bytes) expression and 400 KiB (409,600 bytes) resulting-item limits are surfaced through explicit provider-limit reasons and values.
+- Structured null/map/list values use native DynamoDB `NULL`/`M`/`L` shapes. The shared 10-field limit keeps every public update safely below DynamoDB's native expression ceiling; an accepted call consumes one item update's write capacity.
+- A size-specific update `ValidationException` is normalized to non-retryable `UNSUPPORTED_CAPABILITY` with `reason=dynamodb_result_item_size_limit` and a `maximumResultBytes` detail describing the native ceiling when the existing item plus fields would be too large. This path follows one attempted `UpdateItem`, preserves the native cause/metadata, and adds no read/merge preflight; other validation failures remain `INVALID_REQUEST`.
+- Declares `PARTIAL_UPDATE` supported with the portable 10-field limit and the provider-native resulting-item ceiling documented explicitly.
 
 ## [0.1.0-beta.2] — 2026-06-22
 

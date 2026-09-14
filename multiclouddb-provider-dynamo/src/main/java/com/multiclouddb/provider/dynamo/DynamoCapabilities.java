@@ -48,6 +48,6 @@ public final class DynamoCapabilities {
             // and gated internally by DefaultMulticloudDbClient. Native envelope failures
             // surface through structured provider-limit errors.
             Capability.PARTIAL_UPDATE_CAP.withNotes(
-                    "One conditional aliased UpdateItem SET expression per update; limits: 4 KiB "
-                    + "expression and 400 KiB resulting item")));
+                    "One conditional aliased UpdateItem SET expression per accepted update; "
+                    + "portable limit: 10 fields; native limit: 400 KiB resulting item")));
 }

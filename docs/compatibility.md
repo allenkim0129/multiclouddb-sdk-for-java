@@ -35,8 +35,8 @@ Spanner provider explicitly declares
 
 | Provider | `PARTIAL_UPDATE` | Native mechanism / request count | Cost and limits |
 |----------|:----------------:|----------------------------------|-----------------|
-| Cosmos DB | ✅ | One `patchItem` for up to 10 fields | One point patch per accepted call; 2 MiB resulting-document limit after one attempted update |
-| DynamoDB | ✅ | One conditional aliased `UpdateItem SET` for up to 10 fields | 400 KiB (409,600 bytes) resulting-item limit after one attempted update; accepted calls consume one item update's write capacity |
+| Cosmos DB | ✅ | One `patchItem` for up to 10 fields | One point patch per accepted call; provider-native resulting-document limit after one attempted update |
+| DynamoDB | ✅ | One conditional aliased `UpdateItem SET` for up to 10 fields | provider-native resulting-item limit after one attempted update; accepted calls consume one item update's write capacity |
 | Spanner | ❌ (explicit) | No provider call; rejected by the shared capability gate | Zero Spanner I/O |
 
 A valid Spanner `update()` call returns non-retryable `UNSUPPORTED_CAPABILITY`
@@ -115,7 +115,7 @@ The raw HTTP or gRPC status code is also available via `error.statusCode()`.
 | `THROTTLED`  | HTTP 429  | ProvisionedThroughputExceededException, ThrottlingException  | RESOURCE_EXHAUSTED  |
 | `TRANSIENT_FAILURE`  | CRUD/update HTTP 408, 410 (substatus retained), 449, 500, 502, 503  | HTTP 500–5xx  | UNAVAILABLE  |
 | `PERMANENT_FAILURE`  | -  | ItemCollectionSizeLimitExceededException  | -  |
-| `UNSUPPORTED_CAPABILITY`  | HTTP 400 with AVAD-not-enabled fingerprint (`providerDetails.reason="avad_not_enabled"`); update HTTP 413 (`reason="cosmos_result_item_size_limit"`, `maximumResultBytes="2097152"` / 2 MiB)  | `InvalidArgumentException` / `ResourceNotFoundException` for streams not enabled (`reason="stream_not_enabled"`); update result-item-size `ValidationException` (`reason="dynamodb_result_item_size_limit"`, `maximumResultBytes="409600"` / 400 KiB)  | UNIMPLEMENTED, change-stream-not-provisioned (`reason="stream_not_enabled"`), valid `update()` calls are rejected by the shared pre-I/O capability gate with non-retryable `UNSUPPORTED_CAPABILITY` (`providerDetails.capability="partial_update"`) and no provider-specific `reason`  |
+| `UNSUPPORTED_CAPABILITY`  | HTTP 400 with AVAD-not-enabled fingerprint (`providerDetails.reason="avad_not_enabled"`); update HTTP 413 (`reason="cosmos_result_item_size_limit"`, native ceiling in `maximumResultBytes`)  | `InvalidArgumentException` / `ResourceNotFoundException` for streams not enabled (`reason="stream_not_enabled"`); update result-item-size `ValidationException` (`reason="dynamodb_result_item_size_limit"`, native ceiling in `maximumResultBytes`)  | UNIMPLEMENTED, change-stream-not-provisioned (`reason="stream_not_enabled"`), valid `update()` calls are rejected by the shared pre-I/O capability gate with non-retryable `UNSUPPORTED_CAPABILITY` (`providerDetails.capability="partial_update"`) and no provider-specific `reason`  |
 | `CURSOR_EXPIRED` (change-feed) | HTTP 410 GONE (`reason="PROVIDER_TRIMMED"`)  | `TrimmedDataAccessException` (`reason="PROVIDER_TRIMMED"`), `ExpiredIteratorException` (`reason="ITERATOR_EXPIRED"`)  | `INVALID_ARGUMENT` / `OUT_OF_RANGE` / `NOT_FOUND` for partition outside retention (`reason="PROVIDER_TRIMMED"`)  |
 | `PROVIDER_ERROR`  | Other  | Other  | INTERNAL, Other  |
 

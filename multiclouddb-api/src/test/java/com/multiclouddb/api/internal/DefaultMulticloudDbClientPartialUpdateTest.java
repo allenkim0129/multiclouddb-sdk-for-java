@@ -145,7 +145,7 @@ class DefaultMulticloudDbClientPartialUpdateTest {
     }
 
     @Test
-    @DisplayName("a 408,577-byte field map fails before provider delegation")
+    @DisplayName("a field map over the portable 390 KiB limit fails before provider delegation")
     void commonSizeFailureZeroDelegation() throws Exception {
         RecordingProvider provider = new RecordingProvider(supported());
         DefaultMulticloudDbClient c = client(provider);

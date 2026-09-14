@@ -24,7 +24,7 @@
 - [x] Reserved names, underscore prefixes, case-insensitive collisions, and
   no-trimming behavior are explicit.
 - [x] Update TTL rejection is explicit and create/upsert migration is clear.
-- [x] The common limits are 10 fields and exactly 408,576 serialized bytes, with pass/fail boundaries.
+- [x] The common limits are 10 fields and a portable 390 KiB serialized payload, with pass/fail boundaries.
 - [x] The core `partial_update` gate and future unsupported-provider error are
   explicit.
 - [x] Native request and resulting-item limit failures use stable reasons and
@@ -51,9 +51,9 @@
 
 - [x] One conditional aliased `UpdateItem` is specified.
 - [x] Structured null/map/list values are required.
-- [x] The complete update expression is measured in UTF-8.
-- [x] The 4,096-byte boundary and structured error details are complete.
-- [x] The state-dependent 409,600-byte result-item rejection is normalized only
+- [x] The shared 10-field limit keeps generated expressions safely below the
+ native ceiling; the defensive planner guard is not a public envelope.
+- [x] The state-dependent native result-item rejection is normalized only
   for the matching update `ValidationException`, preserves the cause/native
   metadata, and does not add a read preflight.
 - [x] Conditional failure maps to `NOT_FOUND`.
@@ -65,7 +65,7 @@
 - [x] Focused API, Cosmos, and Dynamo unit tests are named.
 - [x] Existing replace-to-patch consistency coverage is updated.
 - [x] Runnable shared `CrudConformanceTests` cover update TTL,
-  invalid/reserved-field atomic failure, 408,577-byte atomic failure, and a
+  invalid/reserved-field atomic failure, over-limit atomic failure, and a
   wide missing-item update without provider branches.
 - [x] Concrete Cosmos and Dynamo emulator regressions cover result-item
   overflow and unchanged stored state.

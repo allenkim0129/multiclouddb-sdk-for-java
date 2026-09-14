@@ -336,10 +336,10 @@ This appendix is **non-normative**. It records Java SDK behaviors that impact th
 
 ---
 
-## Decision 23: Uniform document size enforcement (400 KB)
+## Decision 23: Uniform document size enforcement (390 KiB)
 
 - **Decision**: Add a `DocumentSizeValidator` utility in `multiclouddb-api/internal` that serializes `JsonNode` to UTF-8 bytes via `ObjectMapper.writeValueAsBytes()` and checks against `MAX_BYTES = 400 * 1024`. Validation occurs in `DefaultMulticloudDbClient` before delegating to the provider adapter — once, provider-agnostically.
-- **Rationale**: DynamoDB's 400 KB limit is the lowest common denominator. Enforcing at the `DefaultMulticloudDbClient` layer means no provider adapter needs to duplicate the check. Serializing to check size is deterministic and requires no provider I/O.
+- **Rationale**: The 390 KiB portable limit leaves headroom below the DynamoDB native ceiling. Enforcing at the `DefaultMulticloudDbClient` layer means no provider adapter needs to duplicate the check. Serializing to check size is deterministic and requires no provider I/O.
 - **Alternatives considered**:
   - Enforce per-provider adapter: duplicates logic, inconsistent enforcement.
   - Enforce at SPI layer: coupling SPI to a specific limit.

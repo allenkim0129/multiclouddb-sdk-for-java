@@ -1,7 +1,7 @@
 # Feature Specification: Portable Partial Update
 
 **Branch**: `002-partial-update`
-**Status**: Complete; Cosmos DB and DynamoDB implementation validated, Spanner explicitly unsupported
+**Status**: Complete; Cosmos DB and DynamoDB validated, Spanner deferred pending live-account validation
 
 ## Scope decision
 
@@ -9,13 +9,15 @@
 operation. Cosmos DB and DynamoDB move from full replacement to native partial
 update and advertise `PARTIAL_UPDATE`.
 
-The Spanner provider data path is not part of this feature release. Files under
-`multiclouddb-provider-spanner/` remain unchanged except for the capability declaration and changelog. Spanner
-explicitly declares the sole feature-002
+The Spanner provider data path is not part of this feature release because a
+live account is not currently available for release-grade validation. Files
+under `multiclouddb-provider-spanner/` remain unchanged except for the capability
+declaration and changelog. Spanner explicitly declares the sole feature-002
 partial-update capability unsupported. After shared validation, a valid Spanner
-`update()` call fails at the default client's core capability gate with
+`update()` call fails at the default client core capability gate with
 non-retryable `UNSUPPORTED_CAPABILITY`, `capability=partial_update`, and zero
-Spanner I/O.
+Spanner I/O. Support can be enabled after live-account validation is available.
+
 ## User scenarios
 
 ### US1 — Update selected fields without losing omitted data
@@ -48,7 +50,7 @@ size/count details.
 Maps above 10 fields fail in shared preflight. Oversized Dynamo update expressions fail before
 provider I/O. Cosmos DB's state-dependent 2,097,152-byte resulting-document
 limit is reported after one attempted patch request, and DynamoDB's
-state-dependent 409,600-byte result-item limit is reported after one attempted
+state-dependent native result-item limit is reported after one attempted
 `UpdateItem`; no read/merge preflight is added.
 
 ### US4 — Migrate callers that relied on replacement
@@ -83,8 +85,8 @@ a valid update is rejected before provider delegation.
 - **FR-009**: Accepted field names MUST NOT be trimmed or rewritten.
 - **FR-010**: A non-null `OperationOptions.ttlSeconds()` on `update()` MUST be
   rejected before provider I/O. TTL remains create/upsert-only.
-- **FR-011**: The serialized field map limit MUST be exactly 408,576 bytes.
-  408,576 bytes passes shared preflight and 408,577 bytes fails.
+- **FR-011**: The serialized field map limit MUST be the portable 390 KiB boundary.
+  A payload at the boundary passes shared preflight and a larger payload fails.
 - **FR-012**: After validation and before delegation, the default client MUST
   gate `Capability.PARTIAL_UPDATE`; an unsupported provider receives
   non-retryable `UNSUPPORTED_CAPABILITY` with
@@ -118,8 +120,9 @@ a valid update is rejected before provider delegation.
   and value aliases, one `SET` assignment per field, and an aliased
   `attribute_exists(partitionKey)` guard.
 - **FR-025**: DynamoDB values MUST preserve null, scalar, map, and list shapes.
-- **FR-026**: DynamoDB MUST measure the complete update expression as UTF-8;
-  4,096 bytes passes and 4,097 bytes fails before I/O.
+- **FR-026**: The shared 10-field limit MUST keep every portable DynamoDB
+ update safely below the native expression ceiling. Any defensive planner
+ limit for direct SPI misuse is not part of the public error contract.
 - **FR-027**: DynamoDB conditional failure on the existence guard MUST map to
   `NOT_FOUND`; no read, `PutItem`, or adapter retry loop may be added.
 - **FR-028**: Provider diagnostics MUST be concise and MUST NOT log field
@@ -133,14 +136,14 @@ a valid update is rejected before provider delegation.
   variant indicating that the resulting item exceeds the maximum item size MUST
   map to non-retryable `UNSUPPORTED_CAPABILITY` with
   `reason=dynamodb_result_item_size_limit` and
-  `maximumResultBytes=409600`. Other `ValidationException` failures MUST remain
+  `maximumResultBytes`. Other `ValidationException` failures MUST remain
   `INVALID_REQUEST`. The original cause and sanitized native error code, status,
   request ID, and service details MUST be preserved where available, without
   payload data.
 - **FR-032**: On `update()` only, Cosmos DB HTTP 413 MUST map to
   non-retryable `UNSUPPORTED_CAPABILITY` with
   `reason=cosmos_result_item_size_limit` and
-  `maximumResultBytes=2097152`. The direct exception cause and sanitized
+  `maximumResultBytes`. The direct exception cause and sanitized
   native status, substatus, activity ID, and request charge MUST be preserved
   where available. The failed native patch MUST leave the item
   unchanged. HTTP 413 from other operations MUST retain the normal Cosmos
@@ -155,13 +158,14 @@ a valid update is rejected before provider delegation.
 | Core partial update | Native patch | Native `UpdateItem` | Explicitly unsupported; shared gate rejects |
 | Missing item | 404 → `NOT_FOUND` | failed existence condition → `NOT_FOUND` | Not reached |
 | More than 10 fields | shared `INVALID_REQUEST`; no provider call | shared `INVALID_REQUEST`; no provider call | shared `INVALID_REQUEST`; no provider call |
-| Lower native envelope | 2 MiB resulting item | 4,096-byte expression; 409,600-byte resulting item | Not reached |
+| Lower native envelope | provider-native resulting-item limit | provider-native resulting-item limit | Not reached |
 | Case-distinct names | preserved | preserved | Not part of this release |
 | Adapter read/retry | no read/retry; result-size rejection follows one attempted patch | no read/retry; result-size rejection follows one attempted `UpdateItem` | zero provider I/O |
+
 ## Edge cases
 
 - Empty maps, blank names, reserved names, underscore-prefixed names,
-  case-insensitive collisions, update TTL, and 408,577-byte maps fail before
+  case-insensitive collisions, update TTL, and over-limit maps fail before
   provider delegation.
 - Names containing `.`, `/`, `~`, or surrounding spaces remain literal. Cosmos
   escapes them and Dynamo aliases them.
@@ -179,7 +183,7 @@ a valid update is rejected before provider delegation.
 - Dynamo reserved words and punctuation never appear directly in the update
   expression.
 - A small Dynamo update can pass shared and expression preflight but fail when
-  the existing item plus assignments would exceed 409,600 bytes. Only the
+  the existing item plus assignments would exceed 390 KiB. Only the
   item-size `ValidationException` variant becomes a reason-coded native-limit
   error; the failed native update leaves the item unchanged.
 

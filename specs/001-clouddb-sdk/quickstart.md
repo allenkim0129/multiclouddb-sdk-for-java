@@ -313,11 +313,11 @@ ObjectNode doc = result.document();  // same as before
 
 ## Uniform Document Size Limit
 
-The SDK enforces a **400 KB** maximum document size across all providers (driven by DynamoDB's limit). Documents exceeding the limit are rejected at the SDK layer before any I/O.
+The SDK enforces a **390 KiB** maximum document size across all providers (chosen below the DynamoDB native limit). Documents exceeding the limit are rejected at the SDK layer before any I/O.
 
 ```java
 // Oversized documents are rejected before any I/O
-ObjectNode largeDoc = buildLargeDocument();  // >400 KB
+ObjectNode largeDoc = buildLargeDocument();  // >390 KiB
 try {
     client.create(address, key, largeDoc, OperationOptions.defaults());
 } catch (MulticloudDbException e) {

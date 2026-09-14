@@ -43,7 +43,7 @@ void update(
 - A missing item returns `NOT_FOUND` and is not created.
 - Non-null `options.ttlSeconds()` returns pre-I/O, non-retryable
   `INVALID_REQUEST`.
-- At most 10 fields may be supplied per call; the shared serialized field-map limit is 408,576 bytes.
+- At most 10 fields may be supplied per call; the shared serialized field-map limit is 390 KiB.
 
 `Capability.PARTIAL_UPDATE` is supported by Cosmos DB and DynamoDB. The
 Spanner provider declares it unsupported, so the default client returns
@@ -56,10 +56,10 @@ explicit through non-retryable `UNSUPPORTED_CAPABILITY` errors with stable
 `providerDetails.reason` and limit values.
 The Cosmos result-size case is non-retryable `UNSUPPORTED_CAPABILITY` with
 `reason=cosmos_result_item_size_limit` and
-`maximumResultBytes=2097152` (2 MiB).
+a `maximumResultBytes` detail describing the native ceiling.
 The Dynamo result-size case is non-retryable `UNSUPPORTED_CAPABILITY` with
 `reason=dynamodb_result_item_size_limit` and
-`maximumResultBytes=409600` (400 KiB). Other Dynamo `ValidationException` errors remain
+a `maximumResultBytes` detail describing the native ceiling. Other Dynamo `ValidationException` errors remain
 `INVALID_REQUEST`.
 
 For complete replacement, call `upsert()` with the complete desired document.

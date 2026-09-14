@@ -493,19 +493,23 @@ replace their complete top-level value, and Java `null` stores null.
 client.update(address, key, Map.of("status", "shipped"));
 ```
 
-Cosmos and DynamoDB each use one native write for accepted updates. The portable
-`update()` contract accepts at most 10 fields per call. The Spanner
-provider explicitly declares `PARTIAL_UPDATE` unsupported in this release;
-a valid call fails at the shared capability gate with non-retryable
-`UNSUPPORTED_CAPABILITY` before provider delegation.
+On providers that advertise `PARTIAL_UPDATE`, the normalized contract is the
+same: at most 10 fields, shallow top-level set/replace semantics, preservation
+of omitted fields, one atomic native write, and `NOT_FOUND` for a missing item.
+The conservative 10-field initial-release limit keeps Cosmos DB on one
+`patchItem` and DynamoDB on one `UpdateItem`; it can be raised compatibly after
+multi-patch Cosmos transactions receive dedicated validation.
 
-Cosmos can reject one attempted patch with HTTP 413 if the resulting
-document would exceed 2 MiB (2,097,152 bytes); the SDK surfaces that atomic failure as
-`UNSUPPORTED_CAPABILITY` with `reason=cosmos_result_item_size_limit`.
-DynamoDB's generated expression is capped at 4 KiB (4,096 UTF-8 bytes) before I/O. A
-small update can also be rejected after the one attempted `UpdateItem` if the
-existing item plus fields would exceed 400 KiB (409,600 bytes), reported with
-`reason=dynamodb_result_item_size_limit`.
+Spanner intentionally declares `PARTIAL_UPDATE` unsupported because
+release-grade behavior cannot yet be validated against a live Spanner account.
+A valid call therefore fails safely at the shared capability gate with
+non-retryable `UNSUPPORTED_CAPABILITY` before provider delegation. Spanner
+support can be enabled after live-account validation is available.
+
+Provider-native resulting-item ceilings remain constraints. Any resulting-item
+failure is atomic and surfaces as non-retryable
+`UNSUPPORTED_CAPABILITY` with a stable provider-specific `reason`; the SDK does
+not add a read-before-write size check that would introduce cost and a race.
 
 For complete replacement, use `upsert()` with the complete document; it creates
 a missing item. `ttlSeconds` is invalid on `update()` and fails before provider
@@ -588,7 +592,7 @@ if (meta != null) {
 
 ## Document Size Enforcement
 
-All write operations are validated against a **399 KiB** limit before any network
+All write operations are validated against a **390 KiB** limit before any network
 call is made. Documents that exceed the limit are rejected with
 `MulticloudDbErrorCategory.INVALID_REQUEST`:
 
@@ -597,14 +601,14 @@ try {
     client.create(address, key, largeDoc);
 } catch (MulticloudDbException e) {
     if (e.error().category() == MulticloudDbErrorCategory.INVALID_REQUEST) {
-        System.out.println("Document exceeds 399 KiB limit");
+        System.out.println("Document exceeds 390 KiB limit");
     }
 }
 ```
 
-The limit is 399 KiB (not 400 KiB) because providers inject additional fields
-before writing — see [Developer Guide](docs/guide.md#document-size-enforcement)
-for details.
+The portable limit is rounded down to 390 KiB to leave headroom for
+provider-injected fields and native wire-format overhead — see
+[Developer Guide](docs/guide.md#document-size-enforcement) for details.
 
 ---
 

@@ -18,9 +18,10 @@ Keep the Spanner adapter data path unchanged and explicitly declare
 operation, so a valid Spanner update returns
 non-retryable `UNSUPPORTED_CAPABILITY` before provider delegation.
 
-**Why**: Spanner is not being released with this feature. Explicitly gating the
-operation avoids both an unplanned provider change and silent invocation of its
-legacy, case-insensitive fixed-schema behavior.
+**Why**: A live Spanner account is not currently available for release-grade
+validation. Explicitly gating the operation avoids shipping unvalidated
+behavior or silently invoking the legacy, case-insensitive fixed-schema path.
+The implementation can follow when live-account validation is available.
 
 **Rejected**:
 
@@ -48,7 +49,7 @@ The default client validates:
 3. reserved names and underscore prefix;
 4. case-insensitive collisions;
 5. update TTL;
-6. exact 408,576-byte serialized size; and
+6. portable 390 KiB serialized-size limit; and
 7. core capability support.
 
 **Why**: one preflight gives all providers the same category and zero-I/O
@@ -104,8 +105,10 @@ upsert consistency invariants.
 Generate stable `#fN`/`:vN` aliases, an aliased
 `attribute_exists(#pk)` guard, and one `SET` expression.
 
-Map values through the structured item mapper. Measure the complete update
-expression in UTF-8; 4,096 bytes passes and 4,097 fails.
+Map values through the structured item mapper. The shared 10-field limit keeps
+the generated expression safely below the DynamoDB native expression ceiling.
+The planner retains a defensive size check for direct SPI misuse, but that path
+is not part of the portable public contract.
 
 Conditional failure maps to `NOT_FOUND`. No read, `PutItem`, or adapter retry
 loop is used.
@@ -113,13 +116,13 @@ loop is used.
 ## Decision 11 — Normalize DynamoDB's state-dependent result-item limit
 
 An update can have a small fields map and short expression but still push an
-existing item above DynamoDB's 409,600-byte limit. Do not read and merge before
+existing item above the DynamoDB native limit. Do not read and merge before
 the write. Attempt the one conditional `UpdateItem`, then recognize only the
 size-specific `ValidationException` message for `update()`.
 
 That variant maps to non-retryable `UNSUPPORTED_CAPABILITY` with
 `reason=dynamodb_result_item_size_limit` and
-`maximumResultBytes=409600`. Other `ValidationException` messages remain
+`maximumResultBytes`. Other `ValidationException` messages remain
 `INVALID_REQUEST`; the native cause and sanitized code/status/request ID/service
 details are retained without payload data.
 
@@ -134,7 +137,7 @@ still push an existing Cosmos document above 2,097,152 bytes. Do not read and
 merge before the write. Attempt the one direct patch, then map
 HTTP 413 from `update()` to non-retryable `UNSUPPORTED_CAPABILITY` with
 `reason=cosmos_result_item_size_limit` and
-`maximumResultBytes=2097152`.
+`maximumResultBytes`.
 
 Direct exceptions retain their cause and sanitized native metadata. HTTP 413 from other
 operations keeps the general provider-error mapping.
@@ -145,14 +148,14 @@ state and portability with one attempted native write.
 
 ## Decision 13 — Keep shared runtime assertions capability-driven
 
-Shared invalid-map/name, update-TTL, and 408,577-byte assertions run on all
+Shared invalid-map/name, update-TTL, and over-limit assertions run on all
 providers because validation precedes the core gate. Supported behavior runs
 only where `partial_update` is advertised. A dedicated assertion verifies that
 Spanner explicitly declares the capability unsupported and fails locally with `UNSUPPORTED_CAPABILITY` and
 `capability=partial_update`.
 
 Case-distinct identity runs directly on Cosmos and Dynamo as part of the base
-contract. API tests lock the exact 408,576-byte positive boundary; a shared
+contract. API tests lock the portable 390 KiB boundary; a shared
 provider-runtime success assertion is omitted because native envelopes may bind
 first.
 

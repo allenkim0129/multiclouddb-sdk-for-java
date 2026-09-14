@@ -15,10 +15,11 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Exact common-size boundary for the shared {@link DocumentSizeValidator}: a
- * serialized field map of exactly 408,576 bytes (399 KiB) passes; 408,577 bytes
+ * serialized field map at {@code MAX_BYTES} passes; one byte over the limit
  * fails with a non-retryable INVALID_REQUEST. The validator performs no provider
  * I/O, so a rejection delegates zero provider operations by construction.
  */
@@ -27,9 +28,9 @@ class DocumentSizeValidatorTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @Test
-    @DisplayName("MAX_BYTES is exactly 408,576 bytes (399 KiB)")
+    @DisplayName("MAX_BYTES is the portable 390 KiB limit")
     void maxBytesIsExact() {
-        assertEquals(408_576, DocumentSizeValidator.MAX_BYTES);
+        assertEquals(390 * 1024, DocumentSizeValidator.MAX_BYTES);
     }
 
     /** Builds a single-field map whose serialized JSON is exactly {@code targetBytes} long. */
@@ -43,20 +44,21 @@ class DocumentSizeValidatorTest {
     }
 
     @Test
-    @DisplayName("exactly 408,576 bytes passes common preflight")
+    @DisplayName("MAX_BYTES passes common preflight")
     void exactLimitPasses() throws Exception {
-        Map<String, Object> atLimit = mapOfSerializedSize(408_576);
+        Map<String, Object> atLimit = mapOfSerializedSize(DocumentSizeValidator.MAX_BYTES);
         assertDoesNotThrow(() -> DocumentSizeValidator.validate(atLimit, OperationNames.UPDATE));
     }
 
     @Test
-    @DisplayName("408,577 bytes fails with non-retryable INVALID_REQUEST and zero delegation")
+    @DisplayName("one byte over MAX_BYTES fails with non-retryable INVALID_REQUEST and zero delegation")
     void oneOverLimitFails() throws Exception {
-        Map<String, Object> overLimit = mapOfSerializedSize(408_577);
+        Map<String, Object> overLimit = mapOfSerializedSize(DocumentSizeValidator.MAX_BYTES + 1);
         MulticloudDbException ex = assertThrows(MulticloudDbException.class,
                 () -> DocumentSizeValidator.validate(overLimit, OperationNames.UPDATE));
         assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
         assertEquals(false, ex.error().retryable());
+ assertTrue(ex.error().message().contains("391 KiB"));
         // The static validator performs no provider call, so a rejection is inherently zero-I/O.
     }
 }

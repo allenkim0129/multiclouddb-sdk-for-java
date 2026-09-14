@@ -87,7 +87,7 @@ public interface MulticloudDbClient extends AutoCloseable {
      * {@code _}; two names that collide ignoring case (for example {@code foo} and
      * {@code Foo}); a non-null {@link OperationOptions#ttlSeconds()} (TTL is supported only by
      * {@code create()}/{@code upsert()}); more than 10 fields in one call; and a serialized
-     * field map larger than exactly 408,576 bytes (399 KiB). The 10-field portable bound keeps
+     * field map larger than the portable 390 KiB limit. The 10-field portable bound keeps
      * every accepted update to one atomic native write operation.
      * <p>
      * The operation is available only when the provider advertises

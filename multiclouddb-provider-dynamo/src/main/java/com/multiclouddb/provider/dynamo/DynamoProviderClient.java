@@ -310,10 +310,10 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      * TTL assignment. No adapter-side read, duplicate capability gate, or retry loop is added —
      * the default client owns the core {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE}
      * gate. A failed existence guard maps to
-     * {@link com.multiclouddb.api.MulticloudDbErrorCategory#NOT_FOUND}; an update expression
-     * above 4 KiB (4,096 UTF-8 bytes) fails locally with
-     * {@link com.multiclouddb.api.MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} and zero
-     * DynamoDB I/O. If the existing item plus accepted fields would exceed DynamoDB's
+     * {@link com.multiclouddb.api.MulticloudDbErrorCategory#NOT_FOUND}. The shared 10-field
+     * limit keeps public calls safely below the DynamoDB native expression ceiling; the planner
+     * retains a defensive expression-size guard for direct SPI misuse. If the existing item
+     * plus accepted fields would exceed the DynamoDB
      * 400 KiB (409,600 bytes) result-item limit, the single attempted {@code UpdateItem} returns a
      * size-specific {@code ValidationException}; that variant is normalized to the same
      * non-retryable capability error without an adapter read/merge preflight.

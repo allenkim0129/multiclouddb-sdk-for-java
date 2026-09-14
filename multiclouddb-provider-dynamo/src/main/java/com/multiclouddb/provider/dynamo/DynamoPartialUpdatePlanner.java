@@ -27,9 +27,10 @@ import java.util.TreeMap;
  * mapped through {@link DynamoItemMapper#objectToAttributeValue(Object)} so null/map/list/scalar
  * shapes are preserved. No TTL assignment is ever added.
  * <p>
- * The completed update expression is measured in UTF-8: 4,096 bytes is accepted; 4,097 bytes is
- * rejected before any DynamoDB call with a non-retryable {@code UNSUPPORTED_CAPABILITY}
- * carrying structured reason and limit details.
+ * The shared client accepts at most ten fields, keeping public calls safely below DynamoDB's
+ * native expression ceiling. The planner still measures the completed expression in UTF-8 and
+ * defensively rejects an oversized expression before I/O if the provider SPI is invoked
+ * directly without shared validation.
  */
 final class DynamoPartialUpdatePlanner {
 

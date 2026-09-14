@@ -686,7 +686,7 @@ RBAC-mode database creation. Simplifies `ResourceProvisioner` sample to use sing
 
 ## Phase 17: User Story 7 — Uniform Document Size and Quota Limits (Priority: P2)
 
-**Goal**: The SDK enforces a 400 KB maximum document size across all providers before sending any I/O. Oversized documents are rejected with `INVALID_REQUEST`.
+**Goal**: The SDK enforces a 390 KiB maximum document size across all providers before sending any I/O. Oversized documents are rejected with `INVALID_REQUEST`.
 
 - [x] T158 [P] [US7] Create `DocumentSizeValidator` utility class with `MAX_BYTES = 400 * 1024` and `validate(JsonNode document, String operation)` method that serializes to UTF-8 bytes via `ObjectMapper.writeValueAsBytes()` and throws `MulticloudDbException(INVALID_REQUEST)` when byte length exceeds the limit.
   File: `multiclouddb-api/src/main/java/com/multiclouddb/api/internal/DocumentSizeValidator.java`
@@ -694,7 +694,7 @@ RBAC-mode database creation. Simplifies `ResourceProvisioner` sample to use sing
 - [x] T159 [US7] Update `DefaultMulticloudDbClient` to call `DocumentSizeValidator.validate(document, operation)` at the start of `create()` and `upsert()` before the provider delegation block.
   File: `multiclouddb-api/src/main/java/com/multiclouddb/api/internal/DefaultMulticloudDbClient.java`
 
-- [x] T160 [US7] Create `DocumentSizeConformanceTest.java` with tests: document within limit is accepted; document exceeding 400 KB is rejected on upsert with INVALID_REQUEST; document exceeding 400 KB is rejected on create with INVALID_REQUEST.
+- [x] T160 [US7] Create `DocumentSizeConformanceTest.java` with tests: document within limit is accepted; document exceeding 390 KiB is rejected on upsert with INVALID_REQUEST; document exceeding 390 KiB is rejected on create with INVALID_REQUEST.
   File: `multiclouddb-conformance/src/test/java/com/multiclouddb/conformance/us7/DocumentSizeConformanceTest.java`
 
 ---

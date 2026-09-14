@@ -14,7 +14,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Changed
 
 - `MulticloudDbClient.update()` now specifies shallow top-level set/replace semantics: supplied fields are replaced, omitted fields remain, map/list values replace their complete top-level value, and a missing item returns `NOT_FOUND` without create.
-- Update payloads are validated before delegation. Non-null `OperationOptions.ttlSeconds()` returns non-retryable `INVALID_REQUEST` with zero provider I/O, at most 10 fields are accepted per call, and the serialized field map is limited to 408,576 bytes.
+- Update payloads are validated before delegation. Non-null `OperationOptions.ttlSeconds()` returns non-retryable `INVALID_REQUEST` with zero provider I/O, at most 10 fields are accepted per call, and the serialized field map is limited to 390 KiB.
 - Full-document replacement callers must use `upsert()` with the complete desired document. `upsert()` creates a missing item and is not an update-only replacement.
 
 ## [0.1.0-beta.2] — 2026-06-17

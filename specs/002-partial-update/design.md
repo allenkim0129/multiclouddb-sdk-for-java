@@ -17,8 +17,10 @@ void update(
 ```
 
 Cosmos DB and DynamoDB move to native partial-update operations and advertise
-the core capability. Spanner is excluded from this release and its provider
-module remains byte-for-byte unchanged from the PR base.
+the core capability. The Spanner data path is excluded from this release; only
+its explicit unsupported capability declaration and changelog alignment change.
+Release-grade Spanner behavior will be enabled after validation against a live
+account becomes available.
 
 ## 2. Portable contract
 
@@ -37,9 +39,9 @@ field predicates, or update TTL.
 ### 2.1 Release boundary
 
 Only providers advertising `partial_update` enter a provider data path. Cosmos
-DB and DynamoDB advertise it. Spanner retains its pre-feature capability set,
-so the default client rejects a valid update after shared validation and before
-delegation with:
+DB and DynamoDB advertise it. Spanner explicitly declares the capability
+unsupported, so the default client rejects a valid update after shared
+validation and before delegation with:
 
 ```text
 category=UNSUPPORTED_CAPABILITY
@@ -48,9 +50,11 @@ operation=update
 capability=partial_update
 ```
 
-This boundary avoids changing or releasing any Spanner provider code while
-keeping unsupported behavior explicit rather than silently invoking its legacy
-implementation.
+This boundary avoids releasing an unvalidated Spanner data path while keeping
+the unsupported behavior explicit. The capability declaration and changelog
+alignment are intentional feature-002 changes; implementation follows after
+live-account validation is available.
+
 ## 3. Shared preflight
 
 `DefaultMulticloudDbClient.update()` runs:
@@ -60,7 +64,7 @@ checkOpen
   -> validate non-null/non-empty fields
   -> validate names
   -> reject update TTL
-  -> validate serialized size <= 408,576 bytes
+  -> validate serialized size <= 390 KiB
   -> gate Capability.PARTIAL_UPDATE
   -> delegate once
 ```
@@ -78,7 +82,7 @@ The validator accepts literal `.`, `/`, `~`, and surrounding spaces. Mapping
 constraints apply only after the provider passes the core capability gate.
 
 All validation failures are non-retryable `INVALID_REQUEST` and perform zero
-provider I/O. Exactly 408,576 serialized bytes passes; 408,577 fails.
+provider I/O. A payload at the portable 390 KiB limit passes; a larger payload fails.
 
 ## 4. Capability
 
@@ -144,7 +148,7 @@ is added. If the one attempted direct patch reports HTTP
 413 during `update()`, it maps to non-retryable `UNSUPPORTED_CAPABILITY` with:
 
 - `reason=cosmos_result_item_size_limit`
-- `maximumResultBytes=2097152`
+- `maximumResultBytes`
 
 A thrown direct-patch exception preserves its cause and sanitized native
 metadata.  HTTP 413 from
@@ -179,30 +183,22 @@ ConditionExpression:
 
 The value mapper preserves STRING/NUMBER/BOOL/NULL/MAP/LIST shapes.
 
-The planner measures:
-
-```java
-updateExpression.getBytes(StandardCharsets.UTF_8).length
-```
-
-An expression above 4,096 bytes fails locally with non-retryable
-`UNSUPPORTED_CAPABILITY` and:
-
-- `reason=dynamodb_update_expression_limit`
-- `actualExpressionBytes`
-- `maximumExpressionBytes=4096`
+The shared 10-field limit keeps every portable call safely below the DynamoDB
+native expression ceiling. The planner still measures the generated expression
+and retains a defensive local rejection for direct SPI misuse, but this is not
+a caller-visible portable envelope.
 
 The provider executes exactly one `updateItem`. A
 `ConditionalCheckFailedException` from the existence guard maps to
 `NOT_FOUND`. No read, `PutItem`, or adapter retry loop is used.
 
 The existing item can make an otherwise-valid update exceed DynamoDB's
-409,600-byte resulting-item limit. No read/merge preflight is added. When the
+provider-native resulting-item limit. No read/merge preflight is added. When the
 single `UpdateItem` returns the size-specific `ValidationException` message,
 only that variant maps to non-retryable `UNSUPPORTED_CAPABILITY` with:
 
 - `reason=dynamodb_result_item_size_limit`
-- `maximumResultBytes=409600`
+- `maximumResultBytes`
 
 Sanitized native error code, status, request ID, and service details remain
 available where supplied. Other `ValidationException` messages remain
@@ -226,14 +222,14 @@ needed by the pinned SDK so a clean module-path compilation succeeds.
 ### Shared layer
 
 All providers inherit shared validation coverage for invalid maps, names, TTL,
-and the 408,577-byte rejection because validation precedes the core gate.
+and the over-limit rejection because validation precedes the core gate.
 Supported behavior—preservation, missing-item handling, replay, concurrency,
 field-count rejection, literal-name handling, and case identity—runs only when `partial_update` is advertised.
 A dedicated shared assertion verifies that Spanner explicitly declares the capability unsupported and returns
 `UNSUPPORTED_CAPABILITY` with `capability=partial_update` and does not mutate
 state.
 
-The exact 408,576-byte positive boundary is locked by API validator tests. A
+The portable 390 KiB boundary is locked by API validator tests. A
 shared provider-runtime success assertion is intentionally omitted because a
 native request or resulting-item limit may reject an otherwise-valid map.
 Cosmos and Dynamo exercise those native limits in concrete emulator regressions.
