@@ -13,11 +13,15 @@ import com.azure.cosmos.GatewayConnectionConfig;
 import com.multiclouddb.api.MulticloudDbClientConfig;
 import com.multiclouddb.api.ProviderId;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.MockedConstruction;
 import org.slf4j.LoggerFactory;
 
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -78,54 +82,52 @@ class CosmosGatewayDefaultsTest {
         assertEquals(1L, transportConfigurationLogCount);
     }
 
-    @Test
-    void rejectsRemovedGatewayV2Option() {
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class,
-                () -> new CosmosProviderClient(config("gatewayV2Enable", "false")));
+    @ParameterizedTest(name = "{0}={1}")
+    @MethodSource("removedTransportSettings")
+    void rejectsRemovedTransportSettingBeforeBuilderConstruction(
+            String property, String value, String expectedMessage) {
+        try (MockedConstruction<CosmosClientBuilder> mocked = mockBuilderConstruction()) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> new CosmosProviderClient(config(property, value)));
 
-        assertEquals(
-                "Cosmos connection property 'gatewayV2Enable' is not supported; Gateway V1/V2 "
-                        + "routing is selected automatically from account configuration by Azure "
-                        + "Cosmos DB and its SDK",
-                error.getMessage());
+            assertEquals(expectedMessage, error.getMessage());
+            assertEquals(0, mocked.constructed().size());
+        }
     }
 
-    @Test
-    void rejectsRemovedThinClientOption() {
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class,
-                () -> new CosmosProviderClient(config("thinClientEnabled", "false")));
-
-        assertEquals(
-                "Cosmos connection property 'thinClientEnabled' is not supported; Gateway V1/V2 "
-                        + "routing is selected automatically from account configuration by Azure "
-                        + "Cosmos DB and its SDK",
-                error.getMessage());
-    }
-
-    @Test
-    void rejectsRemovedConnectionModeOption() {
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class,
-                () -> new CosmosProviderClient(config("connectionMode", "direct")));
-
-        assertEquals(
+    private static Stream<Arguments> removedTransportSettings() {
+        String connectionModeMessage =
                 "Cosmos connection property 'connectionMode' is no longer supported; "
-                        + "Gateway mode is always used",
-                error.getMessage());
-    }
-
-    @Test
-    void rejectsGatewayHttp2Toggle() {
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class,
-                () -> new CosmosProviderClient(config("gatewayHttp2Enabled", "false")));
-
-        assertEquals(
+                        + "Gateway mode is always used";
+        String http2Message =
                 "Cosmos connection property 'gatewayHttp2Enabled' is not supported; "
-                        + "Gateway HTTP/2 is always enabled",
-                error.getMessage());
+                        + "Gateway HTTP/2 is always enabled";
+        String automaticRoutingSuffix =
+                "' is not supported; Gateway V1/V2 routing is selected automatically "
+                        + "from account configuration by Azure Cosmos DB and its SDK";
+
+        return Stream.of(
+                Arguments.of("connectionMode", "direct", connectionModeMessage),
+                Arguments.of("connectionMode", "gateway", connectionModeMessage),
+                Arguments.of("gatewayHttp2Enabled", "false", http2Message),
+                Arguments.of("gatewayHttp2Enabled", "true", http2Message),
+                Arguments.of(
+                        "gatewayV2Enable",
+                        "false",
+                        "Cosmos connection property 'gatewayV2Enable" + automaticRoutingSuffix),
+                Arguments.of(
+                        "gatewayV2Enable",
+                        "true",
+                        "Cosmos connection property 'gatewayV2Enable" + automaticRoutingSuffix),
+                Arguments.of(
+                        "thinClientEnabled",
+                        "false",
+                        "Cosmos connection property 'thinClientEnabled" + automaticRoutingSuffix),
+                Arguments.of(
+                        "thinClientEnabled",
+                        "true",
+                        "Cosmos connection property 'thinClientEnabled" + automaticRoutingSuffix));
     }
 
     private static MulticloudDbClientConfig config(String property, String value) {
