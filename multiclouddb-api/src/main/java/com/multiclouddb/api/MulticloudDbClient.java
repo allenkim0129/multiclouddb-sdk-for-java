@@ -34,13 +34,18 @@ public interface MulticloudDbClient extends AutoCloseable {
      * The supplied top-level {@code Map} entries are snapshotted before
      * validation, so a class-level map serializer cannot add, remove, or rename fields.
      * Cyclic value graphs and non-collection {@link Iterable} values are rejected rather
-     * than delegated or traversed without a bound.
+     * than delegated or traversed without a bound. The bounded normalized snapshot is
+     * detached from caller-owned nested values and is the exact document delegated to the
+     * provider.
      * <p>
      * Top-level provider-owned names are reserved case-insensitively: {@code id},
      * {@code partitionKey}, {@code sortKey}, {@code ttl}, {@code ttlExpiry}, and
-     * {@code data}; names beginning with {@code _} are also reserved. Every field name,
-     * including nested map keys, is limited to
-     * {@link PortableWriteLimits#MAX_FIELD_NAME_UTF8_BYTES} UTF-8 bytes. Binary values are rejected wherever they occur, including inside a POJO.
+     * {@code data}; names beginning with {@code _} are also reserved. Complete-document
+     * top-level names must be unique ignoring case and contain at most
+     * {@link PortableWriteLimits#MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS} Unicode characters.
+     * Nested map keys are limited to
+     * {@link PortableWriteLimits#MAX_FIELD_NAME_UTF8_BYTES} UTF-8 bytes. Binary values are
+     * rejected wherever they occur, including inside a POJO.
      * Serialized JSON output is capped while it is produced. Serialized UTF-8 size
      * and provider-neutral structural footprint are independently limited to
      * {@link PortableWriteLimits#MAX_SERIALIZED_INPUT_BYTES} and
@@ -82,7 +87,8 @@ public interface MulticloudDbClient extends AutoCloseable {
      * @param key     document key
      * @param options operation options; set {@link OperationOptions#includeMetadata()} to
      *                {@code true} to request provider write-metadata
-     * @return the document result (document + optional metadata), or {@code null} if not found
+     * @return the document result after top-level provider-owned fields are removed by the
+     *         shared client, or {@code null} if not found; requested metadata remains separate
      */
     DocumentResult read(ResourceAddress address, MulticloudDbKey key, OperationOptions options);
 
@@ -205,13 +211,18 @@ public interface MulticloudDbClient extends AutoCloseable {
      * The supplied top-level {@code Map} entries are snapshotted before
      * validation, so a class-level map serializer cannot add, remove, or rename fields.
      * Cyclic value graphs and non-collection {@link Iterable} values are rejected rather
-     * than delegated or traversed without a bound.
+     * than delegated or traversed without a bound. The bounded normalized snapshot is
+     * detached from caller-owned nested values and is the exact document delegated to the
+     * provider.
      * <p>
      * Top-level provider-owned names are reserved case-insensitively: {@code id},
      * {@code partitionKey}, {@code sortKey}, {@code ttl}, {@code ttlExpiry}, and
-     * {@code data}; names beginning with {@code _} are also reserved. Every field name,
-     * including nested map keys, is limited to
-     * {@link PortableWriteLimits#MAX_FIELD_NAME_UTF8_BYTES} UTF-8 bytes. Binary values are rejected wherever they occur, including inside a POJO.
+     * {@code data}; names beginning with {@code _} are also reserved. Complete-document
+     * top-level names must be unique ignoring case and contain at most
+     * {@link PortableWriteLimits#MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS} Unicode characters.
+     * Nested map keys are limited to
+     * {@link PortableWriteLimits#MAX_FIELD_NAME_UTF8_BYTES} UTF-8 bytes. Binary values are
+     * rejected wherever they occur, including inside a POJO.
      * Serialized JSON output is capped while it is produced. Serialized UTF-8 size
      * and provider-neutral structural footprint are independently limited to
      * {@link PortableWriteLimits#MAX_SERIALIZED_INPUT_BYTES} and
@@ -283,7 +294,8 @@ public interface MulticloudDbClient extends AutoCloseable {
      * @param query   query request (expression, parameters, page size, continuation
      *                token)
      * @param options operation options
-     * @return a page of results with optional continuation token
+     * @return a page whose items have top-level provider-owned fields removed by the
+     *         shared client, with an optional continuation token
      */
     QueryPage query(ResourceAddress address, QueryRequest query, OperationOptions options);
 

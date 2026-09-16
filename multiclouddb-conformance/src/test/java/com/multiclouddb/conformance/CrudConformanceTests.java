@@ -89,6 +89,9 @@ public abstract class CrudConformanceTests {
 
     private record IterablePojo(Iterable<Integer> values) { }
 
+    private static final class PojoNode {
+        public PojoNode child;
+    }
 
     private static final class FailingPojo {
         public String getValue() {
@@ -149,17 +152,26 @@ public abstract class CrudConformanceTests {
     }
 
     private static void assertPortableResult(JsonNode document) {
-        PROVIDER_OWNED_FIELDS.forEach(field ->
-                assertFalse(document.has(field), field + " must not leak into read results"));
-        document.fieldNames().forEachRemaining(field ->
-                assertFalse(field.startsWith("_"), field + " must not leak into read results"));
+        document.fieldNames().forEachRemaining(field -> {
+            assertFalse(isProviderOwnedField(field),
+                    field + " must not leak into read results");
+            assertFalse(field.startsWith("_"),
+                    field + " must not leak into read results");
+        });
     }
 
     private static void assertPortableResult(Map<String, Object> document) {
-        PROVIDER_OWNED_FIELDS.forEach(field ->
-                assertFalse(document.containsKey(field), field + " must not leak into query results"));
-        document.keySet().forEach(field ->
-                assertFalse(field.startsWith("_"), field + " must not leak into query results"));
+        document.keySet().forEach(field -> {
+            assertFalse(isProviderOwnedField(field),
+                    field + " must not leak into query results");
+            assertFalse(field.startsWith("_"),
+                    field + " must not leak into query results");
+        });
+    }
+
+    private static boolean isProviderOwnedField(String field) {
+        return PROVIDER_OWNED_FIELDS.stream()
+                .anyMatch(providerField -> providerField.equalsIgnoreCase(field));
     }
     /**
      * Cleanup helper that delegates to {@link com.multiclouddb.api.MulticloudDbClient#delete}.
@@ -220,6 +232,16 @@ public abstract class CrudConformanceTests {
             deep = Map.of("level", deep);
         }
 
+        PojoNode pojoCycle = new PojoNode();
+        pojoCycle.child = pojoCycle;
+
+        PojoNode deepPojo = new PojoNode();
+        for (int i = 0; i < PortableWriteLimits.MAX_NESTED_CONTAINERS + 1; i++) {
+            PojoNode parent = new PojoNode();
+            parent.child = deepPojo;
+            deepPojo = parent;
+        }
+
         Iterable<Integer> unbounded = () -> new Iterator<>() {
             private int value;
 
@@ -241,6 +263,12 @@ public abstract class CrudConformanceTests {
                 new UnsafeValueCase(
                         PartialUpdateStructureValidator.DOCUMENT_DEPTH_LIMIT_REASON,
                         PartialUpdateStructureValidator.DEPTH_LIMIT_REASON, deep, false),
+                new UnsafeValueCase(
+                        "document_value_cycle", "partial_update_value_cycle",
+                        pojoCycle, false),
+                new UnsafeValueCase(
+                        PartialUpdateStructureValidator.DOCUMENT_DEPTH_LIMIT_REASON,
+                        PartialUpdateStructureValidator.DEPTH_LIMIT_REASON, deepPojo, false),
                 new UnsafeValueCase(
                         "non_portable_iterable", "non_portable_iterable",
                         unbounded, false),
@@ -1283,7 +1311,9 @@ public abstract class CrudConformanceTests {
         MulticloudDbKey nameUpsertKey = ConformanceHarness.uniqueKey("upsert-name-over");
         Map<String, Object> binary = Map.of("payload", new byte[] {1, 2});
         Map<String, Object> oversizedName = Map.of(
-                "a".repeat(PortableWriteLimits.MAX_FIELD_NAME_UTF8_BYTES + 1), "value");
+                "nestedObj", Map.of(
+                        "a".repeat(PortableWriteLimits.MAX_FIELD_NAME_UTF8_BYTES + 1),
+                        "value"));
 
         try {
             List<MulticloudDbException> failures = List.of(
@@ -1319,6 +1349,60 @@ public abstract class CrudConformanceTests {
             safeDelete(binaryUpsertKey);
             safeDelete(nameCreateKey);
             safeDelete(nameUpsertKey);
+        }
+    }
+
+    @Test @Order(29)
+    @DisplayName("complete writes reject Spanner-incompatible top-level names before I/O")
+    void completeWriteTopLevelNamesArePortable() {
+        MulticloudDbKey collisionCreateKey =
+                ConformanceHarness.uniqueKey("create-case-collision");
+        MulticloudDbKey collisionUpsertKey =
+                ConformanceHarness.uniqueKey("upsert-case-collision");
+        MulticloudDbKey longCreateKey =
+                ConformanceHarness.uniqueKey("create-long-field");
+        MulticloudDbKey longUpsertKey =
+                ConformanceHarness.uniqueKey("upsert-long-field");
+        Map<String, Object> collision = new LinkedHashMap<>();
+        collision.put("foo", 1);
+        collision.put("Foo", 2);
+        Map<String, Object> longName = Map.of(
+                "a".repeat(PortableWriteLimits.MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS + 1),
+                "value");
+
+        try {
+            List<MulticloudDbException> collisionFailures = List.of(
+                    assertThrows(MulticloudDbException.class,
+                            () -> client.create(
+                                    getAddress(), collisionCreateKey, collision)),
+                    assertThrows(MulticloudDbException.class,
+                            () -> client.upsert(
+                                    getAddress(), collisionUpsertKey, collision)));
+            List<MulticloudDbException> lengthFailures = List.of(
+                    assertThrows(MulticloudDbException.class,
+                            () -> client.create(getAddress(), longCreateKey, longName)),
+                    assertThrows(MulticloudDbException.class,
+                            () -> client.upsert(getAddress(), longUpsertKey, longName)));
+
+            collisionFailures.forEach(failure -> {
+                assertEquals("document_case_insensitive_field_name_collision",
+                        failure.error().providerDetails().get("reason"));
+                assertNull(failure.error().provider());
+            });
+            lengthFailures.forEach(failure -> {
+                assertEquals("document_top_level_field_name_length_limit",
+                        failure.error().providerDetails().get("reason"));
+                assertNull(failure.error().provider());
+            });
+            assertNull(client.read(getAddress(), collisionCreateKey));
+            assertNull(client.read(getAddress(), collisionUpsertKey));
+            assertNull(client.read(getAddress(), longCreateKey));
+            assertNull(client.read(getAddress(), longUpsertKey));
+        } finally {
+            safeDelete(collisionCreateKey);
+            safeDelete(collisionUpsertKey);
+            safeDelete(longCreateKey);
+            safeDelete(longUpsertKey);
         }
     }
 

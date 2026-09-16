@@ -11,12 +11,14 @@ parameter from `document` to `fields`.
 **Why**: Java parameter names are not binary API, and a new patch type or method
 would expand scope unnecessarily.
 
-## Decision 2 — Exclude Spanner from this feature release
+## Decision 2 — Exclude Spanner partial update from this feature release
 
-Keep the Spanner production source unchanged and deliberately leave portable
-partial update unsupported in this feature. Changelog and provider-direct test
-alignment do not alter released behavior. `CapabilitySet` supplies unsupported
-defaults for all three Feature 002 capabilities when the provider omits them.
+Deliberately leave portable Spanner partial update unsupported. The shared default
+client performs portable read/query identity cleanup after provider mapping, and
+the Spanner write path remains unchanged. The only Spanner production adjustment
+matches `FIELD_DATA` metadata to physical columns case-insensitively to preserve
+caller field spelling. `CapabilitySet` supplies unsupported defaults for all three
+Feature 002 capabilities when the provider omits them.
 The default client gates the operation, so a valid Spanner update returns
 non-retryable `UNSUPPORTED_CAPABILITY` before provider delegation.
 
@@ -29,7 +31,8 @@ future portable Spanner update support requires a separate release decision.
 
 **Rejected**:
 
-- retaining the casing guard, because it changes an unreleased provider module;
+- preserving exact-case result mapping, because Spanner column names are
+  case-insensitive and physical schema casing must not leak into portable results;
 - bypassing the core gate for Spanner, because that restores silent field-case
   divergence; and
 - adding a provider-ID special case in shared code.
@@ -71,15 +74,16 @@ and compact JSON such as a dense list of empty containers understates DynamoDB's
 native item accounting. The structure-aware pass applies the lowest common
 denominator before the capability gate while inspecting only incoming fields.
 Complete documents use the same binary-value, depth, nested-name, and structural
-limits; a null document, every case-insensitive top-level
-provider-owned name (`id`, `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`,
-`data`), and every underscore-prefixed top-level name are rejected before I/O.
-Case-distinct non-reserved top-level names remain valid.
-Create, upsert, and update snapshot top-level maps and use bounded SDK-owned
-Jackson serialization while inspecting nested values before delegation.
-`PortableWriteLimits` exposes exactly five input/structure constants. The 50,000-byte name
-bound is at or below the AWS SDK's 50,000-character DynamoDB response-parser
-limit, including for multibyte UTF-8 names.
+limits; a null document, every case-insensitive top-level provider-owned name
+(`id`, `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, `data`), and every
+underscore-prefixed top-level name are rejected before I/O. Remaining top-level
+names must be unique ignoring case and contain at most 128 Unicode characters,
+the Spanner-compatible portable baseline. Create, upsert, and update snapshot
+top-level maps, perform one bounded SDK-owned Jackson serialization, and delegate
+its detached normalized representation. `PortableWriteLimits` exposes exactly
+six input/structure constants. The 50,000-byte nested/partial-update name bound
+is at or below the AWS SDK's 50,000-character DynamoDB response-parser limit,
+including for multibyte UTF-8 names.
 Existing-state result size remains native and does not justify a read/merge
 preflight.
 
@@ -123,8 +127,9 @@ Add `partial_update_preserves_ttl_expiry` without changing the meaning of
   assign `ttlExpiry`, so the existing absolute expiry is unchanged.
 - Cosmos DB advertises unsupported because `patchItem` advances `_ts`, which
   restarts the countdown for a TTL-bearing item.
-- Spanner and legacy omissions receive the API-default unsupported value with
-  no Spanner production change.
+- Spanner and legacy omissions receive the API-default unsupported value while
+  shared result cleanup and the Spanner mapper casing fix remain independent of
+  partial update.
 
 **Why**: base shallow update is portable even though provider TTL clocks differ.
 Callers requiring fixed absolute expiry need a separate discoverable guarantee;

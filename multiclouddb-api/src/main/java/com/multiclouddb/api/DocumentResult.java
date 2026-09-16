@@ -36,9 +36,10 @@ public final class DocumentResult {
     }
 
     /**
-     * The portable document payload returned by the provider. Adapter-injected
-     * identity, TTL, and system-metadata fields are removed; request metadata is
-     * exposed separately through {@link #metadata()} when available.
+     * The portable document payload exposed by {@link MulticloudDbClient}. The default
+     * client removes adapter-injected identity, TTL, and system-metadata fields after
+     * provider mapping; request metadata is exposed separately through {@link #metadata()}
+     * when available.
      *
      * @return non-null portable document
      */

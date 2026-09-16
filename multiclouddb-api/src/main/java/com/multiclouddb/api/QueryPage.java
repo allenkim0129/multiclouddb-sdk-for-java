@@ -48,8 +48,8 @@ public final class QueryPage {
      * Items in this page, each represented as an <em>unmodifiable</em> map of
      * field name to value.
      * <p>
-     * Adapter-injected identity, TTL, and system-metadata fields are removed
-     * from each document. Both the list and every document map are unmodifiable;
+     * The default client removes adapter-injected identity, TTL, and system-metadata
+     * fields from each document after provider mapping. Both the list and every map are unmodifiable;
      * mutations throw {@link UnsupportedOperationException}.
      */
     public List<Map<String, Object>> items() {

@@ -331,19 +331,16 @@ names**:
 | **DynamoDB** | `partitionKey` (hash key attribute) | `sortKey` (range key attribute) |
 | **Spanner** | `partitionKey` (primary key column) | `sortKey` (primary key column) |
 
-This means a document read back from **Cosmos DB** looks like:
+At the native storage layer, the Cosmos item contains `id` and `partitionKey`,
+while the DynamoDB item contains `sortKey` and `partitionKey`. Those adapter-owned
+fields are not part of the portable document payload: `read()` and `query()` strip
+them before returning this provider-independent shape:
 
 ```json
-{"id": "pos-42", "partitionKey": "tenant-1", "name": "Alpha Fund"}
+{"name": "Alpha Fund"}
 ```
 
-while the same document read back from **DynamoDB** looks like:
-
-```json
-{"sortKey": "pos-42", "partitionKey": "tenant-1", "name": "Alpha Fund"}
-```
-
-A convention-based overload - `upsert(address, document)` - would need to look
+A convention-based overload - `upsert(address, document)` - would still need to look
 for `sortKey` on DynamoDB/Spanner but `id` on Cosmos DB. That requires
 provider-aware extraction logic in what is supposed to be a provider-agnostic
 interface, which defeats the purpose of a portable abstraction.
@@ -1783,11 +1780,11 @@ if (client.capabilities().isSupported(Capability.WRITE_TIMESTAMP)) {
 
 ### System Property Stripping
 
-Documents returned by `read()` and items returned by `query()` are stripped of
-adapter-injected identity, TTL, and system metadata before being exposed. Cosmos
-removes `id`, `partitionKey`, `ttl`, `_ts`, `_etag`, `_rid`, `_self`, and
-`_attachments`; DynamoDB removes `partitionKey`, `sortKey`, and `ttlExpiry`;
-Spanner removes `partitionKey`, `sortKey`, and its internal `data` metadata column.
+Documents returned by `read()` and items returned by `query()` are normalized by
+`DefaultMulticloudDbClient` after provider mapping. It removes top-level identity,
+TTL, and system metadata names case-insensitively, including `id`, `partitionKey`,
+`sortKey`, `ttl`, `ttlExpiry`, Spanner's internal `data`, and underscore-prefixed
+provider fields. Nested fields with those names remain caller data and are preserved.
 TTL/write metadata requested with `includeMetadata(true)` remains available through
 `DocumentMetadata`. A result that otherwise satisfies the portable write envelope
 can therefore be converted to a map and passed to replacement `upsert()` without
@@ -1799,21 +1796,23 @@ manually deleting provider-owned fields.
 
 The SDK enforces **independent 390 KiB serialized and structural write-input
 bounds** before any data leaves the client. Shared preflight snapshots the
-top-level map and uses bounded SDK-owned Jackson serialization while inspecting
-nested values. Caller-registered modules are not consulted, so values requiring
+top-level map and performs one bounded SDK-owned Jackson serialization. The
+resulting detached normalized snapshot is the exact input delegated to the
+provider. Caller-registered modules are not consulted, so values requiring
 custom modules, such as `Instant`, must first be converted to serializable
-values. Binary values are rejected even when hidden in a POJO. Cyclic graphs and
-non-collection iterables are rejected by bounded inspection, serialized JSON
-output is capped while it is produced, and field names above 50,000 UTF-8 bytes
-are outside the portable value envelope.
+values. Binary values are rejected even when hidden in a POJO. POJO cycles,
+excessive POJO depth, serializer re-entry, non-collection iterables, and
+over-limit output fail through typed shared validation.
 
 For `create()` and `upsert()`, a null document, a top-level name matching `id`,
 `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, or `data` case-insensitively,
 or any top-level name beginning with `_`, returns non-retryable
-`INVALID_REQUEST` before provider I/O. Other case-distinct non-reserved names
-remain separate literal fields. The same validation and structural
-preflight apply to the full document passed to `create()`/`upsert()` and to
-the field map passed to `update()`.
+`INVALID_REQUEST` before provider I/O. Complete-document top-level names must be
+unique ignoring case and contain at most 128 Unicode characters, matching the
+portable Spanner column baseline. Nested names and partial-update names retain
+the 50,000-byte UTF-8 limit. The same serialized and structural preflight applies
+to the full document passed to `create()`/`upsert()` and to the field map passed
+to `update()`.
 
 Complete `create()`/`upsert()` documents and incoming update maps share the
 structural bound. A complete document may contain at most 31 map/list containers

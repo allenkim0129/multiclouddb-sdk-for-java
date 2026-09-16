@@ -3,6 +3,7 @@
 
 package com.multiclouddb.api.internal;
 
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.multiclouddb.api.Capability;
 import com.multiclouddb.api.CapabilitySet;
 import com.multiclouddb.api.DocumentResult;
@@ -39,6 +40,8 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -104,9 +107,10 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         Instant start = Instant.now();
         try {
             DocumentResult result = providerClient.read(address, key, options);
+            DocumentResult portableResult = normalizeReadResult(result);
             LOG.debug("read completed: address={}, key={}, found={}, duration={}ms",
-                    address, key, result != null, Duration.between(start, Instant.now()).toMillis());
-            return result;
+                    address, key, portableResult != null, Duration.between(start, Instant.now()).toMillis());
+            return portableResult;
         } catch (MulticloudDbException e) {
             throw enrichException(e, "read", start);
         } catch (Exception e) {
@@ -216,6 +220,7 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
                 page = providerClient.query(address, query, options);
             }
 
+            page = normalizeQueryPage(page);
             LOG.debug("query completed: address={}, items={}, hasMore={}, duration={}ms",
                     address, page.items().size(), page.continuationToken() != null,
                     Duration.between(start, Instant.now()).toMillis());
@@ -235,6 +240,41 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         } catch (Exception e) {
             throw wrapUnexpected(e, "query", start);
         }
+    }
+
+    private static DocumentResult normalizeReadResult(DocumentResult result) {
+        if (result == null) {
+            return null;
+        }
+
+        ObjectNode document = result.document().deepCopy();
+        List<String> fieldsToRemove = new ArrayList<>();
+        document.fieldNames().forEachRemaining(name -> {
+            if (PartialUpdateValidator.isReservedProviderField(name)) {
+                fieldsToRemove.add(name);
+            }
+        });
+        document.remove(fieldsToRemove);
+        return new DocumentResult(document, result.metadata());
+    }
+
+    private static QueryPage normalizeQueryPage(QueryPage page) {
+        List<Map<String, Object>> items = new ArrayList<>(page.items().size());
+        for (Map<String, Object> item : page.items()) {
+            items.add(copyPortableItem(item));
+        }
+        return new QueryPage(items, page.continuationToken(), page.diagnostics());
+    }
+
+    private static Map<String, Object> copyPortableItem(Map<String, Object> item) {
+        Map<String, Object> portableItem = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : item.entrySet()) {
+            String name = entry.getKey();
+            if (name == null || !PartialUpdateValidator.isReservedProviderField(name)) {
+                portableItem.put(name, entry.getValue());
+            }
+        }
+        return portableItem;
     }
 
     /**

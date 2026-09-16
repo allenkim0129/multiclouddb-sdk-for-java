@@ -112,15 +112,16 @@ request counts, costs, and migration guidance.
 `create()` and `upsert()` reject a null document, top-level names matching `id`,
 `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, or `data` case-insensitively,
 top-level names beginning with `_`, binary values (including values hidden in
-POJOs), cyclic graphs, non-collection iterables, and field names above 50,000
-UTF-8 bytes before provider I/O. Other case-distinct top-level names remain
-separate literal fields. Values must be serializable with the SDK-owned Jackson
-configuration; caller-registered modules are not consulted. Serialized JSON
-output is bounded as it is produced. Serialized UTF-8 input and structural
-footprint have separate 390 KiB limits, with at most 31 map/list containers below
-the document root. `PortableWriteLimits` exposes the serialized, structural,
-field-name, nesting, and partial-update field-count constants. Violations are
-non-retryable `INVALID_REQUEST`.
+POJOs), cyclic graphs, non-collection iterables, and over-limit names before
+provider I/O. Complete-document top-level names must be unique ignoring case and
+contain at most 128 Unicode characters; nested names remain limited to 50,000
+UTF-8 bytes. Values must be serializable with the SDK-owned Jackson configuration;
+caller-registered modules are not consulted. One bounded serialization produces
+a detached normalized snapshot, and that exact snapshot is delegated. Serialized
+UTF-8 input and structural footprint have separate 390 KiB limits, with at most
+31 map/list containers below the document root. `PortableWriteLimits` exposes
+all six serialized, structural, name, nesting, and partial-update field-count
+constants. Violations are non-retryable `INVALID_REQUEST`.
 
 ### Query Expression Types
 

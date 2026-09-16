@@ -45,10 +45,11 @@ values.
 
 ### Spanner release boundary
 
-Spanner partial update is deliberately unsupported in this feature release. Its
-provider production source remains unchanged, and `CapabilitySet` defaults all
-three omitted Feature 002 capabilities to unsupported. After shared validation, a
-valid call returns non-retryable `UNSUPPORTED_CAPABILITY` with
+Spanner partial update is deliberately unsupported in this feature release.
+Targeted provider changes enforce baseline complete-write and portable-result
+contracts only, while `CapabilitySet` defaults all three omitted Feature 002
+capabilities to unsupported. After shared validation, a valid call returns
+non-retryable `UNSUPPORTED_CAPABILITY` with
 `capability=partial_update` before any Spanner provider I/O. The Spanner emulator
 ran shared gate coverage and the provider-direct legacy regression; this is not
 live production Spanner validation and does not advertise portable update
@@ -106,18 +107,21 @@ These shared failures use `partial_update_field_name_size_limit`,
 with actual/maximum limit details, and perform zero provider I/O. They inspect
 only incoming fields; final item size still depends on stored state.
 
-Shared preflight snapshots the top-level map and uses bounded SDK-owned Jackson
-serialization while inspecting nested values. Caller-registered modules are not
-consulted, so values requiring custom modules must first be converted to
-serializable values. Binary values hidden in a POJO are rejected during that
-process. Non-collection iterables are rejected before iteration, and serialized
-JSON output is capped at 390 KiB while it is produced.
+Shared preflight snapshots the top-level map and performs one bounded SDK-owned
+Jackson serialization. Its detached normalized result is the exact provider
+input. Caller-registered modules are not consulted, so values requiring custom
+modules must first be converted to serializable values. Binary values hidden in
+a POJO are rejected during that process. POJO cycles, excessive POJO depth,
+serializer re-entry, non-collection iterables, and over-limit output become
+typed shared validation failures.
 
 Complete `create()`/`upsert()` writes use the same validation and limits.
 A null complete document, a top-level name matching `id`, `partitionKey`,
 `sortKey`, `ttl`, `ttlExpiry`, or `data` in any letter case, or an
 underscore-prefixed top-level name returns non-retryable `INVALID_REQUEST`
-before provider I/O. Case-distinct non-reserved top-level names remain valid.
+before provider I/O. Remaining top-level names must be unique ignoring case and
+contain at most 128 Unicode characters; nested names retain the 50,000-byte
+UTF-8 limit.
 
 ## Capabilities
 
@@ -155,11 +159,13 @@ Use the public constants instead of copying literals:
 int inputBytes = PortableWriteLimits.MAX_SERIALIZED_INPUT_BYTES;
 int footprintBytes = PortableWriteLimits.MAX_STRUCTURAL_FOOTPRINT_BYTES;
 int nameBytes = PortableWriteLimits.MAX_FIELD_NAME_UTF8_BYTES;
+int topLevelNameCharacters =
+    PortableWriteLimits.MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS;
 int depth = PortableWriteLimits.MAX_NESTED_CONTAINERS;
 int updateFields = PortableWriteLimits.MAX_PARTIAL_UPDATE_FIELDS;
 ```
 
-These are the only five `PortableWriteLimits` constants.
+These are the only six `PortableWriteLimits` constants.
 
 Case-distinct field identity is part of the base `PARTIAL_UPDATE` contract.
 Names such as `status` and `STATUS` remain separate fields across calls and may

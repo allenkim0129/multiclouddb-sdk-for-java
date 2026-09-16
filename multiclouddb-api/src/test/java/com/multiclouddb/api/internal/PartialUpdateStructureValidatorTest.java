@@ -76,6 +76,41 @@ class PartialUpdateStructureValidatorTest {
         }
     }
 
+    @JsonSerialize(using = ReenteringSerializer.class)
+    private static final class ReenteringValue { }
+
+    private static final class ReenteringSerializer
+            extends StdSerializer<ReenteringValue> {
+        private ReenteringSerializer() {
+            super(ReenteringValue.class);
+        }
+
+        @Override
+        public void serialize(ReenteringValue value, JsonGenerator generator,
+                SerializerProvider provider) throws IOException {
+            generator.writeObject(value);
+        }
+    }
+
+    @JsonSerialize(using = StatefulSerializer.class)
+    private static final class StatefulValue {
+        private int serializationCount;
+    }
+
+    private static final class StatefulSerializer
+            extends StdSerializer<StatefulValue> {
+        private StatefulSerializer() {
+            super(StatefulValue.class);
+        }
+
+        @Override
+        public void serialize(StatefulValue value, JsonGenerator generator,
+                SerializerProvider provider) throws IOException {
+            value.serializationCount++;
+            generator.writeString("snapshot-" + value.serializationCount);
+        }
+    }
+
     @JsonSerialize(using = AnnotatedIterableSerializer.class)
     private static final class AnnotatedIterable implements Iterable<Integer> {
         @Override
@@ -393,6 +428,35 @@ class PartialUpdateStructureValidatorTest {
         assertInvalid(ex, "portable_value_normalization_failed");
     }
 
+
+    @Test
+    @DisplayName("serializer re-entry fails as a typed cycle instead of raw stack overflow")
+    void serializerReentryIsRejectedAsCycle() {
+        ReenteringValue value = new ReenteringValue();
+
+        MulticloudDbException document = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validate(
+                        Map.of("payload", value), OperationNames.CREATE));
+        MulticloudDbException update = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validatePartialUpdate(
+                        Map.of("payload", value), OperationNames.UPDATE));
+
+        assertInvalid(document, "document_value_cycle");
+        assertInvalid(update, "partial_update_value_cycle");
+    }
+
+    @Test
+    @DisplayName("bounded serialization runs once and becomes the delegated snapshot")
+    void boundedSerializationIsAuthoritative() {
+        StatefulValue value = new StatefulValue();
+
+        Map<String, Object> snapshot = DocumentSizeValidator
+                .validateAndSnapshotDocument(
+                        Map.of("payload", value), OperationNames.CREATE);
+
+        assertEquals(1, value.serializationCount);
+        assertEquals("snapshot-1", snapshot.get("payload"));
+    }
 
     @Test
     @DisplayName("duplicate root-map entries fail after bounded inspection")

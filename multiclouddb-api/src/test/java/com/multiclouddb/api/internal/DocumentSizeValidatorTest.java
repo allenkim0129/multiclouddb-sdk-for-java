@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -56,6 +56,10 @@ class DocumentSizeValidatorTest {
         public byte[] getPayload() {
             return new byte[] {1, 2};
         }
+    }
+
+    private static final class PojoNode {
+        public PojoNode child;
     }
 
 
@@ -134,8 +138,8 @@ class DocumentSizeValidatorTest {
     }
 
     @Test
-    @DisplayName("validated snapshots preserve caller value objects")
-    void validatedSnapshotsPreserveCallerValues() {
+    @DisplayName("validated snapshots detach nested caller values")
+    void validatedSnapshotsDetachNestedCallerValues() {
         String[] array = {"a", "b"};
         var tree = MAPPER.createObjectNode().put("name", "Ada");
         Map<String, Object> document = Map.of("array", array, "tree", tree);
@@ -143,8 +147,89 @@ class DocumentSizeValidatorTest {
         Map<String, Object> snapshot = DocumentSizeValidator
                 .validateAndSnapshotDocument(document, OperationNames.CREATE);
 
-        assertSame(array, snapshot.get("array"));
-        assertSame(tree, snapshot.get("tree"));
+        assertNotSame(array, snapshot.get("array"));
+        assertNotSame(tree, snapshot.get("tree"));
+        assertEquals(List.of("a", "b"), snapshot.get("array"));
+        assertEquals(Map.of("name", "Ada"), snapshot.get("tree"));
+
+        array[0] = "changed";
+        tree.put("name", "changed");
+        assertEquals(List.of("a", "b"), snapshot.get("array"));
+        assertEquals(Map.of("name", "Ada"), snapshot.get("tree"));
+    }
+
+    @Test
+    @DisplayName("self-referencing POJOs fail with the stable cycle reason")
+    void selfReferencingPojoIsRejected() {
+        PojoNode value = new PojoNode();
+        value.child = value;
+
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validate(
+                        Map.of("payload", value), OperationNames.CREATE));
+
+        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
+        assertEquals("document_value_cycle", ex.error().providerDetails().get("reason"));
+        assertNull(ex.error().provider());
+    }
+
+    @Test
+    @DisplayName("deep POJO graphs fail with the stable depth reason")
+    void deepPojoGraphIsRejected() {
+        PojoNode value = new PojoNode();
+        for (int i = 0; i < PartialUpdateStructureValidator.MAX_NESTING_DEPTH + 1; i++) {
+            PojoNode parent = new PojoNode();
+            parent.child = value;
+            value = parent;
+        }
+
+        PojoNode root = value;
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validate(
+                        Map.of("payload", root), OperationNames.UPSERT));
+
+        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
+        assertEquals(PartialUpdateStructureValidator.DOCUMENT_DEPTH_LIMIT_REASON,
+                ex.error().providerDetails().get("reason"));
+        assertNull(ex.error().provider());
+    }
+
+    @Test
+    @DisplayName("complete top-level names use the portable 128-character boundary")
+    void completeTopLevelFieldNameBoundaryIsPortable() {
+        String accepted = "a".repeat(
+                com.multiclouddb.api.PortableWriteLimits
+                        .MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS);
+        String rejected = accepted + "a";
+
+        assertDoesNotThrow(() -> DocumentSizeValidator.validate(
+                Map.of(accepted, "value"), OperationNames.CREATE));
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validate(
+                        Map.of(rejected, "value"), OperationNames.UPSERT));
+
+        assertEquals(DocumentSizeValidator.TOP_LEVEL_FIELD_NAME_LIMIT_REASON,
+                ex.error().providerDetails().get("reason"));
+        assertEquals("129", ex.error().providerDetails()
+                .get("actualFieldNameCharacters"));
+        assertEquals("128", ex.error().providerDetails()
+                .get("maximumFieldNameCharacters"));
+    }
+
+    @Test
+    @DisplayName("complete top-level names must be unique ignoring case")
+    void completeTopLevelFieldNamesRejectCaseInsensitiveCollisions() {
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("foo", 1);
+        document.put("Foo", 2);
+
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validate(document, OperationNames.CREATE));
+
+        assertEquals(DocumentSizeValidator.CASE_INSENSITIVE_FIELD_COLLISION_REASON,
+                ex.error().providerDetails().get("reason"));
+        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
+        assertNull(ex.error().provider());
     }
 
     @Test

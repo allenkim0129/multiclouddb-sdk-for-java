@@ -74,12 +74,13 @@ RECEIVED
 All local failures delegate zero provider update operations. Structural failures
 use stable `partial_update_nesting_depth_limit` or
 `partial_update_structural_footprint_limit` reasons with actual/maximum details.
-Complete create/upsert documents share the 31-level, field-name, binary-value,
+Complete create/upsert documents share the 31-level, nested-name, binary-value,
 and 390 KiB structural checks. They also reject a null document and the
 case-insensitive top-level provider-owned names `id`, `partitionKey`, `sortKey`,
 `ttl`, `ttlExpiry`, and `data`, plus every underscore-prefixed top-level name.
-Case-distinct non-reserved top-level names remain valid.
-The update structure calculation
+Remaining top-level names must be unique ignoring case and contain at most 128
+Unicode characters. The detached result of bounded serialization is the exact
+provider snapshot. The update structure calculation
 applies only to the incoming replacement field map;
 it does not model omitted existing state.
 
@@ -92,10 +93,11 @@ it does not model omitted existing state.
 | `MAX_SERIALIZED_INPUT_BYTES` | 399,360 |
 | `MAX_STRUCTURAL_FOOTPRINT_BYTES` | 399,360 |
 | `MAX_FIELD_NAME_UTF8_BYTES` | 50,000 |
+| `MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS` | 128 |
 | `MAX_NESTED_CONTAINERS` | 31 |
 | `MAX_PARTIAL_UPDATE_FIELDS` | 10 |
 
-These are the only `PortableWriteLimits` constants.
+These are the only six `PortableWriteLimits` constants.
 
 ## 4. Cosmos plan
 
@@ -159,14 +161,15 @@ errors remain `INVALID_REQUEST`.
 
 ## 6. Provider release boundary
 
-Spanner is deliberately not a supported Feature 002 update data path. Its
-production source remains unchanged; only changelog and provider-direct
-emulator-test alignment is in scope.
-Because the provider omits all three Feature 002 capabilities, `CapabilitySet`
-supplies their unsupported defaults; the core default makes the client reject valid calls before provider
-delegation; no row, schema, metadata, or mapping behavior is changed. The
-Spanner emulator validated this gate and the provider-direct legacy regression;
-no live production Spanner validation is claimed.
+Spanner is deliberately not a supported Feature 002 update data path. The shared
+default client owns portable read/query identity cleanup after provider mapping,
+and the Spanner write path remains unchanged. The only Spanner production
+adjustment matches `FIELD_DATA` metadata to physical columns case-insensitively so
+mapped results preserve the caller's field spelling. Because the provider omits all
+three Feature 002 capabilities, `CapabilitySet` supplies their unsupported defaults
+and the core default rejects valid calls before provider delegation. The Spanner
+emulator validated this gate, the provider-direct legacy regression, and the mapper
+casing behavior; no live production Spanner validation is claimed.
 ## 7. Capabilities
 
 | Provider | `partial_update` | `partial_update_extended_result_size` | `partial_update_preserves_ttl_expiry` |

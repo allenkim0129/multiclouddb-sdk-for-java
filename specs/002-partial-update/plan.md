@@ -6,9 +6,11 @@
 ## Summary
 
 Change Cosmos DB and DynamoDB `update()` from full replacement to native shallow
-partial update. Keep the Spanner production implementation unchanged and
-deliberately capability-gate portable Spanner update in this release; the API
-defaults all three omitted Feature 002 capabilities to unsupported.
+partial update. Deliberately capability-gate portable Spanner update in this
+release; the API defaults all three omitted Feature 002 capabilities to
+unsupported. The shared default client owns portable read/query identity cleanup,
+the Spanner write path remains unchanged, and the only Spanner production adjustment
+preserves caller field spelling across physical-column casing differences.
 The base result envelope requires serialized JSON and portable structural footprint
 to each remain within 390 KiB. A second optional capability declares support above
 either boundary: Cosmos supports it, Dynamo and API-normalized
@@ -33,7 +35,7 @@ The work is intentionally split:
 | Shared API/preflight | Complete; capability gate rejects non-participating providers |
 | Cosmos production/unit work | Complete; current Cosmos emulator rerun unavailable |
 | Dynamo production/unit work | Complete; DynamoDB Local validation ran |
-| Spanner provider implementation | Deliberately unsupported; production source remains identical to `upstream/main`, and Spanner emulator coverage ran for shared gating plus the provider-direct legacy path |
+| Spanner provider implementation | Partial update remains deliberately unsupported; the write path matches `upstream/main`, and a focused read mapper casing fix is covered alongside shared result cleanup, capability gating, and the provider-direct legacy path |
 | Feature artifacts/docs/contracts | Reconciled to the implemented Cosmos/Dynamo contract and three-capability matrix |
 | Shared conformance | Supported behavior on Cosmos/Dynamo; preflight and unsupported gate on Spanner |
 | Provider-native result-size regressions | DynamoDB Local ran; current Cosmos emulator rerun unavailable |
@@ -83,12 +85,13 @@ unresolved-error bytecode.
 
 ### Spanner
 
-The Spanner production source remains byte-for-byte unchanged from
-`upstream/main`. `CapabilitySet` adds the three unsupported Feature 002 defaults
-when the provider omits them, so the shared client rejects valid updates before
-provider delegation. The unchanged provider-direct legacy method and its
-legacy Javadoc describe historical direct use only; they are not authoritative
-for the portable `MulticloudDbClient.update()` contract.
+Spanner continues to omit all three Feature 002 capabilities, so `CapabilitySet`
+adds their unsupported defaults and the shared client rejects valid updates before
+provider delegation. The Spanner write path matches `upstream/main`; portable
+identity cleanup occurs in `DefaultMulticloudDbClient` after provider mapping. The
+only Spanner production adjustment restores caller field spelling when `FIELD_DATA`
+metadata and physical columns differ only by case. It does not advertise or enable
+the provider-direct legacy update method through `MulticloudDbClient.update()`.
 ## Implementation stages
 
 ### Stage 1 — Shared contract and validation
@@ -96,18 +99,19 @@ for the portable `MulticloudDbClient.update()` contract.
 1. Keep both existing `update()` overloads and `Map<String,Object>`.
 2. Validate field map/names, reject binary values and unsafe graphs, and reject
    update TTL.
-3. Snapshot top-level maps and use bounded SDK-owned Jackson serialization to
-   inspect create/upsert/update values before delegation.
+3. Snapshot top-level maps, serialize once through bounded SDK-owned Jackson,
+   and delegate the resulting detached normalized representation.
 4. Reject null complete documents, every case-insensitive top-level
    provider-owned name (`id`, `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`,
-   `data`), and underscore-prefixed top-level names before provider I/O while
-   retaining case-distinct non-reserved top-level names.
-5. Enforce the portable 390 KiB serialized-input limit.
+   `data`), underscore-prefixed names, case-insensitive top-level collisions,
+   and top-level names above 128 Unicode characters before provider I/O.
+5. Enforce the portable 390 KiB serialized-input limit while producing output.
 6. Enforce 31-level complete-document/replacement nesting, 50,000-byte nested
-   field names, and a separate 390 KiB structural footprint.
-7. Expose exactly five public `PortableWriteLimits` input/structure constants:
-   serialized bytes, structural footprint, field-name bytes, nested-container
-   depth, and partial-update field count.
+   and partial-update field names, and a separate 390 KiB structural footprint.
+7. Expose exactly six public `PortableWriteLimits` input/structure constants:
+   serialized bytes, structural footprint, nested/partial-update field-name bytes,
+   complete-write top-level characters, nested-container depth, and partial-update
+   field count.
 8. Gate `Capability.PARTIAL_UPDATE` before delegation.
 9. Define serialized and structural 390 KiB bounds as the base result envelope and
    expose `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE` for provider support above either.
@@ -126,7 +130,7 @@ for the portable `MulticloudDbClient.update()` contract.
 3. Reject maps above 10 fields in shared preflight before provider delegation.
 4. Sort literal field names before constructing deterministic patch operations.
 5. Normalize direct patch failures through the portable error mapper.
-6. Normalize Cosmos update 408/410 as retryable transient failures; align DynamoDB update service/SDK timeout equivalents without changing Spanner.
+6. Normalize Cosmos update 408/410 as retryable transient failures; align DynamoDB update service/SDK timeout equivalents while leaving Spanner partial update capability-gated.
 7. Normalize update HTTP 413 as the state-dependent 2-MiB result-item
    capability limit without adding a read.
 8. Keep diagnostics metadata-only and verify write response bodies can be
@@ -193,7 +197,7 @@ Document:
 - create/upsert-only TTL;
 - bounded shared serialization, null-document rejection, and all provider-owned/
   underscore-prefixed top-level complete-write rejections; and
-- the exact five public `PortableWriteLimits` constants.
+- the exact six public `PortableWriteLimits` constants.
 
 The E2E runner checks `PARTIAL_UPDATE` before executing update scenarios, so the
 Spanner run skips them without changing its schema or provider code.
@@ -229,10 +233,11 @@ profiles. Cosmos and Dynamo execute supported partial-update behavior. Spanner
 executes shared validation and the core capability rejection, while the
 provider-direct legacy regression runs separately. Current local validation ran
 DynamoDB Local and the Spanner emulator; the Cosmos emulator was unavailable,
-so this final step and T061 remain pending. Confirm Spanner production source
-remains identical to `upstream/main`, then validate Javadocs, changed Markdown
-links, capability counts, requirement traceability, and the protected-path
-audit. Do not describe the emulator run as live production Spanner validation.
+so this final step and T061 remain pending. Confirm Spanner still omits all three
+Feature 002 capabilities and performs zero provider I/O for portable update, then
+validate Javadocs, changed Markdown links, capability counts, requirement
+traceability, and the protected-path audit. Do not describe the emulator run as
+live production Spanner validation.
 ## Parity matrix
 
 | Behavior | Cosmos DB | DynamoDB | Spanner |
@@ -248,7 +253,7 @@ audit. Do not describe the emulator run as live production Spanner validation.
 | TTL-expiry preservation | unsupported; patch advances `_ts` | supported; `ttlExpiry` unchanged | unsupported by API default |
 | Case-distinct non-reserved fields | preserved together or across requests | preserved together or across requests | not part of release |
 | Complete-write provider-owned names | shared rejection before I/O | shared rejection before I/O | shared rejection before I/O |
-| New provider data path | yes | yes | none |
+| New partial-update data path | yes | yes | none |
 
 ## Cost matrix
 
@@ -261,25 +266,15 @@ No implementation may add an adapter read/replace cycle for Cosmos or Dynamo.
 
 ## Scope guard
 
-The Spanner production source under
-`multiclouddb-provider-spanner/src/main/` must remain identical to
-`upstream/main`. The only
-Feature 002 changes permitted elsewhere in that module are:
-
-- `multiclouddb-provider-spanner/CHANGELOG.md`, to document that portable
-  `update()` is unavailable; and
-- `multiclouddb-provider-spanner/src/test/java/com/multiclouddb/provider/spanner/`
-  `SpannerLegacyRowUpdateEmulatorTest.java`, to keep the legacy implementation
-  covered through a provider-direct emulator regression.
-
-These documentation/test changes do not advertise partial-update support or
-alter runtime provider behavior. The unchanged provider-direct implementation
-and its legacy Javadoc are not the portable API contract; the shared capability
-gate prevents portable delegation to that method.
+Spanner write behavior must remain identical to `upstream/main`. Shared read/query
+identity cleanup belongs in `DefaultMulticloudDbClient`; the only Spanner production
+change may restore caller field spelling while matching `FIELD_DATA` metadata to
+physical columns case-insensitively. The provider must continue to omit all three
+Feature 002 capabilities, and the shared gate must prevent portable delegation to
+its legacy update method.
 
 Do not:
 
-- change any path under `multiclouddb-provider-spanner/src/main/`;
 - advertise or implement Spanner partial-update support without a separate
   provider design, implementation, and validation decision;
 - add a public patch model or `replace()` method;

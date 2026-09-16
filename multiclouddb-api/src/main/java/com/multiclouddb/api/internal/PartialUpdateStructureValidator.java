@@ -11,6 +11,8 @@ import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.core.StreamWriteConstraints;
 import com.fasterxml.jackson.core.StreamWriteFeature;
+import com.fasterxml.jackson.core.exc.StreamConstraintsException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.core.util.JsonGeneratorDelegate;
 import com.fasterxml.jackson.databind.BeanDescription;
 import com.fasterxml.jackson.databind.JavaType;
@@ -72,6 +74,8 @@ public final class PartialUpdateStructureValidator {
     private static final int NESTED_ELEMENT_OVERHEAD_BYTES = 1;
     private static final int MAX_VALUE_GRAPH_NODES = DocumentSizeValidator.MAX_BYTES;
     private static final ObjectMapper MAPPER = createMapper();
+    private static final TypeReference<Map<String, Object>> MAP_TYPE =
+            new TypeReference<>() { };
 
     private PartialUpdateStructureValidator() {
     }
@@ -118,30 +122,13 @@ public final class PartialUpdateStructureValidator {
             throw normalizationFailure(operation, e);
         }
 
-        if (serializedRoot == null || !serializedRoot.isObject()) {
-            throw invalidRequest(
-                    subject(OperationNames.UPDATE.equals(operation))
-                            + " must serialize as a JSON object.",
-                    operation,
-                    Map.of("reason", OperationNames.UPDATE.equals(operation)
-                            ? "partial_update_fields_not_object"
-                            : "document_not_object"),
-                    null);
+        boolean partialUpdate = OperationNames.UPDATE.equals(operation);
+        validateSerializedRoot(serializedRoot, operation, partialUpdate);
+        try {
+            return MAPPER.convertValue(serializedRoot, MAP_TYPE);
+        } catch (IllegalArgumentException e) {
+            throw normalizationFailure(operation, e);
         }
-
-        Map<String, Object> result = new LinkedHashMap<>();
-        if (snapshot instanceof Map<?, ?> map) {
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                result.put((String) entry.getKey(), entry.getValue());
-            }
-        } else {
-            Iterator<Map.Entry<String, JsonNode>> fields = serializedRoot.fields();
-            while (fields.hasNext()) {
-                Map.Entry<String, JsonNode> field = fields.next();
-                result.put(field.getKey(), field.getValue());
-            }
-        }
-        return result;
     }
 
     /** Performs bounded, iterative validation before Jackson serialization. */
@@ -168,6 +155,11 @@ public final class PartialUpdateStructureValidator {
                     e);
         }
 
+        validateSerializedRoot(root, operation, partialUpdate);
+    }
+
+    private static void validateSerializedRoot(JsonNode root, String operation,
+            boolean partialUpdate) {
         if (root == null || !root.isObject()) {
             throw invalidRequest(
                     subject(partialUpdate) + " must serialize as a JSON object.",
@@ -546,8 +538,70 @@ public final class PartialUpdateStructureValidator {
                 };
                 throw invalidRequest(message, operation, details, e);
             }
+            if (isCycleFailure(e)) {
+                throw valueCycleFailure(operation, e);
+            }
+            if (findCause(e, StreamConstraintsException.class) != null) {
+                throw serializedDepthFailure(operation, e);
+            }
+            throw normalizationFailure(operation, e);
+        } catch (StackOverflowError e) {
+            throw valueCycleFailure(operation, e);
+        } catch (RuntimeException e) {
             throw normalizationFailure(operation, e);
         }
+    }
+
+    private static boolean isCycleFailure(Throwable failure) {
+        if (findCause(failure, StackOverflowError.class) != null) {
+            return true;
+        }
+        Throwable current = failure;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null && (message.contains("Direct self-reference")
+                    || message.contains("Infinite recursion"))) {
+                return true;
+            }
+            if (current == current.getCause()) {
+                break;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private static MulticloudDbException valueCycleFailure(
+            String operation, Throwable cause) {
+        boolean partialUpdate = OperationNames.UPDATE.equals(operation);
+        Map<String, String> details = new LinkedHashMap<>();
+        details.put("reason", partialUpdate
+                ? "partial_update_value_cycle" : "document_value_cycle");
+        String path = mappingPath(cause);
+        if (path != null) {
+            details.put("valuePath", path);
+        }
+        return invalidRequest(
+                subject(partialUpdate) + " contains a self-referential value graph.",
+                operation, details, cause);
+    }
+
+    private static MulticloudDbException serializedDepthFailure(
+            String operation, Throwable cause) {
+        boolean partialUpdate = OperationNames.UPDATE.equals(operation);
+        Map<String, String> details = new LinkedHashMap<>();
+        details.put("reason", partialUpdate
+                ? DEPTH_LIMIT_REASON : DOCUMENT_DEPTH_LIMIT_REASON);
+        details.put("actualNestingDepth", String.valueOf(MAX_NESTING_DEPTH + 1));
+        details.put("maximumNestingDepth", String.valueOf(MAX_NESTING_DEPTH));
+        String path = mappingPath(cause);
+        if (path != null) {
+            details.put("valuePath", path);
+        }
+        return invalidRequest(
+                subject(partialUpdate) + " exceeds the portable map/list nesting depth of "
+                        + MAX_NESTING_DEPTH + ".",
+                operation, details, cause);
     }
 
     private static MulticloudDbException serializedSizeLimit(String operation) {

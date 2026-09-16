@@ -40,12 +40,15 @@ result-item ceilings are also not configurable:
 | DynamoDB | One `UpdateItem` for up to 10 fields; resulting item subject to the DynamoDB native ceiling after the attempted update | Preserved: `UpdateItem` leaves `ttlExpiry` unchanged |
 | Spanner | Omits `PARTIAL_UPDATE`; the API supplies the unsupported default | Unsupported API default |
 
-Shared write preflight rejects binary values, cyclic
-graphs, non-collection iterables, and field names above 50,000 UTF-8
-bytes. The 31-level count starts at level 1 when a supplied top-level value is itself a
-map or list. Structural footprint includes UTF-8 field names and native map/list
-overhead. Shared violations return non-retryable `INVALID_REQUEST` before the
-capability gate or provider I/O.
+Shared write preflight rejects binary values, cyclic graphs, non-collection
+iterables, and over-limit field names. Partial-update and nested names are capped
+at 50,000 UTF-8 bytes. Complete-document top-level names are capped at 128
+Unicode characters and must be unique ignoring case. The 31-level count starts
+at level 1 when a supplied top-level value is itself a map or list. Structural
+footprint includes UTF-8 field names and native map/list overhead. Shared
+violations return non-retryable `INVALID_REQUEST` before the capability gate or
+provider I/O, and providers receive the detached bounded snapshot rather than
+caller-owned nested values.
 
 Cosmos and Dynamo report `Capability.PARTIAL_UPDATE=true`. Case-distinct
 non-reserved field names are part of that base contract: `foo` and `Foo` remain

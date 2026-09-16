@@ -94,21 +94,23 @@ absolute expiry stays fixed; that guarantee requires
 
 ## Complete-document write addendum
 
-The shared create/upsert preflight uses the same bounded Jackson serialization,
+The shared create/upsert preflight uses one bounded Jackson serialization for
 unsafe-graph, binary-value, field-name, depth, serialized-size, and
-structural-footprint rules. A
-null complete document fails with non-retryable `INVALID_REQUEST` before
-provider I/O. Top-level names matching `id`, `partitionKey`, `sortKey`, `ttl`,
-`ttlExpiry`, or `data` case-insensitively, and names beginning with `_`, fail
-through the same zero-I/O category before provider I/O. Case-distinct
-non-reserved top-level names remain valid.
+structural-footprint validation. Its detached normalized result is the exact
+provider input. A null complete document fails with non-retryable
+`INVALID_REQUEST` before provider I/O. Top-level names matching `id`,
+`partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, or `data` case-insensitively, and
+names beginning with `_`, fail through the same zero-I/O category. Remaining
+top-level names must be unique ignoring case and contain at most 128 Unicode
+characters; nested names retain the 50,000-byte UTF-8 limit.
 
-`com.multiclouddb.api.PortableWriteLimits` exposes exactly these five
+`com.multiclouddb.api.PortableWriteLimits` exposes exactly these six
 input/structure constants:
 
 - `MAX_SERIALIZED_INPUT_BYTES=399360`
 - `MAX_STRUCTURAL_FOOTPRINT_BYTES=399360`
 - `MAX_FIELD_NAME_UTF8_BYTES=50000`
+- `MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS=128`
 - `MAX_NESTED_CONTAINERS=31`
 - `MAX_PARTIAL_UPDATE_FIELDS=10`
 
@@ -212,17 +214,17 @@ with `attribute_exists(#pk)`. Values preserve null/scalar/map/list shapes.
 The expression does not assign `ttlExpiry`, so DynamoDB preserves an existing
 absolute expiry and advertises the corresponding capability.
 
-Complete `create()`/`upsert()` documents share the 31-level, 50,000-byte
-field-name, binary-value, and 390 KiB structural-footprint
-checks. This ensures
+Complete `create()`/`upsert()` documents share the 31-level, 50,000-byte nested
+field-name, binary-value, and 390 KiB structural-footprint checks. Their top-level
+names use the 128-character case-insensitive portable namespace. This ensures
 SDK-created base documents fit the same native-safe envelope.
 
-Provider read and query paths remove adapter-injected storage fields before
-returning portable documents: Cosmos removes `id`, `partitionKey`, `ttl`, and
-its underscore-prefixed metadata; DynamoDB removes `partitionKey`, `sortKey`,
-and `ttlExpiry`; Spanner removes `partitionKey`, `sortKey`, and its internal
-`data` metadata column.
-Requested read metadata remains in `DocumentMetadata`.
+After provider mapping, `DefaultMulticloudDbClient` centrally removes top-level
+adapter storage names case-insensitively from read and query documents: `id`,
+`partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, `data`, and underscore-prefixed
+metadata. Nested names are preserved. Spanner row mapping independently matches
+`FIELD_DATA` metadata to physical columns case-insensitively so caller field
+spelling survives. Requested read metadata remains in `DocumentMetadata`.
 
 The shared 31-level, field-name, binary-value, and structural-footprint checks
 reject incoming replacement structures that cannot fit the portable DynamoDB-safe envelope even when their

@@ -25,11 +25,13 @@ it because `UpdateItem` leaves `ttlExpiry` unchanged, while Cosmos DB advertises
 it unsupported because `patchItem` advances `_ts` and restarts the TTL
 countdown.
 
-The Spanner production source remains unchanged. Because it omits all three
-Feature 002 capabilities, `CapabilitySet` supplies unsupported defaults. This is a
-deliberate release boundary, not an implied temporary validation result; future
-portable Spanner update support requires a separate provider release and
-validation decision.
+Spanner continues to omit all three Feature 002 capabilities, so `CapabilitySet`
+supplies unsupported defaults. Its write path remains unchanged. The shared default
+client owns portable read/query identity cleanup, while the only Spanner production
+adjustment matches `FIELD_DATA` metadata to physical columns case-insensitively and
+preserves caller field spelling. Neither change enables partial update. Future
+portable Spanner update support still requires a separate provider design, release,
+and validation decision.
 
 ## 2. Portable contract
 
@@ -66,9 +68,10 @@ capability=partial_update
 
 This boundary avoids releasing an unvalidated Spanner data path while keeping
 the unsupported behavior explicit and preserving provider-version independence.
-No Spanner provider release is required. The Spanner emulator validates shared
-preflight/capability rejection and the provider-direct legacy regression, but no
-live production Spanner validation is claimed.
+No Spanner partial-update capability is released. The Spanner emulator validates
+shared preflight/capability rejection, the provider-direct legacy regression,
+shared result cleanup, and mapper casing restoration, but no live production
+Spanner validation is claimed.
 
 ## 3. Shared preflight
 
@@ -112,7 +115,9 @@ output is bounded while it is generated. Values must be serializable with the
 SDK-owned Jackson configuration.
 
 The structural pass reads the already-serialized JSON, so it neither mutates
-caller data nor introduces another serialization path. For each supplied field,
+caller data nor introduces another serialization path. That bounded JSON is
+converted to a detached map/list/scalar snapshot and becomes the exact provider
+input; caller-owned nested objects are never re-serialized after validation. For each supplied field,
 the top-level map/list replacement container is depth 1 and 31 containers are
 accepted; depth 32 fails with `partial_update_nesting_depth_limit`. A separate
 DynamoDB-style estimate sums UTF-8 attribute names and scalar bytes, adds three
@@ -121,14 +126,15 @@ above 399,360 bytes with `partial_update_structural_footprint_limit`. Both error
 carry actual/maximum details and occur before capability gating.
 
 Complete documents accepted by `create()`/`upsert()` share the binary-value,
-31-level, 50,000-byte field-name, and 390 KiB structural checks. A null complete
+31-level, 50,000-byte nested-name, and 390 KiB structural checks. A null complete
 document, any case-insensitive top-level provider-owned name (`id`,
 `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, or `data`), and any
 underscore-prefixed top-level name fail with non-retryable `INVALID_REQUEST`
-before provider I/O; case-distinct non-reserved top-level names remain valid.
-`PortableWriteLimits` exposes exactly the five
-input/structure limits (serialized bytes, structural footprint, field-name
-bytes, nested-container depth, and partial-update field count).
+before provider I/O. Remaining top-level names must be unique ignoring case and
+contain at most 128 Unicode characters. `PortableWriteLimits` exposes exactly
+six input/structure limits (serialized bytes, structural footprint,
+nested/partial-update field-name bytes, complete-write top-level characters,
+nested-container depth, and partial-update field count).
 
 These checks bound only the incoming replacements. Existing omitted fields are
 not read or merged, so state-dependent resulting-item failures retain the native

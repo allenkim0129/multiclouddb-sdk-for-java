@@ -18,13 +18,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - `upsert(address, key, document)` now uses Spanner `INSERT_OR_UPDATE` (was `REPLACE`). `REPLACE` is internally delete-then-insert, which change streams surface as `mod_type=INSERT` — making a second upsert of the same key appear as `ChangeType.CREATE` instead of `ChangeType.UPDATE`. `INSERT_OR_UPDATE` matches the `UPDATE` / `MODIFY` behaviour of Cosmos AVAD and DynamoDB Streams. The observable upsert semantics are unchanged: `FIELD_DATA` continues to project only the new document''s fields on read, so `CrudConformanceTests.upsertOverwrites` still passes.
 - Spanner instance creation in `ensureDatabase` is gated to emulator mode. In production (no `emulatorHost` configured), the instance is expected to pre-exist; only the database is created. Creating a Spanner instance is a billable, region-specific operation that should be done deliberately.
-- Complex values (`Map`, `Collection`, Java arrays, `JsonNode`, and POJOs) round-trip through STRING columns using an unambiguous prefix marker (`U+0001` + `mcdb:json:`). User strings that happen to start with `{` or `[` are returned verbatim; user strings that themselves begin with `U+0001` are escaped at write time.
-- Read/query results omit adapter-injected `partitionKey`, `sortKey`, and internal `data` metadata so returned documents satisfy the portable result contract.
+- Complex container values (`Map`, `Collection`) round-trip through STRING columns using an unambiguous prefix marker (`U+0001` + `mcdb:json:`). User strings that happen to start with `{` or `[` are returned verbatim; user strings that themselves begin with `U+0001` are escaped at write time.
 - `BETWEEN` translation wraps in parentheses (`(field BETWEEN @lo AND @hi)`) for cross-provider consistency.
 
-- **BREAKING (pre-1.0 beta): portable `update()` is unavailable with the current Spanner provider.** The API now defines capability-gated shallow partial update, but this provider does not declare `PARTIAL_UPDATE`; valid calls return non-retryable `UNSUPPORTED_CAPABILITY` before Spanner I/O. Replacement callers must use `upsert()`, which creates missing items and is not an atomic replace-if-present operation.
+### Breaking changes
+
+- **`update()` is a partial update preserving previously written fields.** The provider performs a read-modify-write transaction so the merged field set is written; the previous behaviour overwrote `FIELD_DATA` with only the columns named in the call, silently hiding every other previously-written column on the next `read()`. **Known cross-provider asymmetry:** Cosmos `update()` and DynamoDB `update()` are still full-document replaces; the portable SPI contract is currently undefined and alignment is tracked as follow-up. Callers that relied on the previous behaviour should issue a full document `upsert()` instead.
 - **Document field named `data` is rejected** with `MulticloudDbException(category = INVALID_REQUEST)`. The provider reserves the `data` column for the internal `FIELD_DATA` metadata. The reserved-field check is case-insensitive (Spanner resolves column names case-insensitively); `Data` / `DATA` / `dAtA` are all rejected with the offending field name echoed back so callers can pinpoint which key to rename.
-- **`upsert()` is a full document replace.** Columns absent from the upserted document become NULL on read; this matches the Cosmos DB / DynamoDB upsert contract. Use `upsert()` when the complete desired document is available; portable partial modification is not available with the current Spanner provider.
+- **`upsert()` is a full document replace.** Columns absent from the upserted document become NULL on read; this matches the Cosmos / DynamoDB upsert contract. Callers that want partial modification must call `update()`.
 - **Customer-managed tables require a `data STRING(MAX)` column.** Tables created by `ensureContainer()` already include it; tables provisioned outside the SDK must run `ALTER TABLE <table> ADD COLUMN data STRING(MAX);`.
 - **`ensureDatabase(name)` throws `MulticloudDbException(INVALID_REQUEST)` when `name` does not match the configured `databaseId`.** Operations always route to the client''s configured database; accepting a different name silently provisioned the wrong database previously. To target a different database, construct a new client.
 - **Lifecycle errors are typed.** `checkOpen()` and the `ensureDatabase` name-mismatch validation throw `MulticloudDbException` with categories `CLIENT_CLOSED` and `INVALID_REQUEST` respectively, replacing the prior raw `IllegalStateException` / `IllegalArgumentException`. Consumers that caught the raw JDK exceptions must catch `MulticloudDbException` and branch on `error().category()`.
@@ -32,10 +33,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- `FIELD_DATA` metadata matching now tolerates physical-column casing differences while preserving the caller's field spelling in mapped results.
+
 - **Default `ORDER BY` no longer fires for aggregate / `GROUP BY` queries.** The provider previously appended `ORDER BY partitionKey, sortKey` to every SELECT, which GoogleSQL rejects on aggregates with `column not aggregated`. The default is now suppressed when the SQL contains an aggregate function or `GROUP BY`; caller-supplied `ORDER BY` is honoured verbatim. The default also no longer duplicates primary-key columns when the caller already sorts by them — only the missing key is appended as a tiebreaker — and `ORDER BY` detection ignores string literals so `WHERE comment = ''please ORDER BY date''` is no longer a false positive.
 - **Legacy / pre-`FIELD_DATA` rows preserve every column on read and `update()`.** When `FIELD_DATA` is absent or malformed, `SpannerRowMapper` applies the historical "no metadata => no filtering" rule including nulls; `update()` deliberately leaves `FIELD_DATA` alone so the reader''s fallback continues to project all legacy columns. A subsequent `upsert()` or `create()` promotes the row into the metadata regime by writing a complete `FIELD_DATA` stamp.
 - `ensureDatabase()` / `ensureContainer()` no longer leak raw `RuntimeException` on non-Spanner failures. `InterruptedException` surfaces as `MulticloudDbException(TRANSIENT_FAILURE, retryable=true)` (with the interrupt flag restored); non-Spanner causes inside the admin `ExecutionException` surface as `MulticloudDbException(PROVIDER_ERROR)` preserving the original cause.
-- `setMutationValue` no longer stringifies shared-preflight-approved arrays, `JsonNode` values, or POJOs. Non-native scalar values use the marker-prefixed JSON encoding; unexpected serialization failures surface as non-retryable `INVALID_REQUEST` instead of silently changing the stored shape.
+- `setMutationValue` no longer fails on common Java types (e.g. `java.time.Instant`) — JSON serialisation is restricted to `Map`/`Collection`; every other type falls back to `value.toString()`.
 
 ### Known limitations
 
@@ -88,7 +91,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   no row matches
 - `update` — Spanner `UPDATE` mutation (fails if row does not exist)
 - `upsert` — Spanner `INSERT_OR_UPDATE` mutation (merging upsert; superseded
-  by `REPLACE` semantics in the Unreleased section — see *Changed*
+  by `REPLACE` semantics in the Unreleased section — see *Breaking changes*
   above)
 - `delete` — Spanner `DELETE` mutation using `KeySet.singleKey()`; `NOT_FOUND`
   is silently ignored for idempotent delete semantics

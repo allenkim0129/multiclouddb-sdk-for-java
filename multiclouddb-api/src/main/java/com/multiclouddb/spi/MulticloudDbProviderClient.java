@@ -77,10 +77,12 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      * <p>
      * Only adapters that advertise
      * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE} receive this call. Feature 002
-     * leaves the Spanner adapter unchanged and unadvertised, so the default client rejects
-     * Spanner calls before delegation. The current Spanner provider-direct legacy method and
-     * its unchanged legacy Javadoc are not the portable delegation contract; callers using
-     * {@link com.multiclouddb.api.MulticloudDbClient} never reach that method in this release.
+     * keeps Spanner partial update unadvertised, so the default client rejects Spanner calls
+     * before delegation. Feature 002 leaves the Spanner write path unchanged. Its only
+     * Spanner production adjustment restores caller field spelling when read/query metadata
+     * is matched to physical columns; the default client owns provider-identity cleanup.
+     * Neither path enables or alters this provider-direct update method, which callers using
+     * {@link com.multiclouddb.api.MulticloudDbClient} never reach in this release.
      * TTL-expiry preservation is separate from core partial-update support and is advertised
      * through {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY};
      * adapters must declare it explicitly when updates leave absolute expiry unchanged.

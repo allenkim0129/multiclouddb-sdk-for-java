@@ -43,6 +43,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   <li>{@link SpannerRowMapper#toMap} preserves explicitly written
  *       {@code null} values, matching {@link SpannerRowMapper#toJsonNode}
  *       and the Cosmos / DynamoDB schemaless contract.</li>
+ *   <li>Field metadata is matched case-insensitively to physical columns while
+ *       preserving the caller's spelling in mapped results.</li>
  * </ol>
  */
 class SpannerRowMapperTest {
@@ -52,30 +54,6 @@ class SpannerRowMapperTest {
         // Advance to the (only) row so the mapper can read it.
         assertTrue(rs.next(), "in-memory ResultSet should expose the staged row");
         return rs;
-    }
-
-    @Test
-    @DisplayName("adapter-owned identity and metadata columns are omitted")
-    void providerOwnedFieldsAreOmitted() {
-        Type rowType = Type.struct(
-                StructField.of("partitionKey", Type.string()),
-                StructField.of("sortKey", Type.string()),
-                StructField.of("data", Type.string()),
-                StructField.of("title", Type.string()));
-        Struct row = Struct.newBuilder()
-                .set("partitionKey").to("p")
-                .set("sortKey").to("s")
-                .set("data").to("[\"title\"]")
-                .set("title").to("portable")
-                .build();
-
-        try (ResultSet rs = singleRow(rowType, row)) {
-            JsonNode node = SpannerRowMapper.toJsonNode(rs);
-            assertFalse(node.has("partitionKey"));
-            assertFalse(node.has("sortKey"));
-            assertFalse(node.has("data"));
-            assertEquals("portable", node.path("title").asText());
-        }
     }
 
     @Test
@@ -337,6 +315,35 @@ class SpannerRowMapperTest {
             assertTrue(node.has("maybe"),
                     "malformed FIELD_DATA must fall back to legacy null-preserving behaviour");
             assertTrue(node.get("maybe").isNull());
+        }
+    }
+
+    @Test
+    @DisplayName("FIELD_DATA matching restores caller casing while raw identity columns remain")
+    void fieldMetadataRestoresCallerCasing() {
+        Type rowType = Type.struct(
+                StructField.of("partitionKey", Type.string()),
+                StructField.of("sortKey", Type.string()),
+                StructField.of("DATA", Type.string()),
+                StructField.of("DisplayName", Type.string()),
+                StructField.of("OptionalValue", Type.string()));
+        Struct row = Struct.newBuilder()
+                .set("partitionKey").to("p")
+                .set("sortKey").to("s")
+                .set("DATA").to("[\"displayName\",\"optionalValue\"]")
+                .set("DisplayName").to("Ada")
+                .set("OptionalValue").to((String) null)
+                .build();
+
+        try (ResultSet rs = singleRow(rowType, row)) {
+            JsonNode node = SpannerRowMapper.toJsonNode(rs);
+            assertEquals("Ada", node.path("displayName").asText());
+            assertFalse(node.has("DisplayName"));
+            assertTrue(node.has("optionalValue"));
+            assertTrue(node.get("optionalValue").isNull());
+            assertEquals("p", node.path("partitionKey").asText());
+            assertEquals("s", node.path("sortKey").asText());
+            assertFalse(node.has("DATA"));
         }
     }
 }

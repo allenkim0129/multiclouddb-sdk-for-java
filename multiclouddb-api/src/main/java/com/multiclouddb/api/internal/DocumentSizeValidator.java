@@ -3,17 +3,18 @@
 
 package com.multiclouddb.api.internal;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.OperationNames;
 import com.multiclouddb.api.PortableWriteLimits;
 
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Validates portable write inputs against the serialized and structural limits
@@ -31,7 +32,10 @@ public final class DocumentSizeValidator {
 
     private static final String RESERVED_DOCUMENT_FIELD_REASON =
             "reserved_document_field";
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    static final String TOP_LEVEL_FIELD_NAME_LIMIT_REASON =
+            "document_top_level_field_name_length_limit";
+    static final String CASE_INSENSITIVE_FIELD_COLLISION_REASON =
+            "document_case_insensitive_field_name_collision";
 
     private DocumentSizeValidator() {
     }
@@ -65,8 +69,6 @@ public final class DocumentSizeValidator {
         Map<String, Object> snapshot =
                 PartialUpdateStructureValidator.validateAndSnapshotDocument(fields, operation);
         PartialUpdateValidator.validate(snapshot, null, operation);
-        byte[] serializedFields = validateSerializedSize(snapshot, operation);
-        PartialUpdateStructureValidator.validatePartialUpdate(serializedFields, operation);
         return snapshot;
     }
 
@@ -82,8 +84,7 @@ public final class DocumentSizeValidator {
         Map<String, Object> snapshot =
                 PartialUpdateStructureValidator.validateAndSnapshotDocument(document, operation);
         validateReservedTopLevelFields(snapshot, operation);
-        byte[] serializedDocument = validateSerializedSize(snapshot, operation);
-        PartialUpdateStructureValidator.validateDocument(serializedDocument, operation);
+        validatePortableTopLevelFieldNames(snapshot, operation);
         return snapshot;
     }
 
@@ -102,34 +103,33 @@ public final class DocumentSizeValidator {
         }
     }
 
-    private static byte[] validateSerializedSize(Object document, String operation) {
-        try {
-            byte[] bytes = MAPPER.writeValueAsBytes(document);
-            if (bytes.length > MAX_BYTES) {
-                boolean partialUpdate = OperationNames.UPDATE.equals(operation);
-                long actualKiB = (bytes.length + 1023L) / 1024L;
-                String subject = partialUpdate ? "Partial-update field map" : "Document";
+    private static void validatePortableTopLevelFieldNames(
+            Map<String, Object> document, String operation) {
+        Set<String> foldedNames = new HashSet<>();
+        for (String field : document.keySet()) {
+            int characters = field.codePointCount(0, field.length());
+            if (characters > PortableWriteLimits.MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS) {
                 Map<String, String> details = new LinkedHashMap<>();
-                details.put("reason", partialUpdate
-                        ? "partial_update_serialized_size_limit"
-                        : "document_serialized_size_limit");
-                details.put("actualSerializedBytesAtLeast", String.valueOf(bytes.length));
-                details.put("maximumSerializedBytes", String.valueOf(MAX_BYTES));
+                details.put("reason", TOP_LEVEL_FIELD_NAME_LIMIT_REASON);
+                details.put("actualFieldNameCharacters", String.valueOf(characters));
+                details.put("maximumFieldNameCharacters", String.valueOf(
+                        PortableWriteLimits.MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS));
                 throw invalidRequest(
-                        subject + " size " + actualKiB
-                                + " KiB exceeds the portable 390 KiB serialized-input limit. "
-                                + "Reduce the write input to maintain portability across all providers.",
+                        "Complete write top-level field name is " + characters
+                                + " characters; the portable maximum is "
+                                + PortableWriteLimits.MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS + ".",
+                        operation, details, null);
+            }
+
+            String folded = field.toLowerCase(Locale.ROOT);
+            if (!foldedNames.add(folded)) {
+                throw invalidRequest(
+                        "Complete write contains top-level field names that differ only by case; "
+                                + "portable complete documents require case-insensitive uniqueness.",
                         operation,
-                        details,
+                        Map.of("reason", CASE_INSENSITIVE_FIELD_COLLISION_REASON),
                         null);
             }
-            return bytes;
-        } catch (JsonProcessingException e) {
-            throw invalidRequest(
-                    "Write input could not be serialised for size check: " + e.getMessage(),
-                    operation,
-                    Map.of("reason", "write_input_serialization_failed"),
-                    e);
         }
     }
 

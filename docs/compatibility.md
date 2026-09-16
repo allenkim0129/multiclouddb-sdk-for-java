@@ -63,15 +63,16 @@ not expanded to every well-known capability.
 
 The base capability covers results whose serialized JSON and portable structural
 footprint are each at or below 390 KiB. Complete create/upsert documents share the
-same structural, nesting, field-name, and binary-value preflight.
-Shared preflight also rejects a null complete document, top-level names matching
-`id`, `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, or `data`
-case-insensitively, and top-level names beginning with `_`. Other case-distinct
-non-reserved names remain separate literal fields. Values must be serializable
-with the SDK-owned Jackson configuration; caller-registered modules are not
-consulted. Binary values hidden inside POJOs are rejected, and serialized JSON
-output is capped while it is produced. `com.multiclouddb.api.PortableWriteLimits`
-exposes the serialized, structural, field-name, nesting, and partial-update
+same structural, nesting, name, and binary-value preflight. Their top-level names
+must be unique ignoring case and contain at most 128 Unicode characters; nested
+names retain the 50,000-byte UTF-8 limit. Shared preflight also rejects a null
+complete document, top-level names matching `id`, `partitionKey`, `sortKey`,
+`ttl`, `ttlExpiry`, or `data` case-insensitively, and top-level names beginning
+with `_`. Values must be serializable with the SDK-owned Jackson configuration;
+caller-registered modules are not consulted. One bounded serialization creates
+the detached normalized provider input, including POJO values. Binary values
+hidden inside POJOs are rejected. `com.multiclouddb.api.PortableWriteLimits`
+exposes all six serialized, structural, name, nesting, and partial-update
 field-count constants.
 The structural preflight covers only incoming replacements; it does not read and
 merge existing state. Above either result bound, callers must inspect the

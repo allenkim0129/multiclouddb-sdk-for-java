@@ -7,9 +7,10 @@ repository does not provide.
 - [partial-update-contract.md](partial-update-contract.md) is the normative Java
   API behavior, capability gates, Cosmos/Dynamo mechanics, and explicit
   Spanner release boundary. It also records shared bounded write validation,
-  same-request case-distinct field identity, null complete-document and all provider-owned/
-  underscore-prefixed top-level rejections, the three Feature 002 capabilities,
-  and the exact five public `PortableWriteLimits` constants.
+  same-request partial-update case identity, null complete-document and all provider-owned/
+  underscore-prefixed top-level rejections, the 128-character case-insensitive
+  complete-write namespace, the three Feature 002 capabilities, and the exact six
+  public `PortableWriteLimits` constants.
 - [provider-limit-details.schema.json](provider-limit-details.schema.json)
   defines the structured, string-valued `providerDetails` carried by native
   resulting-item errors. Cosmos DB returns its error after one attempted patch,

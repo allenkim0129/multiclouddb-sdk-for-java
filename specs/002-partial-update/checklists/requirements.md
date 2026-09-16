@@ -5,9 +5,9 @@
 
 ## Scope and consistency
 
-- [x] Spanner production source under `multiclouddb-provider-spanner/src/main` matches `upstream/main`; changelog and provider-direct emulator-test alignment are allowed.
-- [x] No artifact requires Spanner production capability, data-path, schema,
-  or E2E helper changes; changelog and test coverage describe the boundary.
+- [x] Spanner omits all three Feature 002 capabilities and keeps its write path unchanged; shared read/query identity cleanup occurs in the default client, and the only provider production adjustment restores caller field casing during row mapping.
+- [x] No artifact requires a portable Spanner partial-update data path, schema,
+  capability declaration, or E2E update helper; changelog and tests describe the boundary.
 - [x] Spanner partial update is described as deliberately unsupported in this
   feature release and rejected by the shared `partial_update` capability gate;
   emulator evidence is not described as live production validation.
@@ -22,12 +22,14 @@
   and missing-item `NOT_FOUND` are unambiguous.
 - [x] Null/empty maps, binary values, unsafe graphs, and invalid or overlong names are specified
   as zero-I/O `INVALID_REQUEST`.
-- [x] Create/upsert/update top-level maps are snapshotted and nested values use
-  bounded SDK-owned Jackson serialization, including binary detection in a POJO.
+- [x] Create/upsert/update top-level maps are snapshotted once through bounded
+  SDK-owned Jackson; the detached normalized result is the exact provider input,
+  including POJO cycle/depth/serializer-reentry handling and binary detection.
 - [x] Null create/upsert documents, all case-insensitive provider-owned
   top-level names (`id`, `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, `data`),
   and underscore-prefixed top-level names are specified as zero-I/O
-  `INVALID_REQUEST`; case-distinct non-reserved top-level names remain valid.
+  `INVALID_REQUEST`; remaining complete-write top-level names are unique ignoring
+  case and at most 128 Unicode characters.
 - [x] Reserved-name matching, underscore prefixes, no-trimming behavior, and
   same-request acceptance of case-distinct non-reserved names are explicit.
 - [x] Update TTL rejection is explicit and create/upsert migration is clear.
@@ -52,8 +54,9 @@
   `PARTIAL_UPDATE`, `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`, and
   `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY` declarations default to unsupported,
   while unrelated omissions in arbitrary partial sets remain absent.
-- [x] `PortableWriteLimits` exposes exactly five input/structure constants:
-  both 399,360-byte limits, 50,000-byte names, 31 nested containers, and 10
+- [x] `PortableWriteLimits` exposes exactly six input/structure constants:
+  both 399,360-byte limits, 50,000-byte nested/partial-update names,
+  128-character complete-write top-level names, 31 nested containers, and 10
   update fields.
 
 ## Cosmos DB
@@ -105,7 +108,7 @@
   limit assertion capability-gated, including `foo` and `Foo` in one request.
 - [x] API/shared coverage rejects every provider-owned and underscore-prefixed
   complete-write top-level name.
-- [x] Provider and shared conformance coverage strips adapter-owned fields from
+- [x] Shared-client and conformance coverage strips adapter-owned fields from
   read/query results and proves an in-envelope read result can be reused by `upsert()`.
 - [x] Capability conformance covers all 20 effective rows and both independent
   Feature 002 optional-capability matrices.

@@ -20,8 +20,11 @@ public final class PortableWriteLimits {
     /** Maximum provider-neutral structural footprint in bytes (390 KiB). */
     public static final int MAX_STRUCTURAL_FOOTPRINT_BYTES = 390 * 1024;
 
-    /** Maximum UTF-8 bytes in any document field name. */
+    /** Maximum UTF-8 bytes in a nested field name or partial-update field name. */
     public static final int MAX_FIELD_NAME_UTF8_BYTES = 50_000;
+
+    /** Maximum Unicode characters in a complete document's top-level field name. */
+    public static final int MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS = 128;
 
     /** Maximum map/list containers below the top-level document root. */
     public static final int MAX_NESTED_CONTAINERS = 31;
