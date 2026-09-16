@@ -14,21 +14,21 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>
  * <h3>Usage</h3>
  * Well-known capabilities are exposed as pre-built singleton pairs:
- * {@code Capability.TRANSACTIONS} (supported) and
+ * {@code Capability.TRANSACTIONS_CAP} (supported) and
  * {@code Capability.TRANSACTIONS_UNSUPPORTED} (unsupported).
  * Providers use these directly instead of constructing new instances:
  *
  * <pre>{@code
  * // preferred — reuses singletons
  * new CapabilitySet(List.of(
- *     Capability.TRANSACTIONS,
- *     Capability.CONTINUATION_TOKEN_PAGING,
+ *     Capability.TRANSACTIONS_CAP,
+ *     Capability.CONTINUATION_TOKEN_PAGING_CAP,
  *     Capability.CROSS_PARTITION_QUERY_UNSUPPORTED
  * ));
  *
  * // override notes when the provider-specific detail matters
  * new CapabilitySet(List.of(
- *     Capability.TRANSACTIONS.withNotes("TransactWriteItems up to 100 items")
+ *     Capability.TRANSACTIONS_CAP.withNotes("TransactWriteItems up to 100 items")
  * ));
  * }</pre>
  *
@@ -66,8 +66,13 @@ public final class Capability {
     public static final String REGEX_MATCH                  = "regex_match";
     public static final String CASE_FUNCTIONS               = "case_functions";
 
-    /** Portable shallow set/replace partial update (universal base contract). */
+    /** Capability-gated portable shallow set/replace partial-update contract. */
     public static final String PARTIAL_UPDATE               = "partial_update";
+    /** Provider supports results above either 390 KiB serialized or structural base bound. */
+    public static final String PARTIAL_UPDATE_EXTENDED_RESULT_SIZE = "partial_update_extended_result_size";
+    /** Provider preserves the absolute expiry of an existing TTL-bearing item on update. */
+    public static final String PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY =
+            "partial_update_preserves_ttl_expiry";
     // ── Pre-built singleton instances ─────────────────────────────────────────
     // Each well-known capability has a SUPPORTED and an _UNSUPPORTED singleton.
     // Use these in provider CapabilitySet declarations instead of constructing
@@ -147,6 +152,18 @@ public final class Capability {
     public static final Capability PARTIAL_UPDATE_CAP              = intern(PARTIAL_UPDATE, true);
     /** Unsupported singleton — partial update (future provider without the core operation). */
     public static final Capability PARTIAL_UPDATE_UNSUPPORTED      = intern(PARTIAL_UPDATE, false);
+
+    /** Supported singleton - partial-update results above the portable document envelope. */
+    public static final Capability PARTIAL_UPDATE_EXTENDED_RESULT_SIZE_CAP = intern(PARTIAL_UPDATE_EXTENDED_RESULT_SIZE, true);
+    /** Unsupported singleton - partial-update results above the portable document envelope. */
+    public static final Capability PARTIAL_UPDATE_EXTENDED_RESULT_SIZE_UNSUPPORTED = intern(PARTIAL_UPDATE_EXTENDED_RESULT_SIZE, false);
+
+    /** Supported singleton - partial update preserves an existing absolute TTL expiry. */
+    public static final Capability PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY_CAP =
+            intern(PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY, true);
+    /** Unsupported singleton - partial update may refresh or cannot preserve TTL expiry. */
+    public static final Capability PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY_UNSUPPORTED =
+            intern(PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY, false);
 
     // ── Instance fields ───────────────────────────────────────────────────────
 

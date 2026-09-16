@@ -31,8 +31,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 /**
- * SPI contract for a provider client that implements CRUD + query operations.
- * Provider adapters create instances of this interface.
+ * SPI contract for a provider client that implements portable base document
+ * operations, capability-gated operations, and queries. Provider adapters
+ * create instances of this interface.
  */
 public interface MulticloudDbProviderClient extends AutoCloseable {
 
@@ -54,30 +55,49 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      * Apply a shallow, set/replace-only partial update to an existing document.
      * <p>
      * Providers receive {@code fields} <em>already validated</em> by the default client:
-     * the field map is non-null and non-empty, every name is non-null/non-blank, no name is
-     * reserved, underscore-prefixed, or case-colliding, {@code options.ttlSeconds()} is null,
-     * the map contains at most 10 fields and stays within the portable 390 KiB limit.
-     * The default client also owns the core
+     * the field map is non-null and non-empty, every name is non-null/non-blank and at
+     * most 50,000 UTF-8 bytes, no name is
+     * reserved or underscore-prefixed, {@code options.ttlSeconds()} is null,
+     * the map contains at most 10 fields, contains no binary value, its serialized and
+     * structural footprints are each at most 390 KiB, and no replacement value exceeds
+     * 31 nested map/list containers (the
+     * top-level replacement container is level 1). The default client also owns the core
      * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE} gate and checks it before
      * delegating, so provider adapters MUST NOT duplicate that gate.
      * <p>
-     * For field names and value shapes supported by the provider mapping, every provider must
-     * produce identical observable postconditions: present fields are set/replaced, omitted
-     * fields are preserved, object/array values replace the whole top-level value (shallow),
-     * null stores JSON null, all assignments commit atomically, and a missing document throws
-     * {@link MulticloudDbErrorCategory#NOT_FOUND} without creating it. Providers must add no
-     * update-TTL assignment.
+     * For field names and value shapes supported by the provider mapping, every adapter that
+     * advertises {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE} must produce identical
+     * observable postconditions: present fields are set/replaced, omitted fields are preserved,
+     * object/array values replace the whole top-level value (shallow), null stores JSON null,
+     * and all assignments commit atomically. Replaying absolute assignments is idempotent for
+     * logical document fields, not for provider-maintained metadata or TTL timing. A missing
+     * document throws
+     * {@link MulticloudDbErrorCategory#NOT_FOUND} without creating it. Advertising adapters
+     * must add no update-TTL assignment.
      * <p>
      * Only adapters that advertise
      * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE} receive this call. Feature 002
      * leaves the Spanner adapter unchanged and unadvertised, so the default client rejects
-     * Spanner calls before delegation. Participating providers must preserve case-distinct
-     * logical fields rather than silently overwriting another field. A local native
-     * request-envelope rejection must perform zero provider I/O and carry a stable reason
-     * plus limit details. A state-dependent resulting-item limit may instead be returned by
+     * Spanner calls before delegation. The current Spanner provider-direct legacy method and
+     * its unchanged legacy Javadoc are not the portable delegation contract; callers using
+     * {@link com.multiclouddb.api.MulticloudDbClient} never reach that method in this release.
+     * TTL-expiry preservation is separate from core partial-update support and is advertised
+     * through {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY};
+     * adapters must declare it explicitly when updates leave absolute expiry unchanged.
+     * Participating providers must preserve case-distinct logical fields rather than silently
+     * overwriting another field. The core capability
+     * guarantees results whose serialized JSON and portable structural footprint are each
+     * within 390 KiB. Results above either bound are optional and declared through
+     * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE_EXTENDED_RESULT_SIZE}. A local
+     * native request-envelope rejection must perform zero provider I/O and carry a stable reason
+     * plus limit details. The shared structural check covers only incoming replacement values;
+     * a state-dependent resulting-item limit may instead be returned by
      * the provider after the single native update attempt and must be normalized to
      * non-retryable {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} without adding
-     * a read/merge preflight.
+     * a read/merge preflight. Native update timeout equivalents MUST map to retryable
+     * {@link MulticloudDbErrorCategory#TRANSIENT_FAILURE}: Cosmos DB HTTP 408/410
+     * (retaining 410 substatus) and DynamoDB service request timeout or SDK API-call/
+     * API-call-attempt timeout equivalents.
      *
      * @param fields validated literal top-level fields to set/replace
      * @throws MulticloudDbException with category NOT_FOUND if the key does not exist

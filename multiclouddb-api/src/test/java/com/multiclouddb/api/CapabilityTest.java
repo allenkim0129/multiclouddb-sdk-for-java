@@ -6,9 +6,92 @@ package com.multiclouddb.api;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class CapabilityTest {
+
+    @Test
+    @DisplayName("Missing partial-update capability defaults to unsupported")
+    void missingPartialUpdateDefaultsToUnsupported() {
+        CapabilitySet legacyProviderCapabilities = new CapabilitySet(
+                List.of(Capability.TRANSACTIONS_CAP));
+
+        Capability partialUpdate = legacyProviderCapabilities.get(Capability.PARTIAL_UPDATE);
+        assertNotNull(partialUpdate);
+        assertFalse(partialUpdate.supported());
+        assertFalse(legacyProviderCapabilities.isSupported(Capability.PARTIAL_UPDATE));
+        assertTrue(partialUpdate.notes().contains("backward compatibility"));
+    }
+
+    @Test
+    @DisplayName("Missing extended partial-update result-size capability defaults to unsupported")
+    void missingExtendedPartialUpdateResultSizeDefaultsToUnsupported() {
+        CapabilitySet capabilities = new CapabilitySet(List.of(Capability.PARTIAL_UPDATE_CAP));
+
+        assertFalse(capabilities.isSupported(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE));
+        assertNotNull(capabilities.get(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE));
+    }
+
+    @Test
+    @DisplayName("Missing partial-update TTL-preservation capability defaults to unsupported")
+    void missingPartialUpdateTtlPreservationDefaultsToUnsupported() {
+        CapabilitySet capabilities = new CapabilitySet(List.of(Capability.PARTIAL_UPDATE_CAP));
+
+        assertFalse(capabilities.isSupported(
+                Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY));
+        assertNotNull(capabilities.get(
+                Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY));
+    }
+
+    @Test
+    @DisplayName("Normalization adds only the three partial-update defaults")
+    void normalizationDoesNotSynthesizeUnrelatedKnownCapabilities() {
+        CapabilitySet legacyProviderCapabilities = new CapabilitySet(
+                List.of(Capability.TRANSACTIONS_CAP));
+
+        assertEquals(4, legacyProviderCapabilities.all().size());
+        assertNull(legacyProviderCapabilities.get(Capability.CROSS_PARTITION_QUERY),
+                "An omitted known capability without an API default must remain absent");
+        assertFalse(legacyProviderCapabilities.isSupported(Capability.CROSS_PARTITION_QUERY));
+    }
+
+    @Test
+    @DisplayName("Explicit partial-update support overrides the API default")
+    void explicitPartialUpdateSupportOverridesDefault() {
+        CapabilitySet capabilities = new CapabilitySet(
+                List.of(Capability.PARTIAL_UPDATE_CAP));
+
+        assertTrue(capabilities.isSupported(Capability.PARTIAL_UPDATE));
+        assertSame(Capability.PARTIAL_UPDATE_CAP,
+                capabilities.get(Capability.PARTIAL_UPDATE));
+    }
+
+    @Test
+    @DisplayName("Explicit extended partial-update result-size support overrides the API default")
+    void explicitExtendedPartialUpdateResultSizeSupportOverridesDefault() {
+        CapabilitySet capabilities = new CapabilitySet(List.of(
+                Capability.PARTIAL_UPDATE_CAP,
+                Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE_CAP));
+
+        assertTrue(capabilities.isSupported(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE));
+        assertSame(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE_CAP,
+                capabilities.get(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE));
+    }
+
+    @Test
+    @DisplayName("Explicit partial-update TTL preservation overrides the API default")
+    void explicitPartialUpdateTtlPreservationOverridesDefault() {
+        CapabilitySet capabilities = new CapabilitySet(List.of(
+                Capability.PARTIAL_UPDATE_CAP,
+                Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY_CAP));
+
+        assertTrue(capabilities.isSupported(
+                Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY));
+        assertSame(Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY_CAP,
+                capabilities.get(Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY));
+    }
 
     @Test
     @DisplayName("Well-known supported singletons are the same instance via of() and the constant")
@@ -91,9 +174,14 @@ class CapabilityTest {
         assertTrue(registered.contains(Capability.CROSS_PARTITION_QUERY_UNSUPPORTED));
         assertTrue(registered.contains(Capability.PARTIAL_UPDATE_CAP));
         assertTrue(registered.contains(Capability.PARTIAL_UPDATE_UNSUPPORTED));
-        // 15 pre-built names × supported/unsupported.
-        assertTrue(registered.size() >= 30,
-                "expected at least 30 entries (15 × 2), got " + registered.size());
+        assertTrue(registered.contains(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE_CAP));
+        assertTrue(registered.contains(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE_UNSUPPORTED));
+        assertTrue(registered.contains(Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY_CAP));
+        assertTrue(registered.contains(
+                Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY_UNSUPPORTED));
+        // 17 pre-built names x supported/unsupported.
+        assertTrue(registered.size() >= 34,
+                "expected at least 34 entries (17 x 2), got " + registered.size());
     }
 
     @Test

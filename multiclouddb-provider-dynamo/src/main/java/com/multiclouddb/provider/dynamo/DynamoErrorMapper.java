@@ -8,6 +8,7 @@ import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.OperationNames;
 import com.multiclouddb.api.ProviderId;
+import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
 
 import java.util.LinkedHashMap;
@@ -19,8 +20,13 @@ import java.util.regex.Pattern;
  */
 public final class DynamoErrorMapper {
 
-    private static final Pattern RESULT_ITEM_SIZE_LIMIT_MESSAGE = Pattern.compile(
-            "\\bitem size(?: to update)? has exceeded the maximum allowed size\\b",
+    private static final Pattern RESULT_ITEM_SIZE_SUBJECT = Pattern.compile(
+            "\\b(?:item\\s+size(?:\\s+to\\s+update)?|maximum\\s+item\\s+size"
+                    + "|item\\s+(?:is\\s+)?too\\s+large|item\\s+exceeds?)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern RESULT_ITEM_SIZE_LIMIT_SIGNAL = Pattern.compile(
+            "\\b(?:exceed(?:ed|s|ing)?|maximum|too\\s+large|limit"
+                    + "|400\\s*(?:kb|kib))\\b",
             Pattern.CASE_INSENSITIVE);
 
     private DynamoErrorMapper() {
@@ -29,10 +35,13 @@ public final class DynamoErrorMapper {
     public static MulticloudDbException map(DynamoDbException e, String operation) {
         int httpStatus = e.statusCode();
         boolean resultItemSizeLimit = isResultItemSizeLimit(e, operation);
+        boolean requestTimeout = isUpdateRequestTimeout(e, operation);
         MulticloudDbErrorCategory category = resultItemSizeLimit
                 ? MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY
-                : mapCategory(e);
-        boolean retryable = !resultItemSizeLimit && isRetryable(e);
+                : requestTimeout
+                        ? MulticloudDbErrorCategory.TRANSIENT_FAILURE
+                        : mapCategory(e);
+        boolean retryable = !resultItemSizeLimit && (requestTimeout || isRetryable(e));
 
         Map<String, String> details = new LinkedHashMap<>();
         if (e.awsErrorDetails() != null) {
@@ -62,6 +71,28 @@ public final class DynamoErrorMapper {
         return new MulticloudDbException(error, e);
     }
 
+    static MulticloudDbException mapTimeout(SdkClientException e, String operation) {
+        Map<String, String> details = new LinkedHashMap<>();
+        details.put("reason", "dynamodb_request_timeout");
+        MulticloudDbError error = new MulticloudDbError(
+                MulticloudDbErrorCategory.TRANSIENT_FAILURE,
+                e.getMessage(),
+                ProviderId.DYNAMO,
+                operation,
+                true,
+                details);
+        return new MulticloudDbException(error, e);
+    }
+
+    private static boolean isUpdateRequestTimeout(DynamoDbException e, String operation) {
+        if (!OperationNames.UPDATE.equals(operation) || e.awsErrorDetails() == null) {
+            return false;
+        }
+        String errorCode = e.awsErrorDetails().errorCode();
+        return "RequestTimeout".equals(errorCode)
+                || "RequestTimeoutException".equals(errorCode);
+    }
+
     private static boolean isResultItemSizeLimit(DynamoDbException e, String operation) {
         if (!OperationNames.UPDATE.equals(operation) || e.awsErrorDetails() == null
                 || !"ValidationException".equals(e.awsErrorDetails().errorCode())) {
@@ -72,7 +103,9 @@ public final class DynamoErrorMapper {
     }
 
     private static boolean matchesResultItemSizeMessage(String message) {
-        return message != null && RESULT_ITEM_SIZE_LIMIT_MESSAGE.matcher(message).find();
+        return message != null
+                && RESULT_ITEM_SIZE_SUBJECT.matcher(message).find()
+                && RESULT_ITEM_SIZE_LIMIT_SIGNAL.matcher(message).find();
     }
 
     private static MulticloudDbErrorCategory mapCategory(DynamoDbException e) {

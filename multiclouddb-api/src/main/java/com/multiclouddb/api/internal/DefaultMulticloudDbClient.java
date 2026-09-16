@@ -86,8 +86,9 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         checkOpen(OperationNames.CREATE);
         Instant start = Instant.now();
         try {
-            DocumentSizeValidator.validate(document, OperationNames.CREATE);
-            providerClient.create(address, key, document, options);
+            Map<String, Object> validatedDocument = DocumentSizeValidator
+                    .validateAndSnapshotDocument(document, OperationNames.CREATE);
+            providerClient.create(address, key, validatedDocument, options);
             LOG.debug("create completed: address={}, key={}, duration={}ms",
                     address, key, Duration.between(start, Instant.now()).toMillis());
         } catch (MulticloudDbException e) {
@@ -120,19 +121,23 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         try {
             // Portable partial-update preflight, shared by all providers, runs in a fixed
             // order and performs zero provider I/O on failure:
-            //   1) field-map / 10-field bound / name / reserved / underscore / case-collision
+            //   1) field-map / 10-field bound / name-size / reserved / underscore
             //      validation and rejection of a non-null update TTL (PartialUpdateValidator),
-            //   2) the portable 390 KiB serialized-size check, then
+            //   2) the portable value-shape, 390 KiB serialized-size, and structural-envelope checks, then
             //   3) the internal core PARTIAL_UPDATE capability gate.
             PartialUpdateValidator.validate(fields, options, OperationNames.UPDATE);
-            DocumentSizeValidator.validate(fields, OperationNames.UPDATE);
-            // Core release gate: Cosmos DB and DynamoDB advertise partial_update. The
-            // Spanner provider explicitly does not, so valid calls fail here locally and
-            // non-retryably with operation=update and
-            // providerDetails.capability=partial_update. Supported calls delegate exactly once.
+            Map<String, Object> validatedFields = DocumentSizeValidator
+                    .validateAndSnapshotPartialUpdate(fields, OperationNames.UPDATE);
+            PartialUpdateValidator.validate(
+                    validatedFields, options, OperationNames.UPDATE);
+            // Core release gate: Cosmos DB and DynamoDB advertise partial_update;
+            // Providers that omit the new capability default to unsupported, so older
+            // Spanner provider versions fail here locally and non-retryably with
+            // operation=update and providerDetails.capability=partial_update.
+            // Supported calls delegate exactly once.
             checkCapability(Capability.PARTIAL_UPDATE, OperationNames.UPDATE,
                     "Partial update (partial_update) is not supported by provider " + config.provider().id());
-            providerClient.update(address, key, fields, options);
+            providerClient.update(address, key, validatedFields, options);
             LOG.debug("update completed: address={}, key={}, duration={}ms",
                     address, key, Duration.between(start, Instant.now()).toMillis());
         } catch (MulticloudDbException e) {
@@ -147,8 +152,9 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
         checkOpen(OperationNames.UPSERT);
         Instant start = Instant.now();
         try {
-            DocumentSizeValidator.validate(document, OperationNames.UPSERT);
-            providerClient.upsert(address, key, document, options);
+            Map<String, Object> validatedDocument = DocumentSizeValidator
+                    .validateAndSnapshotDocument(document, OperationNames.UPSERT);
+            providerClient.upsert(address, key, validatedDocument, options);
             LOG.debug("upsert completed: address={}, key={}, duration={}ms",
                     address, key, Duration.between(start, Instant.now()).toMillis());
         } catch (MulticloudDbException e) {

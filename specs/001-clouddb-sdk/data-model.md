@@ -50,7 +50,18 @@ Fields:
 - `value`: JSON-like object
 
 Constraints:
-- must be serializable to a JSON-like representation
+- a complete `create()`/`upsert()` document must be non-null and serialize as a
+  JSON object;
+- shared preflight snapshots the top-level map and uses bounded SDK-owned
+  Jackson serialization while inspecting nested values;
+- top-level complete-document names `id`, `partitionKey`, `sortKey`, `ttl`,
+  `ttlExpiry`, and `data` are reserved case-insensitively, and every
+  underscore-prefixed top-level name is reserved;
+- binary values are outside the portable value model, including binary values
+  exposed while serializing a POJO;
+- the serialized, structural, field-name, nesting, and partial-update
+  field-count limits are defined by `PortableWriteLimits`.
+
 
 ### Query
 Portable query request.
@@ -87,11 +98,15 @@ Supporting types:
 - `PortableFunction`: enum (STARTS_WITH, CONTAINS, FIELD_EXISTS, STRING_LENGTH, COLLECTION_SIZE)
 
 ### ExpressionTranslator
-SPI interface for translating Expression AST to provider-native query string.
+Provider translation interface for translating Expression AST to a
+provider-native query string.
+
+Location:
+`multiclouddb-api/src/main/java/com/multiclouddb/api/query/ExpressionTranslator.java`
 
 Fields/methods:
-- `translate(expression, parameters, resourceAddress)` → `TranslatedQuery` (native string + bound parameters)
-- `supportedCapabilities()` → set of query-related Capability names
+- `translate(expression, parameters, container)` → `TranslatedQuery` (native
+  string + bound parameters)
 
 Implementations:
 - `CosmosExpressionTranslator`: AST → Cosmos SQL WHERE clause (adds `c.` prefix to fields, keeps `@param` names)
@@ -119,7 +134,7 @@ Single page of results.
 Fields:
 - `items`: list of Document (or row-mapped objects)
 - `continuation_token`: optional string
-- `warnings`: optional list of portability warnings
+- `diagnostics`: optional `OperationDiagnostics`
 
 ### Capability
 Named feature/behavior that may be supported or not.
@@ -137,30 +152,53 @@ Well-known query capabilities:
 - `REGEX_MATCH`: supports regex pattern matching (Cosmos, Spanner)
 - `CASE_FUNCTIONS`: supports `LOWER()`/`UPPER()` functions (Cosmos, Spanner)
 
-### PortabilityWarning
-A structured warning indicating non-portable behavior or provider divergence.
+Well-known write capabilities:
+- `PARTIAL_UPDATE = "partial_update"`: provider supports the capability-gated
+  shallow literal top-level set/replace contract. Cosmos DB and DynamoDB support
+  it in this release; Spanner does not.
+- `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE =
+  "partial_update_extended_result_size"`: provider supports resulting documents
+  above either 390 KiB serialized or structural base bound, up to its documented
+  native ceiling. Cosmos DB supports it; DynamoDB and Spanner do not.
+- `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY =
+  "partial_update_preserves_ttl_expiry"`: provider preserves the absolute
+  expiry of an existing TTL-bearing item during partial update. DynamoDB
+  supports it because `UpdateItem` leaves `ttlExpiry` unchanged. Cosmos DB does
+  not because `patchItem` advances `_ts` and restarts the TTL countdown.
+  Spanner receives the unsupported API default.
 
-Fields:
-- `code`: string
-- `message`: string
-- `scope`: operation/resource
-- `provider`: provider id
+`CapabilitySet` supplies unsupported defaults for these three Feature 002
+capabilities when a provider omits them; unrelated omitted well-known names are
+not synthesized. Each built-in provider exposes 20 effective capability rows.
 
 ### MulticloudDbError
 Provider-neutral error category.
 
 Fields:
-- `category`: enum (InvalidRequest, AuthenticationFailed, AuthorizationFailed, NotFound, Conflict, Throttled, TransientFailure, PermanentFailure, ProviderError)
+- `category`: enum (InvalidRequest, AuthenticationFailed, AuthorizationFailed, NotFound, Conflict, Throttled, TransientFailure, PermanentFailure, ProviderError, UnsupportedCapability)
 - `message`: string
 - `provider`: provider id
 - `operation`: string
 - `retryable`: bool
 - `provider_details`: optional object (sanitized provider codes, request ids)
 
+### UnsupportedCapability
+
+A non-retryable specialization of `MulticloudDbError` used when an optional
+portable operation or envelope is unavailable.
+
+Fields:
+- `category`: `UnsupportedCapability`
+- `retryable`: `false`
+- `provider_details.capability`: canonical capability name (for example
+  `partial_update`) when failure occurs at the shared capability gate
+- `provider_details.reason`: optional stable provider-limit reason when one
+  attempted native update rejects a state-dependent result size
+
 ## Relationships
 - ClientConfig selects Provider and influences capabilities.
 - Client operations use ResourceAddress + Key/Document/Query.
-- Query returns QueryPage and may emit PortabilityWarnings.
+- Query returns `QueryPage`; capability-gated behavior is exposed through `CapabilitySet` and structured errors.
 - Errors are raised/returned as MulticloudDbError.
 
 ---
@@ -213,9 +251,15 @@ Fields:
 Provider availability:
 | Field | Cosmos DB | DynamoDB | Spanner |
 |---|---|---|---|
-| `lastModified` | ✅ via `_ts` | ❌ | ✅ (schema column) |
-| `ttlExpiry` | ✅ via `_ttl`+`_ts` | ✅ via `ttlExpiry` attr | ❌ |
+| `lastModified` | ✅ via `_ts` | ❌ | ❌ |
+| `ttlExpiry` | ❌ | ✅ via `ttlExpiry` attr | ❌ |
 | `version` | ✅ ETag | ❌ | ❌ |
+
+`metadata()` is null when metadata was not requested. With
+`includeMetadata=true`, the metadata envelope is present and callers inspect
+the three nullable fields independently; Spanner currently returns an empty
+envelope. `WRITE_TIMESTAMP` indicates only whether `lastModified` may be
+populated (Cosmos DB true, DynamoDB/Spanner false).
 
 ### DocumentResult (new class)
 
@@ -223,14 +267,16 @@ Location: `multiclouddb-api/src/main/java/com/multiclouddb/api/DocumentResult.ja
 
 Fields:
 - `document: ObjectNode` (required — the document payload)
-- `metadata: DocumentMetadata` — null when `OperationOptions.includeMetadata()` is false (the default)
+- `metadata: DocumentMetadata` — null when
+  `OperationOptions.includeMetadata()` is false (the default); otherwise an
+  envelope with independently nullable fields
 
 **API impact**: `MulticloudDbClient.read()` return type changed from `JsonNode` to `DocumentResult`. Existing callers use `.document()` to get the payload.
 
 ### OperationOptions (modified)
 
 New optional fields:
-- `ttlSeconds: Integer` — per-request TTL for write operations (`create`, `upsert`). `null` means no TTL. Must be ≥ 1 when set.
+- `ttlSeconds: Integer` — per-request TTL for write operations (`create`, `upsert`). `null` means no TTL. Must be ≥ 1 when set; providers without `ROW_LEVEL_TTL` ignore it and store without expiry, so callers requiring expiration inspect the capability before writing.
 - `includeMetadata: boolean` — whether to return `DocumentMetadata` on read. Default `false`.
 
 Builder methods added:
@@ -248,16 +294,50 @@ New constants added to `Capability`:
 - `ROW_LEVEL_TTL = "row_level_ttl"` — provider supports per-document expiry
 - `WRITE_TIMESTAMP = "write_timestamp"` — provider exposes last-write timestamp in document metadata
 - `RESULT_LIMIT = "result_limit"` — provider supports Top N result capping
+- `PARTIAL_UPDATE = "partial_update"` — capability-gated shallow literal
+  top-level set/replace; Cosmos DB and DynamoDB supported, Spanner unsupported
+- `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE =
+  "partial_update_extended_result_size"` — results above either 390 KiB base
+  bound; Cosmos DB supported, DynamoDB and Spanner unsupported
+- `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY =
+  "partial_update_preserves_ttl_expiry"` — existing absolute TTL expiry remains
+  unchanged during partial update; DynamoDB supported, Cosmos DB unsupported,
+  and Spanner unsupported through the API default
 
-### DocumentSizeValidator (new utility)
+### Portable write-input validation
 
-Location: `multiclouddb-api/src/main/java/com/multiclouddb/api/internal/DocumentSizeValidator.java`
+Public constants:
+`multiclouddb-api/src/main/java/com/multiclouddb/api/PortableWriteLimits.java`
 
-Static utility:
-- `MAX_BYTES = 390 * 1024` (390 KiB portable limit, below the DynamoDB native ceiling)
-- `validate(JsonNode document, String operation)` — throws `MulticloudDbException(INVALID_REQUEST)` when serialized UTF-8 size exceeds limit
+- `MAX_SERIALIZED_INPUT_BYTES = 399360` (390 KiB)
+- `MAX_STRUCTURAL_FOOTPRINT_BYTES = 399360` (390 KiB)
+- `MAX_FIELD_NAME_UTF8_BYTES = 50000`
+- `MAX_NESTED_CONTAINERS = 31`
+- `MAX_PARTIAL_UPDATE_FIELDS = 10`
 
-Applied in `DefaultMulticloudDbClient.create()` and `upsert()` before provider delegation.
+Internal enforcement:
+`multiclouddb-api/src/main/java/com/multiclouddb/api/internal/DocumentSizeValidator.java`
+
+Shared preflight rejects null complete documents; top-level `id`,
+`partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, and `data`
+case-insensitively; and every underscore-prefixed top-level name. It snapshots
+the top-level map and uses bounded SDK-owned Jackson serialization while
+validating the complete document in `DefaultMulticloudDbClient.create()` and
+`upsert()`, and the incoming field map in `update()`, before provider
+delegation. Binary values (including values hidden inside POJOs), field names
+above 50,000 UTF-8 bytes, nesting above 31 map/list containers below the document
+root, and either 390 KiB limit fail with non-retryable
+`MulticloudDbException(INVALID_REQUEST)`.
+
+Partial `update()` is shallow, literal, top-level set/replace with at most 10
+fields, no TTL, one native atomic write, and `NOT_FOUND` for a missing item. The
+update check does not prevalidate the resulting stored item; its base result
+envelope independently requires serialized and structural size at or below
+390 KiB. Larger results require
+`PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`. Case-distinct names such as `foo` and
+`Foo` remain separate literal fields. The base capability does not guarantee
+that an existing absolute TTL expiry is unchanged; callers requiring that
+behavior also check `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY`.
 
 ### Provider Schema Changes
 

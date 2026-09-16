@@ -3,6 +3,7 @@
 
 package com.microsoft.multiclouddb.e2e;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.multiclouddb.api.Capability;
 import com.multiclouddb.api.DocumentResult;
 import com.multiclouddb.api.MulticloudDbClient;
@@ -17,8 +18,12 @@ import java.util.Map;
 /**
  * End-to-end portability test for the Multicloud DB SDK.
  *
- * <p>Runs the same CRUD + query calls against whichever provider is configured
- * in the active properties file. Switch providers without changing any code:
+ * <p>Runs the same create/read/upsert/delete/query base calls against whichever
+ * provider is configured in the active properties file. Partial update is
+ * exercised only when {@link Capability#PARTIAL_UPDATE} is advertised: Cosmos
+ * DB and DynamoDB support it in this release, while current Spanner runs skip
+ * it (a valid call would be rejected by the shared client before provider I/O).
+ * Switch providers without changing the base-operation code:
  * <pre>
  *   mvn -pl multiclouddb-e2e process-resources exec:java                                          # Cosmos DB (default)
  *   mvn -pl multiclouddb-e2e process-resources exec:java -Dmulticlouddb.config=dynamo.properties
@@ -85,7 +90,7 @@ public class Main {
         System.out.println("── SDK warm-up ────────────────────────────────────────────────");
         client.query(address, QueryRequest.builder().maxPageSize(1).build());
         MulticloudDbKey warmupKey = MulticloudDbKey.of("__warmup__", "__warmup__");
-        client.upsert(address, warmupKey, Map.of("id", "__warmup__"));
+        client.upsert(address, warmupKey, Map.of("name", "__warmup__"));
         client.delete(address, warmupKey);
         System.out.println("  Read and write metadata cached.");
         System.out.println();
@@ -111,11 +116,17 @@ public class Main {
             // ── PARTIAL UPDATE ────────────────────────────────────────
             update("prod-001", Map.of("price", 1199.00, "inStock", false));
             DocumentResult updatedResult = read("prod-001");
-            if (updatedResult == null
-                    || updatedResult.document().path("price").asDouble() != 1199.00
-                    || updatedResult.document().path("inStock").asBoolean()
-                    || !"Laptop Pro 15".equals(updatedResult.document().path("name").asText())
-                    || !"electronics".equals(updatedResult.document().path("category").asText())) {
+            JsonNode updated = updatedResult == null ? null : updatedResult.document();
+            JsonNode price = updated == null ? null : updated.get("price");
+            JsonNode inStock = updated == null ? null : updated.get("inStock");
+            JsonNode name = updated == null ? null : updated.get("name");
+            JsonNode category = updated == null ? null : updated.get("category");
+            if (price == null || !price.isNumber() || price.doubleValue() != 1199.00
+                    || inStock == null || !inStock.isBoolean() || inStock.booleanValue()
+                    || name == null || !name.isTextual()
+                    || !"Laptop Pro 15".equals(name.textValue())
+                    || category == null || !category.isTextual()
+                    || !"electronics".equals(category.textValue())) {
                 throw new AssertionError(
                         "Partial update did not update selected fields and preserve omitted fields");
             }
@@ -186,7 +197,7 @@ public class Main {
                         double price, boolean inStock) {
         MulticloudDbKey key = MulticloudDbKey.of(id, id);
         Map<String, Object> doc = Map.of(
-                "id", id, "name", name, "category", category,
+                "name", name, "category", category,
                 "price", price, "inStock", inStock);
 
         System.out.printf("  client.upsert(address, key(%s), doc)%n", id);

@@ -42,8 +42,5 @@ public final class SpannerCapabilities {
                     + "not implementable as a runtime write — SDK does not manage schema"),
             Capability.of(Capability.WRITE_TIMESTAMP, false,
                     "Full commit-timestamp metadata requires allow_commit_timestamp=true DDL; "
-                    + "deferred — current impl returns empty metadata shell"),
-            Capability.PARTIAL_UPDATE_UNSUPPORTED.withNotes(
-                    "The portable shallow partial-update contract is not implemented by "
-                    + "the Spanner adapter in this release")));
+                    + "deferred — current impl returns empty metadata shell")));
 }

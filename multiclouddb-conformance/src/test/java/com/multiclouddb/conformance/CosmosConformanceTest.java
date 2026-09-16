@@ -11,34 +11,28 @@ import com.azure.cosmos.models.CosmosItemRequestOptions;
 import com.azure.cosmos.models.PartitionKey;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.multiclouddb.api.*;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Order;
+import com.multiclouddb.api.MulticloudDbClient;
+import com.multiclouddb.api.MulticloudDbClientConfig;
+import com.multiclouddb.api.MulticloudDbKey;
+import com.multiclouddb.api.ProviderId;
+import com.multiclouddb.api.ResourceAddress;
 import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Cosmos DB conformance test running against the Cosmos DB Emulator.
- * <p>
- * Prerequisites:
- * <ul>
- * <li>Cosmos DB Emulator running on https://localhost:8081</li>
- * <li>Database "todoapp" and container "todos" (partition key: /partitionKey) must
- * exist</li>
- * </ul>
- * <p>
- * To skip when emulator is unavailable, run with:
- * {@code -DskipCosmosTests=true}
+ *
+ * <p>Requires the emulator on {@code https://localhost:8081} with database
+ * {@code todoapp} and container {@code todos} partitioned by
+ * {@code /partitionKey}.</p>
  */
 @Tag("cosmos")
 @Tag("emulator")
-class CosmosConformanceTest extends CrudConformanceTests {
+class CosmosConformanceTest extends CrudConformanceTests
+        implements PartialUpdateResultLimitConformanceTest {
 
     private static final String ENDPOINT = System.getProperty(
             "cosmos.endpoint", "https://localhost:8081");
@@ -58,7 +52,7 @@ class CosmosConformanceTest extends CrudConformanceTests {
                 .connection("key", KEY)
                 .connection("connectionMode", "gateway")
                 .build();
-        return MulticloudDbClientFactory.create(config);
+        return com.multiclouddb.api.MulticloudDbClientFactory.create(config);
     }
 
     @Override
@@ -66,10 +60,18 @@ class CosmosConformanceTest extends CrudConformanceTests {
         return new ResourceAddress(DATABASE, CONTAINER);
     }
 
-    @Test
-    @Order(28)
-    @DisplayName("Cosmos result-item size overflow is normalized and atomic")
-    void resultItemSizeOverflowIsNormalizedAndLeavesItemUnchanged() throws Exception {
+    @Override
+    public MulticloudDbClient createResultLimitClient() {
+        return createClient();
+    }
+
+    @Override
+    public ResourceAddress resultLimitAddress() {
+        return getAddress();
+    }
+
+    @Override
+    public PartialUpdateResultLimitScenario resultLimitScenario() {
         MulticloudDbKey key = ConformanceHarness.uniqueKey("cosmos-result-size");
         String partitionKey = key.partitionKey();
         String id = key.sortKey();
@@ -77,43 +79,44 @@ class CosmosConformanceTest extends CrudConformanceTests {
         seed.put("id", id);
         seed.put("partitionKey", partitionKey);
         seed.put("payload", "A".repeat(1_850_000));
+        PartitionKey nativePartitionKey = new PartitionKey(partitionKey);
 
-        try (CosmosClient nativeClient = new CosmosClientBuilder()
+        return new PartialUpdateResultLimitScenario(
+                key,
+                Map.of("overflow", "B".repeat(300_000)),
+                "cosmos_result_item_size_limit",
+                "2097152",
+                () -> {
+                    try (CosmosClient nativeClient = nativeClient()) {
+                        container(nativeClient).createItem(
+                                seed, nativePartitionKey, new CosmosItemRequestOptions());
+                    }
+                },
+                () -> {
+                    try (CosmosClient nativeClient = nativeClient()) {
+                        ObjectNode stored = container(nativeClient).readItem(
+                                id, nativePartitionKey, ObjectNode.class).getItem();
+                        assertFalse(stored.has("overflow"),
+                                "Rejected patch must leave the stored item unchanged");
+                    }
+                },
+                () -> {
+                    try (CosmosClient nativeClient = nativeClient()) {
+                        container(nativeClient).deleteItem(
+                                id, nativePartitionKey, new CosmosItemRequestOptions());
+                    }
+                });
+    }
+
+    private static CosmosClient nativeClient() {
+        return new CosmosClientBuilder()
                 .endpoint(ENDPOINT)
                 .key(KEY)
                 .gatewayMode(new GatewayConnectionConfig())
-                .buildClient()) {
-            CosmosContainer container =
-                    nativeClient.getDatabase(DATABASE).getContainer(CONTAINER);
-            PartitionKey nativePartitionKey = new PartitionKey(partitionKey);
-            container.createItem(seed, nativePartitionKey, new CosmosItemRequestOptions());
-            try {
-                try (MulticloudDbClient portableClient = createClient()) {
-                    MulticloudDbException ex = assertThrows(
-                            MulticloudDbException.class,
-                            () -> portableClient.update(
-                                    getAddress(),
-                                    key,
-                                    Map.of("overflow", "B".repeat(300_000))));
+                .buildClient();
+    }
 
-                    assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
-                            ex.error().category(), ex.error().toString());
-                    assertEquals("update", ex.error().operation());
-                    assertFalse(ex.error().retryable());
-                    assertEquals("cosmos_result_item_size_limit",
-                            ex.error().providerDetails().get("reason"));
-                    assertEquals("2097152",
-                            ex.error().providerDetails().get("maximumResultBytes"));
-                }
-
-                ObjectNode stored = container.readItem(
-                        id, nativePartitionKey, ObjectNode.class).getItem();
-                assertFalse(stored.has("overflow"),
-                        "Rejected patch must leave the stored item unchanged");
-            } finally {
-                container.deleteItem(id, nativePartitionKey,
-                        new CosmosItemRequestOptions());
-            }
-        }
+    private static CosmosContainer container(CosmosClient client) {
+        return client.getDatabase(DATABASE).getContainer(CONTAINER);
     }
 }

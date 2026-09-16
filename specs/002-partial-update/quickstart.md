@@ -1,5 +1,10 @@
 # Quickstart: Portable Partial Update
 
+These examples execute `update()` only after the selected provider advertises
+`Capability.PARTIAL_UPDATE`. Cosmos DB and DynamoDB advertise it in this release;
+Spanner callers skip these examples because the shared client rejects the operation
+before provider I/O.
+
 ## Update selected fields
 
 ```java
@@ -11,10 +16,13 @@ client.upsert(orders, key, Map.of(
     "owner", "ana",
     "region", "westus"));
 
-client.update(orders, key, Map.of("status", "SHIPPED"));
+if (client.capabilities().isSupported(Capability.PARTIAL_UPDATE)) {
+    client.update(orders, key, Map.of("status", "SHIPPED"));
+}
 ```
 
-Afterward, `status` is `SHIPPED`; `owner` and `region` remain unchanged.
+On a provider advertising `PARTIAL_UPDATE`, `status` is then `SHIPPED` while
+`owner` and `region` remain unchanged.
 `update()` never creates a missing document.
 
 ## Null, map, and list values
@@ -27,7 +35,9 @@ fields.put("closedAt", null);
 fields.put("profile", Map.of("name", "Bob"));
 fields.put("tags", List.of("priority"));
 
-client.update(orders, key, fields);
+if (client.capabilities().isSupported(Capability.PARTIAL_UPDATE)) {
+    client.update(orders, key, fields);
+}
 ```
 
 The merge is shallow: `profile` and `tags` replace their complete top-level
@@ -35,12 +45,14 @@ values.
 
 ### Spanner release boundary
 
-Spanner is not part of this feature release because release-grade behavior
-cannot yet be validated against a live account. Its data path remains unchanged,
-and it explicitly declares `PARTIAL_UPDATE` unsupported. After shared validation, a
+Spanner partial update is deliberately unsupported in this feature release. Its
+provider production source remains unchanged, and `CapabilitySet` defaults all
+three omitted Feature 002 capabilities to unsupported. After shared validation, a
 valid call returns non-retryable `UNSUPPORTED_CAPABILITY` with
-`capability=partial_update` before any Spanner provider I/O. Support can be
-enabled after live-account validation is available.
+`capability=partial_update` before any Spanner provider I/O. The Spanner emulator
+ran shared gate coverage and the provider-direct legacy regression; this is not
+live production Spanner validation and does not advertise portable update
+support.
 
 ## Literal names
 
@@ -52,56 +64,120 @@ Map<String, Object> literal = new LinkedHashMap<>();
 literal.put("/", "slash");
 literal.put("~", "tilde");
 literal.put(" customer ", "spaces preserved");
-client.update(orders, key, literal);
+literal.put("foo", "lower-case field");
+literal.put("Foo", "separate upper-case field");
+if (client.capabilities().isSupported(Capability.PARTIAL_UPDATE)) {
+    client.update(orders, key, literal);
+}
 ```
 
+Case-distinct non-reserved names are separate literal fields, including in the
+same atomic request.
 
 ## Invalid requests
 
-These fail with non-retryable `INVALID_REQUEST` before provider I/O:
+On a provider advertising `PARTIAL_UPDATE`, these fail with non-retryable
+`INVALID_REQUEST` before provider I/O:
 
 ```java
-client.update(orders, key, Map.of());
+if (client.capabilities().isSupported(Capability.PARTIAL_UPDATE)) {
+    client.update(orders, key, Map.of());
 
-client.update(
-    orders,
-    key,
-    Map.of("status", "SHIPPED"),
-    OperationOptions.builder().ttlSeconds(3600).build());
+    client.update(
+        orders,
+        key,
+        Map.of("status", "SHIPPED"),
+        OperationOptions.builder().ttlSeconds(3600).build());
+}
 ```
 
-Reserved names, underscore-prefixed names, blank names, and case-insensitive
-duplicates also fail. The shared serialized limit is 390 KiB.
+The names `id`, `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, and `data`
+(matched case-insensitively), underscore-prefixed names, blank names, names
+above 50,000 UTF-8 bytes, binary values, cyclic graphs, and non-collection iterables also fail. The shared serialized limit is
+390 KiB. Independently,
+each replacement value may contain at most 31 nested map/list containers (its
+top-level container is level 1), and the incoming map's structural footprint may
+not exceed 390 KiB. Every nested map key uses the same name bound. The footprint includes UTF-8 field
+names and native map/list overhead, so compact JSON containing many empty containers can still be rejected.
+
+These shared failures use `partial_update_field_name_size_limit`,
+`non_portable_binary_value`, `partial_update_nesting_depth_limit`, or
+`partial_update_structural_footprint_limit` in `providerDetails.reason`, together
+with actual/maximum limit details, and perform zero provider I/O. They inspect
+only incoming fields; final item size still depends on stored state.
+
+Shared preflight snapshots the top-level map and uses bounded SDK-owned Jackson
+serialization while inspecting nested values. Caller-registered modules are not
+consulted, so values requiring custom modules must first be converted to
+serializable values. Binary values hidden in a POJO are rejected during that
+process. Non-collection iterables are rejected before iteration, and serialized
+JSON output is capped at 390 KiB while it is produced.
+
+Complete `create()`/`upsert()` writes use the same validation and limits.
+A null complete document, a top-level name matching `id`, `partitionKey`,
+`sortKey`, `ttl`, `ttlExpiry`, or `data` in any letter case, or an
+underscore-prefixed top-level name returns non-retryable `INVALID_REQUEST`
+before provider I/O. Case-distinct non-reserved top-level names remain valid.
 
 ## Capabilities
 
-Callers using Cosmos DB or DynamoDB do not need to pre-check:
+All callers must check `Capability.PARTIAL_UPDATE` before invoking `update()`.
+Cosmos DB and DynamoDB currently advertise it; Spanner does not. The default
+client gate is a typed safety failure path, not a substitute for caller gating.
+
+`PARTIAL_UPDATE` covers results whose serialized JSON and portable structural
+footprint are each at most 390 KiB. Before relying on a result above either bound, check `Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`: Cosmos
+supports it up to 2 MiB; DynamoDB and API-normalized older providers do not.
+
+TTL-expiry preservation is separate from the core and extended-result
+capabilities above. If an
+existing TTL-bearing item must retain its fixed absolute expiry, also check:
 
 ```java
-client.update(orders, key, fields);
+boolean preservesExpiry = client.capabilities().isSupported(
+    Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY);
 ```
 
-The default client internally gates `Capability.PARTIAL_UPDATE`.
+DynamoDB supports this because `UpdateItem` leaves `ttlExpiry` unchanged.
+Cosmos DB does not because `patchItem` advances `_ts` and restarts the TTL
+countdown. Spanner and legacy omissions receive the API-default unsupported
+value. `PARTIAL_UPDATE` alone does not make this guarantee.
 
-Native request and resulting-item limits do not define another capability.
-Callers handle them through non-retryable `UNSUPPORTED_CAPABILITY` errors with
+The SDK performs no read/merge preflight because result size depends on stored state.
+Complete `create()`/`upsert()` documents use the same binary-value, name, depth,
+and structural envelope. Native size failures remain non-retryable
+`UNSUPPORTED_CAPABILITY` errors with
 stable `providerDetails.reason` and limit values.
 
+Use the public constants instead of copying literals:
+
+```java
+int inputBytes = PortableWriteLimits.MAX_SERIALIZED_INPUT_BYTES;
+int footprintBytes = PortableWriteLimits.MAX_STRUCTURAL_FOOTPRINT_BYTES;
+int nameBytes = PortableWriteLimits.MAX_FIELD_NAME_UTF8_BYTES;
+int depth = PortableWriteLimits.MAX_NESTED_CONTAINERS;
+int updateFields = PortableWriteLimits.MAX_PARTIAL_UPDATE_FIELDS;
+```
+
+These are the only five `PortableWriteLimits` constants.
+
 Case-distinct field identity is part of the base `PARTIAL_UPDATE` contract.
-Across calls, names such as `status` and `STATUS` remain separate fields; a
-single request containing both variants is rejected as a collision.
+Names such as `status` and `STATUS` remain separate fields across calls and may
+also appear together in one atomic request.
 
 ## Provider-envelope errors
 
 ```java
-try {
-    client.update(orders, key, veryWideFields);
-} catch (MulticloudDbException ex) {
-    if (ex.error().category()
-            == MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY) {
-        String reason = ex.error().providerDetails().get("reason");
-        // cosmos_result_item_size_limit
-        // dynamodb_result_item_size_limit
+if (client.capabilities().isSupported(Capability.PARTIAL_UPDATE)) {
+    try {
+        client.update(orders, key, veryWideFields);
+    } catch (MulticloudDbException ex) {
+        if (ex.error().category()
+                == MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY) {
+            String reason = ex.error().providerDetails().get("reason");
+            // cosmos_result_item_size_limit
+            // dynamodb_result_item_size_limit
+        }
     }
 }
 ```
@@ -132,8 +208,13 @@ client.upsert(
     OperationOptions.builder().ttlSeconds(3600).build());
 ```
 
+Setting TTL through a complete write is different from preserving an existing
+absolute expiry during partial update. For the latter, require
+`PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY`.
+
 `upsert()` creates a missing document. It is not an atomic replacement guarded
-by existence.
+by existence, read-then-upsert is not atomic, and this release has no exact
+portable atomic full-document replace-if-present equivalent.
 
 ## Focused unit validation
 
@@ -147,9 +228,12 @@ mvn -pl multiclouddb-provider-cosmos -am -Punit `
   '-Dsurefire.failIfNoSpecifiedTests=false' test
 
 mvn -pl multiclouddb-provider-dynamo -am -Punit `
-  '-Dtest=DynamoPartialUpdatePlannerTest,DynamoPartialUpdateTest,DynamoItemMapperTest' `
+  '-Dtest=DynamoPartialUpdatePlannerTest,DynamoPartialUpdateTest,DynamoItemMapperTest,DynamoErrorMappingTest' `
   '-Dsurefire.failIfNoSpecifiedTests=false' test
 ```
 
 Shared conformance and provider-neutral E2E use the existing Spanner schema.
-The blocker-remediation rerun adds no schema fixture or E2E schema helper.
+The current local validation ran DynamoDB Local and the Spanner emulator. The
+Cosmos emulator is unavailable, so the final post-remediation Cosmos rerun and
+T061 remain pending. The blocker-remediation rerun adds no schema fixture or E2E
+schema helper.

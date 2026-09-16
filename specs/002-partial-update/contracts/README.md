@@ -6,14 +6,23 @@ repository does not provide.
 
 - [partial-update-contract.md](partial-update-contract.md) is the normative Java
   API behavior, capability gates, Cosmos/Dynamo mechanics, and explicit
-  Spanner release boundary.
+  Spanner release boundary. It also records shared bounded write validation,
+  same-request case-distinct field identity, null complete-document and all provider-owned/
+  underscore-prefixed top-level rejections, the three Feature 002 capabilities,
+  and the exact five public `PortableWriteLimits` constants.
 - [provider-limit-details.schema.json](provider-limit-details.schema.json)
   defines the structured, string-valued `providerDetails` carried by native
   resulting-item errors. Cosmos DB returns its error after one attempted patch,
   and DynamoDB after one attempted `UpdateItem`. Stable reasons and limit values
-  describe these atomic failures without defining another capability. The schema
-  intentionally does not describe the simpler core-gate detail
-  `{ "capability": "partial_update" }`.
+  complement `partial_update_extended_result_size`, which declares whether results
+  above either 390 KiB serialized/structural base bound are supported. The schema does not duplicate
+  capability state, the independent
+  `partial_update_preserves_ttl_expiry` guarantee, the core-gate detail
+  `{ "capability": "partial_update" }`, or
+  shared `INVALID_REQUEST` details for field-name, binary values,
+  nesting-depth, unsafe graphs, null/provider-owned top-level names, and
+  complete-document/update structural preflight; those are normative in
+  `partial-update-contract.md`.
 
 The binding algorithm remains in [../design.md](../design.md). These contracts
 summarize its caller-visible surface and must not be used to weaken that design.

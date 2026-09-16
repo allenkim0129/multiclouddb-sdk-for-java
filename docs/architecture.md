@@ -32,7 +32,22 @@ multiclouddb-api  ← must be released first if API changed
 ```
 
 Providers depend on a released version of `multiclouddb-api`. They are
-independent of each other and can be released separately.
+independent of each other and can be released separately. The three Feature 002
+partial-update capabilities default to unsupported when an older provider omits
+them, allowing applications to upgrade supported providers without coordinating
+every provider version. Each built-in provider therefore exposes 20 effective
+capability rows: Cosmos DB and DynamoDB declare all 20, while Spanner declares
+17 and receives three API defaults.
+
+```text
+new multiclouddb-api
+  ├── new Cosmos provider -> partial_update supported; partial_update_extended_result_size supported;
+  │                          partial_update_preserves_ttl_expiry unsupported
+  ├── new Dynamo provider -> partial_update supported; partial_update_extended_result_size unsupported;
+  │                          partial_update_preserves_ttl_expiry supported
+  └── older Spanner provider
+        └── all three capabilities omitted -> API defaults unsupported -> zero provider I/O
+```
 
 ---
 
@@ -42,7 +57,7 @@ All application code depends on `multiclouddb-api`. The core types are:
 
 | Type | Purpose |
 |------|---------|
-| `MulticloudDbClient` | Portable interface: `create`, `read`, `update`, `delete`, `upsert`, `query`, `provisionSchema`, `capabilities` |
+| `MulticloudDbClient` | Portable base operations (`create`, `read`, full-replacement `upsert`, `delete`), capability-gated partial `update`, query, provisioning, and capabilities |
 | `MulticloudDbClientFactory` | Creates a `MulticloudDbClient` by discovering providers via `ServiceLoader` |
 | `MulticloudDbClientConfig` | Builder-pattern config: provider selection, connection, auth, feature flags |
 | `ResourceAddress` | `(database, collection)` pair targeting a container/table |
@@ -50,12 +65,11 @@ All application code depends on `multiclouddb-api`. The core types are:
 | `QueryRequest` | Portable expression, native expression, parameters, page size, continuation token, partition key scoping, `limit`, `orderBy` |
 | `QueryPage` | Result page: items + optional continuation token + optional diagnostics |
 | `SortOrder` / `SortDirection` | Sort specification for `orderBy` - validates field names against injection |
-| `DocumentResult` | Result of `read()`: document payload + optional `DocumentMetadata` |
-| `DocumentMetadata` | Write-metadata: `lastModified`, `ttlExpiry`, `version` |
+| `DocumentResult` | Result of `read()`: document payload + `DocumentMetadata` when requested |
+| `DocumentMetadata` | Provider-available nullable fields: `lastModified`, `ttlExpiry`, `version` |
 | `CapabilitySet` / `Capability` | Runtime introspection of provider capabilities |
 | `MulticloudDbException` | Structured error with category, provider, and native code |
-| `PortabilityWarning` | Signals non-portable behavior |
-| `OperationOptions` | Per-call timeout, TTL, metadata flag |
+| `OperationOptions` | Per-call timeout and metadata flag; TTL is accepted only by create/upsert |
 | `OperationDiagnostics` | Latency, request units/charge, request ID, ETag, item count |
 
 ### Expression Types
@@ -77,7 +91,7 @@ Provider modules implement two SPI contracts without importing each other:
 | SPI Interface | Responsibility |
 |---------------|---------------|
 | `MulticloudDbProviderAdapter` | Factory - creates a `MulticloudDbProviderClient` from config; registered via `META-INF/services` |
-| `MulticloudDbProviderClient` | CRUD + query + provisioning + capabilities - called by `DefaultMulticloudDbClient` |
+| `MulticloudDbProviderClient` | Base operations, capability-gated update, query, provisioning, and capabilities - called by `DefaultMulticloudDbClient` |
 
 ---
 
@@ -162,5 +176,5 @@ supposed to be a provider-agnostic interface, which defeats portability.
 | Compile-time safety | Missing key = compiler error | Missing field = runtime error |
 | Source of truth | Key is authoritative | Ambiguous when fields disagree |
 
-See the [Developer Guide](guide.md#why-key-is-an-explicit-parameter) for the
+See the [Developer Guide](guide.md#why-multiclouddbkey-is-an-explicit-parameter) for the
 full rationale.

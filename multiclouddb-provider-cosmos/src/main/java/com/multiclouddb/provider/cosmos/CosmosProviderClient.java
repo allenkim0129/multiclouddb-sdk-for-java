@@ -216,11 +216,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             ObjectNode raw = response.getItem();
             if (raw == null) return null;
 
-            // Strip Cosmos system properties so the returned document is portable
-            // across providers (Cosmos-only fields like _rid, _self, _ts, etc. must
-            // not appear in a DocumentResult that callers compare across providers).
-            ObjectNode item = raw.deepCopy();
-            CosmosConstants.SYSTEM_FIELDS.forEach(item::remove);
+            ObjectNode item = toPortableDocument(raw);
 
             DocumentMetadata metadata = null;
             if (options != null && options.includeMetadata()) {
@@ -996,6 +992,15 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     private Map<String, Object> toMap(JsonNode node) {
         if (node == null) return null;
-        return MAPPER.convertValue(node, MAP_TYPE);
+        JsonNode portable = node instanceof ObjectNode object
+                ? toPortableDocument(object)
+                : node;
+        return MAPPER.convertValue(portable, MAP_TYPE);
+    }
+
+    static ObjectNode toPortableDocument(ObjectNode raw) {
+        ObjectNode portable = raw.deepCopy();
+        CosmosConstants.SYSTEM_FIELDS.forEach(portable::remove);
+        return portable;
     }
 }

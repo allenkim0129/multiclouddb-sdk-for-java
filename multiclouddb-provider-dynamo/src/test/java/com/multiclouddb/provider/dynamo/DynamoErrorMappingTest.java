@@ -64,6 +64,30 @@ class DynamoErrorMappingTest {
         assertEquals(MulticloudDbErrorCategory.fromString(expectedCategory), result.error().category());
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"RequestTimeout", "RequestTimeoutException"})
+    @DisplayName("Update request timeouts are retryable transient failures")
+    void updateRequestTimeoutIsTransient(String errorCode) {
+        DynamoDbException ex = mockDynamoException(400, errorCode);
+
+        MulticloudDbException result = DynamoErrorMapper.map(ex, OperationNames.UPDATE);
+
+        assertEquals(MulticloudDbErrorCategory.TRANSIENT_FAILURE,
+                result.error().category());
+        assertTrue(result.error().retryable());
+    }
+
+    @Test
+    @DisplayName("Request timeout mapping remains scoped to update")
+    void requestTimeoutOutsideUpdateUsesExistingMapping() {
+        DynamoDbException ex = mockDynamoException(400, "RequestTimeout");
+
+        MulticloudDbException result = DynamoErrorMapper.map(ex, OperationNames.READ);
+
+        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, result.error().category());
+        assertFalse(result.error().retryable());
+    }
+
     @Test
     @DisplayName("statusCode() field carries the HTTP status code")
     void statusCodeFieldSet() {
@@ -125,6 +149,10 @@ class DynamoErrorMappingTest {
     @ValueSource(strings = {
             "Item size has exceeded the maximum allowed size",
             "Item size to update has exceeded the maximum allowed size",
+            "Item size is too large",
+            "The provided item is too large",
+            "The item exceeds the 400 KB limit",
+            "Maximum item size of 400 KiB exceeded",
             "Item size has exceeded the maximum allowed size "
                     + "(Service: DynamoDb, Status Code: 400, Request ID: req-size-1)"
     })
@@ -156,6 +184,7 @@ class DynamoErrorMappingTest {
     @ValueSource(strings = {
             "One or more parameter values were invalid: Type mismatch for key",
             "Item collection size has exceeded the maximum allowed size",
+            "Item collection exceeds the 10 GB limit",
             "Expression size has exceeded the maximum allowed size"
     })
     @DisplayName("Other update ValidationException messages remain invalid requests")

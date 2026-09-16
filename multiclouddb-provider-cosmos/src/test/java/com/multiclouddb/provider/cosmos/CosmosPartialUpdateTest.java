@@ -19,6 +19,8 @@ import com.multiclouddb.api.OperationOptions;
 import com.multiclouddb.api.ResourceAddress;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 
 import java.util.LinkedHashMap;
@@ -30,6 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -110,6 +113,35 @@ class CosmosPartialUpdateTest {
         assertEquals(MulticloudDbErrorCategory.NOT_FOUND, ex.error().category());
         assertFalse(ex.error().retryable());
         assertSame(failure, ex.getCause());
+    }
+
+    @ParameterizedTest(name = "HTTP {0}")
+    @ValueSource(ints = {408, 410})
+    void nativeTimeoutMapsThroughProviderUpdate(int statusCode) {
+        CosmosException failure = mock(CosmosException.class);
+        when(failure.getStatusCode()).thenReturn(statusCode);
+        when(failure.getSubStatusCode()).thenReturn(1002);
+        when(failure.getMessage()).thenReturn("timeout");
+        when(failure.getActivityId()).thenReturn("timeout-request");
+        when(failure.getRequestCharge()).thenReturn(0.0);
+        when(container.patchItem(anyString(), any(PartitionKey.class),
+                any(CosmosPatchOperations.class), any(CosmosPatchItemRequestOptions.class),
+                eq(ObjectNode.class))).thenThrow(failure);
+
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> provider.update(ADDRESS, KEY, Map.of("status", "SHIPPED"),
+                        OperationOptions.defaults()));
+
+        assertEquals(MulticloudDbErrorCategory.TRANSIENT_FAILURE, ex.error().category());
+        assertTrue(ex.error().retryable());
+        assertEquals(statusCode, ex.error().statusCode());
+        assertEquals("1002", ex.error().providerDetails().get("subStatusCode"));
+        assertEquals("timeout-request", ex.error().providerDetails().get("requestId"));
+        assertSame(failure, ex.getCause());
+        verify(container).patchItem(eq("item"), any(PartitionKey.class),
+                any(CosmosPatchOperations.class), any(CosmosPatchItemRequestOptions.class),
+                eq(ObjectNode.class));
+        verifyNoMoreInteractions(container);
     }
 
     private static Map<String, Object> fields(int count) {

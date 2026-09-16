@@ -14,10 +14,12 @@ state, and provider-native plans.
 
 ### Name rules
 
-- non-null, non-empty, non-blank;
-- not a case-insensitive reserved name;
+- non-null, non-empty, non-blank, and at most 50,000 UTF-8 bytes;
+- not one of `id`, `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, or `data`
+  under a case-insensitive comparison;
 - not underscore-prefixed;
-- unique ignoring case; and
+- case-distinct non-reserved names remain separate literal names, including
+  when both occur in one request; and
 - never trimmed or rewritten.
 
 Punctuation remains literal for participating Cosmos DB and DynamoDB mappings.
@@ -29,6 +31,13 @@ validation, the capability gate rejects every otherwise-valid update before prov
 - scalar → replace scalar;
 - map/list → replace complete top-level value;
 - null → stored null for a supported provider mapping;
+- values must be serializable with the SDK-owned Jackson configuration used by
+  bounded shared preflight;
+- binary values are outside the portable JSON value model, including values
+  exposed while serializing a POJO;
+- cyclic graphs and non-collection iterables fail bounded inspection, and
+  serialized JSON output is capped while it is produced;
+- every nested map key is at most 50,000 UTF-8 bytes; and
 - no remove, increment, nested path, condition, or TTL mutation.
 
 ## 2. State transition
@@ -45,20 +54,48 @@ MISSING document
   -> NOT_FOUND; remains missing
 ```
 
-The transition is atomic and replay-idempotent.
+The logical-field transition is atomic and replay-idempotent. Provider-maintained
+metadata and TTL timing are outside that guarantee.
 
 ## 3. Shared validation state
 
 ```text
 RECEIVED
   -> closed                         CLIENT_CLOSED
-  -> invalid map/name/TTL/count           INVALID_REQUEST
-  -> serialized bytes > 390 KiB     INVALID_REQUEST
-  -> partial_update unsupported     UNSUPPORTED_CAPABILITY
+  -> invalid map/name/TTL/count/value     INVALID_REQUEST
+  -> serialization failure                 INVALID_REQUEST
+  -> serialized bytes > 390 KiB           INVALID_REQUEST
+  -> replacement map/list depth > 31      INVALID_REQUEST
+  -> structural footprint > 390 KiB       INVALID_REQUEST
+  -> partial_update unsupported           UNSUPPORTED_CAPABILITY
   -> provider plan
 ```
 
-All local failures delegate zero provider update operations.
+All local failures delegate zero provider update operations. Structural failures
+use stable `partial_update_nesting_depth_limit` or
+`partial_update_structural_footprint_limit` reasons with actual/maximum details.
+Complete create/upsert documents share the 31-level, field-name, binary-value,
+and 390 KiB structural checks. They also reject a null document and the
+case-insensitive top-level provider-owned names `id`, `partitionKey`, `sortKey`,
+`ttl`, `ttlExpiry`, and `data`, plus every underscore-prefixed top-level name.
+Case-distinct non-reserved top-level names remain valid.
+The update structure calculation
+applies only to the incoming replacement field map;
+it does not model omitted existing state.
+
+### Public limit model
+
+`com.multiclouddb.api.PortableWriteLimits` exposes:
+
+| Constant | Value |
+|---|---:|
+| `MAX_SERIALIZED_INPUT_BYTES` | 399,360 |
+| `MAX_STRUCTURAL_FOOTPRINT_BYTES` | 399,360 |
+| `MAX_FIELD_NAME_UTF8_BYTES` | 50,000 |
+| `MAX_NESTED_CONTAINERS` | 31 |
+| `MAX_PARTIAL_UPDATE_FIELDS` | 10 |
+
+These are the only `PortableWriteLimits` constants.
 
 ## 4. Cosmos plan
 
@@ -122,24 +159,41 @@ errors remain `INVALID_REQUEST`.
 
 ## 6. Provider release boundary
 
-Spanner is not a feature-002 data model. Its data path remains
-unchanged, while its capability set explicitly declares `partial_update` unsupported. The default
-client rejects valid calls before provider delegation; no row, schema, metadata,
-or mapping behavior is changed by this feature.
-## 7. Capability
+Spanner is deliberately not a supported Feature 002 update data path. Its
+production source remains unchanged; only changelog and provider-direct
+emulator-test alignment is in scope.
+Because the provider omits all three Feature 002 capabilities, `CapabilitySet`
+supplies their unsupported defaults; the core default makes the client reject valid calls before provider
+delegation; no row, schema, metadata, or mapping behavior is changed. The
+Spanner emulator validated this gate and the provider-direct legacy regression;
+no live production Spanner validation is claimed.
+## 7. Capabilities
 
-| Provider | `partial_update` |
-|---|---|
-| Cosmos DB | supported |
-| DynamoDB | supported |
-| Spanner | explicitly unsupported |
+| Provider | `partial_update` | `partial_update_extended_result_size` | `partial_update_preserves_ttl_expiry` |
+|---|---|---|---|
+| Cosmos DB | supported | supported up to 2 MiB | unsupported; patch advances `_ts` and restarts countdown |
+| DynamoDB | supported | unsupported | supported; `ttlExpiry` remains unchanged |
+| Spanner | unsupported by API default | unsupported by API default | unsupported by API default |
 
-Native request and resulting-item limits are reason-coded errors, not separate
-capabilities. Case-distinct field identity is part of the base contract.
+The base operation guarantees results whose serialized JSON and portable structural
+footprint are each at most 390 KiB. Results above either bound require the extended
+capability. Native size errors remain
+reason-coded because the SDK does not read/merge stored state before writing.
+Case-distinct field identity is part of the base contract. Absolute TTL-expiry
+preservation is not: callers requiring fixed expiry inspect the separate
+TTL-preservation capability. `CapabilitySet` supplies unsupported defaults for
+all three Feature 002 names, so every built-in provider exposes 20 effective
+rows; an older Spanner provider's 17 declarations become 20 without a
+production change.
 
 ## 8. Structured provider-limit errors
 
 All values in `providerDetails` are strings.
+
+The shared capability gate uses the `UnsupportedCapability` error
+representation with `category=UNSUPPORTED_CAPABILITY`, `retryable=false`, and
+`capability=partial_update`. State-dependent native envelope failures use the
+same category with a stable provider-specific `reason`.
 
 ### Cosmos
 
@@ -176,5 +230,11 @@ the failed native operation leaves the item unchanged.
 
 Supported partial-update behavior runs only for providers advertising the core
 capability. Shared invalid-request checks still run on every provider because
-validation precedes the gate. Spanner receives a dedicated assertion for its explicit unsupported declaration and
+validation precedes the gate. Shared coverage accepts same-request
+case-distinct non-reserved names, rejects all provider-owned and
+underscore-prefixed complete-write top-level names, and verifies the shared write envelope. Capability coverage verifies all 20 effective rows and
+the separate result-size and TTL-expiry matrices. Spanner receives a dedicated assertion for the API-default unsupported state and
 for non-retryable `UNSUPPORTED_CAPABILITY` with zero provider mutation.
+
+Current local validation ran DynamoDB Local and the Spanner emulator. The Cosmos
+emulator is unavailable, so its post-remediation rerun and T061 remain pending.

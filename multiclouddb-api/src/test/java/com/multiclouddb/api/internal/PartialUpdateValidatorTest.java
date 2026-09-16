@@ -10,12 +10,18 @@ import com.multiclouddb.api.OperationOptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+import java.util.AbstractMap;
+import java.util.AbstractSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -69,6 +75,65 @@ class PartialUpdateValidatorTest {
     }
 
     @Test
+    @DisplayName("misleading unbounded maps stop at the field-count limit")
+    void unboundedMapInspectionIsBounded() {
+        Map<String, Object> unbounded = new AbstractMap<>() {
+            @Override
+            public int size() {
+                return 1;
+            }
+
+            @Override
+            public Set<Entry<String, Object>> entrySet() {
+                return new AbstractSet<>() {
+                    @Override
+                    public Iterator<Entry<String, Object>> iterator() {
+                        return new Iterator<>() {
+                            private int index;
+
+                            @Override
+                            public boolean hasNext() {
+                                return true;
+                            }
+
+                            @Override
+                            public Entry<String, Object> next() {
+                                return Map.entry("field" + index, index++);
+                            }
+                        };
+                    }
+
+                    @Override
+                    public int size() {
+                        return 1;
+                    }
+                };
+            }
+        };
+
+        assertTimeoutPreemptively(Duration.ofSeconds(1),
+                () -> assertInvalidRequest(reject(
+                        unbounded, OperationOptions.defaults())));
+    }
+
+    @Test
+    @DisplayName("map iterator failures are structured invalid requests")
+    void mapIteratorFailuresAreInvalidRequests() {
+        Map<String, Object> failing = new AbstractMap<>() {
+            @Override
+            public Set<Entry<String, Object>> entrySet() {
+                throw new IllegalStateException("iterator unavailable");
+            }
+        };
+
+        MulticloudDbException ex = reject(failing, OperationOptions.defaults());
+
+        assertInvalidRequest(ex);
+        assertEquals("portable_value_snapshot_failed",
+                ex.error().providerDetails().get("reason"));
+    }
+
+    @Test
     @DisplayName("null field name is rejected")
     void nullNameRejected() {
         Map<String, Object> f = new LinkedHashMap<>();
@@ -102,6 +167,33 @@ class PartialUpdateValidatorTest {
     }
 
     @Test
+    @DisplayName("field name at the UTF-8 byte limit is accepted")
+    void maximumFieldNameBytesAccepted() {
+        Map<String, Object> fields = Map.of(
+                "a".repeat(PartialUpdateValidator.MAX_FIELD_NAME_BYTES), "v");
+
+        assertDoesNotThrow(() -> PartialUpdateValidator.validate(
+                fields, OperationOptions.defaults(), OperationNames.UPDATE));
+    }
+
+    @Test
+    @DisplayName("field name over the UTF-8 byte limit is rejected with stable details")
+    void fieldNameOverByteLimitRejected() {
+        Map<String, Object> fields = Map.of(
+                "a".repeat(PartialUpdateValidator.MAX_FIELD_NAME_BYTES + 1), "v");
+
+        MulticloudDbException ex = reject(fields, OperationOptions.defaults());
+
+        assertInvalidRequest(ex);
+        assertEquals(PartialUpdateValidator.FIELD_NAME_SIZE_LIMIT_REASON,
+                ex.error().providerDetails().get("reason"));
+        assertEquals(String.valueOf(PartialUpdateValidator.MAX_FIELD_NAME_BYTES + 1),
+                ex.error().providerDetails().get("actualFieldNameBytes"));
+        assertEquals(String.valueOf(PartialUpdateValidator.MAX_FIELD_NAME_BYTES),
+                ex.error().providerDetails().get("maximumFieldNameBytes"));
+    }
+
+    @Test
     @DisplayName("reserved names are rejected case-insensitively")
     void reservedNamesRejected() {
         for (String reserved : new String[] {"id", "ID", "partitionKey", "PARTITIONKEY", "sortKey",
@@ -121,12 +213,13 @@ class PartialUpdateValidatorTest {
     }
 
     @Test
-    @DisplayName("foo/Foo case-insensitive collision is rejected")
-    void caseCollisionRejected() {
+    @DisplayName("foo/Foo case variants are accepted as distinct fields")
+    void caseVariantsAccepted() {
         Map<String, Object> f = new LinkedHashMap<>();
         f.put("foo", 1);
         f.put("Foo", 2);
-        assertInvalidRequest(reject(f, OperationOptions.defaults()));
+        assertDoesNotThrow(() -> PartialUpdateValidator.validate(
+                f, OperationOptions.defaults(), OperationNames.UPDATE));
     }
 
     @Test

@@ -3,6 +3,7 @@
 
 package com.multiclouddb.api.internal;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
@@ -10,22 +11,31 @@ import com.multiclouddb.api.OperationNames;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.nio.ByteBuffer;
+import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Exact common-size boundary for the shared {@link DocumentSizeValidator}: a
- * serialized field map at {@code MAX_BYTES} passes; one byte over the limit
- * fails with a non-retryable INVALID_REQUEST. The validator performs no provider
- * I/O, so a rejection delegates zero provider operations by construction.
- */
+/** Unit tests for the shared serialized and structural write-input envelope. */
 class DocumentSizeValidatorTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    private static final class FailingBean {
+        public String getValue() {
+            throw new IllegalStateException("getter failed");
+        }
+    }
 
     @Test
     @DisplayName("MAX_BYTES is the portable 390 KiB limit")
@@ -33,9 +43,8 @@ class DocumentSizeValidatorTest {
         assertEquals(390 * 1024, DocumentSizeValidator.MAX_BYTES);
     }
 
-    /** Builds a single-field map whose serialized JSON is exactly {@code targetBytes} long. */
     private static Map<String, Object> mapOfSerializedSize(int targetBytes) throws Exception {
-        int overhead = MAPPER.writeValueAsBytes(Map.of("p", "")).length; // {"p":""} == 8 bytes
+        int overhead = MAPPER.writeValueAsBytes(Map.of("p", "")).length;
         String value = "A".repeat(targetBytes - overhead);
         Map<String, Object> map = Map.of("p", value);
         assertEquals(targetBytes, MAPPER.writeValueAsBytes(map).length,
@@ -43,22 +52,162 @@ class DocumentSizeValidatorTest {
         return map;
     }
 
+    private static final class BinaryBean {
+        public byte[] getPayload() {
+            return new byte[] {1, 2};
+        }
+    }
+
+
     @Test
-    @DisplayName("MAX_BYTES passes common preflight")
-    void exactLimitPasses() throws Exception {
-        Map<String, Object> atLimit = mapOfSerializedSize(DocumentSizeValidator.MAX_BYTES);
-        assertDoesNotThrow(() -> DocumentSizeValidator.validate(atLimit, OperationNames.UPDATE));
+    @DisplayName("self-referencing input is a typed non-retryable invalid request")
+    void selfReferenceIsRejected() {
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("self", document);
+
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validate(document, OperationNames.CREATE));
+
+        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
+        assertEquals(OperationNames.CREATE, ex.error().operation());
+        assertEquals(false, ex.error().retryable());
+        assertNull(ex.error().provider());
+        assertEquals("document_value_cycle",
+                ex.error().providerDetails().get("reason"));
+        assertNull(ex.getCause());
     }
 
     @Test
-    @DisplayName("one byte over MAX_BYTES fails with non-retryable INVALID_REQUEST and zero delegation")
+    @DisplayName("failing value serialization is a typed invalid request")
+    void failingValueSerializationIsMapped() {
+        Map<String, Object> document = Map.of("value", new FailingBean());
+
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validate(document, OperationNames.CREATE));
+
+        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
+        assertEquals(OperationNames.CREATE, ex.error().operation());
+        assertInstanceOf(JsonProcessingException.class, ex.getCause());
+    }
+
+    @Test
+    @DisplayName("values requiring custom Jackson modules fail shared preflight")
+    void customModuleValuesAreRejected() {
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validate(
+                        Map.of("createdAt", Instant.EPOCH), OperationNames.CREATE));
+
+        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
+        assertEquals("portable_value_normalization_failed",
+                ex.error().providerDetails().get("reason"));
+        assertEquals(false, ex.error().retryable());
+        assertNull(ex.error().provider());
+    }
+
+    @Test
+    @DisplayName("null and provider-reserved complete documents are invalid")
+    void nullAndReservedCompleteDocumentsAreRejected() {
+        MulticloudDbException missing = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validate(
+                        (Map<String, Object>) null, OperationNames.CREATE));
+
+        assertEquals("document_required",
+                missing.error().providerDetails().get("reason"));
+        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST,
+                missing.error().category());
+        assertEquals(false, missing.error().retryable());
+        assertNull(missing.error().provider());
+
+        for (String field : List.of(
+                "id", "PARTITIONKEY", "sortKey", "ttl", "TtlExpiry", "DaTa", "_ts")) {
+            MulticloudDbException reserved = assertThrows(MulticloudDbException.class,
+                    () -> DocumentSizeValidator.validate(
+                            Map.of(field, "value"), OperationNames.UPSERT));
+            assertEquals("reserved_document_field",
+                    reserved.error().providerDetails().get("reason"));
+            assertEquals(field, reserved.error().providerDetails().get("field"));
+            assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST,
+                    reserved.error().category());
+            assertEquals(false, reserved.error().retryable());
+            assertNull(reserved.error().provider());
+        }
+    }
+
+    @Test
+    @DisplayName("validated snapshots preserve caller value objects")
+    void validatedSnapshotsPreserveCallerValues() {
+        String[] array = {"a", "b"};
+        var tree = MAPPER.createObjectNode().put("name", "Ada");
+        Map<String, Object> document = Map.of("array", array, "tree", tree);
+
+        Map<String, Object> snapshot = DocumentSizeValidator
+                .validateAndSnapshotDocument(document, OperationNames.CREATE);
+
+        assertSame(array, snapshot.get("array"));
+        assertSame(tree, snapshot.get("tree"));
+    }
+
+    @Test
+    @DisplayName("MAX_BYTES passes common serialized and structural preflight")
+    void exactLimitPasses() throws Exception {
+        Map<String, Object> atLimit = mapOfSerializedSize(DocumentSizeValidator.MAX_BYTES);
+        assertDoesNotThrow(() -> DocumentSizeValidator.validate(atLimit, OperationNames.CREATE));
+    }
+
+    @Test
+    @DisplayName("one byte over MAX_BYTES fails with non-retryable INVALID_REQUEST")
     void oneOverLimitFails() throws Exception {
         Map<String, Object> overLimit = mapOfSerializedSize(DocumentSizeValidator.MAX_BYTES + 1);
         MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                () -> DocumentSizeValidator.validate(overLimit, OperationNames.UPDATE));
+                () -> DocumentSizeValidator.validate(overLimit, OperationNames.UPSERT));
         assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
         assertEquals(false, ex.error().retryable());
- assertTrue(ex.error().message().contains("391 KiB"));
-        // The static validator performs no provider call, so a rejection is inherently zero-I/O.
+        assertTrue(ex.error().message().contains("391 KiB"));
+    }
+
+    @Test
+    @DisplayName("compact complete document over structural limit is rejected")
+    void compactDocumentOverStructuralLimitFails() {
+        int count = (PartialUpdateStructureValidator.MAX_FOOTPRINT_BYTES - 4) / 4 + 1;
+        Map<String, Object> document = Map.of(
+                "x", Collections.nCopies(count, Map.of()));
+
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validate(document, OperationNames.CREATE));
+
+        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
+        assertEquals(PartialUpdateStructureValidator.DOCUMENT_FOOTPRINT_LIMIT_REASON,
+                ex.error().providerDetails().get("reason"));
+    }
+
+    @Test
+    @DisplayName("binary values are rejected consistently for all write operations")
+    void binaryValuesAreRejectedForAllWrites() {
+        Map<String, Object> direct = Map.of("payload", new byte[] {1, 2});
+        Map<String, Object> nested = Map.of(
+                "profile", Map.of("payload", ByteBuffer.wrap(new byte[] {1, 2})));
+        Map<String, Object> hiddenInPojo = Map.of("profile", new BinaryBean());
+
+        MulticloudDbException create = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validate(direct, OperationNames.CREATE));
+        MulticloudDbException upsert = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validate(nested, OperationNames.UPSERT));
+        MulticloudDbException update = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validatePartialUpdate(direct, OperationNames.UPDATE));
+        MulticloudDbException pojo = assertThrows(MulticloudDbException.class,
+                () -> DocumentSizeValidator.validate(hiddenInPojo, OperationNames.UPSERT));
+
+        for (MulticloudDbException failure : new MulticloudDbException[] {
+                create, upsert, update, pojo}) {
+            assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST,
+                    failure.error().category());
+            assertEquals(PartialUpdateStructureValidator.NON_PORTABLE_BINARY_REASON,
+                    failure.error().providerDetails().get("reason"));
+            assertEquals(false, failure.error().retryable());
+            assertNull(failure.error().provider());
+        }
+        assertEquals("/payload", create.error().providerDetails().get("valuePath"));
+        assertEquals("/profile/payload", upsert.error().providerDetails().get("valuePath"));
+        assertEquals("/profile/payload", pojo.error().providerDetails().get("valuePath"));
     }
 }

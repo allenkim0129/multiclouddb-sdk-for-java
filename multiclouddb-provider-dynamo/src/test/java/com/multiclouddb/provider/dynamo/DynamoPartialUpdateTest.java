@@ -10,8 +10,12 @@ import com.multiclouddb.api.OperationOptions;
 import com.multiclouddb.api.ResourceAddress;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
+import software.amazon.awssdk.core.exception.ApiCallAttemptTimeoutException;
+import software.amazon.awssdk.core.exception.ApiCallTimeoutException;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
 import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
@@ -27,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -93,6 +98,70 @@ class DynamoPartialUpdateTest {
         assertFalse(ex.error().retryable());
         assertEquals("ConditionalCheckFailedException",
                 ex.error().providerDetails().get("errorCode"));
+        assertSame(failure, ex.getCause());
+        verify(dynamo).updateItem(any(UpdateItemRequest.class));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"RequestTimeout", "RequestTimeoutException"})
+    void serviceTimeoutMapsThroughProviderUpdate(String errorCode) {
+        DynamoDbException failure = mock(DynamoDbException.class);
+        AwsErrorDetails errorDetails = mock(AwsErrorDetails.class);
+        when(failure.getMessage()).thenReturn("DynamoDB request timed out");
+        when(failure.statusCode()).thenReturn(400);
+        when(failure.requestId()).thenReturn("request-timeout");
+        when(failure.awsErrorDetails()).thenReturn(errorDetails);
+        when(errorDetails.errorCode()).thenReturn(errorCode);
+        when(errorDetails.serviceName()).thenReturn("DynamoDb");
+        when(dynamo.updateItem(any(UpdateItemRequest.class))).thenThrow(failure);
+
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> provider.update(ADDRESS, KEY, Map.of("status", "SHIPPED"),
+                        OperationOptions.defaults()));
+
+        assertEquals(MulticloudDbErrorCategory.TRANSIENT_FAILURE, ex.error().category());
+        assertTrue(ex.error().retryable());
+        assertEquals(400, ex.error().statusCode());
+        assertEquals(errorCode, ex.error().providerDetails().get("errorCode"));
+        assertEquals("request-timeout", ex.error().providerDetails().get("requestId"));
+        assertEquals("DynamoDb", ex.error().providerDetails().get("serviceName"));
+        assertSame(failure, ex.getCause());
+        verify(dynamo).updateItem(any(UpdateItemRequest.class));
+    }
+
+    @Test
+    void sdkApiCallTimeoutMapsToRetryableTransientFailure() {
+        ApiCallTimeoutException failure = mock(ApiCallTimeoutException.class);
+        when(failure.getMessage()).thenReturn("DynamoDB API call timed out");
+        when(dynamo.updateItem(any(UpdateItemRequest.class))).thenThrow(failure);
+
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> provider.update(ADDRESS, KEY, Map.of("status", "SHIPPED"),
+                        OperationOptions.defaults()));
+
+        assertEquals(MulticloudDbErrorCategory.TRANSIENT_FAILURE, ex.error().category());
+        assertTrue(ex.error().retryable());
+        assertEquals("dynamodb_request_timeout",
+                ex.error().providerDetails().get("reason"));
+        assertSame(failure, ex.getCause());
+        verify(dynamo).updateItem(any(UpdateItemRequest.class));
+    }
+
+    @Test
+    void sdkApiCallAttemptTimeoutMapsToRetryableTransientFailure() {
+        ApiCallAttemptTimeoutException failure =
+                mock(ApiCallAttemptTimeoutException.class);
+        when(failure.getMessage()).thenReturn("DynamoDB API call attempt timed out");
+        when(dynamo.updateItem(any(UpdateItemRequest.class))).thenThrow(failure);
+
+        MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                () -> provider.update(ADDRESS, KEY, Map.of("status", "SHIPPED"),
+                        OperationOptions.defaults()));
+
+        assertEquals(MulticloudDbErrorCategory.TRANSIENT_FAILURE, ex.error().category());
+        assertTrue(ex.error().retryable());
+        assertEquals("dynamodb_request_timeout",
+                ex.error().providerDetails().get("reason"));
         assertSame(failure, ex.getCause());
         verify(dynamo).updateItem(any(UpdateItemRequest.class));
     }

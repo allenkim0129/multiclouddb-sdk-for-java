@@ -3,8 +3,13 @@
 
 package com.multiclouddb.conformance;
 
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializerProvider;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.databind.ser.std.StdSerializer;
 import com.multiclouddb.api.Capability;
 import com.multiclouddb.api.CapabilitySet;
 import com.multiclouddb.api.DocumentResult;
@@ -13,10 +18,13 @@ import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.MulticloudDbKey;
 import com.multiclouddb.api.OperationOptions;
+import com.multiclouddb.api.PortableWriteLimits;
 import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
 import com.multiclouddb.api.internal.DocumentSizeValidator;
+import com.multiclouddb.api.internal.PartialUpdateStructureValidator;
+import com.multiclouddb.api.internal.PartialUpdateValidator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -25,10 +33,13 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -68,6 +79,49 @@ import static org.junit.jupiter.api.Assertions.fail;
 public abstract class CrudConformanceTests {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
+    private static final Set<String> PROVIDER_OWNED_FIELDS = Set.of(
+            "id", "partitionKey", "sortKey", "ttl", "ttlExpiry", "data");
+
+    private record CanonicalPojo(String name, List<Integer> scores) { }
+
+    private record BinaryPojo(byte[] payload) { }
+
+    private record IterablePojo(Iterable<Integer> values) { }
+
+
+    private static final class FailingPojo {
+        public String getValue() {
+            throw new IllegalStateException("getter failed");
+        }
+    }
+
+    private record UnsafeValueCase(
+            String documentReason, String updateReason,
+            Object value, boolean expectsCause) { }
+
+    @JsonSerialize(using = CanonicalUpdateFieldsSerializer.class)
+    private static final class CanonicalUpdateFields
+            extends LinkedHashMap<String, Object> {
+    }
+
+    private static final class CanonicalUpdateFieldsSerializer
+            extends StdSerializer<CanonicalUpdateFields> {
+
+        private CanonicalUpdateFieldsSerializer() {
+            super(CanonicalUpdateFields.class);
+        }
+
+        @Override
+        public void serialize(CanonicalUpdateFields value, JsonGenerator generator,
+                SerializerProvider provider) throws IOException {
+            generator.writeStartObject();
+            for (int i = 0; i < 11; i++) {
+                generator.writeStringField("emitted" + i, "value");
+            }
+            generator.writeEndObject();
+        }
+    }
 
     protected abstract MulticloudDbClient createClient();
     protected abstract ResourceAddress getAddress();
@@ -94,6 +148,19 @@ public abstract class CrudConformanceTests {
         return Boolean.parseBoolean(v != null ? v.toString() : "false");
     }
 
+    private static void assertPortableResult(JsonNode document) {
+        PROVIDER_OWNED_FIELDS.forEach(field ->
+                assertFalse(document.has(field), field + " must not leak into read results"));
+        document.fieldNames().forEachRemaining(field ->
+                assertFalse(field.startsWith("_"), field + " must not leak into read results"));
+    }
+
+    private static void assertPortableResult(Map<String, Object> document) {
+        PROVIDER_OWNED_FIELDS.forEach(field ->
+                assertFalse(document.containsKey(field), field + " must not leak into query results"));
+        document.keySet().forEach(field ->
+                assertFalse(field.startsWith("_"), field + " must not leak into query results"));
+    }
     /**
      * Cleanup helper that delegates to {@link com.multiclouddb.api.MulticloudDbClient#delete}.
      * Delete is idempotent across providers, so calling this on an already-deleted
@@ -115,12 +182,96 @@ public abstract class CrudConformanceTests {
         return fields;
     }
 
+    private static Map<String, Object> fieldsWithNestingDepth(int depth) {
+        Object value = "leaf-value";
+        for (int i = 0; i < depth; i++) {
+            value = Map.of("level", value);
+        }
+        return Map.of("profile", value);
+    }
+
+    private static Map<String, Object> fieldsAtStructuralFootprint() {
+        String fieldName = "arrayField";
+        int fixedBytes = fieldName.length() + 3 + 1;
+        int elementCount =
+                (PortableWriteLimits.MAX_STRUCTURAL_FOOTPRINT_BYTES - fixedBytes) / 4;
+        int trailingStringBytes = PortableWriteLimits.MAX_STRUCTURAL_FOOTPRINT_BYTES
+                - fixedBytes - (4 * elementCount);
+        assertEquals(PortableWriteLimits.MAX_STRUCTURAL_FOOTPRINT_BYTES,
+                fixedBytes + (4 * elementCount) + trailingStringBytes,
+                "Fixture footprint must equal the public structural limit");
+        List<Object> values = new ArrayList<>(
+                Collections.nCopies(elementCount, Map.of()));
+        values.add("A".repeat(trailingStringBytes));
+        return Map.of(fieldName, values);
+    }
+
+    private static Map<String, Object> fieldsOverStructuralFootprint() {
+        int elementCount = (PortableWriteLimits.MAX_STRUCTURAL_FOOTPRINT_BYTES - 4) / 4 + 1;
+        return Map.of("x", Collections.nCopies(elementCount, Map.of()));
+    }
+
+    private static List<UnsafeValueCase> unsafeWriteValues() {
+        Map<String, Object> cycle = new LinkedHashMap<>();
+        cycle.put("self", cycle);
+
+        Object deep = "leaf";
+        for (int i = 0; i < 5_000; i++) {
+            deep = Map.of("level", deep);
+        }
+
+        Iterable<Integer> unbounded = () -> new Iterator<>() {
+            private int value;
+
+            @Override
+            public boolean hasNext() {
+                return true;
+            }
+
+            @Override
+            public Integer next() {
+                return value++;
+            }
+        };
+
+        return List.of(
+                new UnsafeValueCase(
+                        "document_value_cycle", "partial_update_value_cycle",
+                        cycle, false),
+                new UnsafeValueCase(
+                        PartialUpdateStructureValidator.DOCUMENT_DEPTH_LIMIT_REASON,
+                        PartialUpdateStructureValidator.DEPTH_LIMIT_REASON, deep, false),
+                new UnsafeValueCase(
+                        "non_portable_iterable", "non_portable_iterable",
+                        unbounded, false),
+                new UnsafeValueCase(
+                        "non_portable_iterable", "non_portable_iterable",
+                        new IterablePojo(unbounded), false),
+                new UnsafeValueCase(
+                        "portable_value_normalization_failed",
+                        "portable_value_normalization_failed",
+                        new FailingPojo(), true),
+                new UnsafeValueCase(
+                        PartialUpdateStructureValidator.NON_PORTABLE_BINARY_REASON,
+                        PartialUpdateStructureValidator.NON_PORTABLE_BINARY_REASON,
+                        new BinaryPojo(new byte[] {1, 2}), false));
+    }
+
     private static Map<String, Object> tooManyUpdateFields() {
         Map<String, Object> fields = new LinkedHashMap<>();
         for (int i = 0; i < 11; i++) {
             fields.put("field" + i, i);
         }
         assertEquals(11, fields.size());
+        return fields;
+    }
+
+    private static Map<String, Object> maximumUpdateFields() {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        for (int i = 0; i < PartialUpdateValidator.MAX_FIELDS; i++) {
+            fields.put("field" + i, i);
+        }
+        assertEquals(PartialUpdateValidator.MAX_FIELDS, fields.size());
         return fields;
     }
 
@@ -143,6 +294,11 @@ public abstract class CrudConformanceTests {
         assertEquals("Conformance Test Item", result.document().get("title").asText());
         assertEquals(42, result.document().get("value").asInt());
         assertTrue(result.document().get("active").asBoolean());
+        assertPortableResult(result.document());
+
+        Map<String, Object> replacement = JSON.convertValue(result.document(), MAP_TYPE);
+        assertDoesNotThrow(() -> client.upsert(getAddress(), key, replacement),
+                "A read result must be reusable as a complete replacement document");
     }
 
     @Test @Order(2)
@@ -208,6 +364,7 @@ public abstract class CrudConformanceTests {
                 QueryRequest.builder().expression("SELECT * FROM c").maxPageSize(50).build());
         assertNotNull(page);
         assertFalse(page.items().isEmpty(), "Query should return at least our inserted items");
+        page.items().forEach(CrudConformanceTests::assertPortableResult);
         for (int i = 1; i <= 3; i++) safeDelete(MulticloudDbKey.of("conf-query-" + i, "conf-query-" + i));
     }
 
@@ -759,6 +916,80 @@ public abstract class CrudConformanceTests {
         }
     }
 
+    @Test @Order(27)
+    @DisplayName("partial update accepts exactly ten fields and preserves omitted data")
+    void partialUpdateAcceptsExactlyTenFields() {
+        assumePartialUpdateSupported();
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-field-max");
+
+        try {
+            client.upsert(getAddress(), key, Map.of("preserved", "seed"));
+            client.update(getAddress(), key, maximumUpdateFields());
+
+            JsonNode document = client.read(getAddress(), key).document();
+            assertEquals("seed", document.path("preserved").asText());
+            for (int i = 0; i < PartialUpdateValidator.MAX_FIELDS; i++) {
+                assertEquals(i, document.path("field" + i).asInt());
+            }
+        } finally {
+            safeDelete(key);
+        }
+    }
+
+    @Test @Order(27)
+    @DisplayName("partial update accepts a field name at the UTF-8 byte boundary")
+    void partialUpdateAcceptsMaximumFieldNameBytes() {
+        assumePartialUpdateSupported();
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-name-max");
+        String fieldName = "a".repeat(PartialUpdateValidator.MAX_FIELD_NAME_BYTES);
+
+        try {
+            client.upsert(getAddress(), key, Map.of("preserved", "seed"));
+            client.update(getAddress(), key, Map.of(fieldName, "value"));
+
+            JsonNode document = client.read(getAddress(), key).document();
+            assertEquals("seed", document.path("preserved").asText());
+            assertEquals("value", document.path(fieldName).asText());
+        } finally {
+            safeDelete(key);
+        }
+    }
+
+    @Test @Order(28)
+    @DisplayName("advertised partial update preserves absolute TTL expiry")
+    void advertisedPartialUpdateTtlPreservationIsOperational() {
+        assumePartialUpdateSupported();
+        assumeTrue(client.capabilities().isSupported(
+                Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY));
+
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-ttl-preserve");
+        OperationOptions ttl = OperationOptions.builder()
+                .ttlSeconds(3600)
+                .build();
+        OperationOptions metadata = OperationOptions.builder()
+                .includeMetadata(true)
+                .build();
+
+        try {
+            client.upsert(getAddress(), key, Map.of("title", "before"), ttl);
+            DocumentResult before = client.read(getAddress(), key, metadata);
+            assertNotNull(before);
+            assertNotNull(before.metadata());
+            var expectedExpiry = before.metadata().ttlExpiry();
+            assertNotNull(expectedExpiry);
+
+            client.update(getAddress(), key, Map.of("title", "after"));
+
+            DocumentResult after = client.read(getAddress(), key, metadata);
+            assertNotNull(after);
+            assertNotNull(after.metadata());
+            assertEquals(expectedExpiry, after.metadata().ttlExpiry());
+            assertEquals("after", after.document().path("title").asText());
+        } finally {
+            safeDelete(key);
+        }
+    }
+
     @Test @Order(28)
     @DisplayName("update TTL is rejected and leaves the existing document unchanged")
     void partialUpdateRejectsTtlWithoutMutation() {
@@ -808,7 +1039,6 @@ public abstract class CrudConformanceTests {
             invalidFieldMaps.add(Map.of("", "empty"));
             invalidFieldMaps.add(Map.of(" ", "blank"));
             invalidFieldMaps.add(Map.of("_hidden", "reserved-prefix"));
-            invalidFieldMaps.add(Map.of("foo", "first", "Foo", "collision"));
             for (String reserved : List.of("id", "ID", "partitionKey", "PARTITIONKEY",
                     "sortKey", "SORTKEY", "ttl", "TTL", "ttlExpiry", "TTLEXPIRY", "data", "DATA")) {
                 invalidFieldMaps.add(Map.of(reserved, "reserved"));
@@ -826,6 +1056,466 @@ public abstract class CrudConformanceTests {
                 assertEquals("before", doc.path("title").asText());
                 assertEquals("preserved", doc.path("status").asText());
             }
+        } finally {
+            safeDelete(key);
+        }
+    }
+
+    @Test @Order(29)
+    @DisplayName("oversized field names and binary values fail shared preflight")
+    void nonPortableUpdateInputsDoNotMutate() {
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-nonportable");
+        Map<String, Object> oversizedName = Map.of(
+                "a".repeat(PartialUpdateValidator.MAX_FIELD_NAME_BYTES + 1), "value");
+        Map<String, Object> binary = Map.of("payload", new byte[] {1, 2});
+
+        try {
+            client.upsert(getAddress(), key, Map.of("title", "before"));
+            MulticloudDbException nameFailure = assertThrows(MulticloudDbException.class,
+                    () -> client.update(getAddress(), key, oversizedName));
+            MulticloudDbException binaryFailure = assertThrows(MulticloudDbException.class,
+                    () -> client.update(getAddress(), key, binary));
+
+            assertEquals(PartialUpdateValidator.FIELD_NAME_SIZE_LIMIT_REASON,
+                    nameFailure.error().providerDetails().get("reason"));
+            assertEquals(PartialUpdateStructureValidator.NON_PORTABLE_BINARY_REASON,
+                    binaryFailure.error().providerDetails().get("reason"));
+            for (MulticloudDbException failure : List.of(nameFailure, binaryFailure)) {
+                assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST,
+                        failure.error().category());
+                assertFalse(failure.error().retryable());
+                assertNull(failure.error().provider());
+            }
+            assertEquals("before", client.read(getAddress(), key).document()
+                    .path("title").asText());
+        } finally {
+            safeDelete(key);
+        }
+    }
+
+    @Test @Order(29)
+    @DisplayName("partial update serializes structured Java values without rewriting map fields")
+    void partialUpdateSerializesJavaRepresentations() {
+        assumePartialUpdateSupported();
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("update-canonical");
+        CanonicalUpdateFields fields = new CanonicalUpdateFields();
+        fields.put("arrayField", new int[] {3, 4});
+        fields.put("nestedObj", JSON.createObjectNode().put("city", "London"));
+        fields.put("strField", new CanonicalPojo("Lin", List.of(5)));
+
+        try {
+            client.upsert(getAddress(), key, Map.of("title", "preserved"));
+            client.update(getAddress(), key, fields);
+
+            JsonNode updated = client.read(getAddress(), key).document();
+            assertEquals("preserved", updated.path("title").asText());
+            assertEquals(4, updated.path("arrayField").path(1).asInt());
+            assertEquals("London", updated.path("nestedObj").path("city").asText());
+            assertEquals("Lin", updated.path("strField").path("name").asText());
+            assertFalse(updated.has("emitted0"),
+                    "A Map serializer must not rewrite validated top-level fields");
+        } finally {
+            safeDelete(key);
+        }
+    }
+
+    @Test @Order(29)
+    @DisplayName("unsafe write graphs fail shared preflight for every operation")
+    void unsafeWriteGraphsFailSharedPreflight() {
+        MulticloudDbKey updateKey = ConformanceHarness.uniqueKey("unsafe-update");
+        List<MulticloudDbKey> cleanupKeys = new ArrayList<>();
+        cleanupKeys.add(updateKey);
+
+        try {
+            client.upsert(getAddress(), updateKey, Map.of("title", "before"));
+            int index = 0;
+            for (UnsafeValueCase unsafe : unsafeWriteValues()) {
+                MulticloudDbKey createKey = ConformanceHarness.uniqueKey(
+                        "unsafe-create-" + index);
+                MulticloudDbKey upsertKey = ConformanceHarness.uniqueKey(
+                        "unsafe-upsert-" + index++);
+                cleanupKeys.add(createKey);
+                cleanupKeys.add(upsertKey);
+                Map<String, Object> input = Map.of("nestedObj", unsafe.value());
+
+                MulticloudDbException createFailure = assertThrows(
+                        MulticloudDbException.class,
+                        () -> client.create(getAddress(), createKey, input));
+                MulticloudDbException upsertFailure = assertThrows(
+                        MulticloudDbException.class,
+                        () -> client.upsert(getAddress(), upsertKey, input));
+                MulticloudDbException updateFailure = assertThrows(
+                        MulticloudDbException.class,
+                        () -> client.update(getAddress(), updateKey, input));
+
+                for (MulticloudDbException failure : List.of(
+                        createFailure, upsertFailure, updateFailure)) {
+                    assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST,
+                            failure.error().category());
+                    assertFalse(failure.error().retryable());
+                    assertNull(failure.error().provider(),
+                            "Unsafe graphs must fail before provider delegation");
+                }
+                assertEquals(unsafe.documentReason(),
+                        createFailure.error().providerDetails().get("reason"));
+                assertEquals(unsafe.documentReason(),
+                        upsertFailure.error().providerDetails().get("reason"));
+                assertEquals(unsafe.updateReason(),
+                        updateFailure.error().providerDetails().get("reason"));
+                if (unsafe.expectsCause()) {
+                    assertNotNull(createFailure.getCause());
+                    assertNotNull(upsertFailure.getCause());
+                    assertNotNull(updateFailure.getCause());
+                }
+                assertNull(client.read(getAddress(), createKey));
+                assertNull(client.read(getAddress(), upsertKey));
+            }
+
+            JsonNode unchanged = client.read(getAddress(), updateKey).document();
+            assertEquals("before", unchanged.path("title").asText());
+            assertFalse(unchanged.has("nestedObj"));
+        } finally {
+            cleanupKeys.forEach(this::safeDelete);
+        }
+    }
+
+    @Test @Order(29)
+    @DisplayName("complete writes reject null and provider-reserved fields before I/O")
+    void invalidCompleteDocumentsFailSharedPreflight() {
+        MulticloudDbKey nullCreateKey = ConformanceHarness.uniqueKey("create-null");
+        MulticloudDbKey nullUpsertKey = ConformanceHarness.uniqueKey("upsert-null");
+        MulticloudDbKey dataCreateKey = ConformanceHarness.uniqueKey("create-data");
+        MulticloudDbKey dataUpsertKey = ConformanceHarness.uniqueKey("upsert-data");
+        MulticloudDbKey ttlCreateKey = ConformanceHarness.uniqueKey("create-ttl");
+        MulticloudDbKey metadataUpsertKey = ConformanceHarness.uniqueKey("upsert-meta");
+
+        try {
+            MulticloudDbException nullCreate = assertThrows(MulticloudDbException.class,
+                    () -> client.create(getAddress(), nullCreateKey,
+                            (Map<String, Object>) null));
+            MulticloudDbException nullUpsert = assertThrows(MulticloudDbException.class,
+                    () -> client.upsert(getAddress(), nullUpsertKey,
+                            (Map<String, Object>) null));
+            MulticloudDbException dataCreate = assertThrows(MulticloudDbException.class,
+                    () -> client.create(getAddress(), dataCreateKey,
+                            Map.of("data", "reserved")));
+            MulticloudDbException dataUpsert = assertThrows(MulticloudDbException.class,
+                    () -> client.upsert(getAddress(), dataUpsertKey,
+                            Map.of("DaTa", "reserved")));
+            MulticloudDbException ttlCreate = assertThrows(MulticloudDbException.class,
+                    () -> client.create(getAddress(), ttlCreateKey,
+                            Map.of("ttl", 60)));
+            MulticloudDbException metadataUpsert = assertThrows(
+                    MulticloudDbException.class,
+                    () -> client.upsert(getAddress(), metadataUpsertKey,
+                            Map.of("_ts", 1)));
+
+            for (MulticloudDbException failure : List.of(nullCreate, nullUpsert)) {
+                assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST,
+                        failure.error().category());
+                assertEquals("document_required",
+                        failure.error().providerDetails().get("reason"));
+                assertFalse(failure.error().retryable());
+                assertNull(failure.error().provider());
+            }
+            for (MulticloudDbException failure : List.of(
+                    dataCreate, dataUpsert, ttlCreate, metadataUpsert)) {
+                assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST,
+                        failure.error().category());
+                assertEquals("reserved_document_field",
+                        failure.error().providerDetails().get("reason"));
+                assertFalse(failure.error().retryable());
+                assertNull(failure.error().provider());
+            }
+            assertNull(client.read(getAddress(), nullCreateKey));
+            assertNull(client.read(getAddress(), nullUpsertKey));
+            assertNull(client.read(getAddress(), dataCreateKey));
+            assertNull(client.read(getAddress(), dataUpsertKey));
+            assertNull(client.read(getAddress(), ttlCreateKey));
+            assertNull(client.read(getAddress(), metadataUpsertKey));
+        } finally {
+            safeDelete(nullCreateKey);
+            safeDelete(nullUpsertKey);
+            safeDelete(dataCreateKey);
+            safeDelete(dataUpsertKey);
+            safeDelete(ttlCreateKey);
+            safeDelete(metadataUpsertKey);
+        }
+    }
+
+    @Test @Order(29)
+    @DisplayName("complete writes serialize Jackson, POJO, and Java-array values")
+    void completeWritesSerializeJavaRepresentations() {
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("complete-canonical");
+        JsonNode tree = JSON.createObjectNode().put("city", "Seattle");
+
+        try {
+            client.create(getAddress(), key, Map.of(
+                    "arrayField", new String[] {"a", "b"},
+                    "nestedObj", tree,
+                    "strField", new CanonicalPojo("Ada", List.of(1, 2))));
+
+            JsonNode created = client.read(getAddress(), key).document();
+            assertEquals("b", created.path("arrayField").path(1).asText());
+            assertEquals("Seattle", created.path("nestedObj").path("city").asText());
+            assertEquals("Ada", created.path("strField").path("name").asText());
+
+            client.upsert(getAddress(), key, Map.of(
+                    "arrayField", new int[] {3, 4},
+                    "nestedObj", JSON.createObjectNode().put("city", "London"),
+                    "strField", new CanonicalPojo("Lin", List.of(5))));
+
+            JsonNode upserted = client.read(getAddress(), key).document();
+            assertEquals(4, upserted.path("arrayField").path(1).asInt());
+            assertEquals("London", upserted.path("nestedObj").path("city").asText());
+            assertEquals("Lin", upserted.path("strField").path("name").asText());
+        } finally {
+            safeDelete(key);
+        }
+    }
+
+    @Test @Order(29)
+    @DisplayName("complete writes reject binary and oversized field-name inputs")
+    void nonPortableCompleteWriteInputsFailSharedPreflight() {
+        MulticloudDbKey binaryCreateKey = ConformanceHarness.uniqueKey("create-binary");
+        MulticloudDbKey binaryUpsertKey = ConformanceHarness.uniqueKey("upsert-binary");
+        MulticloudDbKey nameCreateKey = ConformanceHarness.uniqueKey("create-name-over");
+        MulticloudDbKey nameUpsertKey = ConformanceHarness.uniqueKey("upsert-name-over");
+        Map<String, Object> binary = Map.of("payload", new byte[] {1, 2});
+        Map<String, Object> oversizedName = Map.of(
+                "a".repeat(PortableWriteLimits.MAX_FIELD_NAME_UTF8_BYTES + 1), "value");
+
+        try {
+            List<MulticloudDbException> failures = List.of(
+                    assertThrows(MulticloudDbException.class,
+                            () -> client.create(getAddress(), binaryCreateKey, binary)),
+                    assertThrows(MulticloudDbException.class,
+                            () -> client.upsert(getAddress(), binaryUpsertKey, binary)),
+                    assertThrows(MulticloudDbException.class,
+                            () -> client.create(getAddress(), nameCreateKey, oversizedName)),
+                    assertThrows(MulticloudDbException.class,
+                            () -> client.upsert(getAddress(), nameUpsertKey, oversizedName)));
+
+            for (MulticloudDbException failure : failures) {
+                assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST,
+                        failure.error().category());
+                assertFalse(failure.error().retryable());
+                assertNull(failure.error().provider());
+            }
+            assertEquals(PartialUpdateStructureValidator.NON_PORTABLE_BINARY_REASON,
+                    failures.get(0).error().providerDetails().get("reason"));
+            assertEquals(PartialUpdateStructureValidator.NON_PORTABLE_BINARY_REASON,
+                    failures.get(1).error().providerDetails().get("reason"));
+            assertEquals("document_field_name_size_limit",
+                    failures.get(2).error().providerDetails().get("reason"));
+            assertEquals("document_field_name_size_limit",
+                    failures.get(3).error().providerDetails().get("reason"));
+            assertNull(client.read(getAddress(), binaryCreateKey));
+            assertNull(client.read(getAddress(), binaryUpsertKey));
+            assertNull(client.read(getAddress(), nameCreateKey));
+            assertNull(client.read(getAddress(), nameUpsertKey));
+        } finally {
+            safeDelete(binaryCreateKey);
+            safeDelete(binaryUpsertKey);
+            safeDelete(nameCreateKey);
+            safeDelete(nameUpsertKey);
+        }
+    }
+
+    @Test @Order(29)
+    @DisplayName("complete writes enforce the portable map/list depth boundary")
+    void completeWriteDepthBoundaryIsPortable() {
+        MulticloudDbKey depthKey = ConformanceHarness.uniqueKey("complete-depth-max");
+        MulticloudDbKey createOverKey = ConformanceHarness.uniqueKey("create-depth-over");
+        MulticloudDbKey upsertOverKey = ConformanceHarness.uniqueKey("upsert-depth-over");
+
+        try {
+            Map<String, Object> accepted = Map.of(
+                    "nestedObj", fieldsWithNestingDepth(
+                            PortableWriteLimits.MAX_NESTED_CONTAINERS).get("profile"));
+            client.create(getAddress(), depthKey, accepted);
+            client.upsert(getAddress(), depthKey, accepted);
+            assertNotNull(client.read(getAddress(), depthKey));
+
+            Map<String, Object> rejected = Map.of(
+                    "nestedObj", fieldsWithNestingDepth(
+                            PortableWriteLimits.MAX_NESTED_CONTAINERS + 1)
+                            .get("profile"));
+            MulticloudDbException createFailure = assertThrows(
+                    MulticloudDbException.class,
+                    () -> client.create(getAddress(), createOverKey, rejected));
+            MulticloudDbException upsertFailure = assertThrows(
+                    MulticloudDbException.class,
+                    () -> client.upsert(getAddress(), upsertOverKey, rejected));
+            for (MulticloudDbException failure : List.of(
+                    createFailure, upsertFailure)) {
+                assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST,
+                        failure.error().category());
+                assertEquals(PartialUpdateStructureValidator.DOCUMENT_DEPTH_LIMIT_REASON,
+                        failure.error().providerDetails().get("reason"));
+                assertEquals(String.valueOf(
+                                PortableWriteLimits.MAX_NESTED_CONTAINERS + 1),
+                        failure.error().providerDetails().get("actualNestingDepth"));
+                assertNull(failure.error().provider());
+            }
+            assertNull(client.read(getAddress(), createOverKey));
+            assertNull(client.read(getAddress(), upsertOverKey));
+        } finally {
+            safeDelete(depthKey);
+            safeDelete(createOverKey);
+            safeDelete(upsertOverKey);
+        }
+    }
+
+    @Test @Order(29)
+    @DisplayName("complete writes accept the exact portable structural footprint")
+    void completeWritesAcceptExactStructuralFootprint() {
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("complete-footprint-max");
+        Map<String, Object> exact = fieldsAtStructuralFootprint();
+
+        try {
+            client.create(getAddress(), key, exact);
+            assertNotNull(client.read(getAddress(), key));
+            client.upsert(getAddress(), key, exact);
+            assertNotNull(client.read(getAddress(), key));
+        } finally {
+            safeDelete(key);
+        }
+    }
+
+    @Test @Order(29)
+    @DisplayName("dense create and upsert documents fail the shared structural envelope")
+    void denseDocumentsFailBeforeProviderIo() {
+        Map<String, Object> dense = fieldsOverStructuralFootprint();
+        MulticloudDbKey createKey = ConformanceHarness.uniqueKey("create-structure-over");
+        MulticloudDbKey upsertKey = ConformanceHarness.uniqueKey("upsert-structure-over");
+
+        try {
+            MulticloudDbException createFailure = assertThrows(MulticloudDbException.class,
+                    () -> client.create(getAddress(), createKey, dense));
+            MulticloudDbException upsertFailure = assertThrows(MulticloudDbException.class,
+                    () -> client.upsert(getAddress(), upsertKey, dense));
+
+            for (MulticloudDbException failure : List.of(createFailure, upsertFailure)) {
+                assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST,
+                        failure.error().category());
+                assertEquals(PartialUpdateStructureValidator.DOCUMENT_FOOTPRINT_LIMIT_REASON,
+                        failure.error().providerDetails().get("reason"));
+                assertNull(failure.error().provider());
+            }
+            assertNull(client.read(getAddress(), createKey));
+            assertNull(client.read(getAddress(), upsertKey));
+        } finally {
+            safeDelete(createKey);
+            safeDelete(upsertKey);
+        }
+    }
+
+    @Test @Order(30)
+    @DisplayName("create and upsert accept a document at the portable 390 KiB limit")
+    void documentAtCommonLimitRoundTrips() throws Exception {
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("document-size-boundary");
+        Map<String, Object> created =
+                fieldsOfSerializedSize("title", DocumentSizeValidator.MAX_BYTES);
+        Map<String, Object> replaced =
+                fieldsOfSerializedSize("status", DocumentSizeValidator.MAX_BYTES);
+
+        try {
+            client.create(getAddress(), key, created);
+            JsonNode afterCreate = client.read(getAddress(), key).document();
+            assertEquals(((String) created.get("title")).length(),
+                    afterCreate.path("title").asText().length());
+
+            client.upsert(getAddress(), key, replaced);
+            JsonNode afterUpsert = client.read(getAddress(), key).document();
+            assertFalse(afterUpsert.has("title"));
+            assertEquals(((String) replaced.get("status")).length(),
+                    afterUpsert.path("status").asText().length());
+        } finally {
+            safeDelete(key);
+        }
+    }
+
+    @Test @Order(30)
+    @DisplayName("oversized create and upsert inputs fail shared preflight on every provider")
+    void oversizedDocumentsFailBeforeProviderIo() throws Exception {
+        Map<String, Object> oversized =
+                fieldsOfSerializedSize("payload", DocumentSizeValidator.MAX_BYTES + 1);
+        MulticloudDbKey createKey = ConformanceHarness.uniqueKey("create-size-over");
+        MulticloudDbKey upsertKey = ConformanceHarness.uniqueKey("upsert-size-over");
+
+        try {
+            MulticloudDbException createFailure = assertThrows(MulticloudDbException.class,
+                    () -> client.create(getAddress(), createKey, oversized));
+            MulticloudDbException upsertFailure = assertThrows(MulticloudDbException.class,
+                    () -> client.upsert(getAddress(), upsertKey, oversized));
+
+            for (MulticloudDbException failure : List.of(createFailure, upsertFailure)) {
+                assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST,
+                        failure.error().category());
+                assertFalse(failure.error().retryable());
+                assertNull(failure.error().provider(),
+                        "Size rejection must come from shared preflight");
+            }
+            assertNull(client.read(getAddress(), createKey));
+            assertNull(client.read(getAddress(), upsertKey));
+        } finally {
+            safeDelete(createKey);
+            safeDelete(upsertKey);
+        }
+    }
+
+    @Test @Order(30)
+    @DisplayName("supported partial update accepts the portable 390 KiB boundary")
+    void partialUpdateAtCommonLimitRoundTrips() throws Exception {
+        assumePartialUpdateSupported();
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-size-boundary");
+        int emptyPayloadBytes = JSON.writeValueAsBytes(
+                Map.of("title", "preserved", "payload", "")).length;
+        String payload = "A".repeat(DocumentSizeValidator.MAX_BYTES - emptyPayloadBytes);
+        Map<String, Object> expectedResult = Map.of(
+                "title", "preserved", "payload", payload);
+        assertEquals(DocumentSizeValidator.MAX_BYTES,
+                JSON.writeValueAsBytes(expectedResult).length,
+                "Result fixture must match the portable document envelope");
+
+        try {
+            client.upsert(getAddress(), key, Map.of("title", "preserved"));
+            client.update(getAddress(), key, Map.of("payload", payload));
+
+            JsonNode document = client.read(getAddress(), key).document();
+            assertEquals("preserved", document.path("title").asText());
+            assertEquals(payload.length(), document.path("payload").asText().length());
+        } finally {
+            safeDelete(key);
+        }
+    }
+
+    @Test @Order(30)
+    @DisplayName("advertised extended-result capability accepts a result above 390 KiB")
+    void advertisedExtendedResultSizeIsOperational() throws Exception {
+        assumePartialUpdateSupported();
+        assumeTrue(client.capabilities().isSupported(
+                Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE),
+                "Provider does not advertise extended partial-update results");
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-extended-result");
+        Map<String, Object> seed = fieldsOfSerializedSize("base", 300 * 1024);
+        Map<String, Object> fields = fieldsOfSerializedSize("extra", 200 * 1024);
+
+        try {
+            client.upsert(getAddress(), key, seed);
+            client.update(getAddress(), key, fields);
+
+            JsonNode document = client.read(getAddress(), key).document();
+            int resultBytes = JSON.writeValueAsBytes(document).length;
+            assertTrue(resultBytes > DocumentSizeValidator.MAX_BYTES,
+                    "Result must exercise the advertised extended envelope");
+            assertTrue(resultBytes < 2 * 1024 * 1024,
+                    "Fixture must remain below the Cosmos native ceiling");
+            assertEquals(((String) seed.get("base")).length(),
+                    document.path("base").asText().length());
+            assertEquals(((String) fields.get("extra")).length(),
+                    document.path("extra").asText().length());
         } finally {
             safeDelete(key);
         }
@@ -852,6 +1542,89 @@ public abstract class CrudConformanceTests {
             JsonNode doc = client.read(getAddress(), key).document();
             assertEquals("before", doc.path("title").asText());
             assertEquals("preserved", doc.path("status").asText());
+        } finally {
+            safeDelete(key);
+        }
+    }
+
+    @Test @Order(31)
+    @DisplayName("supported partial update accepts 31 nested replacement containers")
+    void partialUpdateAcceptsPortableNestingBoundary() {
+        assumePartialUpdateSupported();
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-depth-boundary");
+
+        try {
+            client.upsert(getAddress(), key, Map.of("title", "preserved"));
+            client.update(getAddress(), key, fieldsWithNestingDepth(
+                    PartialUpdateStructureValidator.MAX_NESTING_DEPTH));
+
+            JsonNode document = client.read(getAddress(), key).document();
+            assertEquals("preserved", document.path("title").asText());
+            JsonNode nested = document.path("profile");
+            for (int i = 0; i < PartialUpdateStructureValidator.MAX_NESTING_DEPTH; i++) {
+                nested = nested.path("level");
+            }
+            assertEquals("leaf-value", nested.asText());
+        } finally {
+            safeDelete(key);
+        }
+    }
+
+    @Test @Order(31)
+    @DisplayName("32 nested replacement containers fail shared preflight without mutation")
+    void partialUpdateRejectsOverNestingDepthWithoutMutation() {
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-depth-over");
+
+        try {
+            client.upsert(getAddress(), key,
+                    Map.of("title", "before", "status", "preserved"));
+
+            MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                    () -> client.update(getAddress(), key, fieldsWithNestingDepth(
+                            PartialUpdateStructureValidator.MAX_NESTING_DEPTH + 1)));
+
+            assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
+            assertFalse(ex.error().retryable());
+            assertNull(ex.error().provider(),
+                    "Depth rejection must come from shared preflight");
+            assertEquals(PartialUpdateStructureValidator.DEPTH_LIMIT_REASON,
+                    ex.error().providerDetails().get("reason"));
+            assertEquals(String.valueOf(PartialUpdateStructureValidator.MAX_NESTING_DEPTH + 1),
+                    ex.error().providerDetails().get("actualNestingDepth"));
+            JsonNode document = client.read(getAddress(), key).document();
+            assertEquals("before", document.path("title").asText());
+            assertEquals("preserved", document.path("status").asText());
+            assertFalse(document.has("profile"));
+        } finally {
+            safeDelete(key);
+        }
+    }
+
+    @Test @Order(31)
+    @DisplayName("excessive map/list footprint fails shared preflight without mutation")
+    void partialUpdateRejectsStructuralFootprintWithoutMutation() throws Exception {
+        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-footprint-over");
+        Map<String, Object> fields = fieldsOverStructuralFootprint();
+        assertTrue(JSON.writeValueAsBytes(fields).length < DocumentSizeValidator.MAX_BYTES,
+                "Fixture must pass the independent serialized-JSON limit");
+
+        try {
+            client.upsert(getAddress(), key,
+                    Map.of("title", "before", "status", "preserved"));
+
+            MulticloudDbException ex = assertThrows(MulticloudDbException.class,
+                    () -> client.update(getAddress(), key, fields));
+
+            assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
+            assertFalse(ex.error().retryable());
+            assertNull(ex.error().provider(),
+                    "Structural-footprint rejection must come from shared preflight");
+            assertEquals(PartialUpdateStructureValidator.FOOTPRINT_LIMIT_REASON,
+                    ex.error().providerDetails().get("reason"));
+            JsonNode document = client.read(getAddress(), key).document();
+            assertEquals("before", document.path("title").asText());
+            assertEquals("preserved", document.path("status").asText());
+            assertFalse(document.has("x"));
         } finally {
             safeDelete(key);
         }
@@ -890,8 +1663,11 @@ public abstract class CrudConformanceTests {
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-case");
 
         try {
-            client.upsert(getAddress(), key, Map.of("title", "lowercase"));
-            client.update(getAddress(), key, Map.of("TITLE", "uppercase"));
+            client.upsert(getAddress(), key, Map.of("title", "before"));
+            Map<String, Object> fields = new LinkedHashMap<>();
+            fields.put("title", "lowercase");
+            fields.put("TITLE", "uppercase");
+            client.update(getAddress(), key, fields);
 
             JsonNode doc = client.read(getAddress(), key).document();
             assertEquals("lowercase", doc.path("title").asText());

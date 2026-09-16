@@ -29,6 +29,8 @@ import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.core.client.config.SdkAdvancedClientOption;
+import software.amazon.awssdk.core.exception.ApiCallAttemptTimeoutException;
+import software.amazon.awssdk.core.exception.ApiCallTimeoutException;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
@@ -294,7 +296,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
                 }
                 metadata = metaBuilder.build();
             }
-            return new DocumentResult(doc, metadata);
+            return new DocumentResult(DynamoItemMapper.stripProviderFields(doc), metadata);
         } catch (DynamoDbException e) {
             throw DynamoErrorMapper.map(e, OperationNames.READ);
         }
@@ -366,6 +368,8 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
                     details), e);
         } catch (DynamoDbException e) {
             throw DynamoErrorMapper.map(e, OperationNames.UPDATE);
+        } catch (ApiCallTimeoutException | ApiCallAttemptTimeoutException e) {
+            throw DynamoErrorMapper.mapTimeout(e, OperationNames.UPDATE);
         }
     }
 
@@ -612,6 +616,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
             // ORDER BY c.id ASC. Ordering applies within this page only; see
             // SORT_KEY_ASC for the multi-page limitation note.
             items.sort(SORT_KEY_ASC);
+            stripProviderFields(items);
 
             OperationDiagnostics diag = buildQueryDiagnostics(OperationNames.QUERY_WITH_TRANSLATION, address,
                     response.responseMetadata().requestId(),
@@ -662,6 +667,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         for (Map<String, AttributeValue> item : response.items()) {
             items.add(DynamoItemMapper.attributeMapToMap(item));
         }
+        stripProviderFields(items);
 
         OperationDiagnostics partiqlDiag = buildQueryDiagnostics(DynamoConstants.OP_QUERY_PARTIQL, null,
                 response.responseMetadata().requestId(),
@@ -732,6 +738,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         for (Map<String, AttributeValue> item : response.items()) {
             items.add(DynamoItemMapper.attributeMapToMap(item));
         }
+        stripProviderFields(items);
 
         String continuationToken = null;
         if (response.lastEvaluatedKey() != null && !response.lastEvaluatedKey().isEmpty()) {
@@ -782,6 +789,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         // applies within this page only; see SORT_KEY_ASC for the multi-page
         // limitation note.
         items.sort(SORT_KEY_ASC);
+        stripProviderFields(items);
 
         String continuationToken = null;
         if (response.lastEvaluatedKey() != null && !response.lastEvaluatedKey().isEmpty()) {
@@ -848,6 +856,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         // applies within this page only; see SORT_KEY_ASC for the multi-page
         // limitation note.
         items.sort(SORT_KEY_ASC);
+        stripProviderFields(items);
 
         String continuationToken = null;
         if (response.lastEvaluatedKey() != null && !response.lastEvaluatedKey().isEmpty()) {
@@ -894,6 +903,9 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      * For multi-page scans the overall iteration order across pages remains
      * determined by DynamoDB's internal token-based traversal, not by sort key.
      */
+    private static void stripProviderFields(List<Map<String, Object>> items) {
+        items.replaceAll(DynamoItemMapper::stripProviderFields);
+    }
     private static final Comparator<Map<String, Object>> SORT_KEY_ASC =
             (a, b) -> {
                 Object sa = a.get(DynamoConstants.ATTR_SORT_KEY);

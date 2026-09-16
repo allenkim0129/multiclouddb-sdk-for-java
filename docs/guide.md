@@ -355,8 +355,8 @@ interface, which defeats the purpose of a portable abstraction.
 | **`read()` / `delete()`** | Works - no document needed | Impossible - no document to extract from |
 | **Consistency** | All 5 operations use the same signature pattern | Writes differ from reads/deletes |
 | **Compile-time safety** | Missing key = compiler error | Missing field = runtime error in provider |
-| **Key ≠ document** | Key can differ from document fields (remapping, replication) | Key must match document content |
-| **Source of truth** | Key is authoritative; providers overwrite document fields | Ambiguous when key fields and document disagree |
+| **Key outside payload** | Identity is passed independently; provider-owned top-level names are rejected from the document | Key must be duplicated in document content |
+| **Source of truth** | Key is authoritative; providers derive native identity fields from it | Ambiguous when key fields and document disagree |
 
 The explicit MulticloudDbKey keeps the API **uniform** (same pattern for all operations),
 **safe** (compiler-enforced), and **portable** (no provider-specific field name
@@ -452,11 +452,10 @@ application code does not need to manage threading.
 ```java
 import java.util.*;
 
-// Define the full schema: database name → list of collections
+// Define a portable schema: one configured database → list of collections
 Map<String, List<String>> schema = new LinkedHashMap<>();
-schema.put("admin-db",    List.of("tenants"));
-schema.put("acme-risk-db", List.of("portfolios", "positions", "risk_metrics", "alerts"));
-schema.put("shared-db",    List.of("market_data"));
+schema.put("app-db",
+        List.of("tenants", "portfolios", "positions", "risk_metrics", "alerts"));
 
 // Provision everything - databases then containers, both phases in parallel
 client.provisionSchema(schema);
@@ -477,16 +476,25 @@ are created, while maximising throughput within each phase.
 
 | Provider | Database Phase | Container/Table Phase |
 |----------|---------------|----------------------|
-| **Cosmos DB** (cloud) | Creates via Azure Resource Manager SDK (parallel) | Creates via data-plane `createContainerIfNotExists` (parallel) |
-| **Cosmos DB** (emulator) | Creates via data-plane `createDatabaseIfNotExists` (parallel) | Creates via data-plane `createContainerIfNotExists` (parallel) |
+| **Cosmos DB** (cloud or emulator) | Uses data-plane `createDatabaseIfNotExists`; the caller needs database-creation permission | Uses data-plane `createContainerIfNotExists` (parallel) |
 | **DynamoDB** | No-op (no native database concept) | Creates tables named `database__collection` (parallel), waits for ACTIVE |
-| **Spanner** | No-op (database configured at client construction) | Creates tables with DDL (parallel) |
+| **Spanner** | Creates the configured database; emulator mode also creates the configured instance if absent, while production requires the instance to pre-exist | Creates tables with DDL (parallel) |
+
+Cosmos DB and DynamoDB can represent multiple logical database entries in one
+schema map. For a definition that also works with Spanner, use one entry whose
+name equals the client's configured `databaseId`; a Spanner client rejects any
+other database name.
+
+These APIs create the SDK's standard schema and are intended for development
+and application-startup convenience. Use infrastructure as code or provider
+administration tools when production provisioning needs custom throughput,
+indexing, regions, or other advanced controls.
 
 **When to use `provisionSchema()` vs individual calls:**
 
 | Approach | Use When |
 |----------|----------|
-| `provisionSchema(schema)` | Provisioning multiple databases/containers at startup - the SDK handles all parallelism |
+| `provisionSchema(schema)` | Provisioning a provider-compatible database/container schema at startup - the SDK handles all parallelism |
 | `ensureDatabase(name)` | Creating a single database on demand (e.g., new tenant onboarding) |
 | `ensureContainer(address)` | Creating a single container on demand |
 
@@ -547,6 +555,15 @@ can go directly to the partition/item without scanning.
 
 ### update - Partial Update Existing
 
+!!! warning "Breaking change in the pre-1.0 beta contract"
+
+    `update()` previously meant complete document replacement. It now performs
+    a shallow partial update. Callers, including code already compiled against
+    an earlier beta, must migrate both the payload and the expected semantics
+    before running with this release. `upsert()` provides unguarded complete
+    replacement, but there is no exact portable atomic full-document
+    replace-if-present equivalent.
+
 `update()` performs a shallow, top-level partial update. Every supplied field is
 set or replaced, while omitted fields remain unchanged. A supplied map or list
 replaces that complete top-level value; `update()` does not interpret nested
@@ -556,13 +573,21 @@ null rather than deleting the field.
 If the document does **not** exist, the operation fails with `NOT_FOUND` and
 does not create it.
 
+Callers must check `Capability.PARTIAL_UPDATE` before invoking `update()`. The
+shared gate is a typed safety failure path for unsupported providers, not a
+substitute for caller gating in a configuration-switchable application.
+
 ```java
 Map<String, Object> fields = new LinkedHashMap<>();
 fields.put("status", "shipped");
 fields.put("reviewedAt", null);
 
-client.update(addr, MulticloudDbKey.of("customer-456", "order-123"), fields);
-// Existing "total", "customerName", and other omitted fields are preserved.
+if (client.capabilities().isSupported(Capability.PARTIAL_UPDATE)) {
+    client.update(addr, MulticloudDbKey.of("customer-456", "order-123"), fields);
+    // Existing "total", "customerName", and other omitted fields are preserved.
+} else {
+    // Skip this optional operation or select a non-update workflow.
+}
 ```
 
 **Native path, request count, and cost:**
@@ -571,19 +596,55 @@ client.update(addr, MulticloudDbKey.of("customer-456", "order-123"), fields);
 |----------|-------------------------------|--------------------------|
 | **Cosmos DB** | One `patchItem` for every accepted update. | The portable API accepts at most 10 fields per call; the resulting document is subject to the provider-native ceiling. |
 | **DynamoDB** | One conditional, aliased `UpdateItem SET ...` request with `attribute_exists(partitionKey)`. | The portable API accepts at most 10 fields per call. DynamoDB can reject the one attempted update if the resulting item would exceed the provider-native ceiling. Accepted calls consume one item update's write capacity. |
-| **Spanner** | No provider call in this release. | The provider explicitly declares `PARTIAL_UPDATE` unsupported; the shared client rejects valid calls before Spanner I/O. |
+| **Spanner** | No provider call in this release. | The API defaults an omitted `PARTIAL_UPDATE` declaration to unsupported and rejects valid calls before Spanner I/O. |
 
-All three providers declare all 18 known capability names. Cosmos DB and
-DynamoDB support `Capability.PARTIAL_UPDATE` and share the same normalized
+Each built-in provider exposes 20 effective capability rows. Cosmos DB and
+DynamoDB declare all 20; Spanner declares 17 and receives API-supplied unsupported
+defaults for `PARTIAL_UPDATE`, `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`, and
+`PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY`.
+Arbitrary legacy or third-party partial declarations are not expanded to all
+well-known names. Cosmos DB and DynamoDB share the same normalized update
 contract: at most 10 fields, literal top-level set/replace semantics, one atomic
 native write, and `NOT_FOUND` for a missing item. Both preserve case-distinct
-field names.
+non-reserved field names, including `foo` and `Foo` when both occur in the same
+atomic update. Names matching `id`, `partitionKey`, `sortKey`, `ttl`,
+`ttlExpiry`, or `data` case-insensitively, and names beginning with `_`, fail
+shared preflight before provider I/O.
 
-Spanner declares `PARTIAL_UPDATE` unsupported because release-grade behavior
-cannot yet be validated against a live Spanner account. Valid calls fail locally
+Top-level update paths do not make replacement values flat. Each replacement
+value may contain at most 31 nested map/list containers, counting the top-level
+replacement container as level 1. Shared preflight also caps both the serialized
+field map and its structural footprint at 390 KiB; the structural calculation
+includes UTF-8 names, three bytes per map/list container, and one byte per nested
+element. Limit failures are non-retryable `INVALID_REQUEST` with zero provider
+I/O and stable reason plus actual/maximum details.
+
+The base `PARTIAL_UPDATE` contract guarantees a resulting logical document whose
+serialized JSON and portable structural footprint are independently at or below
+390 KiB. `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE` makes larger results explicit:
+Cosmos DB advertises support up to its 2 MiB native ceiling; DynamoDB advertises
+unsupported, and an older provider that omits the capability receives the API
+unsupported default. Because result size depends on stored state, the SDK
+performs no read/merge preflight.
+
+`PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY` is independent of that unchanged
+extended-result capability. Base `PARTIAL_UPDATE` does not promise that an
+existing TTL-bearing item's absolute expiry stays fixed. Callers requiring that
+guarantee must check the preservation capability in addition to
+`PARTIAL_UPDATE`. DynamoDB supports it because `UpdateItem` leaves the absolute
+`ttlExpiry` attribute unchanged. Cosmos DB explicitly does not because
+`patchItem` advances `_ts` and restarts the Cosmos TTL countdown. Spanner and
+omitted declarations receive the unsupported API default. The capability adds
+no I/O: the API remains synchronous, and accepted updates still use one atomic
+native write with no read/merge.
+
+Spanner omits `PARTIAL_UPDATE`; `CapabilitySet` supplies the unsupported default
+so older Spanner provider versions remain compatible. Valid calls fail locally
 with non-retryable `UNSUPPORTED_CAPABILITY` and `capability=partial_update`;
-shared invalid-request validation still runs first. Support can be enabled after
-live-account validation is available.
+shared invalid-request validation still runs first. This is a deliberate release
+scope. Spanner emulator validation covers shared preflight, capability rejection,
+and the provider-direct legacy regression; no live production Spanner validation
+is claimed.
 
 Provider-native resulting-item limits remain explicit. DynamoDB returns
 `reason=dynamodb_result_item_size_limit` with a `maximumResultBytes` detail
@@ -597,19 +658,20 @@ For Cosmos DB, HTTP 413 from an attempted update maps to
 a `maximumResultBytes` detail describing the native ceiling. The SDK does not read the
 existing document before the patch; the failed native write leaves it unchanged.
 
-Cosmos CRUD/update HTTP 408 and 410 failures map to retryable
-`TRANSIENT_FAILURE`, with 410 substatus retained. For a failed transactional
-batch, the SDK skips dependent HTTP 424 results and selects the first usable
-non-424 operation failure, then a usable aggregate failure, then a sanitized
-`PROVIDER_ERROR` when no root status exists.
+Supported partial updates normalize Cosmos HTTP 408/410 and DynamoDB
+`RequestTimeout`/SDK API-call and attempt timeouts to retryable `TRANSIENT_FAILURE`. Cosmos
+410 retains its substatus. Retryability permits replay of the same logical field assignments;
+it does not promise unchanged provider metadata or TTL timing. In particular, another Cosmos
+patch advances `_ts` and can restart the TTL countdown. Partial update has no
+transactional-batch execution path.
 
 `OperationOptions.ttlSeconds()` is invalid for `update()`. A non-null update TTL
 fails before provider I/O with non-retryable `INVALID_REQUEST`.
 
 #### Migrating full-document replacement
 
-Cosmos and Dynamo callers that previously relied on `update()` to remove
-omitted fields must move the complete desired document to `upsert()`:
+Callers that previously relied on `update()` to remove omitted fields must move
+the complete desired document to `upsert()`:
 
 ```java
 client.upsert(addr, key, completeDesiredDocument);
@@ -617,13 +679,15 @@ client.upsert(addr, key, completeDesiredDocument);
 
 `upsert()` creates a missing document. A read-then-upsert sequence is not an
 atomic guarded replacement and can recreate an item that was concurrently
-deleted or expired. TTL-bearing full writes also belong on `create()` or
-`upsert()`, not `update()`.
+deleted or expired. This release has no exact portable atomic full-document
+replace-if-present equivalent. TTL-bearing full writes also belong on `create()`
+or `upsert()`, not `update()`.
 
 ### upsert - Create or Replace
 
 `upsert()` creates a new document or **overwrites** an existing document with
-the same key. It is an insert-or-update in all providers.
+the same key. It is create-or-full-replace in all providers, not an atomic
+replace-if-present operation.
 
 ```java
 ResourceAddress addr = new ResourceAddress("mydb", "orders");
@@ -677,15 +741,16 @@ safe pure existence probe.
 ### Document Field Injection
 
 When you call `create()` or `upsert()`, the SDK **injects key fields into the
-document** automatically. You don't need to manually set `"id"` or
-`"partitionKey"` in your JSON - the provider handles this:
+provider-native write** automatically. Do not manually set `"id"`,
+`"partitionKey"`, or another provider-owned top-level name in the document:
+shared preflight rejects those names before I/O.
 
 ```java
 Map<String, Object> doc = new LinkedHashMap<>();
 doc.put("name", "Alpha Fund");
 doc.put("type", "EQUITY");
 
-// No need to set "id" or "partitionKey" in doc - injected by provider
+// Do not set provider-owned identity/TTL/metadata names in doc.
 client.upsert(addr, MulticloudDbKey.of("acme", "port-1"), doc);
 ```
 
@@ -697,9 +762,11 @@ client.upsert(addr, MulticloudDbKey.of("acme", "port-1"), doc);
 | **DynamoDB** | `"partitionKey"` = key.partitionKey(), `"sortKey"` = key.sortKey() | Added as DynamoDB item attributes |
 | **Spanner** | `"partitionKey"` = key.partitionKey(), `"sortKey"` = key.sortKey() or key.partitionKey() | Written as Spanner row columns |
 
-> **Important**: If your document JSON already contains an `"id"` field, it
-> will be **overwritten** by the key parameter. The key is always the source
-> of truth for the document's identity.
+> **Important**: Complete create/upsert documents reject top-level names
+> matching `id`, `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, or `data`
+> case-insensitively, plus names beginning with `_`. They are never overwritten
+> or silently accepted. The key parameter remains the source of truth for the
+> provider-native identity fields.
 
 `update()` routes by the separately supplied key and rejects attempts to assign
 `id`, `partitionKey`, `sortKey`, TTL fields, or provider metadata fields.
@@ -1596,8 +1663,10 @@ The portable 24-hour baseline incurs no extra cost on any provider.
 ---
 ## Document TTL (Time-to-Live)
 
-Set a per-document expiry at write time using `OperationOptions.ttlSeconds()`.
-TTL is supported only on `create()` and `upsert()`.
+Request per-document expiry at write time using `OperationOptions.ttlSeconds()`.
+Only `create()` and `upsert()` accept this option, and actual expiry requires
+`ROW_LEVEL_TTL`. Providers without that capability ignore the value and store
+the document without expiry.
 
 ### Prerequisite: Enable Container-Level TTL
 
@@ -1641,11 +1710,28 @@ I/O with non-retryable `INVALID_REQUEST`. To replace a complete document and set
 TTL, call `upsert()` with the complete desired document and remember that
 `upsert()` creates the item when it is missing.
 
+An existing TTL set by an earlier complete write is a separate concern. If a
+partial update must leave its absolute expiry fixed, require both capabilities:
+
+```java
+CapabilitySet caps = client.capabilities();
+if (caps.isSupported(Capability.PARTIAL_UPDATE)
+        && caps.isSupported(Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY)) {
+    client.update(address, key, Map.of("status", "shipped"));
+}
+```
+
+DynamoDB satisfies this guarantee by leaving `ttlExpiry` unchanged. Cosmos DB
+does not: `patchItem` advances `_ts`, restarting the Cosmos TTL countdown.
+Spanner receives the unsupported API default.
+
 ---
 
 ## Document Metadata
 
-Read write-metadata (last-modified timestamp, TTL expiry, version/ETag) by setting `includeMetadata(true)` on read operations. Metadata is **null by default** to avoid unnecessary overhead.
+Read available write metadata (last-modified timestamp, TTL expiry,
+version/ETag) by setting `includeMetadata(true)` on read operations.
+`metadata()` is **null when metadata was not requested**.
 
 ### Reading Metadata
 
@@ -1655,12 +1741,18 @@ OperationOptions opts = OperationOptions.builder()
         .build();
 
 DocumentResult result = client.read(address, key, opts);
-DocumentMetadata meta = result.metadata();
+DocumentMetadata meta = result.metadata(); // requested: current providers return an envelope
 
 if (meta != null) {
-    System.out.println("Last modified : " + meta.lastModified());
-    System.out.println("Expires at    : " + meta.ttlExpiry());    // null if no TTL
-    System.out.println("Version/ETag  : " + meta.version());
+    if (meta.lastModified() != null) {
+        System.out.println("Last modified : " + meta.lastModified());
+    }
+    if (meta.ttlExpiry() != null) {
+        System.out.println("Expires at    : " + meta.ttlExpiry());
+    }
+    if (meta.version() != null) {
+        System.out.println("Version/ETag  : " + meta.version());
+    }
 }
 ```
 
@@ -1672,34 +1764,64 @@ if (meta != null) {
 | `ttlExpiry` | ✗ | ✓ (stored attribute) | ✗ |
 | `version` | ✓ (ETag) | ✗ | ✗ |
 
-Fields the provider cannot supply are returned as `null`. Use
-`Capability.WRITE_TIMESTAMP` to check before accessing `metadata()`.
+With `includeMetadata(true)`, callers inspect these nullable fields
+independently. Cosmos DB supplies `lastModified` and `version`; DynamoDB
+supplies `ttlExpiry` when present; current Spanner returns an empty envelope.
+`Capability.WRITE_TIMESTAMP` indicates only whether `lastModified` may be
+populated (Cosmos DB advertises it; DynamoDB and Spanner do not). It does not
+gate the envelope, `ttlExpiry`, or `version`.
 
 ```java
 if (client.capabilities().isSupported(Capability.WRITE_TIMESTAMP)) {
     DocumentResult r = client.read(address, key,
             OperationOptions.builder().includeMetadata(true).build());
-    System.out.println(r.metadata().lastModified());
+    if (r != null && r.metadata().lastModified() != null) {
+        System.out.println(r.metadata().lastModified());
+    }
 }
 ```
 
 ### System Property Stripping
 
-The `document()` field of `DocumentResult` is always stripped of provider
-system properties (`_ts`, `_etag`, `_rid`, `_self`, `_attachments`, `partitionKey`) before being returned, ensuring the same document shape regardless of which provider it was read from.
+Documents returned by `read()` and items returned by `query()` are stripped of
+adapter-injected identity, TTL, and system metadata before being exposed. Cosmos
+removes `id`, `partitionKey`, `ttl`, `_ts`, `_etag`, `_rid`, `_self`, and
+`_attachments`; DynamoDB removes `partitionKey`, `sortKey`, and `ttlExpiry`.
+TTL/write metadata requested with `includeMetadata(true)` remains available through
+`DocumentMetadata`. A result that otherwise satisfies the portable write envelope
+can therefore be converted to a map and passed to replacement `upsert()` without
+manually deleting provider-owned fields.
 
 ---
 
 ## Document Size Enforcement
 
-The SDK enforces a **390 KiB** maximum serialized write payload before any
-data leaves the client. This applies to the full document passed to
-`create()`/`upsert()` and to the field map passed to `update()`.
+The SDK enforces **independent 390 KiB serialized and structural write-input
+bounds** before any data leaves the client. Shared preflight snapshots the
+top-level map and uses bounded SDK-owned Jackson serialization while inspecting
+nested values. Caller-registered modules are not consulted, so values requiring
+custom modules, such as `Instant`, must first be converted to serializable
+values. Binary values are rejected even when hidden in a POJO. Cyclic graphs and
+non-collection iterables are rejected by bounded inspection, serialized JSON
+output is capped while it is produced, and field names above 50,000 UTF-8 bytes
+are outside the portable value envelope.
 
-For `update()`, this measures only the incoming field map, not the existing
-item plus those fields. DynamoDB can therefore reject an otherwise-valid update
-when the resulting item would exceed its provider-native limit. That atomic
-rejection is surfaced as non-retryable `UNSUPPORTED_CAPABILITY` with
+For `create()` and `upsert()`, a null document, a top-level name matching `id`,
+`partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, or `data` case-insensitively,
+or any top-level name beginning with `_`, returns non-retryable
+`INVALID_REQUEST` before provider I/O. Other case-distinct non-reserved names
+remain separate literal fields. The same validation and structural
+preflight apply to the full document passed to `create()`/`upsert()` and to
+the field map passed to `update()`.
+
+Complete `create()`/`upsert()` documents and incoming update maps share the
+structural bound. A complete document may contain at most 31 map/list containers
+below its root; for `update()`, each replacement value uses the same 31-container
+limit with its top-level container counted as level 1. Those checks still inspect
+only incoming fields, not the existing item plus those fields. DynamoDB can
+therefore reject an otherwise-valid update when the resulting item would exceed
+its provider-native limit. That atomic rejection is surfaced as non-retryable
+`UNSUPPORTED_CAPABILITY` with
 `reason=dynamodb_result_item_size_limit`; it occurs after one attempted
 `UpdateItem`, not during the zero-I/O shared preflight.
 
@@ -1707,8 +1829,9 @@ rejection is surfaced as non-retryable `UNSUPPORTED_CAPABILITY` with
 
 Providers inject key, identity, and TTL fields before writing, and DynamoDB
 measures its item limit against an internal wire format that can be larger than
-the raw JSON. The round 390 KiB portable ceiling leaves safety headroom for that
-overhead.
+the raw JSON. The structural pass explicitly accounts for names and map/list overhead, while
+the 390 KiB serialized ceiling leaves additional headroom for provider-injected
+fields.
 
 ### Validation Behaviour
 
@@ -1725,6 +1848,9 @@ try {
 
 Oversized documents are rejected **at the SDK layer** - no network call is made.
 The error category is always `INVALID_REQUEST`.
+
+`com.multiclouddb.api.PortableWriteLimits` exposes the serialized, structural,
+field-name, nesting, and partial-update field-count constants.
 
 ---
 

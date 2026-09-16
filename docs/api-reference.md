@@ -14,7 +14,7 @@ contract.
 
 | Type | Description |
 |------|-------------|
-| `MulticloudDbClient` | The main client interface - CRUD, query, provisioning, and capabilities |
+| `MulticloudDbClient` | The main client interface - base operations, capability-gated update, query, provisioning, and capabilities |
 | `MulticloudDbClientFactory` | Creates a client by discovering providers via `ServiceLoader` |
 | `MulticloudDbClientConfig` | Builder-pattern configuration for provider, connection, and auth |
 | `ResourceAddress` | A `(database, collection)` pair targeting a container/table |
@@ -22,11 +22,12 @@ contract.
 | `QueryRequest` | Query input with expression, parameters, pagination, and partition scoping |
 | `QueryPage` | Query result: items, continuation token, and diagnostics |
 | `DocumentResult` | Read result: document payload and optional metadata |
-| `DocumentMetadata` | Write timestamps, TTL expiry, and version/ETag |
+| `DocumentMetadata` | Independently nullable provider metadata: write timestamp, TTL expiry, and version/ETag |
 | `CapabilitySet` | Runtime introspection of supported provider capabilities |
 | `MulticloudDbException` | Structured error with portable error category |
 | `OperationOptions` | Per-operation timeout and metadata controls; `ttlSeconds` is create/upsert-only |
 | `OperationDiagnostics` | Latency, request charge, request ID, and item count |
+| `PortableWriteLimits` | Public constants for serialized, structural, field-name, nesting, and partial-update field-count limits |
 
 ### `update()` Partial-Update Contract
 
@@ -40,32 +41,86 @@ void update(
 
 - Sets or replaces only the supplied top-level fields; omitted fields remain.
 - Map/list values replace the complete top-level value. Java `null` stores null.
+- Values are inspected and serialized with the SDK-owned Jackson configuration
+  during bounded shared preflight.
 - A missing item returns `NOT_FOUND` and is not created.
 - Non-null `options.ttlSeconds()` returns pre-I/O, non-retryable
   `INVALID_REQUEST`.
-- At most 10 fields may be supplied per call; the shared serialized field-map limit is 390 KiB.
+- At most 10 fields may be supplied per call.
+- Non-reserved names are literal and case-sensitive: `foo` and `Foo` may both
+  appear in one atomic update and remain separate fields. Names matching `id`,
+  `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, or `data`
+  case-insensitively, and names beginning with `_`, are rejected before I/O.
+- Binary values are rejected, including when exposed by a POJO. Cyclic graphs
+  and non-collection iterables are rejected, and serialized JSON output is capped
+  while it is produced.
+- Every field name, including nested map keys, is limited to 50,000 UTF-8 bytes.
+- The serialized field map and its structural footprint must each be at most 390 KiB.
+  Structural footprint includes UTF-8 names plus native map/list container and element overhead.
+- Each replacement value may contain at most 31 nested map/list containers, counting its
+  top-level container as level 1. A shallow update path does not make the replacement value flat.
 
 `Capability.PARTIAL_UPDATE` is supported by Cosmos DB and DynamoDB. The
-Spanner provider declares it unsupported, so the default client returns
-non-retryable `UNSUPPORTED_CAPABILITY` with `capability=partial_update` before
-provider delegation.
+Spanner provider omits it, so API normalization supplies the unsupported default and
+the default client returns non-retryable `UNSUPPORTED_CAPABILITY` with
+`capability=partial_update` before provider delegation.
 
 Cosmos and Dynamo preserve literal field case as part of the base
-`PARTIAL_UPDATE` contract. Native request and resulting-item limits remain
-explicit through non-retryable `UNSUPPORTED_CAPABILITY` errors with stable
-`providerDetails.reason` and limit values.
-The Cosmos result-size case is non-retryable `UNSUPPORTED_CAPABILITY` with
-`reason=cosmos_result_item_size_limit` and
-a `maximumResultBytes` detail describing the native ceiling.
-The Dynamo result-size case is non-retryable `UNSUPPORTED_CAPABILITY` with
-`reason=dynamodb_result_item_size_limit` and
-a `maximumResultBytes` detail describing the native ceiling. Other Dynamo `ValidationException` errors remain
+`PARTIAL_UPDATE` contract. Its portable result envelope requires both serialized
+JSON and portable structural footprint to remain at or below 390 KiB. The optional
+`PARTIAL_UPDATE_EXTENDED_RESULT_SIZE` capability reports whether a provider supports
+larger resulting documents: Cosmos DB supports it up to 2 MiB, while DynamoDB and
+providers omitting the declaration receive an unsupported value.
+
+`PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY` is independent of the base and
+extended-result capabilities. The base `PARTIAL_UPDATE` contract does not
+promise a fixed absolute expiry for an existing TTL-bearing item. Callers that
+require one must check the preservation capability as well. DynamoDB supports
+it because `UpdateItem` leaves `ttlExpiry` unchanged. Cosmos DB reports it
+unsupported because `patchItem` advances `_ts` and restarts the TTL countdown;
+Spanner and omitted declarations receive the unsupported API default. This
+declaration does not add I/O: `update()` remains synchronous, uses one native
+write, and performs no read/merge.
+
+Each built-in provider exposes 20 effective capability rows. Cosmos DB and
+DynamoDB declare all 20; Spanner declares 17 and `CapabilitySet` supplies
+unsupported defaults for the three partial-update capability names.
+
+Shared name-size, binary-value, unsafe-graph, nesting, and
+structural-footprint failures return non-retryable
+`INVALID_REQUEST` before provider I/O. Their stable reasons include `partial_update_field_name_size_limit`,
+`non_portable_binary_value`, `non_portable_iterable`,
+`partial_update_value_cycle`, and `partial_update_nesting_depth_limit` (with `valuePath`, `actualNestingDepth`, and
+`maximumNestingDepth`) and `partial_update_structural_footprint_limit` (with
+`actualPortableFootprintBytes` and `maximumPortableFootprintBytes`).
+
+No read/merge preflight is performed. Native result-size rejections remain
+non-retryable `UNSUPPORTED_CAPABILITY` errors with stable
+`providerDetails.reason` and limit values: `cosmos_result_item_size_limit` or
+`dynamodb_result_item_size_limit`. Other Dynamo `ValidationException` errors remain
 `INVALID_REQUEST`.
 
 For complete replacement, call `upsert()` with the complete desired document.
 `upsert()` creates a missing item, so it is not an update-only replacement.
+Read-then-upsert is not atomic, and this release has no exact portable atomic
+full-document replace-if-present equivalent.
 See [guide.md - update](guide.md#update---partial-update-existing) for native
 request counts, costs, and migration guidance.
+
+### Complete-Document Write Contract
+
+`create()` and `upsert()` reject a null document, top-level names matching `id`,
+`partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, or `data` case-insensitively,
+top-level names beginning with `_`, binary values (including values hidden in
+POJOs), cyclic graphs, non-collection iterables, and field names above 50,000
+UTF-8 bytes before provider I/O. Other case-distinct top-level names remain
+separate literal fields. Values must be serializable with the SDK-owned Jackson
+configuration; caller-registered modules are not consulted. Serialized JSON
+output is bounded as it is produced. Serialized UTF-8 input and structural
+footprint have separate 390 KiB limits, with at most 31 map/list containers below
+the document root. `PortableWriteLimits` exposes the serialized, structural,
+field-name, nesting, and partial-update field-count constants. Violations are
+non-retryable `INVALID_REQUEST`.
 
 ### Query Expression Types
 
@@ -120,5 +175,5 @@ import from this package.
 | Type | Description |
 |------|-------------|
 | `MulticloudDbProviderAdapter` | Factory SPI - creates a provider client from config |
-| `MulticloudDbProviderClient` | Implementation SPI - CRUD + query + provisioning |
+| `MulticloudDbProviderClient` | Implementation SPI - base operations, capability-gated update, query, and provisioning |
 | `SdkUserAgent` | Builds the canonical user-agent header token |

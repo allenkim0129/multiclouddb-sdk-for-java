@@ -9,11 +9,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
-- `update()` now uses one native `patchItem` instead of `replaceItem` for accepted updates of up to 10 fields. Omitted fields are preserved and HTTP 404 remains portable `NOT_FOUND`.
+
+- `update()` now uses one native `patchItem` instead of `replaceItem` for accepted updates of up to 10 fields. Omitted fields are preserved, non-reserved case-distinct names such as `foo` and `Foo` remain separate even in one atomic request, and HTTP 404 remains portable `NOT_FOUND`.
 - Accepted updates issue one Cosmos SDK request. Maps above the portable 10-field limit are rejected by shared preflight before Cosmos I/O, keeping request count and RU cost bounded.
+- Point reads and both query routes strip adapter-injected `id`, `partitionKey`, `ttl`, and Cosmos system metadata before returning portable documents; requested write metadata remains available through `DocumentMetadata`.
+- Shared preflight rejects binary values, field names above 50,000 UTF-8 bytes, replacement values above 31 nested map/list containers, and complete-document or incoming-update structural footprints above 390 KiB before Cosmos I/O, matching the portable DynamoDB-safe envelope even when compact JSON would otherwise hide container overhead. Complete create/upsert documents also reject top-level provider-owned names (`id`, `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, `data`) case-insensitively and names beginning with `_`.
 - Update HTTP 413 is normalized to non-retryable `UNSUPPORTED_CAPABILITY` with `reason=cosmos_result_item_size_limit` and a `maximumResultBytes` detail describing the native ceiling; it follows one attempted patch and leaves the document unchanged.
-- CRUD/update HTTP 408 and 410 are retryable `TRANSIENT_FAILURE` responses, with 410 substatus retained.
-- Declares `PARTIAL_UPDATE` supported; native request and resulting-document limits are surfaced through explicit provider-limit reasons and values.
+- For `update()`, HTTP 408 and 410 are retryable `TRANSIENT_FAILURE` responses, with 410 substatus retained; other operations keep their existing mappings.
+- Declares `PARTIAL_UPDATE` and `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE` supported, and `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY` unsupported. The base result requires serialized JSON and portable structural footprint each at or below 390 KiB; the separate extended-result behavior remains supported up to the Cosmos DB native 2 MiB item limit. Base partial update does not promise fixed absolute expiry: `patchItem` advances `_ts` and restarts the Cosmos TTL countdown. The declaration adds no read/merge or second write.
 
 ## [0.1.0-beta.2] — 2026-06-17
 

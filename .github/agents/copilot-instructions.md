@@ -1,6 +1,6 @@
 # multiclouddb-sdk Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-01-23
+Auto-generated from all feature plans. Last updated: 2026-09-16
 
 ## Active Technologies
 - Python 3.11+ (support 3.10 if required by environment constraints) (001-clouddb-sdk)

@@ -21,11 +21,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Complex container values (`Map`, `Collection`) round-trip through STRING columns using an unambiguous prefix marker (`U+0001` + `mcdb:json:`). User strings that happen to start with `{` or `[` are returned verbatim; user strings that themselves begin with `U+0001` are escaped at write time.
 - `BETWEEN` translation wraps in parentheses (`(field BETWEEN @lo AND @hi)`) for cross-provider consistency.
 
-### Breaking changes
-
-- **Through `MulticloudDbClient`, `update()` is unavailable for Spanner in this release.** A live Spanner account is not currently available for release-grade validation. `SpannerCapabilities` therefore explicitly declares `PARTIAL_UPDATE` unsupported, so otherwise-valid calls fail before provider delegation with non-retryable `UNSUPPORTED_CAPABILITY` (`capability=partial_update`). The adapter's existing read-modify-write implementation is not exposed through the portable client; support can follow after live-account validation.
+- **BREAKING (pre-1.0 beta): portable `update()` is unavailable with the current Spanner provider.** The API now defines capability-gated shallow partial update, but this unchanged provider does not declare `PARTIAL_UPDATE`; valid calls return non-retryable `UNSUPPORTED_CAPABILITY` before Spanner I/O. Replacement callers must use `upsert()`, which creates missing items and is not an atomic replace-if-present operation.
 - **Document field named `data` is rejected** with `MulticloudDbException(category = INVALID_REQUEST)`. The provider reserves the `data` column for the internal `FIELD_DATA` metadata. The reserved-field check is case-insensitive (Spanner resolves column names case-insensitively); `Data` / `DATA` / `dAtA` are all rejected with the offending field name echoed back so callers can pinpoint which key to rename.
-- **`upsert()` is a full document replace.** Columns absent from the upserted document become NULL on read; this matches the Cosmos / DynamoDB upsert contract. Callers needing complete replacement may use `upsert()`, noting that it creates a missing item.
+- **`upsert()` is a full document replace.** Columns absent from the upserted document become NULL on read; this matches the Cosmos DB / DynamoDB upsert contract. Use `upsert()` when the complete desired document is available; portable partial modification is not available with the current Spanner provider.
 - **Customer-managed tables require a `data STRING(MAX)` column.** Tables created by `ensureContainer()` already include it; tables provisioned outside the SDK must run `ALTER TABLE <table> ADD COLUMN data STRING(MAX);`.
 - **`ensureDatabase(name)` throws `MulticloudDbException(INVALID_REQUEST)` when `name` does not match the configured `databaseId`.** Operations always route to the client''s configured database; accepting a different name silently provisioned the wrong database previously. To target a different database, construct a new client.
 - **Lifecycle errors are typed.** `checkOpen()` and the `ensureDatabase` name-mismatch validation throw `MulticloudDbException` with categories `CLIENT_CLOSED` and `INVALID_REQUEST` respectively, replacing the prior raw `IllegalStateException` / `IllegalArgumentException`. Consumers that caught the raw JDK exceptions must catch `MulticloudDbException` and branch on `error().category()`.
@@ -89,7 +87,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   no row matches
 - `update` — Spanner `UPDATE` mutation (fails if row does not exist)
 - `upsert` — Spanner `INSERT_OR_UPDATE` mutation (merging upsert; superseded
-  by `REPLACE` semantics in the Unreleased section — see *Breaking changes*
+  by `REPLACE` semantics in the Unreleased section — see *Changed*
   above)
 - `delete` — Spanner `DELETE` mutation using `KeySet.singleKey()`; `NOT_FOUND`
   is silently ignored for idempotent delete semantics
