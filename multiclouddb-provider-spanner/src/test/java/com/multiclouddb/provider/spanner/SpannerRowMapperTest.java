@@ -55,6 +55,30 @@ class SpannerRowMapperTest {
     }
 
     @Test
+    @DisplayName("adapter-owned identity and metadata columns are omitted")
+    void providerOwnedFieldsAreOmitted() {
+        Type rowType = Type.struct(
+                StructField.of("partitionKey", Type.string()),
+                StructField.of("sortKey", Type.string()),
+                StructField.of("data", Type.string()),
+                StructField.of("title", Type.string()));
+        Struct row = Struct.newBuilder()
+                .set("partitionKey").to("p")
+                .set("sortKey").to("s")
+                .set("data").to("[\"title\"]")
+                .set("title").to("portable")
+                .build();
+
+        try (ResultSet rs = singleRow(rowType, row)) {
+            JsonNode node = SpannerRowMapper.toJsonNode(rs);
+            assertFalse(node.has("partitionKey"));
+            assertFalse(node.has("sortKey"));
+            assertFalse(node.has("data"));
+            assertEquals("portable", node.path("title").asText());
+        }
+    }
+
+    @Test
     @DisplayName("marker-prefixed JSON object is parsed back to a JSON object")
     void markerRoundTripObject() {
         String payload = SpannerConstants.JSON_VALUE_MARKER + "{\"a\":1,\"b\":\"x\"}";

@@ -250,8 +250,9 @@ value without a Spanner production change.
 - **FR-042**: `read()` and `query()` results MUST remove adapter-injected
   identity, TTL, and system-metadata fields before returning documents. Cosmos
   MUST remove `id`, `partitionKey`, `ttl`, and its underscore-prefixed system
-  metadata; DynamoDB MUST remove `partitionKey`, `sortKey`, and `ttlExpiry`.
-  Metadata requested through `OperationOptions` remains in `DocumentMetadata`.
+  metadata; DynamoDB MUST remove `partitionKey`, `sortKey`, and `ttlExpiry`;
+  Spanner MUST remove `partitionKey`, `sortKey`, and its internal `data` metadata
+  column. Metadata requested through `OperationOptions` remains in `DocumentMetadata`.
   A result within the portable write envelope MUST NOT fail replacement
   `upsert()` solely because an adapter-owned field leaked into the payload.
 

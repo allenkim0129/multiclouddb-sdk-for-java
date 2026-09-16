@@ -190,14 +190,15 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 - **BREAKING (pre-1.0 beta): portable `update()` is unavailable with the
   current Spanner provider.** The API now defines capability-gated shallow
-  partial update, but this unchanged provider does not declare
+  partial update, but this provider does not declare
   `PARTIAL_UPDATE`; valid calls return non-retryable
   `UNSUPPORTED_CAPABILITY` before Spanner I/O. Replacement callers must use
   `upsert()`, which creates missing items and is not an atomic
   replace-if-present operation.
 - `upsert(address, key, document)` uses Spanner `INSERT_OR_UPDATE` (was `REPLACE`). `REPLACE` is internally delete-then-insert, which change streams surface as `mod_type=INSERT` — making a second upsert of the same key appear as `ChangeType.CREATE` instead of `ChangeType.UPDATE`. `INSERT_OR_UPDATE` matches Cosmos AVAD and DynamoDB Streams.
 - Spanner instance creation in `ensureDatabase` is gated to emulator mode. In production the instance is expected to pre-exist; only the database is created.
-- Complex container values (`Map`, `Collection`) round-trip through STRING columns using an unambiguous prefix marker (`U+0001` + `mcdb:json:`).
+- Complex values (`Map`, `Collection`, Java arrays, `JsonNode`, and POJOs) round-trip through STRING columns using an unambiguous prefix marker (`U+0001` + `mcdb:json:`).
+- Read/query results omit adapter-injected `partitionKey`, `sortKey`, and internal `data` metadata so returned documents satisfy the portable result contract.
 - `BETWEEN` translation wraps in parentheses (`(field BETWEEN @lo AND @hi)`) for cross-provider consistency.
 
 
@@ -213,7 +214,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Default `ORDER BY` no longer fires for aggregate / `GROUP BY` queries (GoogleSQL rejects with `column not aggregated`). It also no longer duplicates primary-key columns when the caller already sorts by them, and `ORDER BY` detection ignores string literals (so `WHERE comment = ''please ORDER BY date''` is no longer a false positive).
 - Legacy / pre-`FIELD_DATA` rows preserve every column on read and `update()`. When `FIELD_DATA` is absent or malformed, the reader applies the historical "no metadata => no filtering" rule; `update()` deliberately leaves `FIELD_DATA` alone so the reader''s fallback continues to project all legacy columns. A subsequent `upsert()` or `create()` promotes the row into the metadata regime.
 - `ensureDatabase()` / `ensureContainer()` no longer leak raw `RuntimeException` on non-Spanner failures. `InterruptedException` → `TRANSIENT_FAILURE`; non-Spanner causes inside the admin `ExecutionException` → `PROVIDER_ERROR`.
-- `setMutationValue` no longer fails on common Java types (e.g. `java.time.Instant`) — JSON serialisation is restricted to `Map`/`Collection`; every other type falls back to `value.toString()`.
+- `setMutationValue` no longer stringifies shared-preflight-approved arrays, `JsonNode` values, or POJOs. Non-native scalar values use the marker-prefixed JSON encoding; unexpected serialization failures surface as non-retryable `INVALID_REQUEST` instead of silently changing the stored shape.
 
 **Known limitations:**
 

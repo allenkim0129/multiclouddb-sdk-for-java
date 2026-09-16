@@ -100,8 +100,9 @@ portable atomic full-document replace-if-present equivalent.
 
 Read and query results omit adapter-injected storage fields. Cosmos strips
 `id`, `partitionKey`, `ttl`, and its underscore-prefixed system metadata;
-DynamoDB strips `partitionKey`, `sortKey`, and `ttlExpiry`. Read metadata remains
-available through `DocumentMetadata` when requested.
+DynamoDB strips `partitionKey`, `sortKey`, and `ttlExpiry`; Spanner strips
+`partitionKey`, `sortKey`, and its internal `data` metadata column. Read metadata
+remains available through `DocumentMetadata` when requested.
 
 ### Query - Portable Expression DSL
 Write a WHERE-clause filter once. The SDK translates it to the native query

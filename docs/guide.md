@@ -1786,7 +1786,8 @@ if (client.capabilities().isSupported(Capability.WRITE_TIMESTAMP)) {
 Documents returned by `read()` and items returned by `query()` are stripped of
 adapter-injected identity, TTL, and system metadata before being exposed. Cosmos
 removes `id`, `partitionKey`, `ttl`, `_ts`, `_etag`, `_rid`, `_self`, and
-`_attachments`; DynamoDB removes `partitionKey`, `sortKey`, and `ttlExpiry`.
+`_attachments`; DynamoDB removes `partitionKey`, `sortKey`, and `ttlExpiry`;
+Spanner removes `partitionKey`, `sortKey`, and its internal `data` metadata column.
 TTL/write metadata requested with `includeMetadata(true)` remains available through
 `DocumentMetadata`. A result that otherwise satisfies the portable write envelope
 can therefore be converted to a map and passed to replacement `upsert()` without

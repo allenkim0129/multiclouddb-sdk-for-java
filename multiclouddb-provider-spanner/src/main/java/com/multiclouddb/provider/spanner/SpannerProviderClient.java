@@ -354,7 +354,8 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
                 Mutation.WriteBuilder mutation = Mutation.newUpdateBuilder(table)
                         .set(SpannerConstants.FIELD_PARTITION_KEY).to(pk)
                         .set(SpannerConstants.FIELD_SORT_KEY).to(sk);
-                List<String> newFields = writeDocumentFields(mutation, document);
+                List<String> newFields = writeDocumentFields(
+                        mutation, document, OperationNames.UPDATE);
                 mergedFields.addAll(newFields);
 
                 // 3) Stamp the merged FIELD_DATA so reads see the union of every
@@ -488,9 +489,11 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      *
      * @param mutation the mutation builder to populate
      * @param document the document payload; may be {@code null} (no fields written)
+     * @param operation portable operation name used for error normalization
      * @return the field names that were written by this call (may be empty)
      */
-    private List<String> writeDocumentFields(Mutation.WriteBuilder mutation, Map<String, Object> document) {
+    private List<String> writeDocumentFields(Mutation.WriteBuilder mutation,
+            Map<String, Object> document, String operation) {
         List<String> fieldNames = new ArrayList<>();
         if (document == null) {
             return fieldNames;
@@ -516,7 +519,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             if (name != null && SpannerConstants.FIELD_DATA.equalsIgnoreCase(name))
                 continue;
 
-            setMutationValue(mutation, name, value);
+            setMutationValue(mutation, name, value, operation);
             fieldNames.add(name);
         }
         return fieldNames;
@@ -550,7 +553,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * remain visible (see {@link #update}).
      */
     private void writeFullDocument(Mutation.WriteBuilder mutation, Map<String, Object> document, String op) {
-        List<String> fieldNames = writeDocumentFields(mutation, document);
+        List<String> fieldNames = writeDocumentFields(mutation, document, op);
         mutation.set(SpannerConstants.FIELD_DATA).to(serialiseFieldNames(fieldNames, op));
     }
 
@@ -1489,21 +1492,18 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     /**
      * Sets a single column value in a Spanner mutation builder.
      * <p>
-     * Supported Java types: {@link String}, {@link Long}, {@link Integer},
-     * {@link Boolean}, {@link Double}, {@link Float}, and {@code null}
-     * (written as {@code NULL STRING}). {@link Map} and {@link java.util.Collection}
-     * values are serialised as JSON with an unambiguous marker prefix
-     * ({@link SpannerConstants#JSON_VALUE_MARKER}); on read, the marker is detected
-     * and the value is parsed back into a JSON node. Any other type falls back to
-     * {@link Object#toString()} to preserve the prior behaviour and avoid surprise
-     * failures for types Jackson cannot handle without extra modules (e.g.,
-     * {@code java.time.Instant}).
+     * Native scalar types are written directly. Every other value accepted by
+     * shared preflight is serialized as JSON with an unambiguous marker prefix
+     * ({@link SpannerConstants#JSON_VALUE_MARKER}); on read, the marker is
+     * detected and the value is parsed back into a JSON node.
      *
      * @param mutation the mutation builder to write the column into
      * @param column   the Spanner column name
      * @param value    the value to write; {@code null} writes a null STRING
+     * @param operation portable operation name used for error normalization
      */
-    private void setMutationValue(Mutation.WriteBuilder mutation, String column, Object value) {
+    private void setMutationValue(Mutation.WriteBuilder mutation, String column,
+            Object value, String operation) {
         if (value == null) {
             mutation.set(column).to((String) null);
         } else if (value instanceof String s) {
@@ -1526,23 +1526,21 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             mutation.set(column).to(d);
         } else if (value instanceof Float f) {
             mutation.set(column).to((double) f);
-        } else if (value instanceof Map<?, ?> || value instanceof Collection<?>) {
-            // Complex containers: encode as JSON with marker prefix so reads can
-            // unambiguously round-trip them back to Map/List without misclassifying
-            // user strings that happen to start with '{' or '['.
+        } else {
             try {
                 mutation.set(column).to(
                         SpannerConstants.JSON_VALUE_MARKER + JSON_MAPPER.writeValueAsString(value));
             } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
-                // Nested unsupported value (e.g. java.time.Instant without jsr310 module):
-                // fall back to toString() rather than failing the write.
-                LOG.debug("JSON serialise failed for column '{}', falling back to toString(): {}",
-                        column, ex.getMessage());
-                mutation.set(column).to(value.toString());
+                throw new MulticloudDbException(new MulticloudDbError(
+                        MulticloudDbErrorCategory.INVALID_REQUEST,
+                        "Spanner could not serialize field '" + column
+                                + "' as portable JSON.",
+                        ProviderId.SPANNER,
+                        operation,
+                        false,
+                        Map.of("reason", "write_input_serialization_failed", "field", column)),
+                        ex);
             }
-        } else {
-            // Unknown types: preserve historical toString() fallback.
-            mutation.set(column).to(value.toString());
         }
     }
 

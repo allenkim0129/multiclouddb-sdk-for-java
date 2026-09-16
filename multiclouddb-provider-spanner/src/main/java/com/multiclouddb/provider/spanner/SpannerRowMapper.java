@@ -22,9 +22,10 @@ import java.util.HashSet;
  * Supports all common Spanner column types: STRING, INT64, FLOAT64, BOOL,
  * BYTES, TIMESTAMP, DATE, and JSON.
  * <p>
- * When a {@code data} column is present and contains a JSON array of field
- * names, only those fields (plus the primary key columns) are included in the
- * result. This lets the SDK distinguish between "explicitly set to null" and
+ * Adapter-owned {@code partitionKey}, {@code sortKey}, and {@code data}
+ * columns are omitted from portable results. When {@code data} contains a JSON
+ * array of field names, only those caller-owned fields are included. This lets
+ * the SDK distinguish between "explicitly set to null" and
  * "empty schema column" — a distinction that Spanner's fixed schema otherwise
  * loses.
  * <p>
@@ -73,6 +74,11 @@ public final class SpannerRowMapper {
             String colName = type.getStructFields().get(i).getName();
             Type colType = type.getStructFields().get(i).getType();
 
+            if (SpannerConstants.FIELD_PARTITION_KEY.equals(colName)
+                    || SpannerConstants.FIELD_SORT_KEY.equals(colName)) {
+                continue;
+            }
+
             if (rs.isNull(i)) {
                 // Surface null columns when either:
                 //   - we have FIELD_DATA metadata and the column is listed in it
@@ -88,10 +94,7 @@ public final class SpannerRowMapper {
             }
 
             // For non-null values, include if no metadata or if field is in metadata.
-            if (writtenFields != null
-                    && !writtenFields.contains(colName)
-                    && !SpannerConstants.FIELD_PARTITION_KEY.equals(colName)
-                    && !SpannerConstants.FIELD_SORT_KEY.equals(colName)) {
+            if (writtenFields != null && !writtenFields.contains(colName)) {
                 continue;
             }
 

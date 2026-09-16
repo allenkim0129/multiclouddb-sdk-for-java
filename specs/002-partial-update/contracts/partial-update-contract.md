@@ -220,7 +220,9 @@ SDK-created base documents fit the same native-safe envelope.
 Provider read and query paths remove adapter-injected storage fields before
 returning portable documents: Cosmos removes `id`, `partitionKey`, `ttl`, and
 its underscore-prefixed metadata; DynamoDB removes `partitionKey`, `sortKey`,
-and `ttlExpiry`. Requested read metadata remains in `DocumentMetadata`.
+and `ttlExpiry`; Spanner removes `partitionKey`, `sortKey`, and its internal
+`data` metadata column.
+Requested read metadata remains in `DocumentMetadata`.
 
 The shared 31-level, field-name, binary-value, and structural-footprint checks
 reject incoming replacement structures that cannot fit the portable DynamoDB-safe envelope even when their
