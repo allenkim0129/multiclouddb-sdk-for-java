@@ -63,7 +63,7 @@ description: "Tasks for implementing Multicloud DB SDK (Java)"
 
 ---
 
-## Phase 3: User Story 1 - Write Once, Run Anywhere Base Operations + Query (Priority: P1) 🎯 MVP
+## Phase 3: User Story 1 - Write Once, Run Anywhere Point Operations + Query (Priority: P1) 🎯 MVP
 
 **Goal**: A single Java API provides portable create/read/upsert/delete/query across Cosmos/Dynamo/Spanner. Partial update uses the same API but runs only when the selected provider advertises `PARTIAL_UPDATE`.
 
@@ -95,7 +95,7 @@ description: "Tasks for implementing Multicloud DB SDK (Java)"
 - [x] T042 [US1] Wire adapter selection and delegation in `multiclouddb-api/src/main/java/com/multiclouddb/api/internal/DefaultMulticloudDbClient.java` (invoke provider client; normalize failures)
 
 - [x] T043 [P] [US1] Create the E2E config loader in `multiclouddb-e2e/src/main/java/com/microsoft/multiclouddb/e2e/ConfigLoader.java` (properties-file and system-property support)
-- [x] T044 [US1] Implement portable base operations and query examples in `multiclouddb-e2e/src/main/java/com/microsoft/multiclouddb/e2e/Main.java` (switch provider by config only)
+- [x] T044 [US1] Implement portable point operations and query examples in `multiclouddb-e2e/src/main/java/com/microsoft/multiclouddb/e2e/Main.java` (switch provider by config only)
 
 **Checkpoint**: Running the `multiclouddb-e2e` harness succeeds against each configured provider; partial update runs only when advertised, and conformance tests pass for the supported subset.
 
@@ -331,7 +331,7 @@ description: "Tasks for implementing Multicloud DB SDK (Java)"
 
 - **Setup (Phase 1)**: No dependencies; start immediately
 - **Foundational (Phase 2)**: Depends on Setup; blocks all user stories
-- **US1 — Base Operations + Query (Phase 3)**: Depends on Foundational; MVP target
+- **US1 — Point Operations + Query (Phase 3)**: Depends on Foundational; MVP target
 - **US1b — Portable Query Expressions (Phase 4)**: Depends on US1 (needs working adapters and query infrastructure)
 - **US1c — Native Expression Fallback (Phase 5)**: Depends on US1b (needs nativeExpression field on QueryRequest from T055 and translator integration from T061)
 - **US2 — Capabilities (Phase 6)**: Depends on US1b (needs query capability constants from T056 and per-provider capabilities from T064–T066)
@@ -347,7 +347,7 @@ description: "Tasks for implementing Multicloud DB SDK (Java)"
 ```mermaid
 graph TD
     S1[Phase 1: Setup] --> F2[Phase 2: Foundational]
-    F2 --> US1[Phase 3: US1 P1 Base Operations + Query]
+    F2 --> US1[Phase 3: US1 P1 Point Operations + Query]
     US1 --> US1b[Phase 4: US1b P1 Portable Query Expressions]
     US1b --> US1c[Phase 5: US1c P2 Native Expression Fallback]
     US1b --> US2[Phase 6: US2 P2 Capabilities]

@@ -140,10 +140,10 @@ baseline write/result fixes do not enable portable Spanner update.
 - [X] T066 Add shared 31-level replacement/document depth, 50,000-byte field-name,
   non-binary portable-value, and 390 KiB structural-footprint preflight with
   stable `INVALID_REQUEST` details, zero-I/O API/conformance boundaries, and
-  aligned public/normative documentation; include bounded custom-map inspection,
+  aligned user-facing/normative documentation; include bounded custom-map inspection,
   null create/upsert document rejection, all case-insensitive provider-owned and
-  underscore-prefixed top-level reservations, and public `PortableWriteLimits`
-  coverage later extended by T072.
+  underscore-prefixed top-level reservations. Public compile-time limits were
+  superseded during review by internal enforcement coverage later extended by T072.
 
 ## Phase 10: PR 105 post-review contract remediation
 
@@ -192,7 +192,7 @@ baseline write/result contract coverage without a portable partial-update path.
 | FR-031 Dynamo result-item envelope | T024, T034, T045–T047 |
 | FR-032 Cosmos result-item envelope | T020–T021, T033, T051–T054 |
 | FR-033 explicit field-case identity | T055–T057, T060–T061, T067 |
-| FR-034–FR-040 native-safe write envelope and public limits | T058, T061, T066, T068, T072 |
+| FR-034–FR-040 native-safe write envelope and internal limit enforcement | T058, T061, T066, T068, T072 |
 | FR-034–FR-035 structural preflight and diagnostics | T066 |
 | FR-041 non-portable TTL timing boundary | T026, T036–T037, T043, T069–T070 |
 | FR-028 diagnostics safety | T020–T025, T043–T044 |

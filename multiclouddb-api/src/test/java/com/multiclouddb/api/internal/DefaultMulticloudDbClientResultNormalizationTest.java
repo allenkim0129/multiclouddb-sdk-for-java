@@ -27,8 +27,10 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DefaultMulticloudDbClientResultNormalizationTest {
@@ -61,13 +63,18 @@ class DefaultMulticloudDbClientResultNormalizationTest {
 
         DocumentResult result = client(provider).read(ADDRESS, KEY);
 
+        assertNotSame(providerDocument, result.document());
         assertEquals(2, result.document().size());
         assertEquals("Ada", result.document().path("name").textValue());
         assertEquals("nested-id", result.document().path("nested").path("id").textValue());
         assertEquals("nested-etag", result.document().path("nested").path("_etag").textValue());
+        assertSame(nested, result.document().get("nested"));
         assertSame(metadata, result.metadata());
         assertTrue(providerDocument.has("PartitionKEY"));
         assertTrue(providerDocument.has("_etag"));
+
+        result.document().put("name", "Grace");
+        assertEquals("Ada", providerDocument.path("name").textValue());
     }
 
     @Test
@@ -101,12 +108,50 @@ class DefaultMulticloudDbClientResultNormalizationTest {
 
         assertEquals(List.of("nullable", "nested"), List.copyOf(result.items().get(0).keySet()));
         assertTrue(result.items().get(0).containsKey("nullable"));
-        assertEquals(nested, result.items().get(0).get("nested"));
+        assertSame(nested, result.items().get(0).get("nested"));
         assertEquals("next", result.continuationToken());
         assertSame(diagnostics, result.diagnostics());
         assertTrue(providerItem.containsKey("partitionkey"));
         assertTrue(providerItem.containsKey("_rid"));
+        assertTrue(providerPage.items().get(0).containsKey("SortKey"));
         assertFalse(result.items().get(0).containsKey("SortKey"));
+        assertThrows(UnsupportedOperationException.class,
+                () -> result.items().get(0).put("name", "Grace"));
+    }
+
+    @Test
+    void queryPreservesItemsBeforeTheFirstFilteredItem() {
+        Map<String, Object> portableItem = new LinkedHashMap<>();
+        portableItem.put("name", "Ada");
+        Map<String, Object> filteredItem = new LinkedHashMap<>();
+        filteredItem.put("_etag", "provider-etag");
+        filteredItem.put("name", "Grace");
+        QueryPage providerPage = new QueryPage(
+                List.of(portableItem, filteredItem), null);
+        RecordingProvider provider = new RecordingProvider(null, providerPage);
+
+        QueryPage result = client(provider).query(ADDRESS, QueryRequest.builder().build());
+
+        assertEquals(2, result.items().size());
+        assertEquals("Ada", result.items().get(0).get("name"));
+        assertEquals(Map.of("name", "Grace"), result.items().get(1));
+        assertTrue(providerPage.items().get(1).containsKey("_etag"));
+    }
+
+    @Test
+    void queryReusesPageWhenNoProviderOwnedFieldsNeedFiltering() {
+        Map<String, Object> nested = new LinkedHashMap<>();
+        nested.put("city", "Seattle");
+        Map<String, Object> providerItem = new LinkedHashMap<>();
+        providerItem.put("name", "Ada");
+        providerItem.put("nested", nested);
+        QueryPage providerPage = new QueryPage(List.of(providerItem), null);
+        RecordingProvider provider = new RecordingProvider(null, providerPage);
+
+        QueryPage result = client(provider).query(ADDRESS, QueryRequest.builder().build());
+
+        assertSame(providerPage, result);
+        assertSame(nested, result.items().get(0).get("nested"));
     }
 
     private static DefaultMulticloudDbClient client(RecordingProvider provider) {

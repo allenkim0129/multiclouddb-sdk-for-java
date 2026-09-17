@@ -9,8 +9,8 @@ repository does not provide.
   Spanner release boundary. It also records shared bounded write validation,
   same-request partial-update case identity, null complete-document and all provider-owned/
   underscore-prefixed top-level rejections, the 128-character case-insensitive
-  complete-write namespace, the core Feature 002 capability, and the exact six
-  public `PortableWriteLimits` constants.
+  complete-write namespace, the core Feature 002 capability, and the six
+  internally enforced portable write limits.
 - [provider-limit-details.schema.json](provider-limit-details.schema.json)
   defines the structured, string-valued `providerDetails` carried by native
   resulting-item errors. Cosmos DB returns its error after one attempted patch,

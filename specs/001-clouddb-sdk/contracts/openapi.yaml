@@ -22,8 +22,7 @@ paths:
         binary values and portable-limit violations before provider I/O. The
         top-level map is snapshotted and nested values undergo bounded
         SDK-owned Jackson serialization during shared preflight.
-      x-portable-write-limits:
-        $ref: '#/components/schemas/PortableWriteLimits'
+
       requestBody:
         required: true
         content:
@@ -76,8 +75,7 @@ paths:
       description: |
         Performs one atomic native shallow set/replace on providers advertising
         PARTIAL_UPDATE. It never creates a missing item and does not accept TTL.
-      x-portable-write-limits:
-        $ref: '#/components/schemas/PortableWriteLimits'
+
       x-portable-result-envelope:
         $ref: '#/components/schemas/PartialUpdateResultEnvelope'
       requestBody:
@@ -110,8 +108,7 @@ paths:
         Create-or-full-replace. This is not an atomic replace-if-present
         operation, and the release has no exact portable atomic equivalent.
         Shared write preflight validation is identical to create.
-      x-portable-write-limits:
-        $ref: '#/components/schemas/PortableWriteLimits'
+
       requestBody:
         required: true
         content:
@@ -258,10 +255,13 @@ components:
             Non-null complete document. Top-level `id`, `partitionKey`,
             `sortKey`, `ttl`, `ttlExpiry`, and `data` are reserved
             case-insensitively; every underscore-prefixed top-level name is also
-            reserved. Binary values, including values exposed while serializing
-            a POJO, are rejected before provider I/O.
-          x-portable-write-limits:
-            $ref: '#/components/schemas/PortableWriteLimits'
+            reserved. Remaining top-level names must be unique ignoring case and
+            contain at most 128 Unicode characters; nested names are limited to
+            50,000 UTF-8 bytes. Binary values, including values exposed while
+            serializing a POJO, are rejected before provider I/O. Serialized
+            input and structural footprint are independently limited to 390 KiB,
+            with at most 31 map/list containers below the document root.
+
         options:
           $ref: '#/components/schemas/OperationOptions'
 
@@ -328,8 +328,7 @@ components:
           minProperties: 1
           maxProperties: 10
           additionalProperties: true
-          x-portable-write-limits:
-            $ref: '#/components/schemas/PortableWriteLimits'
+
         options:
           allOf:
             - $ref: '#/components/schemas/OperationOptions'
@@ -368,10 +367,13 @@ components:
             Non-null complete replacement document. Top-level `id`,
             `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, and `data` are reserved
             case-insensitively; every underscore-prefixed top-level name is also
-            reserved. Binary values, including values exposed while serializing
-            a POJO, are rejected before provider I/O.
-          x-portable-write-limits:
-            $ref: '#/components/schemas/PortableWriteLimits'
+            reserved. Remaining top-level names must be unique ignoring case and
+            contain at most 128 Unicode characters; nested names are limited to
+            50,000 UTF-8 bytes. Binary values, including values exposed while
+            serializing a POJO, are rejected before provider I/O. Serialized
+            input and structural footprint are independently limited to 390 KiB,
+            with at most 31 map/list containers below the document root.
+
         options:
           $ref: '#/components/schemas/OperationOptions'
 
@@ -653,38 +655,6 @@ components:
         version:
           type: [string, 'null']
           description: Provider-native version/ETag string (Cosmos ETag; others null).
-
-    PortableWriteLimits:
-      type: object
-      description: |
-        Read-only contract metadata attached to create/upsert/update. These five
-        values mirror the complete public constant surface of
-        com.multiclouddb.api.PortableWriteLimits (FR-060–064); this is not an
-        additional request property.
-      x-java-class: com.multiclouddb.api.PortableWriteLimits
-      required:
-        - maxSerializedInputBytes
-        - maxStructuralFootprintBytes
-        - maxFieldNameUtf8Bytes
-        - maxNestedContainers
-        - maxPartialUpdateFields
-      properties:
-        maxSerializedInputBytes:
-          type: integer
-          const: 399360
-        maxStructuralFootprintBytes:
-          type: integer
-          const: 399360
-        maxFieldNameUtf8Bytes:
-          type: integer
-          const: 50000
-        maxNestedContainers:
-          type: integer
-          const: 31
-        maxPartialUpdateFields:
-          type: integer
-          const: 10
-      additionalProperties: false
 
     PartialUpdateResultEnvelope:
       type: object

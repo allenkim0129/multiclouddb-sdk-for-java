@@ -132,10 +132,11 @@ document, any case-insensitive top-level provider-owned name (`id`,
 `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, or `data`), and any
 underscore-prefixed top-level name fail with non-retryable `INVALID_REQUEST`
 before provider I/O. Remaining top-level names must be unique ignoring case and
-contain at most 128 Unicode characters. `PortableWriteLimits` exposes exactly
-six input/structure limits (serialized bytes, structural footprint,
+contain at most 128 Unicode characters. Shared preflight enforces six
+input/structure limits (serialized bytes, structural footprint,
 nested/partial-update field-name bytes, complete-write top-level characters,
-nested-container depth, and partial-update field count).
+nested-container depth, and partial-update field count) without exposing
+compile-time Java constants.
 
 These checks bound only the incoming replacements. Existing omitted fields are
 not read or merged, so state-dependent resulting-item failures retain the native
@@ -154,7 +155,7 @@ result within both 390 KiB bounds. Above either boundary, the result is outside
 this release's portable contract and may succeed or fail under native provider
 limits. Native size failures remain reason-coded and non-retryable after at most
 one attempted native update. Case-distinct field identity remains part of the
-base operation. Fixed absolute TTL expiry is not part of the portable contract.
+core partial-update operation. Fixed absolute TTL expiry is not part of the portable contract.
 
 | Provider | Core capability | Result above either 390 KiB bound | TTL timing on an existing TTL-bearing item |
 |---|---|---|---|

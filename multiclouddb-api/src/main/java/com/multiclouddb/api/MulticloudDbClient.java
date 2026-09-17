@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Portable client interface for base document operations, query, and
+ * Portable client interface for key-based document operations, query, and
  * capability-gated features across cloud database providers.
  * <p>
  * All operations use a provider-neutral <strong>synchronous</strong> contract.
@@ -42,16 +42,14 @@ public interface MulticloudDbClient extends AutoCloseable {
      * {@code partitionKey}, {@code sortKey}, {@code ttl}, {@code ttlExpiry}, and
      * {@code data}; names beginning with {@code _} are also reserved. Complete-document
      * top-level names must be unique ignoring case and contain at most
-     * {@link PortableWriteLimits#MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS} Unicode characters.
+     * 128 Unicode characters.
      * Nested map keys are limited to
-     * {@link PortableWriteLimits#MAX_FIELD_NAME_UTF8_BYTES} UTF-8 bytes. Binary values are
+     * 50,000 UTF-8 bytes. Binary values are
      * rejected wherever they occur, including inside a POJO.
      * Serialized JSON output is capped while it is produced. Serialized UTF-8 size
      * and provider-neutral structural footprint are independently limited to
-     * {@link PortableWriteLimits#MAX_SERIALIZED_INPUT_BYTES} and
-     * {@link PortableWriteLimits#MAX_STRUCTURAL_FOOTPRINT_BYTES} (390 KiB each), and
-     * map/list nesting below the document root is limited to
-     * {@link PortableWriteLimits#MAX_NESTED_CONTAINERS} levels.
+     * 390 KiB each, and map/list nesting below the document root is limited to
+     * 31 levels.
      * <p>
      * A non-null {@link OperationOptions#ttlSeconds()} is honored only when the
      * provider advertises {@link Capability#ROW_LEVEL_TTL}. Providers without that
@@ -218,16 +216,14 @@ public interface MulticloudDbClient extends AutoCloseable {
      * {@code partitionKey}, {@code sortKey}, {@code ttl}, {@code ttlExpiry}, and
      * {@code data}; names beginning with {@code _} are also reserved. Complete-document
      * top-level names must be unique ignoring case and contain at most
-     * {@link PortableWriteLimits#MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS} Unicode characters.
+     * 128 Unicode characters.
      * Nested map keys are limited to
-     * {@link PortableWriteLimits#MAX_FIELD_NAME_UTF8_BYTES} UTF-8 bytes. Binary values are
+     * 50,000 UTF-8 bytes. Binary values are
      * rejected wherever they occur, including inside a POJO.
      * Serialized JSON output is capped while it is produced. Serialized UTF-8 size
      * and provider-neutral structural footprint are independently limited to
-     * {@link PortableWriteLimits#MAX_SERIALIZED_INPUT_BYTES} and
-     * {@link PortableWriteLimits#MAX_STRUCTURAL_FOOTPRINT_BYTES} (390 KiB each), and
-     * map/list nesting below the document root is limited to
-     * {@link PortableWriteLimits#MAX_NESTED_CONTAINERS} levels.
+     * 390 KiB each, and map/list nesting below the document root is limited to
+     * 31 levels.
      * <p>
      * A non-null {@link OperationOptions#ttlSeconds()} is honored only when the
      * provider advertises {@link Capability#ROW_LEVEL_TTL}. Providers without that

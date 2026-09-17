@@ -55,7 +55,7 @@ All application code depends on `multiclouddb-api`. The core types are:
 
 | Type | Purpose |
 |------|---------|
-| `MulticloudDbClient` | Portable base operations (`create`, `read`, full-replacement `upsert`, `delete`), capability-gated partial `update`, query, provisioning, and capabilities |
+| `MulticloudDbClient` | Portable point operations (`create`, `read`, full-replacement `upsert`, `delete`), capability-gated partial `update`, query, provisioning, and capabilities |
 | `MulticloudDbClientFactory` | Creates a `MulticloudDbClient` by discovering providers via `ServiceLoader` |
 | `MulticloudDbClientConfig` | Builder-pattern config: provider selection, connection, auth, feature flags |
 | `ResourceAddress` | `(database, collection)` pair targeting a container/table |
@@ -89,7 +89,7 @@ Provider modules implement two SPI contracts without importing each other:
 | SPI Interface | Responsibility |
 |---------------|---------------|
 | `MulticloudDbProviderAdapter` | Factory - creates a `MulticloudDbProviderClient` from config; registered via `META-INF/services` |
-| `MulticloudDbProviderClient` | Base operations, capability-gated update, query, provisioning, and capabilities - called by `DefaultMulticloudDbClient` |
+| `MulticloudDbProviderClient` | Key-based create/read/upsert/delete, capability-gated partial update, query, provisioning, and capabilities - called by `DefaultMulticloudDbClient` |
 
 ---
 

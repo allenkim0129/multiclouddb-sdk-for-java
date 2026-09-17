@@ -198,8 +198,7 @@ class DocumentSizeValidatorTest {
     @DisplayName("complete top-level names use the portable 128-character boundary")
     void completeTopLevelFieldNameBoundaryIsPortable() {
         String accepted = "a".repeat(
-                com.multiclouddb.api.PortableWriteLimits
-                        .MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS);
+                DocumentSizeValidator.MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS);
         String rejected = accepted + "a";
 
         assertDoesNotThrow(() -> DocumentSizeValidator.validate(

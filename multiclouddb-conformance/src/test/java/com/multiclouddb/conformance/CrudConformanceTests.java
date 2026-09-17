@@ -18,7 +18,6 @@ import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.MulticloudDbKey;
 import com.multiclouddb.api.OperationOptions;
-import com.multiclouddb.api.PortableWriteLimits;
 import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
@@ -206,12 +205,12 @@ public abstract class CrudConformanceTests {
         String fieldName = "arrayField";
         int fixedBytes = fieldName.length() + 3 + 1;
         int elementCount =
-                (PortableWriteLimits.MAX_STRUCTURAL_FOOTPRINT_BYTES - fixedBytes) / 4;
-        int trailingStringBytes = PortableWriteLimits.MAX_STRUCTURAL_FOOTPRINT_BYTES
+                (PartialUpdateStructureValidator.MAX_FOOTPRINT_BYTES - fixedBytes) / 4;
+        int trailingStringBytes = PartialUpdateStructureValidator.MAX_FOOTPRINT_BYTES
                 - fixedBytes - (4 * elementCount);
-        assertEquals(PortableWriteLimits.MAX_STRUCTURAL_FOOTPRINT_BYTES,
+        assertEquals(PartialUpdateStructureValidator.MAX_FOOTPRINT_BYTES,
                 fixedBytes + (4 * elementCount) + trailingStringBytes,
-                "Fixture footprint must equal the public structural limit");
+                "Fixture footprint must equal the portable structural limit");
         List<Object> values = new ArrayList<>(
                 Collections.nCopies(elementCount, Map.of()));
         values.add("A".repeat(trailingStringBytes));
@@ -219,7 +218,7 @@ public abstract class CrudConformanceTests {
     }
 
     private static Map<String, Object> fieldsOverStructuralFootprint() {
-        int elementCount = (PortableWriteLimits.MAX_STRUCTURAL_FOOTPRINT_BYTES - 4) / 4 + 1;
+        int elementCount = (PartialUpdateStructureValidator.MAX_FOOTPRINT_BYTES - 4) / 4 + 1;
         return Map.of("x", Collections.nCopies(elementCount, Map.of()));
     }
 
@@ -236,7 +235,7 @@ public abstract class CrudConformanceTests {
         pojoCycle.child = pojoCycle;
 
         PojoNode deepPojo = new PojoNode();
-        for (int i = 0; i < PortableWriteLimits.MAX_NESTED_CONTAINERS + 1; i++) {
+        for (int i = 0; i < PartialUpdateStructureValidator.MAX_NESTING_DEPTH + 1; i++) {
             PojoNode parent = new PojoNode();
             parent.child = deepPojo;
             deepPojo = parent;
@@ -1277,7 +1276,7 @@ public abstract class CrudConformanceTests {
         Map<String, Object> binary = Map.of("payload", new byte[] {1, 2});
         Map<String, Object> oversizedName = Map.of(
                 "nestedObj", Map.of(
-                        "a".repeat(PortableWriteLimits.MAX_FIELD_NAME_UTF8_BYTES + 1),
+                        "a".repeat(PartialUpdateValidator.MAX_FIELD_NAME_BYTES + 1),
                         "value"));
 
         try {
@@ -1332,7 +1331,7 @@ public abstract class CrudConformanceTests {
         collision.put("foo", 1);
         collision.put("Foo", 2);
         Map<String, Object> longName = Map.of(
-                "a".repeat(PortableWriteLimits.MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS + 1),
+                "a".repeat(DocumentSizeValidator.MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS + 1),
                 "value");
 
         try {
@@ -1381,14 +1380,14 @@ public abstract class CrudConformanceTests {
         try {
             Map<String, Object> accepted = Map.of(
                     "nestedObj", fieldsWithNestingDepth(
-                            PortableWriteLimits.MAX_NESTED_CONTAINERS).get("profile"));
+                            PartialUpdateStructureValidator.MAX_NESTING_DEPTH).get("profile"));
             client.create(getAddress(), depthKey, accepted);
             client.upsert(getAddress(), depthKey, accepted);
             assertNotNull(client.read(getAddress(), depthKey));
 
             Map<String, Object> rejected = Map.of(
                     "nestedObj", fieldsWithNestingDepth(
-                            PortableWriteLimits.MAX_NESTED_CONTAINERS + 1)
+                            PartialUpdateStructureValidator.MAX_NESTING_DEPTH + 1)
                             .get("profile"));
             MulticloudDbException createFailure = assertThrows(
                     MulticloudDbException.class,
@@ -1403,7 +1402,7 @@ public abstract class CrudConformanceTests {
                 assertEquals(PartialUpdateStructureValidator.DOCUMENT_DEPTH_LIMIT_REASON,
                         failure.error().providerDetails().get("reason"));
                 assertEquals(String.valueOf(
-                                PortableWriteLimits.MAX_NESTED_CONTAINERS + 1),
+                                PartialUpdateStructureValidator.MAX_NESTING_DEPTH + 1),
                         failure.error().providerDetails().get("actualNestingDepth"));
                 assertNull(failure.error().provider());
             }

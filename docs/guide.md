@@ -1714,7 +1714,9 @@ requiring a fixed absolute expiry must not call `update()` on TTL-bearing items.
 
 Read available write metadata (last-modified timestamp, TTL expiry,
 version/ETag) by setting `includeMetadata(true)` on read operations.
-`metadata()` is **null when metadata was not requested**.
+`metadata()` is **null when metadata was not requested**. The snippets use a
+class-level SLF4J logger such as
+`private static final Logger LOG = LoggerFactory.getLogger(YourApplication.class)`.
 
 ### Reading Metadata
 
@@ -1728,13 +1730,13 @@ DocumentMetadata meta = result.metadata(); // requested: current providers retur
 
 if (meta != null) {
     if (meta.lastModified() != null) {
-        System.out.println("Last modified : " + meta.lastModified());
+        LOG.info("Last modified: {}", meta.lastModified());
     }
     if (meta.ttlExpiry() != null) {
-        System.out.println("Expires at    : " + meta.ttlExpiry());
+        LOG.info("Expires at: {}", meta.ttlExpiry());
     }
     if (meta.version() != null) {
-        System.out.println("Version/ETag  : " + meta.version());
+        LOG.info("Version/ETag: {}", meta.version());
     }
 }
 ```
@@ -1759,7 +1761,7 @@ if (client.capabilities().isSupported(Capability.WRITE_TIMESTAMP)) {
     DocumentResult r = client.read(address, key,
             OperationOptions.builder().includeMetadata(true).build());
     if (r != null && r.metadata().lastModified() != null) {
-        System.out.println(r.metadata().lastModified());
+        LOG.info("Last modified: {}", r.metadata().lastModified());
     }
 }
 ```
@@ -1835,8 +1837,9 @@ try {
 Oversized documents are rejected **at the SDK layer** - no network call is made.
 The error category is always `INVALID_REQUEST`.
 
-`com.multiclouddb.api.PortableWriteLimits` exposes the serialized, structural,
-field-name, nesting, and partial-update field-count constants.
+The shared layer enforces these limits internally rather than exposing
+compile-time Java constants. `INVALID_REQUEST` details report the applicable
+maximum at runtime.
 
 ---
 

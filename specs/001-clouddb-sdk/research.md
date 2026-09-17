@@ -350,10 +350,11 @@ This appendix is **non-normative**. It records Java SDK behaviors that impact th
 
 ## Decision 23: Uniform write-input envelope (390 KiB)
 
-- **Decision**: Add public `PortableWriteLimits` constants for the independent
-  390 KiB serialized and structural bounds, 50,000-byte field-name bound,
-  31-container depth bound, and 10-field partial-update bound. Internal
-  `DocumentSizeValidator` enforcement snapshots top-level maps and uses bounded
+- **Decision**: Keep the six enforcement defaults package-private while applying
+  the independent 390 KiB serialized and structural bounds, 50,000-byte nested
+  and partial-update field-name bound, 128-character complete-document
+  top-level-name bound, 31-container depth bound, and 10-field partial-update
+  bound uniformly. `DocumentSizeValidator` enforcement snapshots top-level maps and uses bounded
   SDK-owned Jackson serialization while inspecting nested values. It rejects null
   complete documents; top-level `id`, `partitionKey`, `sortKey`, `ttl`,
   `ttlExpiry`, and `data` case-insensitively; every underscore-prefixed
@@ -366,6 +367,9 @@ This appendix is **non-normative**. It records Java SDK behaviors that impact th
 - **Alternatives considered**:
   - Enforce per-provider adapter: duplicates logic, inconsistent enforcement.
   - Enforce at SPI layer: coupling SPI to a specific limit.
+  - Expose primitive public constants: Java callers inline them at compile time,
+    preventing the SDK from evolving defaults safely. Runtime discovery and
+    customer configuration are deferred to [#116](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/116).
 
 ---
 

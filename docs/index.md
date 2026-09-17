@@ -37,11 +37,11 @@ capability-gated.
 
 | Challenge | How the SDK helps |
 |-----------|-------------------|
-| **Vendor lock-in** | Single `MulticloudDbClient` interface - portable base operations + query with explicit capability gates |
+| **Vendor lock-in** | Single `MulticloudDbClient` interface - portable point operations (create/read/upsert/delete) + query with explicit capability gates |
 | **Divergent query languages** | Portable DSL auto-translated to Cosmos SQL, PartiQL, or GoogleSQL |
-| **Migration pain** | Switch providers by changing one property for the portable base; check capabilities before optional operations |
+| **Migration pain** | Switch providers by changing one property for the common operation set; check capabilities before optional operations |
 | **Feature uncertainty** | Runtime `CapabilitySet` introspection and structured `UNSUPPORTED_CAPABILITY` errors |
-| **Cross-provider testing** | Shared conformance verifies the base contract and capability-gated behavior |
+| **Cross-provider testing** | Shared conformance verifies the common contract and capability-gated behavior |
 
 ---
 
@@ -53,7 +53,7 @@ capability-gated.
 
 ### :material-swap-horizontal: Write Once, Run Anywhere
 
-Single `MulticloudDbClient` interface for portable base operations and query.
+Single `MulticloudDbClient` interface for portable point operations and query.
 Capability discovery makes optional operations explicit when providers differ.
 
 [Learn more →](architecture.md)
@@ -97,7 +97,7 @@ Partition-scoped queries for efficient within-partition reads.
 
 ### :material-test-tube: Conformance Testing
 
-Shared base-operation and query conformance runs against each provider
+Shared point-operation and query conformance runs against each provider
 emulator; optional behavior is exercised only when its capability is advertised.
 
 [Learn more →](contributing.md)
@@ -165,8 +165,8 @@ Sample applications are maintained in a separate repository:
 
 | Sample | Description | Details |
 |--------|-------------|---------|
-| **Portable Base Operations + Query** | Minimal create/read/upsert/delete/query sample; update is capability-gated | [View guide →](https://github.com/microsoft/multiclouddb-sdk-for-java-samples#portable-crud--query-sample) |
-| **TODO App** | Base-operation web app; completion update requires `PARTIAL_UPDATE` | [View guide →](https://github.com/microsoft/multiclouddb-sdk-for-java-samples/blob/main/README-todo-app.md) |
+| **Portable Point Operations + Query** | Minimal create/read/upsert/delete/query sample; update is capability-gated | [View guide →](https://github.com/microsoft/multiclouddb-sdk-for-java-samples#portable-crud--query-sample) |
+| **TODO App** | Key-based document web app; completion update requires `PARTIAL_UPDATE` | [View guide →](https://github.com/microsoft/multiclouddb-sdk-for-java-samples/blob/main/README-todo-app.md) |
 | **Risk Analysis Platform** | Multi-tenant portfolio risk analytics with executive dashboard | [View guide →](https://github.com/microsoft/multiclouddb-sdk-for-java-samples/blob/main/README-risk-platform.md) |
 
 Sample callers check `Capability.PARTIAL_UPDATE` before `update()`. Cosmos DB
@@ -192,7 +192,7 @@ MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
 
 try (MulticloudDbClient client = MulticloudDbClientFactory.create(config)) {
 
-// Portable base operations - same code for every provider
+// Portable point operations - same code for every provider
 ResourceAddress todos = new ResourceAddress("mydb", "todos");
 MulticloudDbKey key = MulticloudDbKey.of("todo-1", "todo-1");
 Map<String, Object> doc = Map.of(

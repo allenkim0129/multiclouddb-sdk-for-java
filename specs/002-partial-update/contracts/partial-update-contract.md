@@ -106,15 +106,17 @@ names beginning with `_`, fail through the same zero-I/O category. Remaining
 top-level names must be unique ignoring case and contain at most 128 Unicode
 characters; nested names retain the 50,000-byte UTF-8 limit.
 
-`com.multiclouddb.api.PortableWriteLimits` exposes exactly these six
-input/structure constants:
+Shared preflight enforces these six input/structure limits:
 
-- `MAX_SERIALIZED_INPUT_BYTES=399360`
-- `MAX_STRUCTURAL_FOOTPRINT_BYTES=399360`
-- `MAX_FIELD_NAME_UTF8_BYTES=50000`
-- `MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS=128`
-- `MAX_NESTED_CONTAINERS=31`
-- `MAX_PARTIAL_UPDATE_FIELDS=10`
+- serialized input: 399,360 bytes
+- structural footprint: 399,360 bytes
+- nested and partial-update field names: 50,000 UTF-8 bytes
+- complete-document top-level field names: 128 Unicode characters
+- nested map/list containers: 31
+- partial-update fields: 10
+
+The values are behavioral contract limits, not public Java constants. Typed
+`INVALID_REQUEST` details report the applicable maximum at runtime.
 
 ## Provider release boundary
 
@@ -221,7 +223,7 @@ absolute expiry and advertises the corresponding capability.
 Complete `create()`/`upsert()` documents share the 31-level, 50,000-byte nested
 field-name, binary-value, and 390 KiB structural-footprint checks. Their top-level
 names use the 128-character case-insensitive portable namespace. This ensures
-SDK-created base documents fit the same native-safe envelope.
+SDK-created complete documents fit the same native-safe envelope.
 
 After provider mapping, `DefaultMulticloudDbClient` centrally removes top-level
 adapter storage names case-insensitively from read and query documents: `id`,

@@ -240,11 +240,12 @@ requiring fixed absolute expiry do not call `update()` on TTL-bearing items.
   the same zero-I/O category. Remaining top-level names MUST be unique under a
   case-insensitive comparison and contain at most 128 Unicode characters;
   nested names retain the 50,000-byte UTF-8 limit.
-- **FR-040**: Public `com.multiclouddb.api.PortableWriteLimits` constants MUST
-  expose exactly six input/structure limits: both 399,360-byte limits, the
-  50,000-byte nested/partial-update name limit, the 128-character complete-write
-  top-level name limit, the 31-container depth limit, and the 10-field
-  partial-update limit.
+- **FR-040**: Shared preflight MUST enforce exactly six input/structure limits:
+  both 399,360-byte limits, the 50,000-byte nested/partial-update name limit, the
+  128-character complete-write top-level name limit, the 31-container depth
+  limit, and the 10-field partial-update limit. Implementation constants MUST
+  remain outside the public Java API, and typed `INVALID_REQUEST` details MUST
+  report the applicable maximum.
 - **FR-041**: TTL timing MUST remain outside the portable partial-update
   contract. DynamoDB `UpdateItem` MAY happen to leave the absolute `ttlExpiry`
   unchanged, while Cosmos DB `patchItem` advances `_ts` and restarts relative

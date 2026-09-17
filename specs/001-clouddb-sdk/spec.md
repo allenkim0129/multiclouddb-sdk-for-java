@@ -6,7 +6,7 @@
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - Write Once, Run Anywhere Base Operations + Query (Priority: P1)
+### User Story 1 - Write Once, Run Anywhere Point Operations + Query (Priority: P1)
 
 As an application developer, I can use a single SDK interface to perform create, read, upsert, delete, and read-query operations against a chosen cloud database provider, switching providers by configuration only.
 
@@ -77,7 +77,7 @@ performing data operations, without using provider SDKs directly. The schema
 must respect provider addressing constraints: a Spanner client provisions only
 its configured `databaseId`.
 
-**Why this priority**: Applications need database and collection resources to exist before portable base operations and queries can succeed. Without portable provisioning, developers must write provider-specific setup code (Cosmos SDK, DynamoDB SDK, Spanner Admin API), which defeats the "write once, run anywhere" goal and leaks provider details into application code.
+**Why this priority**: Applications need database and collection resources to exist before portable point operations and queries can succeed. Without portable provisioning, developers must write provider-specific setup code (Cosmos SDK, DynamoDB SDK, Spanner Admin API), which defeats the "write once, run anywhere" goal and leaks provider details into application code.
 
 **Independent Test**: A sample application can call `provisionSchema` (or
 individual `ensureDatabase` and `ensureContainer`) with a schema containing the
@@ -645,7 +645,7 @@ Portability is the default mode of the SDK.
 
 The initial SDK version exposes **synchronous (blocking) APIs only**.
 
-- All base operations (`create`, `read`, `upsert`, `delete`, `query`,
+- All listed operations (`create`, `read`, `upsert`, `delete`, `query`,
   `ensureDatabase`, `ensureContainer`, `provisionSchema`) return results
   synchronously. The capability-gated `update()` operation is also synchronous
   when `PARTIAL_UPDATE` is supported.
@@ -666,10 +666,10 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 
 - **FR-001**: The SDK MUST allow selecting the target provider (Cosmos DB, DynamoDB, Spanner) through configuration only, without requiring application code changes.
 - **FR-002**: The SDK MUST expose a single, provider-neutral client abstraction
-  for portable base operations: create-by-key, read-by-key,
-  upsert/full-replace-by-key, delete-by-key, and read-query. Shallow
-  `update()` is an optional operation gated by `PARTIAL_UPDATE`, not part of the
-  every-provider base.
+  for portable point operations (create-by-key, read-by-key,
+  upsert/full-replace-by-key, and delete-by-key) plus read-query. Shallow
+  `update()` is an optional operation gated by `PARTIAL_UPDATE` and is not
+  universally available across providers.
 - **FR-003**: The SDK MUST define a portable “resource addressing” scheme that can uniquely identify a logical database/namespace and a logical collection (container/table) for all supported providers.
 - **FR-004**: The SDK MUST define a portable key representation that can express the minimum key material required by each provider, and it MUST validate key completeness before issuing a request.
 - **FR-005**: The SDK MUST support a portable document payload for common
@@ -820,14 +820,13 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
   `UNSUPPORTED_CAPABILITY`.
 - **FR-062**: The SDK MUST define and document uniform quota limits for provider resources (e.g., maximum logical partition size) so that applications can anticipate constraints regardless of the selected provider.
 - **FR-063**: When a provider-specific quota limit is reached (e.g., partition size exceeded, throughput exhausted), the SDK MUST surface the failure through the standard provider-neutral error model with clear categorization and actionable guidance.
-- **FR-064**: The public
-  `com.multiclouddb.api.PortableWriteLimits` class MUST expose
-  `MAX_SERIALIZED_INPUT_BYTES=399360`,
-  `MAX_STRUCTURAL_FOOTPRINT_BYTES=399360`,
-  `MAX_FIELD_NAME_UTF8_BYTES=50000`, `MAX_NESTED_CONTAINERS=31`, and
-  `MAX_PARTIAL_UPDATE_FIELDS=10` so applications can perform pre-validation or
-  display the portable write limits without duplicating literals. These five size, structure, name, nesting, and field-count limits are the
-  complete public constant surface.
+- **FR-064**: The 399,360-byte serialized and structural bounds, 50,000-byte
+  nested/partial-update field-name bound, 128-character complete-document
+  top-level-name bound, 31-container depth bound, and 10-field partial-update
+  bound MUST be enforced by the shared API layer. Their implementation constants
+  MUST remain outside the public Java API; failures MUST expose the applicable
+  maximum through typed `INVALID_REQUEST` details. Runtime discovery and customer
+  configuration are deferred to [#116](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/116).
 - **FR-064a**: `CapabilitySet` MUST supply an unsupported default only for an
   omitted `PARTIAL_UPDATE` declaration, without synthesizing unrelated omitted
   names. Every built-in provider's effective set MUST contain 18 rows. Cosmos
@@ -1429,9 +1428,10 @@ This checklist is used to accept the feature as “done” at the spec level.
 - [ ] Complete create/upsert documents reject top-level `id`, `partitionKey`,
   `sortKey`, `ttl`, `ttlExpiry`, and `data` case-insensitively, plus every
   underscore-prefixed top-level name, before provider I/O.
-- [ ] `PortableWriteLimits` exposes both 399,360-byte write bounds, the
-  50,000-byte field-name limit, 31-container nesting limit, and 10-field
-  partial-update limit for application pre-validation.
+- [ ] Shared preflight enforces both 399,360-byte write bounds, the 50,000-byte
+  nested/partial-update field-name limit, 128-character complete-document
+  top-level-name limit, 31-container nesting limit, and 10-field partial-update
+  limit without exposing compile-time Java constants.
 - [ ] Every built-in effective capability set contains 18 rows; Cosmos DB and
   DynamoDB explicitly declare 18, while Spanner declares 17 and receives only
   the core `PARTIAL_UPDATE` unsupported API default.

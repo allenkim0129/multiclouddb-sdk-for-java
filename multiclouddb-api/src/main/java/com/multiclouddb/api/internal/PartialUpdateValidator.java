@@ -7,7 +7,6 @@ import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.OperationOptions;
-import com.multiclouddb.api.PortableWriteLimits;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
@@ -48,10 +47,10 @@ import java.util.Set;
 public final class PartialUpdateValidator {
 
     /** Portable upper bound that keeps every update to one native write operation. */
-    public static final int MAX_FIELDS = PortableWriteLimits.MAX_PARTIAL_UPDATE_FIELDS;
+    public static final int MAX_FIELDS = WriteLimits.MAX_PARTIAL_UPDATE_FIELDS;
 
     /** Portable byte bound compatible with the AWS SDK's 50,000-character read limit. */
-    public static final int MAX_FIELD_NAME_BYTES = PortableWriteLimits.MAX_FIELD_NAME_UTF8_BYTES;
+    public static final int MAX_FIELD_NAME_BYTES = WriteLimits.MAX_FIELD_NAME_UTF8_BYTES;
 
     public static final String FIELD_NAME_SIZE_LIMIT_REASON =
             "partial_update_field_name_size_limit";

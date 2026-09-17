@@ -31,7 +31,7 @@ dependencies {
 
 1. Load configuration (provider selection + connection/auth details).
 2. Construct `MulticloudDbClient` from configuration.
-3. Use portable base operations: `create`, `read`, `upsert`, `delete`, `query`.
+3. Use portable point operations (`create`, `read`, `upsert`, `delete`) and query.
 4. Use `update` only when `Capability.PARTIAL_UPDATE` is supported.
 
 ### Example (illustrative)
@@ -297,6 +297,9 @@ client.create(address, key, document, optionsWithTtl);
 
 ### Reading document metadata
 
+This snippet assumes a class-level SLF4J logger such as
+`private static final Logger LOG = LoggerFactory.getLogger(YourApplication.class)`.
+
 ```java
 OperationOptions optionsWithMeta = OperationOptions.builder()
     .includeMetadata(true)
@@ -306,9 +309,9 @@ DocumentResult result = client.read(address, key, optionsWithMeta);
 ObjectNode doc = result.document();
 DocumentMetadata meta = result.metadata(); // requested: current providers return an envelope
 if (meta != null) {
-    if (meta.lastModified() != null) System.out.println("Last written: " + meta.lastModified());
-    if (meta.ttlExpiry() != null) System.out.println("Expires at: " + meta.ttlExpiry());
-    if (meta.version() != null) System.out.println("ETag: " + meta.version());
+    if (meta.lastModified() != null) LOG.info("Last written: {}", meta.lastModified());
+    if (meta.ttlExpiry() != null) LOG.info("Expires at: {}", meta.ttlExpiry());
+    if (meta.version() != null) LOG.info("ETag: {}", meta.version());
 }
 ```
 
@@ -336,10 +339,10 @@ invalid. Complete writes also reject top-level `id`, `partitionKey`, `sortKey`,
 `ttl`, `ttlExpiry`, and `data` case-insensitively, plus every
 underscore-prefixed top-level name.
 
-Use `PortableWriteLimits.MAX_SERIALIZED_INPUT_BYTES`,
-`MAX_STRUCTURAL_FOOTPRINT_BYTES`, `MAX_FIELD_NAME_UTF8_BYTES`,
-`MAX_NESTED_CONTAINERS`, and `MAX_PARTIAL_UPDATE_FIELDS` instead of duplicating
-numeric literals.
+The enforcement values are internal rather than compile-time Java constants.
+Handle typed `INVALID_REQUEST` limit details instead of duplicating numeric
+literals. Runtime limit discovery and configuration are deferred to
+[#116](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/116).
 
 ```java
 // Inputs exceeding either portable bound are rejected before any I/O
@@ -348,7 +351,7 @@ try {
     client.create(address, key, largeDoc, OperationOptions.defaults());
 } catch (MulticloudDbException e) {
     if (e.error().category() == MulticloudDbErrorCategory.INVALID_REQUEST) {
-        System.out.println("Write input outside portable envelope: " + e.error().message());
+        LOG.warn("Write input outside portable envelope: {}", e.error().message());
     }
 }
 ```

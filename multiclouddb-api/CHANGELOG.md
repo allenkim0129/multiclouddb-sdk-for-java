@@ -11,10 +11,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Added
 
 - Added the well-known `PARTIAL_UPDATE` capability. Cosmos DB and DynamoDB support the shallow update contract; Spanner receives the backward-compatible unsupported API default. Portable behavior is guaranteed only when both the resulting logical document's serialized JSON and portable structural footprint are within 390 KiB.
-- Added `com.multiclouddb.api.PortableWriteLimits`, exposing the 390 KiB serialized-input and structural-footprint limits, 50,000-byte nested/partial-update field-name limit, 128-character complete-write top-level field-name limit, 31-container nesting limit, and 10-field partial-update limit as public constants.
 
 ### Changed
 
+- The proposed public compile-time write-limit constants were removed during review. Shared preflight still enforces the same limits and reports runtime details; a discoverable, customer-configurable limits API is deferred to [#116](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/116).
 - **BREAKING (pre-1.0 beta): `update()` changed from complete replacement to
   shallow partial update.** Callers, including code already compiled against an
   earlier beta, must migrate their update payloads and expectations before

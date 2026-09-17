@@ -296,7 +296,8 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
                 }
                 metadata = metaBuilder.build();
             }
-            return new DocumentResult(DynamoItemMapper.stripProviderFields(doc), metadata);
+            DynamoItemMapper.removeProviderFields(doc);
+            return new DocumentResult(doc, metadata);
         } catch (DynamoDbException e) {
             throw DynamoErrorMapper.map(e, OperationNames.READ);
         }
@@ -616,7 +617,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
             // ORDER BY c.id ASC. Ordering applies within this page only; see
             // SORT_KEY_ASC for the multi-page limitation note.
             items.sort(SORT_KEY_ASC);
-            stripProviderFields(items);
+            removeProviderFields(items);
 
             OperationDiagnostics diag = buildQueryDiagnostics(OperationNames.QUERY_WITH_TRANSLATION, address,
                     response.responseMetadata().requestId(),
@@ -667,7 +668,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         for (Map<String, AttributeValue> item : response.items()) {
             items.add(DynamoItemMapper.attributeMapToMap(item));
         }
-        stripProviderFields(items);
+        removeProviderFields(items);
 
         OperationDiagnostics partiqlDiag = buildQueryDiagnostics(DynamoConstants.OP_QUERY_PARTIQL, null,
                 response.responseMetadata().requestId(),
@@ -738,7 +739,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         for (Map<String, AttributeValue> item : response.items()) {
             items.add(DynamoItemMapper.attributeMapToMap(item));
         }
-        stripProviderFields(items);
+        removeProviderFields(items);
 
         String continuationToken = null;
         if (response.lastEvaluatedKey() != null && !response.lastEvaluatedKey().isEmpty()) {
@@ -789,7 +790,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         // applies within this page only; see SORT_KEY_ASC for the multi-page
         // limitation note.
         items.sort(SORT_KEY_ASC);
-        stripProviderFields(items);
+        removeProviderFields(items);
 
         String continuationToken = null;
         if (response.lastEvaluatedKey() != null && !response.lastEvaluatedKey().isEmpty()) {
@@ -856,7 +857,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         // applies within this page only; see SORT_KEY_ASC for the multi-page
         // limitation note.
         items.sort(SORT_KEY_ASC);
-        stripProviderFields(items);
+        removeProviderFields(items);
 
         String continuationToken = null;
         if (response.lastEvaluatedKey() != null && !response.lastEvaluatedKey().isEmpty()) {
@@ -903,8 +904,8 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      * For multi-page scans the overall iteration order across pages remains
      * determined by DynamoDB's internal token-based traversal, not by sort key.
      */
-    private static void stripProviderFields(List<Map<String, Object>> items) {
-        items.replaceAll(DynamoItemMapper::stripProviderFields);
+    private static void removeProviderFields(List<Map<String, Object>> items) {
+        items.forEach(DynamoItemMapper::removeProviderFields);
     }
     private static final Comparator<Map<String, Object>> SORT_KEY_ASC =
             (a, b) -> {

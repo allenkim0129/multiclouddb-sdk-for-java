@@ -6,13 +6,13 @@ calls fail locally with `UNSUPPORTED_CAPABILITY`.
 
 ---
 
-## Portable Base Contract
+## Portable Common Contract
 
-Create, read, upsert, delete, and query form the every-provider base contract.
+Create, read, upsert, delete, and query form the common every-provider contract.
 Shallow partial `update()` is a separate, capability-gated operation; it is not
-part of that base.
+part of that common contract.
 
-### Base Document Operations
+### Point Operations
 
 | Operation | Description |
 |-----------|-------------|
@@ -70,9 +70,9 @@ complete document, top-level names matching `id`, `partitionKey`, `sortKey`,
 with `_`. Values must be serializable with the SDK-owned Jackson configuration;
 caller-registered modules are not consulted. One bounded serialization creates
 the detached normalized provider input, including POJO values. Binary values
-hidden inside POJOs are rejected. `com.multiclouddb.api.PortableWriteLimits`
-exposes all six serialized, structural, name, nesting, and partial-update
-field-count constants.
+hidden inside POJOs are rejected. The shared layer keeps all six serialized,
+structural, name, nesting, and partial-update limits internal rather than
+exposing compile-time Java constants.
 The structural preflight covers only incoming replacements; it does not read and
 merge existing state. A result above either 390 KiB bound is outside this
 release's portable contract and may succeed or fail under native provider

@@ -59,10 +59,10 @@
 - [x] Every built-in provider exposes 18 effective capability rows; only an
   omitted `PARTIAL_UPDATE` declaration defaults to unsupported, while unrelated
   omissions in arbitrary partial sets remain absent.
-- [x] `PortableWriteLimits` exposes exactly six input/structure constants:
-  both 399,360-byte limits, 50,000-byte nested/partial-update names,
-  128-character complete-write top-level names, 31 nested containers, and 10
-  update fields.
+- [x] Shared preflight enforces six input/structure limits: both 399,360-byte
+  bounds, 50,000-byte nested/partial-update names, 128-character complete-write
+  top-level names, 31 nested containers, and 10 update fields. Implementation
+  constants remain internal rather than becoming compile-time public API.
 
 ## Cosmos DB
 

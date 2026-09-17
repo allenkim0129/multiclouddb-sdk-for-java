@@ -8,7 +8,6 @@ import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.OperationNames;
-import com.multiclouddb.api.PortableWriteLimits;
 
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -28,7 +27,11 @@ import java.util.Set;
 public final class DocumentSizeValidator {
 
     /** Portable 390 KiB serialized payload and structural-footprint limit. */
-    public static final int MAX_BYTES = PortableWriteLimits.MAX_SERIALIZED_INPUT_BYTES;
+    public static final int MAX_BYTES = WriteLimits.MAX_SERIALIZED_INPUT_BYTES;
+
+    /** Maximum Unicode characters in a complete document top-level field name. */
+    public static final int MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS =
+            WriteLimits.MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS;
 
     private static final String RESERVED_DOCUMENT_FIELD_REASON =
             "reserved_document_field";
@@ -108,16 +111,16 @@ public final class DocumentSizeValidator {
         Set<String> foldedNames = new HashSet<>();
         for (String field : document.keySet()) {
             int characters = field.codePointCount(0, field.length());
-            if (characters > PortableWriteLimits.MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS) {
+            if (characters > MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS) {
                 Map<String, String> details = new LinkedHashMap<>();
                 details.put("reason", TOP_LEVEL_FIELD_NAME_LIMIT_REASON);
                 details.put("actualFieldNameCharacters", String.valueOf(characters));
                 details.put("maximumFieldNameCharacters", String.valueOf(
-                        PortableWriteLimits.MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS));
+                        MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS));
                 throw invalidRequest(
                         "Complete write top-level field name is " + characters
                                 + " characters; the portable maximum is "
-                                + PortableWriteLimits.MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS + ".",
+                                + MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS + ".",
                         operation, details, null);
             }
 

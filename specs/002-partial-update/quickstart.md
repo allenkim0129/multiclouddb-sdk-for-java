@@ -146,19 +146,11 @@ and structural envelope. Native size failures remain non-retryable
 `UNSUPPORTED_CAPABILITY` errors with
 stable `providerDetails.reason` and limit values.
 
-Use the public constants instead of copying literals:
-
-```java
-int inputBytes = PortableWriteLimits.MAX_SERIALIZED_INPUT_BYTES;
-int footprintBytes = PortableWriteLimits.MAX_STRUCTURAL_FOOTPRINT_BYTES;
-int nameBytes = PortableWriteLimits.MAX_FIELD_NAME_UTF8_BYTES;
-int topLevelNameCharacters =
-    PortableWriteLimits.MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS;
-int depth = PortableWriteLimits.MAX_NESTED_CONTAINERS;
-int updateFields = PortableWriteLimits.MAX_PARTIAL_UPDATE_FIELDS;
-```
-
-These are the only six `PortableWriteLimits` constants.
+The enforcement values are internal rather than compile-time Java constants.
+Applications should handle typed `INVALID_REQUEST` limit details rather than
+copying values for client-side prevalidation. Runtime discovery and customer
+configuration are deferred to
+[#116](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/116).
 
 Case-distinct field identity is part of the base `PARTIAL_UPDATE` contract.
 Names such as `status` and `STATUS` remain separate fields across calls and may

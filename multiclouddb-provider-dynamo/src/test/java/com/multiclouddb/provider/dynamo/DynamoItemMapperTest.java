@@ -45,24 +45,28 @@ class DynamoItemMapperTest {
 
 
     @Test
-    void portableResultCopiesOmitDynamoOwnedFields() {
+    void portableResultRemovalMutatesOnlyTopLevelDynamoOwnedFields() {
+        Map<String, Object> nested = new LinkedHashMap<>();
+        nested.put("partitionKey", "nested-value");
         Map<String, Object> rawMap = new LinkedHashMap<>();
         rawMap.put(DynamoConstants.ATTR_PARTITION_KEY, "partition");
         rawMap.put(DynamoConstants.ATTR_SORT_KEY, "item");
         rawMap.put(DynamoConstants.ATTR_TTL_EXPIRY, 1_700_000_000L);
         rawMap.put("title", "portable");
-
-        Map<String, Object> portableMap = DynamoItemMapper.stripProviderFields(rawMap);
-        assertEquals(Map.of("title", "portable"), portableMap);
-        assertTrue(rawMap.containsKey(DynamoConstants.ATTR_TTL_EXPIRY));
-
+        rawMap.put("nested", nested);
         ObjectNode rawNode = MAPPER.valueToTree(rawMap);
-        ObjectNode portableNode = DynamoItemMapper.stripProviderFields(rawNode);
-        assertEquals("portable", portableNode.get("title").asText());
-        assertFalse(portableNode.has(DynamoConstants.ATTR_PARTITION_KEY));
-        assertFalse(portableNode.has(DynamoConstants.ATTR_SORT_KEY));
-        assertFalse(portableNode.has(DynamoConstants.ATTR_TTL_EXPIRY));
-        assertTrue(rawNode.has(DynamoConstants.ATTR_PARTITION_KEY));
+        JsonNode nestedNode = rawNode.get("nested");
+
+        DynamoItemMapper.removeProviderFields(rawMap);
+        assertEquals(Map.of("title", "portable", "nested", nested), rawMap);
+        assertSame(nested, rawMap.get("nested"));
+
+        DynamoItemMapper.removeProviderFields(rawNode);
+        assertEquals("portable", rawNode.get("title").asText());
+        assertFalse(rawNode.has(DynamoConstants.ATTR_PARTITION_KEY));
+        assertFalse(rawNode.has(DynamoConstants.ATTR_SORT_KEY));
+        assertFalse(rawNode.has(DynamoConstants.ATTR_TTL_EXPIRY));
+        assertSame(nestedNode, rawNode.get("nested"));
     }
     @Test
     void booleanRoundTrip() {

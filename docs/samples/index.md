@@ -19,7 +19,7 @@ support it, while the current Spanner provider rejects it before provider I/O.
 
 <div class="card" markdown>
 
-### :material-code-tags:{ .card-icon } Portable Base Operations + Query
+### :material-code-tags:{ .card-icon } Portable Point Operations + Query
 
 A minimal end-to-end sample showing create/read/upsert/delete and the portable
 query DSL against any provider, with partial update exercised only when the
@@ -77,7 +77,7 @@ Then see the individual guides above for per-sample instructions.
 
 ## What the Samples Demonstrate
 
-| Feature | Portable Base Operations + Query | TODO App | Risk Platform |
+| Feature | Portable Point Operations + Query | TODO App | Risk Platform |
 |---------|:---------------------:|:--------:|:-------------:|
 | Base create/read/upsert/delete operations | ✅ | ✅ | ✅ |
 | Capability check before partial update | ✅ | ✅ | — |

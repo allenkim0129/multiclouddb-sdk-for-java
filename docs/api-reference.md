@@ -14,7 +14,7 @@ contract.
 
 | Type | Description |
 |------|-------------|
-| `MulticloudDbClient` | The main client interface - base operations, capability-gated update, query, provisioning, and capabilities |
+| `MulticloudDbClient` | The main client interface - point operations, capability-gated partial update, query, provisioning, and capabilities |
 | `MulticloudDbClientFactory` | Creates a client by discovering providers via `ServiceLoader` |
 | `MulticloudDbClientConfig` | Builder-pattern configuration for provider, connection, and auth |
 | `ResourceAddress` | A `(database, collection)` pair targeting a container/table |
@@ -27,7 +27,6 @@ contract.
 | `MulticloudDbException` | Structured error with portable error category |
 | `OperationOptions` | Per-operation timeout and metadata controls; `ttlSeconds` is create/upsert-only |
 | `OperationDiagnostics` | Latency, request charge, request ID, and item count |
-| `PortableWriteLimits` | Public constants for serialized, structural, field-name, nesting, and partial-update field-count limits |
 
 ### `update()` Partial-Update Contract
 
@@ -118,9 +117,9 @@ UTF-8 bytes. Values must be serializable with the SDK-owned Jackson configuratio
 caller-registered modules are not consulted. One bounded serialization produces
 a detached normalized snapshot, and that exact snapshot is delegated. Serialized
 UTF-8 input and structural footprint have separate 390 KiB limits, with at most
-31 map/list containers below the document root. `PortableWriteLimits` exposes
-all six serialized, structural, name, nesting, and partial-update field-count
-constants. Violations are non-retryable `INVALID_REQUEST`.
+31 map/list containers below the document root. These limits are enforced
+internally and are not exposed as compile-time Java constants. Violations are
+non-retryable `INVALID_REQUEST` and include structured limit details.
 
 ### Query Expression Types
 
@@ -175,5 +174,5 @@ import from this package.
 | Type | Description |
 |------|-------------|
 | `MulticloudDbProviderAdapter` | Factory SPI - creates a provider client from config |
-| `MulticloudDbProviderClient` | Implementation SPI - base operations, capability-gated update, query, and provisioning |
+| `MulticloudDbProviderClient` | Implementation SPI - point operations, capability-gated partial update, query, and provisioning |
 | `SdkUserAgent` | Builds the canonical user-agent header token |

@@ -40,11 +40,14 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.AbstractMap;
+import java.util.AbstractSet;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletionException;
 
 /**
@@ -247,34 +250,83 @@ public final class DefaultMulticloudDbClient implements MulticloudDbClient {
             return null;
         }
 
-        ObjectNode document = result.document().deepCopy();
-        List<String> fieldsToRemove = new ArrayList<>();
-        document.fieldNames().forEachRemaining(name -> {
-            if (PartialUpdateValidator.isReservedProviderField(name)) {
-                fieldsToRemove.add(name);
+        ObjectNode document = result.document().objectNode();
+        result.document().fields().forEachRemaining(entry -> {
+            if (isPortableResultField(entry.getKey())) {
+                document.set(entry.getKey(), entry.getValue());
             }
         });
-        document.remove(fieldsToRemove);
         return new DocumentResult(document, result.metadata());
     }
 
     private static QueryPage normalizeQueryPage(QueryPage page) {
-        List<Map<String, Object>> items = new ArrayList<>(page.items().size());
-        for (Map<String, Object> item : page.items()) {
-            items.add(copyPortableItem(item));
-        }
-        return new QueryPage(items, page.continuationToken(), page.diagnostics());
-    }
+        List<Map<String, Object>> sourceItems = page.items();
+        List<Map<String, Object>> portableItems = null;
+        for (int index = 0; index < sourceItems.size(); index++) {
+            Map<String, Object> item = sourceItems.get(index);
+            int visibleFieldCount = portableFieldCount(item);
+            boolean requiresFiltering = visibleFieldCount != item.size();
 
-    private static Map<String, Object> copyPortableItem(Map<String, Object> item) {
-        Map<String, Object> portableItem = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> entry : item.entrySet()) {
-            String name = entry.getKey();
-            if (name == null || !PartialUpdateValidator.isReservedProviderField(name)) {
-                portableItem.put(name, entry.getValue());
+            if (portableItems == null && requiresFiltering) {
+                portableItems = new ArrayList<>(sourceItems.size());
+                portableItems.addAll(sourceItems.subList(0, index));
+            }
+            if (portableItems != null) {
+                portableItems.add(requiresFiltering
+                        ? new PortableItemMapView(item, visibleFieldCount)
+                        : item);
             }
         }
-        return portableItem;
+
+        if (portableItems == null) {
+            return page;
+        }
+        return new QueryPage(
+                portableItems, page.continuationToken(), page.diagnostics());
+    }
+
+    private static int portableFieldCount(Map<String, Object> item) {
+        int count = 0;
+        for (String name : item.keySet()) {
+            if (isPortableResultField(name)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static boolean isPortableResultField(String name) {
+        return name == null || !PartialUpdateValidator.isReservedProviderField(name);
+    }
+
+    /** Transient filtering view consumed immediately by {@link QueryPage}'s copy. */
+    private static final class PortableItemMapView extends AbstractMap<String, Object> {
+        private final Map<String, Object> item;
+        private final int size;
+        private final Set<Entry<String, Object>> entries;
+
+        private PortableItemMapView(Map<String, Object> item, int size) {
+            this.item = item;
+            this.size = size;
+            this.entries = new AbstractSet<>() {
+                @Override
+                public Iterator<Entry<String, Object>> iterator() {
+                    return PortableItemMapView.this.item.entrySet().stream()
+                            .filter(entry -> isPortableResultField(entry.getKey()))
+                            .iterator();
+                }
+
+                @Override
+                public int size() {
+                    return PortableItemMapView.this.size;
+                }
+            };
+        }
+
+        @Override
+        public Set<Entry<String, Object>> entrySet() {
+            return entries;
+        }
     }
 
     /**

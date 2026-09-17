@@ -60,7 +60,7 @@ unresolved-error bytecode.
 - `multiclouddb-api/src/main/java/com/multiclouddb/api/Capability.java`
 - `multiclouddb-api/src/main/java/com/multiclouddb/api/MulticloudDbClient.java`
 - `multiclouddb-api/src/main/java/com/multiclouddb/api/OperationOptions.java`
-- `multiclouddb-api/src/main/java/com/multiclouddb/api/PortableWriteLimits.java`
+- `multiclouddb-api/src/main/java/com/multiclouddb/api/internal/WriteLimits.java`
 - `multiclouddb-api/src/main/java/com/multiclouddb/api/internal/DefaultMulticloudDbClient.java`
 - `multiclouddb-api/src/main/java/com/multiclouddb/api/internal/DocumentSizeValidator.java`
 - `multiclouddb-api/src/main/java/com/multiclouddb/api/internal/PartialUpdateValidator.java`
@@ -108,10 +108,10 @@ the provider-direct legacy update method through `MulticloudDbClient.update()`.
 5. Enforce the portable 390 KiB serialized-input limit while producing output.
 6. Enforce 31-level complete-document/replacement nesting, 50,000-byte nested
    and partial-update field names, and a separate 390 KiB structural footprint.
-7. Expose exactly six public `PortableWriteLimits` input/structure constants:
-   serialized bytes, structural footprint, nested/partial-update field-name bytes,
-   complete-write top-level characters, nested-container depth, and partial-update
-   field count.
+7. Keep the six write-limit implementation defaults package-private while
+   enforcing serialized bytes, structural footprint, nested/partial-update
+   field-name bytes, complete-write top-level characters, nested-container depth,
+   and partial-update field count uniformly.
 8. Gate `Capability.PARTIAL_UPDATE` before delegation.
 9. Define serialized and structural 390 KiB bounds as the base result envelope.
    The proposed provider-specific larger-result capability was superseded and
@@ -198,7 +198,7 @@ Document:
 - create/upsert-only TTL;
 - bounded shared serialization, null-document rejection, and all provider-owned/
   underscore-prefixed top-level complete-write rejections; and
-- the exact six public `PortableWriteLimits` constants.
+- internal enforcement of all six portable write limits without public compile-time constants.
 
 The E2E runner checks `PARTIAL_UPDATE` before executing update scenarios, so the
 Spanner run skips them without changing its schema or provider code.

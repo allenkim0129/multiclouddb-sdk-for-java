@@ -80,8 +80,9 @@ underscore-prefixed top-level name are rejected before I/O. Remaining top-level
 names must be unique ignoring case and contain at most 128 Unicode characters,
 the Spanner-compatible portable baseline. Create, upsert, and update snapshot
 top-level maps, perform one bounded SDK-owned Jackson serialization, and delegate
-its detached normalized representation. `PortableWriteLimits` exposes exactly
-six input/structure constants. The 50,000-byte nested/partial-update name bound
+its detached normalized representation. The six input/structure enforcement
+defaults remain package-private rather than becoming compile-time public API.
+The 50,000-byte nested/partial-update name bound
 is at or below the AWS SDK's 50,000-character DynamoDB response-parser limit,
 including for multibyte UTF-8 names.
 Existing-state result size remains native and does not justify a read/merge
@@ -205,7 +206,7 @@ the API defaults Spanner's omitted capability to unsupported and fails locally
 with `UNSUPPORTED_CAPABILITY` and `capability=partial_update`.
 
 Case-distinct identity, including `foo` and `Foo` in one atomic request, runs
-directly on Cosmos and DynamoDB as part of the base contract. API
+directly on Cosmos and DynamoDB as part of the core partial-update contract. API
 recording-provider tests prove the exact 390 KiB boundary reaches
 delegation while one byte over does not. When each emulator is available, shared conformance verifies exact-limit
 create/upsert on every provider and partial update on Cosmos/DynamoDB.

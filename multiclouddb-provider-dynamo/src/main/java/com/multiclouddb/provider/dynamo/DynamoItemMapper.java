@@ -189,19 +189,15 @@ public final class DynamoItemMapper {
         return MAPPER.convertValue(node, MAP_TYPE);
     }
 
-    static ObjectNode stripProviderFields(ObjectNode document) {
-        ObjectNode portable = document.deepCopy();
-        portable.remove(DynamoConstants.ATTR_PARTITION_KEY);
-        portable.remove(DynamoConstants.ATTR_SORT_KEY);
-        portable.remove(DynamoConstants.ATTR_TTL_EXPIRY);
-        return portable;
+    static void removeProviderFields(ObjectNode document) {
+        document.remove(DynamoConstants.ATTR_PARTITION_KEY);
+        document.remove(DynamoConstants.ATTR_SORT_KEY);
+        document.remove(DynamoConstants.ATTR_TTL_EXPIRY);
     }
 
-    static Map<String, Object> stripProviderFields(Map<String, Object> document) {
-        Map<String, Object> portable = new LinkedHashMap<>(document);
-        portable.remove(DynamoConstants.ATTR_PARTITION_KEY);
-        portable.remove(DynamoConstants.ATTR_SORT_KEY);
-        portable.remove(DynamoConstants.ATTR_TTL_EXPIRY);
-        return portable;
+    static void removeProviderFields(Map<String, Object> document) {
+        document.remove(DynamoConstants.ATTR_PARTITION_KEY);
+        document.remove(DynamoConstants.ATTR_SORT_KEY);
+        document.remove(DynamoConstants.ATTR_TTL_EXPIRY);
     }
 }

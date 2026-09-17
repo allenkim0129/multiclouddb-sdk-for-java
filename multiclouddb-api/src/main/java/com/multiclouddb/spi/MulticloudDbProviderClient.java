@@ -31,9 +31,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 /**
- * SPI contract for a provider client that implements portable base document
+ * SPI contract for a provider client that implements portable key-based document
  * operations, capability-gated operations, and queries. Provider adapters
  * create instances of this interface.
+ * <p>
+ * Adapters must not mutate returned document trees or query-item values after
+ * returning. The default client may retain nested value references while
+ * removing provider-owned top-level fields.
  */
 public interface MulticloudDbProviderClient extends AutoCloseable {
 

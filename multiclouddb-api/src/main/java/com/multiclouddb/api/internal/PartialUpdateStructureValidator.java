@@ -30,7 +30,6 @@ import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.OperationNames;
-import com.multiclouddb.api.PortableWriteLimits;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -60,10 +59,10 @@ import java.util.Map;
 public final class PartialUpdateStructureValidator {
 
     /** Maximum map/list levels below the top-level document root. */
-    public static final int MAX_NESTING_DEPTH = PortableWriteLimits.MAX_NESTED_CONTAINERS;
+    public static final int MAX_NESTING_DEPTH = WriteLimits.MAX_NESTED_CONTAINERS;
 
     /** Maximum portable structural footprint for a write input or resulting document. */
-    public static final int MAX_FOOTPRINT_BYTES = PortableWriteLimits.MAX_STRUCTURAL_FOOTPRINT_BYTES;
+    public static final int MAX_FOOTPRINT_BYTES = WriteLimits.MAX_STRUCTURAL_FOOTPRINT_BYTES;
 
     public static final String DEPTH_LIMIT_REASON = "partial_update_nesting_depth_limit";
     public static final String FOOTPRINT_LIMIT_REASON = "partial_update_structural_footprint_limit";
@@ -261,7 +260,7 @@ public final class PartialUpdateStructureValidator {
 
         Map<Object, Object> snapshot = new LinkedHashMap<>();
         int maximumEntries = OperationNames.UPDATE.equals(operation)
-                ? PortableWriteLimits.MAX_PARTIAL_UPDATE_FIELDS + 1
+                ? WriteLimits.MAX_PARTIAL_UPDATE_FIELDS + 1
                 : MAX_VALUE_GRAPH_NODES;
         try {
             Iterator<? extends Map.Entry<?, ?>> entries = map.entrySet().iterator();

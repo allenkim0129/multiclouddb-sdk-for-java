@@ -67,11 +67,11 @@ Optional operations such as partial `update()` are capability-gated.
 
 | Problem | Multicloud DB Solution |
 |---------|------------------|
-| Vendor lock-in - each cloud DB has its own SDK, data model, and query language | Single `MulticloudDbClient` interface with portable base operations + query and explicit capability gates |
+| Vendor lock-in - each cloud DB has its own SDK, data model, and query language | Single `MulticloudDbClient` interface with portable point operations (create/read/upsert/delete) + query and explicit capability gates |
 | Each provider has a different query language (Cosmos SQL, PartiQL, GoogleSQL) | **Portable query DSL** - write `status = @status AND priority > @min`, auto-translated per provider |
 | Migrating between providers requires rewriting data-access code | Change **one property** (`multiclouddb.provider=dynamo` → `cosmos`) |
 | Understanding which features are portable vs. provider-specific | Runtime `CapabilitySet` introspection and structured `UNSUPPORTED_CAPABILITY` errors |
-| Testing across providers | Shared conformance tests verify the base contract and capability-gated behavior |
+| Testing across providers | Shared conformance tests verify the common contract and capability-gated behavior |
 
 ---
 
@@ -158,7 +158,7 @@ MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
 // Create client via ServiceLoader discovery
 MulticloudDbClient client = MulticloudDbClientFactory.create(config);
 
-// Portable base operations - same code for every provider
+// Portable point operations - same code for every provider
 Map<String, Object> doc = Map.of(
         "title", "Buy groceries",
         "completed", false,
@@ -337,7 +337,7 @@ Provider modules implement two SPI contracts without importing each other:
 | SPI Interface | Responsibility |
 |---------------|---------------|
 | `MulticloudDbProviderAdapter` | Factory - creates a `MulticloudDbProviderClient` from config; registered via `META-INF/services` |
-| `MulticloudDbProviderClient` | Base operations, capability-gated update, query, provisioning, and capabilities - called by `DefaultMulticloudDbClient` |
+| `MulticloudDbProviderClient` | Key-based create/read/upsert/delete, capability-gated partial update, query, provisioning, and capabilities - called by `DefaultMulticloudDbClient` |
 
 ### Provider Discovery
 
@@ -657,7 +657,9 @@ writing.
 
 ## Document Metadata
 
-Read write-metadata (last-modified timestamp, TTL expiry, version/ETag) on demand:
+Read write-metadata (last-modified timestamp, TTL expiry, version/ETag) on demand.
+The snippets use a class-level SLF4J logger such as
+`private static final Logger LOG = LoggerFactory.getLogger(YourApplication.class)`:
 
 ```java
 OperationOptions opts = OperationOptions.builder()
@@ -670,13 +672,13 @@ DocumentMetadata meta = result.metadata();   // non-null because metadata was re
 if (meta != null) {
     // Each field is independently nullable.
     if (meta.lastModified() != null) {
-        System.out.println("Last modified: " + meta.lastModified());
+        LOG.info("Last modified: {}", meta.lastModified());
     }
     if (meta.ttlExpiry() != null) {
-        System.out.println("Expires at   : " + meta.ttlExpiry());
+        LOG.info("Expires at: {}", meta.ttlExpiry());
     }
     if (meta.version() != null) {
-        System.out.println("ETag/version : " + meta.version());
+        LOG.info("ETag/version: {}", meta.version());
     }
 }
 ```
@@ -718,7 +720,8 @@ try {
     client.create(address, key, largeDoc);
 } catch (MulticloudDbException e) {
     if (e.error().category() == MulticloudDbErrorCategory.INVALID_REQUEST) {
-        System.out.println("Write input exceeds a portable validation limit");
+        LOG.warn("Write input exceeds a portable validation limit: {}",
+                e.error().message());
     }
 }
 ```
@@ -733,8 +736,11 @@ atomic write.
 
 Results above either 390 KiB portable result bound are outside this release's
 portable contract and remain subject to the selected provider's native limit.
-`com.multiclouddb.api.PortableWriteLimits` exposes the serialized, structural,
-field-name, nesting, and partial-update field-count limits.
+These limits are enforced internally rather than exposed as compile-time Java
+constants. Applications should handle `INVALID_REQUEST` and its structured limit
+details instead of compiling against copied values. Runtime limit discovery and
+configuration are tracked in [#116](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/116).
+
 The portable size limits are rounded down to 390 KiB to leave headroom for
 provider-injected fields and native wire-format overhead — see
 [Developer Guide](docs/guide.md#document-size-enforcement) for details.
@@ -766,8 +772,8 @@ Sample applications are maintained in a **separate repository**:
 
 | Sample | Description | Port | Guide |
 |--------|-------------|------|-------|
-| **Portable Base Operations + Query** | Minimal create/read/upsert/delete/query sample; partial update is capability-gated | — | [README](https://github.com/microsoft/multiclouddb-sdk-for-java-samples#portable-crud--query-sample) |
-| **TODO App** | Base-operation web app; completion updates require `PARTIAL_UPDATE` | `8080` | [README-todo-app.md](https://github.com/microsoft/multiclouddb-sdk-for-java-samples/blob/main/README-todo-app.md) |
+| **Portable Point Operations + Query** | Minimal create/read/upsert/delete/query sample; partial update is capability-gated | — | [README](https://github.com/microsoft/multiclouddb-sdk-for-java-samples#portable-crud--query-sample) |
+| **TODO App** | Key-based document web app; completion updates require `PARTIAL_UPDATE` | `8080` | [README-todo-app.md](https://github.com/microsoft/multiclouddb-sdk-for-java-samples/blob/main/README-todo-app.md) |
 | **Risk Analysis Platform** | Multi-tenant portfolio risk analytics with executive dashboard | `8090` | [README-risk-platform.md](https://github.com/microsoft/multiclouddb-sdk-for-java-samples/blob/main/README-risk-platform.md) |
 
 ### Quick Start

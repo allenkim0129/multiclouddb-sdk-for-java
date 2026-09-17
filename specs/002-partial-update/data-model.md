@@ -84,20 +84,21 @@ provider snapshot. The update structure calculation
 applies only to the incoming replacement field map;
 it does not model omitted existing state.
 
-### Public limit model
+### Portable limit model
 
-`com.multiclouddb.api.PortableWriteLimits` exposes:
+Shared preflight enforces:
 
-| Constant | Value |
+| Limit | Value |
 |---|---:|
-| `MAX_SERIALIZED_INPUT_BYTES` | 399,360 |
-| `MAX_STRUCTURAL_FOOTPRINT_BYTES` | 399,360 |
-| `MAX_FIELD_NAME_UTF8_BYTES` | 50,000 |
-| `MAX_TOP_LEVEL_FIELD_NAME_CHARACTERS` | 128 |
-| `MAX_NESTED_CONTAINERS` | 31 |
-| `MAX_PARTIAL_UPDATE_FIELDS` | 10 |
+| Serialized input | 399,360 bytes |
+| Structural footprint | 399,360 bytes |
+| Nested and partial-update field name | 50,000 UTF-8 bytes |
+| Complete-document top-level field name | 128 Unicode characters |
+| Nested map/list containers | 31 |
+| Partial-update fields | 10 |
 
-These are the only six `PortableWriteLimits` constants.
+The implementation defaults are package-private and are not part of the public
+Java API. Typed `INVALID_REQUEST` details report the applicable maximum.
 
 ## 4. Cosmos plan
 
@@ -178,12 +179,12 @@ casing behavior; no live production Spanner validation is claimed.
 | DynamoDB | supported |
 | Spanner | unsupported by API default |
 
-The base operation guarantees results whose serialized JSON and portable structural
-footprint are each at most 390 KiB. A state-dependent result above either bound
+The core partial-update operation guarantees results whose serialized JSON and
+portable structural footprint are each at most 390 KiB. A state-dependent result above either bound
 is outside this release's portable contract and may succeed or fail under native
 provider limits. Native size errors remain reason-coded because the SDK does not
 read/merge stored state before writing. Case-distinct field identity is part of
-the base contract. TTL timing is not: DynamoDB `UpdateItem` happens to leave
+the core partial-update contract. TTL timing is not: DynamoDB `UpdateItem` happens to leave
 `ttlExpiry` unchanged, while Cosmos DB `patchItem` advances `_ts` and restarts
 relative TTL. Until behavior is normalized, callers requiring fixed absolute
 expiry must not call `update()` on TTL-bearing items.

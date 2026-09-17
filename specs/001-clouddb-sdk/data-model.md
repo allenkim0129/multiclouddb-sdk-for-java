@@ -60,7 +60,7 @@ Constraints:
 - binary values are outside the portable value model, including binary values
   exposed while serializing a POJO;
 - the serialized, structural, field-name, nesting, and partial-update
-  field-count limits are defined by `PortableWriteLimits`.
+  field-count limits are enforced uniformly by shared API preflight.
 
 
 ### Query
@@ -295,16 +295,23 @@ New constants added to `Capability`:
 
 ### Portable write-input validation
 
-Public constants:
-`multiclouddb-api/src/main/java/com/multiclouddb/api/PortableWriteLimits.java`
+Shared preflight currently enforces:
 
-- `MAX_SERIALIZED_INPUT_BYTES = 399360` (390 KiB)
-- `MAX_STRUCTURAL_FOOTPRINT_BYTES = 399360` (390 KiB)
-- `MAX_FIELD_NAME_UTF8_BYTES = 50000`
-- `MAX_NESTED_CONTAINERS = 31`
-- `MAX_PARTIAL_UPDATE_FIELDS = 10`
+- serialized input: 399,360 bytes (390 KiB)
+- structural footprint: 399,360 bytes (390 KiB)
+- nested and partial-update field names: 50,000 UTF-8 bytes
+- complete-document top-level field names: 128 Unicode characters
+- nested map/list containers: 31
+- partial-update fields: 10
 
-Internal enforcement:
+Implementation defaults are package-private in
+`multiclouddb-api/src/main/java/com/multiclouddb/api/internal/WriteLimits.java`;
+they are not part of the public Java API. Applications should consume typed
+`INVALID_REQUEST` limit details instead of compiling copied values. Runtime
+limit discovery and configuration are deferred to
+[#116](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/116).
+
+Primary enforcement:
 `multiclouddb-api/src/main/java/com/multiclouddb/api/internal/DocumentSizeValidator.java`
 
 Shared preflight rejects null complete documents; top-level `id`,

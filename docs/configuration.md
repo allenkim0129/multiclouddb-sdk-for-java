@@ -31,8 +31,11 @@ Supplying any non-null `ttlSeconds` to `update()` returns non-retryable
 `INVALID_REQUEST` before provider I/O on every provider.
 
 The portable 10-field limit, 31-level replacement-value nesting limit, and
-390 KiB serialized/structural input limits are not configurable. Native
-result-item ceilings are also not configurable:
+390 KiB serialized/structural input limits are not configurable or exposed as
+compile-time Java constants. Runtime discovery and customer configuration are
+tracked in [#116](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/116).
+
+Native result-item ceilings are also not configurable:
 
 | Provider | Partial-update envelope | Observed TTL behavior (outside portable contract) |
 |----------|-------------------------|--------------------------------------------------|
@@ -51,7 +54,7 @@ provider I/O, and providers receive the detached bounded snapshot rather than
 caller-owned nested values.
 
 Cosmos and Dynamo report `Capability.PARTIAL_UPDATE=true`. Case-distinct
-non-reserved field names are part of that base contract: `foo` and `Foo` remain
+non-reserved field names are part of the core partial-update contract: `foo` and `Foo` remain
 separate even in one atomic request. Update fields matching `id`, `partitionKey`,
 `sortKey`, `ttl`, `ttlExpiry`, or `data` case-insensitively, and names beginning
 with `_`, fail before I/O. Complete create/upsert documents apply the same

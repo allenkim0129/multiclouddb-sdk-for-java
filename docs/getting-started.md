@@ -93,7 +93,7 @@ MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
 // Create client via ServiceLoader discovery
 try (MulticloudDbClient client = MulticloudDbClientFactory.create(config)) {
 
-// Portable base operations - same code for every provider
+// Portable point operations - same code for every provider
 Map<String, Object> doc = Map.of(
         "title", "Buy groceries",
         "completed", false,
@@ -114,7 +114,9 @@ JsonNode document = result.document();           // The document payload
 
 ## 4. Query with Portable Expressions
 
-Write a WHERE-clause filter once - the SDK translates it for each provider:
+Write a WHERE-clause filter once - the SDK translates it for each provider.
+The snippet assumes a class-level SLF4J logger such as
+`private static final Logger LOG = LoggerFactory.getLogger(YourApplication.class)`:
 
 ```java
 try (MulticloudDbClient client = MulticloudDbClientFactory.create(config)) {
@@ -128,7 +130,7 @@ try (MulticloudDbClient client = MulticloudDbClientFactory.create(config)) {
 
     QueryPage page = client.query(todos, query);
     for (Map<String, Object> item : page.items()) {
-        System.out.println(item);
+        LOG.info("Query item: {}", item);
     }
     client.delete(todos, key); // Cleanup after the query
 }
