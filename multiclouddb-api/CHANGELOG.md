@@ -14,6 +14,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Partial-update field-count rejections now include `reason=partial_update_field_count_limit`, `maximumFields=10`, and `observedFields=11`. Inspection stops at the first excess field; the observed count is a lower bound, not the total input size.
 - The proposed public compile-time write-limit constants were removed during review. Shared preflight still enforces the same limits and reports runtime details; a discoverable, customer-configurable limits API is deferred to [#116](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/116).
 - **BREAKING (pre-1.0 beta): `update()` changed from complete replacement to
   shallow partial update.** Callers, including code already compiled against an

@@ -71,7 +71,25 @@ class PartialUpdateValidatorTest {
         for (int i = 0; i <= PartialUpdateValidator.MAX_FIELDS; i++) {
             fields.put("field" + i, i);
         }
-        assertInvalidRequest(reject(fields, OperationOptions.defaults()));
+        assertFieldCountDetails(reject(fields, OperationOptions.defaults()));
+    }
+
+    private static void assertFieldCountDetails(MulticloudDbException ex) {
+        assertInvalidRequest(ex);
+        assertEquals(Map.of(
+                "reason", "partial_update_field_count_limit",
+                "maximumFields", "10",
+                "observedFields", "11"), ex.error().providerDetails());
+    }
+
+    @Test
+    @DisplayName("observed field count is a lower bound, not the total map size")
+    void largerMapReportsOnlyObservedFields() {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        for (int i = 0; i < 100; i++) {
+            fields.put("field" + i, i);
+        }
+        assertFieldCountDetails(reject(fields, OperationOptions.defaults()));
     }
 
     @Test
@@ -80,7 +98,7 @@ class PartialUpdateValidatorTest {
         Map<String, Object> unbounded = new AbstractMap<>() {
             @Override
             public int size() {
-                return 1;
+                throw new AssertionError("validation must not request the total map size");
             }
 
             @Override
@@ -98,6 +116,9 @@ class PartialUpdateValidatorTest {
 
                             @Override
                             public Entry<String, Object> next() {
+                                if (index > PartialUpdateValidator.MAX_FIELDS) {
+                                    throw new AssertionError("inspection must stop at the first excess field");
+                                }
                                 return Map.entry("field" + index, index++);
                             }
                         };
@@ -112,7 +133,7 @@ class PartialUpdateValidatorTest {
         };
 
         assertTimeoutPreemptively(Duration.ofSeconds(1),
-                () -> assertInvalidRequest(reject(
+                () -> assertFieldCountDetails(reject(
                         unbounded, OperationOptions.defaults())));
     }
 

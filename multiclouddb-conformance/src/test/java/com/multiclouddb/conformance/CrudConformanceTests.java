@@ -935,6 +935,10 @@ public abstract class CrudConformanceTests {
             assertFalse(ex.error().retryable());
             assertNull(ex.error().provider(),
                     "Field-count rejection must come from shared preflight");
+            assertEquals("partial_update_field_count_limit",
+                    ex.error().providerDetails().get("reason"));
+            assertEquals("10", ex.error().providerDetails().get("maximumFields"));
+            assertEquals("11", ex.error().providerDetails().get("observedFields"));
             JsonNode doc = client.read(getAddress(), key).document();
             assertEquals("before", doc.path("title").asText());
             assertEquals("preserved", doc.path("status").asText());

@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Public-surface contract for {@code MulticloudDbClient.update(...)}: both overloads retain
@@ -45,7 +46,7 @@ class MulticloudDbClientPartialUpdateContractTest {
     }
 
     private static void assertMapStringObject(Type t) {
-        assertEquals(true, t instanceof ParameterizedType, "payload must remain a parameterized Map");
+        assertTrue(t instanceof ParameterizedType, "payload must remain a parameterized Map");
         ParameterizedType pt = (ParameterizedType) t;
         assertEquals(Map.class, pt.getRawType());
         assertEquals(String.class, pt.getActualTypeArguments()[0]);

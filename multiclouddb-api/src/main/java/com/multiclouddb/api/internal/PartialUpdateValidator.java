@@ -52,6 +52,8 @@ public final class PartialUpdateValidator {
     /** Portable byte bound compatible with the AWS SDK's 50,000-character read limit. */
     public static final int MAX_FIELD_NAME_BYTES = WriteLimits.MAX_FIELD_NAME_UTF8_BYTES;
 
+    public static final String FIELD_COUNT_LIMIT_REASON = "partial_update_field_count_limit";
+
     public static final String FIELD_NAME_SIZE_LIMIT_REASON =
             "partial_update_field_name_size_limit";
 
@@ -96,7 +98,10 @@ public final class PartialUpdateValidator {
                 if (fieldCount > MAX_FIELDS) {
                     throw invalid("Partial update accepts at most " + MAX_FIELDS
                             + " fields per call; received at least " + fieldCount + ".",
-                            operation);
+                            operation, Map.of(
+                                    "reason", FIELD_COUNT_LIMIT_REASON,
+                                    "maximumFields", String.valueOf(MAX_FIELDS),
+                                    "observedFields", String.valueOf(fieldCount)));
                 }
 
                 Object rawName = entry.getKey();

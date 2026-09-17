@@ -1841,6 +1841,11 @@ The shared layer enforces these limits internally rather than exposing
 compile-time Java constants. `INVALID_REQUEST` details report the applicable
 maximum at runtime.
 
+For partial updates exceeding 10 fields, `providerDetails` contains
+`reason=partial_update_field_count_limit`, `maximumFields=10`, and
+`observedFields=11` (string values). Inspection stops at the first excess field,
+so `observedFields` is a lower bound, not the total number of input fields.
+
 ---
 
 ## Provider Diagnostics

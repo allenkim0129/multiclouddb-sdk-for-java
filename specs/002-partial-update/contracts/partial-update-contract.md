@@ -50,6 +50,7 @@ fails with non-retryable `UNSUPPORTED_CAPABILITY` and
 `providerDetails.capability=partial_update`. Every failure performs zero
 provider update operations. Local failures carry these stable details:
 
+- `reason=partial_update_field_count_limit`, `maximumFields=10`, and `observedFields=11`; inspection stops at the first excess field, so the observed count is a lower bound rather than the total input size;
 - `reason=partial_update_field_name_size_limit`, `actualFieldNameBytes`, and `maximumFieldNameBytes=50000`;
 - `reason=non_portable_binary_value`, `valuePath`, and `valueType`;
 - `reason=non_portable_iterable` or `reason=partial_update_value_cycle`;

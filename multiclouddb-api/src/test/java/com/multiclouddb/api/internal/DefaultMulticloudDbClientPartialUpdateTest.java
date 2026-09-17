@@ -194,6 +194,13 @@ class DefaultMulticloudDbClientPartialUpdateTest {
         assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST,
                 assertThrows(MulticloudDbException.class, () -> c.update(ADDRESS, KEY, blankName)).error().category());
 
+        MulticloudDbException fieldCountFailure = assertThrows(MulticloudDbException.class,
+                () -> c.update(ADDRESS, KEY, tooMany));
+        assertEquals(Map.of(
+                "reason", "partial_update_field_count_limit",
+                "maximumFields", "10",
+                "observedFields", "11"), fieldCountFailure.error().providerDetails());
+
         Map<String, Object> oversizedName = Map.of(
                 "a".repeat(PartialUpdateValidator.MAX_FIELD_NAME_BYTES + 1), "v");
         MulticloudDbException nameFailure = assertThrows(MulticloudDbException.class,
