@@ -32,21 +32,19 @@ multiclouddb-api  ← must be released first if API changed
 ```
 
 Providers depend on a released version of `multiclouddb-api`. They are
-independent of each other and can be released separately. The three Feature 002
-partial-update capabilities default to unsupported when an older provider omits
-them, allowing applications to upgrade supported providers without coordinating
-every provider version. Each built-in provider therefore exposes 20 effective
-capability rows: Cosmos DB and DynamoDB declare all 20, while Spanner declares
-17 and receives three API defaults.
+independent of each other and can be released separately. The core Feature 002
+`partial_update` capability defaults to unsupported when an older provider omits
+it, allowing applications to upgrade supported providers without coordinating
+every provider version. Each built-in provider therefore exposes 18 effective
+capability rows: Cosmos DB and DynamoDB explicitly declare all 18, while Spanner
+declares 17 and receives only the core API default.
 
 ```text
 new multiclouddb-api
-  ├── new Cosmos provider -> partial_update supported; partial_update_extended_result_size supported;
-  │                          partial_update_preserves_ttl_expiry unsupported
-  ├── new Dynamo provider -> partial_update supported; partial_update_extended_result_size unsupported;
-  │                          partial_update_preserves_ttl_expiry supported
+  ├── new Cosmos provider -> partial_update supported
+  ├── new Dynamo provider -> partial_update supported
   └── older Spanner provider
-        └── all three capabilities omitted -> API defaults unsupported -> zero provider I/O
+        └── partial_update omitted -> API default unsupported -> zero provider I/O
 ```
 
 ---

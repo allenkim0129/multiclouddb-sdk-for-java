@@ -984,41 +984,6 @@ public abstract class CrudConformanceTests {
     }
 
     @Test @Order(28)
-    @DisplayName("advertised partial update preserves absolute TTL expiry")
-    void advertisedPartialUpdateTtlPreservationIsOperational() {
-        assumePartialUpdateSupported();
-        assumeTrue(client.capabilities().isSupported(
-                Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY));
-
-        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-ttl-preserve");
-        OperationOptions ttl = OperationOptions.builder()
-                .ttlSeconds(3600)
-                .build();
-        OperationOptions metadata = OperationOptions.builder()
-                .includeMetadata(true)
-                .build();
-
-        try {
-            client.upsert(getAddress(), key, Map.of("title", "before"), ttl);
-            DocumentResult before = client.read(getAddress(), key, metadata);
-            assertNotNull(before);
-            assertNotNull(before.metadata());
-            var expectedExpiry = before.metadata().ttlExpiry();
-            assertNotNull(expectedExpiry);
-
-            client.update(getAddress(), key, Map.of("title", "after"));
-
-            DocumentResult after = client.read(getAddress(), key, metadata);
-            assertNotNull(after);
-            assertNotNull(after.metadata());
-            assertEquals(expectedExpiry, after.metadata().ttlExpiry());
-            assertEquals("after", after.document().path("title").asText());
-        } finally {
-            safeDelete(key);
-        }
-    }
-
-    @Test @Order(28)
     @DisplayName("update TTL is rejected and leaves the existing document unchanged")
     void partialUpdateRejectsTtlWithoutMutation() {
         MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-ttl");
@@ -1570,36 +1535,6 @@ public abstract class CrudConformanceTests {
             JsonNode document = client.read(getAddress(), key).document();
             assertEquals("preserved", document.path("title").asText());
             assertEquals(payload.length(), document.path("payload").asText().length());
-        } finally {
-            safeDelete(key);
-        }
-    }
-
-    @Test @Order(30)
-    @DisplayName("advertised extended-result capability accepts a result above 390 KiB")
-    void advertisedExtendedResultSizeIsOperational() throws Exception {
-        assumePartialUpdateSupported();
-        assumeTrue(client.capabilities().isSupported(
-                Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE),
-                "Provider does not advertise extended partial-update results");
-        MulticloudDbKey key = ConformanceHarness.uniqueKey("partial-extended-result");
-        Map<String, Object> seed = fieldsOfSerializedSize("base", 300 * 1024);
-        Map<String, Object> fields = fieldsOfSerializedSize("extra", 200 * 1024);
-
-        try {
-            client.upsert(getAddress(), key, seed);
-            client.update(getAddress(), key, fields);
-
-            JsonNode document = client.read(getAddress(), key).document();
-            int resultBytes = JSON.writeValueAsBytes(document).length;
-            assertTrue(resultBytes > DocumentSizeValidator.MAX_BYTES,
-                    "Result must exercise the advertised extended envelope");
-            assertTrue(resultBytes < 2 * 1024 * 1024,
-                    "Fixture must remain below the Cosmos native ceiling");
-            assertEquals(((String) seed.get("base")).length(),
-                    document.path("base").asText().length());
-            assertEquals(((String) fields.get("extra")).length(),
-                    document.path("extra").asText().length());
         } finally {
             safeDelete(key);
         }

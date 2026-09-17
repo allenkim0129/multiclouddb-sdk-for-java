@@ -26,16 +26,6 @@ public class CosmosCapabilitiesTest extends CapabilitiesConformanceTest {
         return true;
     }
 
-    @Override
-    protected boolean extendedPartialUpdateResultSupported() {
-        return true;
-    }
-
-    @Override
-    protected boolean partialUpdatePreservesTtlExpiry() {
-        return false;
-    }
-
     @Test
     void cosmosExtendedChangeFeedHistorySupported() throws Exception {
         try (var client = com.multiclouddb.conformance.ConformanceHarness.createClient(ProviderId.COSMOS)) {

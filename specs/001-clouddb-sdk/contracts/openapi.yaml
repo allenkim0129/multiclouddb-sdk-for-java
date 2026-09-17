@@ -80,7 +80,6 @@ paths:
         $ref: '#/components/schemas/PortableWriteLimits'
       x-portable-result-envelope:
         $ref: '#/components/schemas/PartialUpdateResultEnvelope'
-      x-ttl-preservation-capability: partial_update_preserves_ttl_expiry
       requestBody:
         required: true
         content:
@@ -345,10 +344,10 @@ components:
       description: |
         Operation acknowledgement. The resulting logical document is within the
         portable base only when its serialized JSON and structural footprint are
-        each at most 390 KiB. Larger results require
-        PARTIAL_UPDATE_EXTENDED_RESULT_SIZE. The base operation does not guarantee
-        preservation of an existing absolute TTL expiry; callers requiring that
-        behavior inspect PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY.
+        each at most 390 KiB. A state-dependent result above either bound is
+        outside this release's portable contract and may succeed or fail under
+        native provider limits. TTL timing is outside the portable contract;
+        callers requiring fixed absolute expiry must not update TTL-bearing items.
       x-portable-result-envelope:
         $ref: '#/components/schemas/PartialUpdateResultEnvelope'
 
@@ -610,13 +609,11 @@ components:
 
     Feature002CapabilityName:
       type: string
-      description: Canonical names introduced by the portable partial-update contract.
+      description: Canonical capability name introduced by the portable partial-update contract.
       enum:
         - partial_update
-        - partial_update_extended_result_size
-        - partial_update_preserves_ttl_expiry
       examples:
-        - partial_update_preserves_ttl_expiry
+        - partial_update
 
 # =============================================================================
 # Issue 25 API Delta: Result Set Control, TTL/Write Metadata, Document Size
@@ -694,11 +691,12 @@ components:
       description: |
         Contract metadata for the resulting logical document. Serialized UTF-8
         JSON size and provider-neutral structural footprint are independent.
+        Portable behavior is guaranteed only when both measures are at or below
+        their maxima. State-dependent results above either maximum are outside
+        this release's portable contract. TTL timing is not represented here.
       required:
         - maxSerializedResultBytes
         - maxStructuralResultBytes
-        - extendedCapability
-        - ttlPreservationCapability
       properties:
         maxSerializedResultBytes:
           type: integer
@@ -706,18 +704,6 @@ components:
         maxStructuralResultBytes:
           type: integer
           const: 399360
-        extendedCapability:
-          description: Capability required for a result above either base bound.
-          allOf:
-            - $ref: '#/components/schemas/Feature002CapabilityName'
-            - const: partial_update_extended_result_size
-        ttlPreservationCapability:
-          description: |
-            Capability required when an existing absolute TTL expiry must remain
-            unchanged during partial update.
-          allOf:
-            - $ref: '#/components/schemas/Feature002CapabilityName'
-            - const: partial_update_preserves_ttl_expiry
       additionalProperties: false
 
   x-capability-additions-issue25:
@@ -744,34 +730,17 @@ components:
       description: |
         Capability-gated portable shallow literal top-level set/replace with at
         most 10 fields, no TTL, NOT_FOUND for a missing item, and one native
-        atomic write.
+        atomic write. Portable behavior is guaranteed only when the resulting
+        logical document's serialized JSON and structural footprint are each at
+        most 390 KiB. TTL timing is outside the portable contract.
       supported_by: [cosmos, dynamo]
       unsupported_by: [spanner]
       omitted_declaration_default: unsupported
       unsupported_error:
         $ref: '#/components/schemas/UnsupportedCapabilityError'
-    PARTIAL_UPDATE_EXTENDED_RESULT_SIZE:
-      name: partial_update_extended_result_size
-      description: |
-        Provider supports a resulting logical document above either 390 KiB
-        serialized or structural base bound, up to its documented native limit.
-      supported_by: [cosmos]
-      unsupported_by: [dynamo, spanner]
-      omitted_declaration_default: unsupported
-    PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY:
-      name: partial_update_preserves_ttl_expiry
-      description: |
-        Provider preserves the existing absolute TTL expiry during partial
-        update. DynamoDB UpdateItem leaves ttlExpiry unchanged. Cosmos DB
-        patchItem advances _ts and restarts the TTL countdown.
-      supported_by: [dynamo]
-      unsupported_by: [cosmos, spanner]
-      omitted_declaration_default: unsupported
 
   x-capabilityset-feature002-normalization:
     unsupported_defaults:
       - partial_update
-      - partial_update_extended_result_size
-      - partial_update_preserves_ttl_expiry
-    built_in_effective_rows: 20
+    built_in_effective_rows: 18
     synthesize_unrelated_omissions: false

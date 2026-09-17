@@ -34,11 +34,11 @@ The portable 10-field limit, 31-level replacement-value nesting limit, and
 390 KiB serialized/structural input limits are not configurable. Native
 result-item ceilings are also not configurable:
 
-| Provider | Partial-update envelope | Existing absolute TTL expiry |
-|----------|-------------------------|------------------------------|
+| Provider | Partial-update envelope | Observed TTL behavior (outside portable contract) |
+|----------|-------------------------|--------------------------------------------------|
 | Cosmos DB | One direct patch for up to 10 fields; resulting document subject to the Cosmos DB native ceiling after the attempted update | Not preserved: `patchItem` advances `_ts` and restarts the TTL countdown |
 | DynamoDB | One `UpdateItem` for up to 10 fields; resulting item subject to the DynamoDB native ceiling after the attempted update | Preserved: `UpdateItem` leaves `ttlExpiry` unchanged |
-| Spanner | Omits `PARTIAL_UPDATE`; the API supplies the unsupported default | Unsupported API default |
+| Spanner | Omits `PARTIAL_UPDATE`; the API supplies the unsupported default | Not reached |
 
 Shared write preflight rejects binary values, cyclic graphs, non-collection
 iterables, and over-limit field names. Partial-update and nested names are capped
@@ -60,22 +60,24 @@ structured error reasons and limit values. When a provider omits
 `PARTIAL_UPDATE`, the API supplies an unsupported default; a valid Spanner
 update is rejected by the shared core gate before any Spanner I/O.
 
-The base result envelope requires both serialized JSON and portable structural
-footprint at or below 390 KiB. Cosmos additionally reports
-`Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE=true` for results up to its 2 MiB
-native ceiling. DynamoDB reports it unsupported; omitted declarations receive the
-same unsupported API default for compatibility with older provider versions.
+Portable partial-update behavior is guaranteed only when both the resulting
+logical document's serialized JSON and portable structural footprint are at or
+below 390 KiB. A state-dependent result above either bound is outside this
+release's portable contract and may succeed or fail under native provider
+limits. No read/merge preflight is performed; a native result-size rejection is
+non-retryable `UNSUPPORTED_CAPABILITY`, reason-coded, and follows at most one
+write attempt.
 
-The separate `Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY` controls whether
-an existing TTL-bearing item's absolute expiry stays fixed. Base
-`PARTIAL_UPDATE` makes no such promise. Callers requiring fixed expiry must
-check the preservation capability: DynamoDB reports supported, Cosmos DB
-reports unsupported, and omitted declarations receive the unsupported API
-default. `CapabilitySet` supplies unsupported defaults for all three Feature
-002 capabilities, so every built-in provider exposes 20 effective rows
-(Cosmos DB and DynamoDB declare 20; Spanner declares 17 plus the three
-defaults). The extended-result-size capability remains independent and
-unchanged.
+TTL timing is outside this release's portable partial-update contract.
+DynamoDB `UpdateItem` happens to leave `ttlExpiry` unchanged, while Cosmos DB
+`patchItem` advances `_ts` and restarts relative TTL. Until this behavior is
+normalized, callers requiring a fixed absolute expiry must not call `update()`
+on TTL-bearing items.
+
+`CapabilitySet` supplies an unsupported default only for an omitted
+`PARTIAL_UPDATE` declaration. Every built-in provider exposes 18 effective rows:
+Cosmos DB and DynamoDB explicitly declare 18, while Spanner declares 17 plus
+that one default. Unrelated omitted names remain absent.
 
 ---
 

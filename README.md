@@ -513,8 +513,6 @@ for (Capability cap : caps.all()) {
 | **Row-level TTL** | ✓ | ✓ | ✗ |
 | **Write timestamp (`lastModified`)** | ✓ | ✗ | ✗ |
 | **Partial update** | ✓ | ✓ | ✗ (not in this release) |
-| **Extended partial-update result size** | ✓ (up to 2 MiB) | ✗ | ✗ (API default) |
-| **Preserve absolute TTL expiry on partial update** (`partial_update_preserves_ttl_expiry`) | ✗ (`_ts` advances) | ✓ (`ttlExpiry` unchanged) | ✗ (API default) |
 | **Case-sensitive partial-update fields** | ✓ | ✓ | — |
 
 ---
@@ -569,23 +567,22 @@ zero provider I/O and return non-retryable `INVALID_REQUEST` with
 `reason=partial_update_structural_footprint_limit` and the applicable actual and
 maximum limit details.
 
-The base `PARTIAL_UPDATE` capability guarantees the normalized behavior when the
-resulting document's serialized JSON and portable structural footprint each remain
-within 390 KiB. Results above either bound are optional and advertised separately through
-`PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`: Cosmos DB supports them up to its 2 MiB
-native item limit, while DynamoDB and API-normalized older providers report the
-extended capability unsupported.
+The `PARTIAL_UPDATE` portable contract applies only when both the resulting
+logical document's serialized JSON and its portable structural footprint are at
+or below 390 KiB. A state-dependent result above either bound is outside this
+release's portable contract and may succeed or fail under the selected
+provider's native limits. The SDK performs no read/merge preflight. A native
+result-size rejection remains non-retryable `UNSUPPORTED_CAPABILITY`, carries a
+stable provider-specific reason and limit details, and follows at most one
+attempted atomic write.
 
-Absolute TTL-expiry preservation is a separate guarantee and does not change
-`PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`. The base `PARTIAL_UPDATE` capability does
-not promise that an existing TTL-bearing item's fixed expiry remains unchanged.
-Callers that require that behavior must also check
-`Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY`. DynamoDB supports it because
-`UpdateItem` leaves the absolute `ttlExpiry` attribute unchanged. Cosmos DB
-explicitly does not because `patchItem` advances `_ts` and restarts the Cosmos
-TTL countdown. Spanner and omitted legacy-provider declarations receive the
-unsupported API default. This capability adds no read/merge step: accepted
-updates remain one synchronous atomic native write.
+TTL timing is also outside this release's portable partial-update contract.
+DynamoDB `UpdateItem` happens to leave `ttlExpiry` unchanged, while Cosmos DB
+`patchItem` advances `_ts` and restarts relative TTL. Until TTL behavior is
+normalized, callers that require a fixed absolute expiry must not call
+`update()` on TTL-bearing items.
+
+Follow-up normalization is tracked in [#113](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/113) for absolute TTL expiry and [#114](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/114) for state-dependent resulting size.
 
 Spanner does not advertise `PARTIAL_UPDATE`. `CapabilitySet` treats an omitted
 declaration as unsupported by default, so this API release remains compatible
@@ -594,9 +591,10 @@ capability gate with non-retryable `UNSUPPORTED_CAPABILITY` before provider
 delegation. This is a deliberate release scope: Spanner emulator validation
 covers shared preflight, capability rejection, and the provider-direct legacy
 regression, but this release does not claim live production Spanner validation.
-Each built-in provider exposes 20 effective capability rows: Cosmos DB and
-DynamoDB declare all 20, while Spanner declares 17 and `CapabilitySet` supplies
-unsupported defaults for the three Feature 002 capabilities.
+Each built-in provider exposes 18 effective capability rows: Cosmos DB and
+DynamoDB explicitly declare all 18, while Spanner declares 17 and
+`CapabilitySet` supplies only the omitted core `PARTIAL_UPDATE` unsupported
+default. Unrelated omitted capability names remain absent.
 
 Provider-native resulting-item ceilings remain constraints. Any resulting-item
 failure is atomic and surfaces as non-retryable
@@ -733,8 +731,8 @@ These checks inspect only incoming fields; they do not preflight the resulting
 stored item, which remains subject to provider-native ceilings after one attempted
 atomic write.
 
-Use `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE` to discover whether results above the
-dual 390 KiB portable result bounds are supported by the selected provider.
+Results above either 390 KiB portable result bound are outside this release's
+portable contract and remain subject to the selected provider's native limit.
 `com.multiclouddb.api.PortableWriteLimits` exposes the serialized, structural,
 field-name, nesting, and partial-update field-count limits.
 The portable size limits are rounded down to 390 KiB to leave headroom for

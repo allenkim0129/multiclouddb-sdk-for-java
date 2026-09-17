@@ -66,25 +66,24 @@ the default client returns non-retryable `UNSUPPORTED_CAPABILITY` with
 `capability=partial_update` before provider delegation.
 
 Cosmos and Dynamo preserve literal field case as part of the base
-`PARTIAL_UPDATE` contract. Its portable result envelope requires both serialized
-JSON and portable structural footprint to remain at or below 390 KiB. The optional
-`PARTIAL_UPDATE_EXTENDED_RESULT_SIZE` capability reports whether a provider supports
-larger resulting documents: Cosmos DB supports it up to 2 MiB, while DynamoDB and
-providers omitting the declaration receive an unsupported value.
+`PARTIAL_UPDATE` contract. Portable behavior is guaranteed only when both the
+resulting logical document's serialized JSON and portable structural footprint
+remain at or below 390 KiB. A state-dependent result above either bound is
+outside this release's portable contract and may succeed or fail under native
+provider limits.
 
-`PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY` is independent of the base and
-extended-result capabilities. The base `PARTIAL_UPDATE` contract does not
-promise a fixed absolute expiry for an existing TTL-bearing item. Callers that
-require one must check the preservation capability as well. DynamoDB supports
-it because `UpdateItem` leaves `ttlExpiry` unchanged. Cosmos DB reports it
-unsupported because `patchItem` advances `_ts` and restarts the TTL countdown;
-Spanner and omitted declarations receive the unsupported API default. This
-declaration does not add I/O: `update()` remains synchronous, uses one native
-write, and performs no read/merge.
+TTL timing is outside the portable partial-update contract. DynamoDB
+`UpdateItem` happens to leave `ttlExpiry` unchanged, while Cosmos DB
+`patchItem` advances `_ts` and restarts relative TTL. Until this behavior is
+normalized, callers requiring a fixed absolute expiry must not call `update()`
+on TTL-bearing items.
 
-Each built-in provider exposes 20 effective capability rows. Cosmos DB and
-DynamoDB declare all 20; Spanner declares 17 and `CapabilitySet` supplies
-unsupported defaults for the three partial-update capability names.
+Follow-up normalization is tracked in [#113](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/113) for absolute TTL expiry and [#114](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/114) for state-dependent resulting size.
+
+Each built-in provider exposes 18 effective capability rows. Cosmos DB and
+DynamoDB explicitly declare all 18; Spanner declares 17 and `CapabilitySet`
+supplies only the omitted core `PARTIAL_UPDATE` unsupported default. Unrelated
+omitted capability names remain absent.
 
 Shared name-size, binary-value, unsafe-graph, nesting, and
 structural-footprint failures return non-retryable

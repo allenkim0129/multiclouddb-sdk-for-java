@@ -9,17 +9,16 @@ repository does not provide.
   Spanner release boundary. It also records shared bounded write validation,
   same-request partial-update case identity, null complete-document and all provider-owned/
   underscore-prefixed top-level rejections, the 128-character case-insensitive
-  complete-write namespace, the three Feature 002 capabilities, and the exact six
+  complete-write namespace, the core Feature 002 capability, and the exact six
   public `PortableWriteLimits` constants.
 - [provider-limit-details.schema.json](provider-limit-details.schema.json)
   defines the structured, string-valued `providerDetails` carried by native
   resulting-item errors. Cosmos DB returns its error after one attempted patch,
   and DynamoDB after one attempted `UpdateItem`. Stable reasons and limit values
-  complement `partial_update_extended_result_size`, which declares whether results
-  above either 390 KiB serialized/structural base bound are supported. The schema does not duplicate
-  capability state, the independent
-  `partial_update_preserves_ttl_expiry` guarantee, the core-gate detail
-  `{ "capability": "partial_update" }`, or
+  describe native rejection above the dual 390 KiB portable result bounds.
+  Results above either bound are outside this release's portable contract and
+  may otherwise succeed under native limits. The schema does not duplicate the
+  core-gate detail `{ "capability": "partial_update" }` or
   shared `INVALID_REQUEST` details for field-name, binary values,
   nesting-depth, unsafe graphs, null/provider-owned top-level names, and
   complete-document/update structural preflight; those are normative in

@@ -27,16 +27,6 @@ public class DynamoCapabilitiesTest extends CapabilitiesConformanceTest {
         return true;
     }
 
-    @Override
-    protected boolean extendedPartialUpdateResultSupported() {
-        return false;
-    }
-
-    @Override
-    protected boolean partialUpdatePreservesTtlExpiry() {
-        return true;
-    }
-
     @Test
     void dynamoLikeNotSupported() throws Exception {
         try (var client = com.multiclouddb.conformance.ConformanceHarness.createClient(ProviderId.DYNAMO)) {

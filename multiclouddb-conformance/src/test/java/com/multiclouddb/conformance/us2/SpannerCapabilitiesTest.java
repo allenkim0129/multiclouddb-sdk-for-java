@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Spanner capability conformance test — verifies supported declarations and
- * API-default unsupported partial-update capabilities.
+ * API-default unsupported partial-update capability.
  */
 @Tag("spanner")
 @Tag("emulator")
@@ -24,16 +24,6 @@ public class SpannerCapabilitiesTest extends CapabilitiesConformanceTest {
 
     @Override
     protected boolean partialUpdateSupported() {
-        return false;
-    }
-
-    @Override
-    protected boolean extendedPartialUpdateResultSupported() {
-        return false;
-    }
-
-    @Override
-    protected boolean partialUpdatePreservesTtlExpiry() {
         return false;
     }
 

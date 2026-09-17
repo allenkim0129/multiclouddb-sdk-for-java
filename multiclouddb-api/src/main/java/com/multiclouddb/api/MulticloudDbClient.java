@@ -150,18 +150,17 @@ public interface MulticloudDbClient extends AutoCloseable {
      * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} after shared validation and
      * before provider delegation. Participating providers preserve case-distinct field names
      * as separate literal top-level fields.
-     * The base partial-update capability does not guarantee that updating a TTL-bearing
-     * item preserves its existing absolute expiry. Callers that require an unchanged expiry
-     * must also require {@link Capability#PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY}. DynamoDB
-     * advertises that capability; Cosmos DB does not because every patch advances
-     * {@code _ts} and restarts its TTL countdown.
+     * TTL timing is outside the portable partial-update contract. DynamoDB leaves an
+     * existing absolute expiry unchanged, while a Cosmos DB patch advances {@code _ts}
+     * and restarts its relative TTL countdown. Until that behavior is normalized, callers
+     * requiring a fixed absolute expiry must not use {@code update()} on TTL-bearing items.
      * <p>
-     * The base capability guarantees portable behavior when both the resulting logical
+     * The base capability guarantees portable behavior only when both the resulting logical
      * document's serialized JSON and its portable structural footprint remain within
-     * 390 KiB. Results above either bound are optional and advertised by
-     * {@link Capability#PARTIAL_UPDATE_EXTENDED_RESULT_SIZE}; callers requiring portable
-     * behavior must not rely on larger results unless that capability is supported. Because
-     * result size depends on existing state, the SDK does not add a read/merge preflight. A
+     * 390 KiB. Results above either bound are outside this release's portable contract and
+     * may succeed or fail according to the provider's native limit; portable callers must
+     * not rely on them. Because result size depends on existing state, the SDK does not add
+     * a read/merge preflight. A
      * provider-native rejection follows at most one attempted atomic update and is non-retryable
      * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY} with a stable
      * {@code providerDetails.reason} and limit details.

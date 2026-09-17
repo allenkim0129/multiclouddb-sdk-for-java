@@ -12,8 +12,8 @@ import java.util.Map;
 /**
  * An immutable, API-normalized set of provider capabilities.
  *
- * <p>Normalization is opt-in per capability. This API supplies backward-compatible
- * unsupported defaults for the three partial-update capabilities; it does not synthesize
+ * <p>Normalization is opt-in per capability. This API supplies a backward-compatible
+ * unsupported default for the core partial-update capability; it does not synthesize
  * entries for every well-known capability omitted by a provider.</p>
  */
 public final class CapabilitySet {
@@ -22,22 +22,12 @@ public final class CapabilitySet {
             Capability.PARTIAL_UPDATE_UNSUPPORTED.withNotes(
                     "Not declared by this provider; unsupported by default for backward compatibility");
 
-    private static final Capability DEFAULT_PARTIAL_UPDATE_EXTENDED_RESULT_SIZE =
-            Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE_UNSUPPORTED.withNotes(
-                    "Not declared by this provider; extended partial-update result size is unsupported by default");
-
-    private static final Capability DEFAULT_PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY =
-            Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY_UNSUPPORTED.withNotes(
-                    "Not declared by this provider; absolute TTL-expiry preservation is unsupported by default");
-
     private final Map<String, Capability> capabilities;
 
     public CapabilitySet(Collection<Capability> capabilities) {
         Map<String, Capability> map = new LinkedHashMap<>();
         map.put(Capability.PARTIAL_UPDATE, DEFAULT_PARTIAL_UPDATE);
-        map.put(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE, DEFAULT_PARTIAL_UPDATE_EXTENDED_RESULT_SIZE);
-        map.put(Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY,
-                DEFAULT_PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY);
+
         for (Capability c : capabilities) {
             map.put(c.name(), c);
         }

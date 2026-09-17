@@ -45,12 +45,5 @@ public final class CosmosCapabilities {
             // surface through structured provider-limit errors.
             Capability.PARTIAL_UPDATE_CAP.withNotes(
                     "Native patch: one direct patchItem for each accepted update; "
-                    + "portable limit: 10 fields; native limit: "
-                    + "resulting-document size"),
-            Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE_CAP.withNotes(
-                    "Supports partial-update results above the portable 390 KiB document envelope "
-                    + "up to the Cosmos DB native 2 MiB item limit; no read/merge preflight"),
-            Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY_UNSUPPORTED.withNotes(
-                    "Cosmos patchItem advances _ts, which restarts the TTL countdown for "
-                    + "TTL-bearing items; check this capability when absolute expiry must not move")));
+                    + "portable limit: 10 fields; native limit: resulting-document size")));
 }

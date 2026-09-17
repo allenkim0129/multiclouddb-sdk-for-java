@@ -385,22 +385,27 @@ This appendix is **non-normative**. It records Java SDK behaviors that impact th
   | `ORDER_BY` | ✅ (existing) | ❌ (existing) | ✅ (existing) |
   | `RESULT_LIMIT` | ✅ | ✅ | ✅ |
 
-### Feature 002 capability addendum (current contract)
+### Feature 002 capability addendum (review outcome)
 
-Feature 002 adds three well-known capability names:
+Feature 002 adds one well-known capability name:
 
 - `PARTIAL_UPDATE = "partial_update"`
-- `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE =
-  "partial_update_extended_result_size"`
-- `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY =
-  "partial_update_preserves_ttl_expiry"`
 
-`CapabilitySet` supplies unsupported defaults for all three names when omitted
-and does not synthesize unrelated well-known names. Built-in effective sets
-contain 20 rows.
+The proposed provider-specific result-size and TTL-preservation capabilities
+were removed during review because single-provider behavior does not establish
+a portable contract. `CapabilitySet` supplies an unsupported default only for
+omitted `PARTIAL_UPDATE` and does not synthesize unrelated well-known names.
+Built-in effective sets contain 18 rows: Cosmos DB and DynamoDB explicitly
+declare 18, while Spanner declares 17 and receives the one core default.
 
 | Capability | Cosmos | DynamoDB | Spanner |
 |---|---|---|---|
 | `PARTIAL_UPDATE` | ✅ | ✅ | ❌ API default |
-| `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE` | ✅ | ❌ | ❌ API default |
-| `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY` | ❌ (`patchItem` advances `_ts` and restarts TTL) | ✅ (`ttlExpiry` is unchanged) | ❌ API default |
+
+Portable partial-update behavior is guaranteed only when both resulting
+logical-document size measures are at or below 390 KiB. State-dependent larger
+results may succeed or fail under native provider limits. TTL timing is outside
+the contract: DynamoDB `UpdateItem` happens to leave `ttlExpiry` unchanged,
+while Cosmos DB `patchItem` advances `_ts` and restarts relative TTL. Until
+behavior is normalized, callers requiring fixed absolute expiry must not call
+`update()` on TTL-bearing items.

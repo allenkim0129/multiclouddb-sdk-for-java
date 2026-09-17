@@ -83,14 +83,13 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      * is matched to physical columns; the default client owns provider-identity cleanup.
      * Neither path enables or alters this provider-direct update method, which callers using
      * {@link com.multiclouddb.api.MulticloudDbClient} never reach in this release.
-     * TTL-expiry preservation is separate from core partial-update support and is advertised
-     * through {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY};
-     * adapters must declare it explicitly when updates leave absolute expiry unchanged.
+     * TTL timing is outside the portable partial-update contract: adapters may differ in
+     * whether a write moves an existing expiry, and callers requiring a fixed expiry must
+     * not use this operation on TTL-bearing items until the behavior is normalized.
      * Participating providers must preserve case-distinct logical fields rather than silently
-     * overwriting another field. The core capability
-     * guarantees results whose serialized JSON and portable structural footprint are each
-     * within 390 KiB. Results above either bound are optional and declared through
-     * {@link com.multiclouddb.api.Capability#PARTIAL_UPDATE_EXTENDED_RESULT_SIZE}. A local
+     * overwriting another field. The core capability guarantees results whose serialized JSON
+     * and portable structural footprint are each within 390 KiB. Results above either bound
+     * are outside this release's portable contract and may follow provider-native limits. A local
      * native request-envelope rejection must perform zero provider I/O and carry a stable reason
      * plus limit details. The shared structural check covers only incoming replacement values;
      * a state-dependent resulting-item limit may instead be returned by

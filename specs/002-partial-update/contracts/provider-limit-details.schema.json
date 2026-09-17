@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://multiclouddb.example/specs/002-partial-update/provider-limit-details.schema.json",
   "title": "Partial update provider limit details",
-  "description": "String-valued MulticloudDbError.providerDetails for Cosmos or Dynamo partial-update resulting-item rejection after one attempted native update. Stable reasons and limit values complement the partial_update_extended_result_size capability; they describe the failed native attempt without duplicating capability state in providerDetails. Shared field-count validation and the default client capability gate are outside this schema.",
+  "description": "String-valued MulticloudDbError.providerDetails for Cosmos or Dynamo partial-update resulting-item rejection after one attempted native update. Stable reasons and limit values describe a native failure above this release's portable result envelope without duplicating capability state in providerDetails. Shared field-count validation and the default client capability gate are outside this schema.",
   "type": "object",
   "required": [
     "reason"

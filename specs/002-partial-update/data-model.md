@@ -165,29 +165,33 @@ Spanner is deliberately not a supported Feature 002 update data path. The shared
 default client owns portable read/query identity cleanup after provider mapping,
 and the Spanner write path remains unchanged. The only Spanner production
 adjustment matches `FIELD_DATA` metadata to physical columns case-insensitively so
-mapped results preserve the caller's field spelling. Because the provider omits all
-three Feature 002 capabilities, `CapabilitySet` supplies their unsupported defaults
-and the core default rejects valid calls before provider delegation. The Spanner
+mapped results preserve the caller's field spelling. Because the provider omits
+the core `partial_update` capability, `CapabilitySet` supplies its unsupported
+default and rejects valid calls before provider delegation. The Spanner
 emulator validated this gate, the provider-direct legacy regression, and the mapper
 casing behavior; no live production Spanner validation is claimed.
 ## 7. Capabilities
 
-| Provider | `partial_update` | `partial_update_extended_result_size` | `partial_update_preserves_ttl_expiry` |
-|---|---|---|---|
-| Cosmos DB | supported | supported up to 2 MiB | unsupported; patch advances `_ts` and restarts countdown |
-| DynamoDB | supported | unsupported | supported; `ttlExpiry` remains unchanged |
-| Spanner | unsupported by API default | unsupported by API default | unsupported by API default |
+| Provider | `partial_update` |
+|---|---|
+| Cosmos DB | supported |
+| DynamoDB | supported |
+| Spanner | unsupported by API default |
 
 The base operation guarantees results whose serialized JSON and portable structural
-footprint are each at most 390 KiB. Results above either bound require the extended
-capability. Native size errors remain
-reason-coded because the SDK does not read/merge stored state before writing.
-Case-distinct field identity is part of the base contract. Absolute TTL-expiry
-preservation is not: callers requiring fixed expiry inspect the separate
-TTL-preservation capability. `CapabilitySet` supplies unsupported defaults for
-all three Feature 002 names, so every built-in provider exposes 20 effective
-rows; an older Spanner provider's 17 declarations become 20 without a
-production change.
+footprint are each at most 390 KiB. A state-dependent result above either bound
+is outside this release's portable contract and may succeed or fail under native
+provider limits. Native size errors remain reason-coded because the SDK does not
+read/merge stored state before writing. Case-distinct field identity is part of
+the base contract. TTL timing is not: DynamoDB `UpdateItem` happens to leave
+`ttlExpiry` unchanged, while Cosmos DB `patchItem` advances `_ts` and restarts
+relative TTL. Until behavior is normalized, callers requiring fixed absolute
+expiry must not call `update()` on TTL-bearing items.
+
+`CapabilitySet` supplies only the omitted core capability default, so every
+built-in provider exposes 18 effective rows; Cosmos DB and DynamoDB explicitly
+declare 18, while an older Spanner provider's 17 declarations become 18 without
+a production change. Unrelated omitted names remain absent.
 
 ## 8. Structured provider-limit errors
 
@@ -235,8 +239,10 @@ Supported partial-update behavior runs only for providers advertising the core
 capability. Shared invalid-request checks still run on every provider because
 validation precedes the gate. Shared coverage accepts same-request
 case-distinct non-reserved names, rejects all provider-owned and
-underscore-prefixed complete-write top-level names, and verifies the shared write envelope. Capability coverage verifies all 20 effective rows and
-the separate result-size and TTL-expiry matrices. Spanner receives a dedicated assertion for the API-default unsupported state and
+underscore-prefixed complete-write top-level names, and verifies the shared write envelope. Capability coverage verifies all 18 effective rows and
+the single core partial-update matrix. Native result-limit and TTL behaviors
+remain provider implementation evidence rather than portable capabilities.
+Spanner receives a dedicated assertion for the API-default unsupported state and
 for non-retryable `UNSUPPORTED_CAPABILITY` with zero provider mutation.
 
 Current local validation ran DynamoDB Local and the Spanner emulator. The Cosmos

@@ -8,7 +8,7 @@ status: "in_progress"
 
 **Binding design**: `specs/002-partial-update/design.md`
 **Scope**: shared API plus Cosmos DB and DynamoDB partial-update implementation.
-Spanner keeps all three Feature 002 capabilities unsupported and its write path
+Spanner keeps the core Feature 002 capability unsupported and its write path
 unchanged. Shared read/query identity cleanup occurs in the default client; the
 only Spanner production adjustment restores caller field spelling across
 case-insensitive metadata/physical-column matches.
@@ -35,7 +35,10 @@ Spanner validation.
 - [X] T009 Rewrite `MulticloudDbProviderClient.update()` Javadocs for the validated SPI contract and participating-provider boundary
 - [X] T010 Update `OperationOptions` Javadocs so TTL is create/upsert-only and `update()` rejects it
 - [X] T011 Implement `PartialUpdateValidator` with `Locale.ROOT` reserved-name checks, literal case-distinct names, underscore rejection, and update TTL rejection
-- [X] T012 Add `PARTIAL_UPDATE` and `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`, declare the release matrix in Cosmos/Dynamo, gate the core operation in `DefaultMulticloudDbClient`, and represent native limits with structured reasons while keeping extended result size independent from later TTL-expiry capability work
+- [X] T012 Add `PARTIAL_UPDATE`, declare the release matrix in Cosmos/Dynamo,
+  gate the core operation in `DefaultMulticloudDbClient`, and represent native
+  limits with structured reasons. The proposed provider-specific larger-result
+  capability portion was superseded and removed during review.
 - [X] T013 Enforce the portable 390 KiB common limit with direct shared serialization and zero-I/O typed failure mapping
 - [X] T014 Remove stale full-replacement wording from API update/delete documentation
 - [X] T015 Run the focused API suite (`PartialUpdateValidatorTest`, `DefaultMulticloudDbClientPartialUpdateTest`, `DocumentSizeValidatorTest`, `MulticloudDbClientPartialUpdateContractTest`, `CapabilityTest`) successfully
@@ -60,7 +63,10 @@ Spanner validation.
 
 ### Cross-provider declarations and focused validation
 
-- [X] T026 Default omitted `PARTIAL_UPDATE`, `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`, and `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY` declarations to unsupported in `CapabilitySet`, verify every built-in provider exposes 20 effective rows, and prove unrelated omissions are not synthesized
+- [X] T026 Default omitted `PARTIAL_UPDATE` declarations to unsupported in
+  `CapabilitySet`, verify every built-in provider exposes 18 effective rows,
+  and prove unrelated omissions are not synthesized. Earlier optional-default
+  work was superseded and removed during review.
 - [X] T027 Verify compatibility with a legacy-style capability set that omits `PARTIAL_UPDATE` and confirm valid portable Spanner updates stop before provider delegation
 - [X] T028 Run the initial named API/Cosmos/Dynamo focused suites with positive discovery and zero failures/errors
 - [X] T029 Reconcile `spec.md`, binding `design.md`, `plan.md`, `research.md`, `data-model.md`, contracts, `quickstart.md`, requirements checklist, and `tasks.md` to the focused scope
@@ -80,8 +86,13 @@ baseline write/result fixes do not enable portable Spanner update.
 
 ## Phase 5: Documentation and migration
 
-- [X] T036 Update user docs for Cosmos/Dynamo shallow update, explicit Spanner capability rejection, native envelopes, TTL rejection, TTL-expiry preservation discovery, and `upsert()` migration
-- [X] T037 Update API, Cosmos, Dynamo, and Spanner `[Unreleased]` entries to describe all three Feature 002 capabilities and the final provider boundary accurately
+- [X] T036 Update user docs for Cosmos/Dynamo shallow update, explicit Spanner
+  capability rejection, native envelopes, TTL rejection, the non-portable TTL
+  timing boundary, and `upsert()` migration
+- [X] T037 Update API, Cosmos, Dynamo, and Spanner `[Unreleased]` entries to
+  describe the core Feature 002 capability and final provider boundary
+  accurately. Proposed provider-specific size/TTL capability wording was
+  removed during review.
 - [X] T038 Update E2E to exercise partial update on Cosmos/Dynamo and skip the scenario when `PARTIAL_UPDATE` is unsupported
 - [X] T039 Update E2E and root README text to document API-default unsupported behavior for Spanner
 
@@ -118,7 +129,12 @@ baseline write/result fixes do not enable portable Spanner update.
 - [X] T059 Document supported-path Cosmos 408/410 and DynamoDB service/SDK timeout normalization plus direct-write result limits in compatibility docs and changelogs
 - [X] T060 Reconcile all feature artifacts and user docs with the Cosmos/Dynamo release scope and API-default unsupported behavior for Spanner
 - [ ] T061 Run the final canonical targeted/full validation after all remediation. DynamoDB Local and Spanner emulator validation have run; retain this task as pending until the currently unavailable Cosmos emulator can run its applicable profile. Reconfirm Spanner capability gating, shared result normalization, and mapper casing coverage; complete documentation/traceability audits; and do not characterize the Spanner emulator evidence as live production validation.
-- [X] T062 Define the dual 390 KiB serialized/structural base result envelope, add the extended-result capability with Cosmos support and Dynamo/legacy-provider unsupported defaults, and align capability conformance plus documentation
+- [X] T062 Define the dual 390 KiB serialized/structural base result envelope
+  and evaluate a provider-specific larger-result capability. The capability
+  portion was superseded and removed during review because Cosmos-only support
+  did not establish a portable contract; native-limit conformance and
+  documentation remain. Portable resulting-size normalization continues in
+  [#114](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/114).
 - [X] T064 Add deterministic API-boundary timeout conformance for Cosmos update HTTP 408/410 and DynamoDB `RequestTimeout`/`RequestTimeoutException`, with shared retryability, operation, provider, attempt-count, and diagnostics assertions.
 - [X] T065 Convert the legacy Spanner row-update emulator regression to an explicit provider-direct test, remove its Surefire exclusion, and keep portable Spanner `update()` capability-gated.
 - [X] T066 Add shared 31-level replacement/document depth, 50,000-byte field-name,
@@ -133,8 +149,16 @@ baseline write/result fixes do not enable portable Spanner update.
 
 - [X] T067 Update shared/API/conformance coverage to accept `foo` plus `Foo` as separate valid literal fields in the same atomic request while reserved-name matching remains case-insensitive
 - [X] T068 Extend complete create/upsert preflight and coverage to reject `id`, `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, `data`, and underscore-prefixed top-level names before provider I/O
-- [X] T069 Add `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY`, advertise DynamoDB support and Cosmos unsupported behavior, default Spanner/legacy omissions to unsupported, keep `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE` unchanged, verify 20 effective capability rows, and execute a Dynamo create/read/update/read lifecycle that proves the absolute expiry is unchanged
-- [X] T070 Reconcile every binding Feature 002 artifact with same-request case identity, complete-write reservations, the three capability defaults, the TTL-expiry matrix, the actual implementation record, and reserved-field-safe E2E/quick examples
+- [X] T069 Evaluate a provider-specific TTL-preservation capability and execute
+  a Dynamo create/read/update/read lifecycle showing that `ttlExpiry` is
+  unchanged. The capability work was superseded and removed during review
+  because DynamoDB-only behavior does not establish a portable contract; the
+  lifecycle remains implementation evidence. Portable TTL-expiry normalization
+  continues in [#113](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/113).
+- [X] T070 Reconcile every binding Feature 002 artifact with same-request case
+  identity, complete-write reservations, the core capability default, the
+  non-portable TTL timing record, the actual implementation record, and
+  reserved-field-safe E2E/quick examples
 - [X] T071 Strip adapter-injected identity, TTL, and system fields centrally in `DefaultMulticloudDbClient`, preserve requested metadata separately, and prove read-to-upsert reuse
 - [X] T072 Make bounded normalized serialization authoritative for provider delegation, map POJO cycle/depth/serializer re-entry failures to stable shared errors, enforce the 128-character case-insensitive complete-write top-level namespace, restore logical casing from Spanner metadata without changing its write path, and align all binding docs
 
@@ -170,7 +194,7 @@ baseline write/result contract coverage without a portable partial-update path.
 | FR-033 explicit field-case identity | T055–T057, T060–T061, T067 |
 | FR-034–FR-040 native-safe write envelope and public limits | T058, T061, T066, T068, T072 |
 | FR-034–FR-035 structural preflight and diagnostics | T066 |
-| FR-041 TTL-expiry preservation capability | T026, T036–T037, T043, T069–T070 |
+| FR-041 non-portable TTL timing boundary | T026, T036–T037, T043, T069–T070 |
 | FR-028 diagnostics safety | T020–T025, T043–T044 |
 | FR-029 shared baseline-only conformance | T030–T035, T064 |
 | FR-030 migration | T036–T039 |

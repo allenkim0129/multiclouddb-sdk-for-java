@@ -155,21 +155,16 @@ Well-known query capabilities:
 Well-known write capabilities:
 - `PARTIAL_UPDATE = "partial_update"`: provider supports the capability-gated
   shallow literal top-level set/replace contract. Cosmos DB and DynamoDB support
-  it in this release; Spanner does not.
-- `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE =
-  "partial_update_extended_result_size"`: provider supports resulting documents
-  above either 390 KiB serialized or structural base bound, up to its documented
-  native ceiling. Cosmos DB supports it; DynamoDB and Spanner do not.
-- `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY =
-  "partial_update_preserves_ttl_expiry"`: provider preserves the absolute
-  expiry of an existing TTL-bearing item during partial update. DynamoDB
-  supports it because `UpdateItem` leaves `ttlExpiry` unchanged. Cosmos DB does
-  not because `patchItem` advances `_ts` and restarts the TTL countdown.
-  Spanner receives the unsupported API default.
+  it in this release; Spanner does not. Portable behavior is guaranteed only
+  when both the resulting logical document's serialized JSON and portable
+  structural footprint are at or below 390 KiB. Larger state-dependent results
+  and TTL timing are outside this release's portable contract.
 
-`CapabilitySet` supplies unsupported defaults for these three Feature 002
-capabilities when a provider omits them; unrelated omitted well-known names are
-not synthesized. Each built-in provider exposes 20 effective capability rows.
+`CapabilitySet` supplies an unsupported default only for omitted
+`PARTIAL_UPDATE`; unrelated omitted well-known names are not synthesized. Each
+built-in provider exposes 18 effective capability rows: Cosmos DB and DynamoDB
+explicitly declare 18, while Spanner declares 17 and receives the one core
+default.
 
 ### MulticloudDbError
 Provider-neutral error category.
@@ -296,13 +291,7 @@ New constants added to `Capability`:
 - `RESULT_LIMIT = "result_limit"` — provider supports Top N result capping
 - `PARTIAL_UPDATE = "partial_update"` — capability-gated shallow literal
   top-level set/replace; Cosmos DB and DynamoDB supported, Spanner unsupported
-- `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE =
-  "partial_update_extended_result_size"` — results above either 390 KiB base
-  bound; Cosmos DB supported, DynamoDB and Spanner unsupported
-- `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY =
-  "partial_update_preserves_ttl_expiry"` — existing absolute TTL expiry remains
-  unchanged during partial update; DynamoDB supported, Cosmos DB unsupported,
-  and Spanner unsupported through the API default
+  through the API default
 
 ### Portable write-input validation
 
@@ -333,11 +322,13 @@ Partial `update()` is shallow, literal, top-level set/replace with at most 10
 fields, no TTL, one native atomic write, and `NOT_FOUND` for a missing item. The
 update check does not prevalidate the resulting stored item; its base result
 envelope independently requires serialized and structural size at or below
-390 KiB. Larger results require
-`PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`. Case-distinct names such as `foo` and
-`Foo` remain separate literal fields. The base capability does not guarantee
-that an existing absolute TTL expiry is unchanged; callers requiring that
-behavior also check `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY`.
+390 KiB. A state-dependent result above either bound is outside this release's
+portable contract and may succeed or fail under native provider limits.
+Case-distinct names such as `foo` and `Foo` remain separate literal fields.
+TTL timing is outside the portable contract: DynamoDB `UpdateItem` happens to
+leave `ttlExpiry` unchanged, while Cosmos DB `patchItem` advances `_ts` and
+restarts relative TTL. Until behavior is normalized, callers requiring fixed
+absolute expiry must not call `update()` on TTL-bearing items.
 
 ### Provider Schema Changes
 

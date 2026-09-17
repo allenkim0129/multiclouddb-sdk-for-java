@@ -778,8 +778,10 @@ in-repository `ResourceProvisioner` sample task is retained as superseded histor
   change-feed milestone, `CapabilitiesConformanceTest.capabilityCountIs17`
   asserted 17 capabilities (was 16), and `EXTENDED_CHANGE_FEED_HISTORY` was
   added to the `knownNames[]` array. Feature 002 later superseded that count:
-  current built-in effective sets contain 20 rows after `CapabilitySet` applies
-  its three partial-update defaults.
+  current built-in effective sets contain 18 rows after `CapabilitySet` applies
+  only the omitted core partial-update default. Proposed provider-specific size
+  and TTL capability work was removed during review because it did not define a
+  portable contract.
   File: `multiclouddb-conformance/src/test/java/com/multiclouddb/conformance/us2/CapabilitiesConformanceTest.java`
 - [x] T180 [US14] Unit-test coverage for the opt-in surface and DDL helper:
   `ChangeFeedConfigTest` exercises builder validation (zero / negative /

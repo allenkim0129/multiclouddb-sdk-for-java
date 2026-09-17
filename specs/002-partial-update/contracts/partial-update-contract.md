@@ -84,13 +84,15 @@ For a provider-supported field mapping on an existing document:
 - replaying the assignments is idempotent for logical document fields, not
   provider-maintained metadata or TTL timing; and
 - a result whose serialized JSON and portable structural footprint are each at most
-  390 KiB is inside the portable base envelope; larger results require
-  `partial_update_extended_result_size`.
+  390 KiB is inside the portable base envelope.
 
 A missing document returns `NOT_FOUND` and is not created.
-The base postconditions do not guarantee that an existing TTL-bearing item's
-absolute expiry stays fixed; that guarantee requires
-`partial_update_preserves_ttl_expiry`.
+A state-dependent result above either 390 KiB bound is outside this release's
+portable contract and may succeed or fail under native provider limits. TTL
+timing is also outside the portable contract. DynamoDB `UpdateItem` happens to
+leave `ttlExpiry` unchanged, while Cosmos DB `patchItem` advances `_ts` and
+restarts relative TTL. Until behavior is normalized, callers requiring fixed
+absolute expiry must not call `update()` on TTL-bearing items.
 
 ## Complete-document write addendum
 
@@ -117,8 +119,8 @@ input/structure constants:
 ## Provider release boundary
 
 Cosmos DB and DynamoDB advertise `partial_update` and enter their native update
-paths. Spanner omits all three Feature 002 capabilities, so `CapabilitySet`
-supplies unsupported defaults. After shared preconditions 1–11 pass, the default client rejects a Spanner call with
+paths. Spanner omits the core Feature 002 capability, so `CapabilitySet`
+supplies its unsupported default. After shared preconditions 1–11 pass, the default client rejects a Spanner call with
 non-retryable `UNSUPPORTED_CAPABILITY`,
 `providerDetails.capability=partial_update`, and zero provider update
 operations. The Spanner emulator validates this shared boundary and the
@@ -127,32 +129,34 @@ portable Spanner update support is claimed.
 
 ## Capability contract
 
-| Provider | `partial_update` | `partial_update_extended_result_size` | `partial_update_preserves_ttl_expiry` |
-|---|---|---|---|
-| Cosmos DB | supported | supported up to 2 MiB | unsupported; patch advances `_ts` and restarts countdown |
-| DynamoDB | supported | unsupported | supported; `ttlExpiry` remains unchanged |
-| Spanner | unsupported by API default | unsupported by API default | unsupported by API default |
+| Provider | `partial_update` |
+|---|---|
+| Cosmos DB | supported |
+| DynamoDB | supported |
+| Spanner | unsupported by API default |
 
 The base capability guarantees results whose serialized JSON and portable
-structural footprint are each at or below 390 KiB. Above either bound, callers
-consult the extended-result capability. Result size is
-state-dependent, so the SDK performs no read/merge preflight; native rejections
-remain non-retryable, reason-coded provider-limit errors.
-`partial_update_preserves_ttl_expiry` is independent: callers requiring an
-unchanged absolute expiry MUST inspect it because base `partial_update` does not
-make that promise. Each built-in provider's effective set has 20 rows: Cosmos DB
-and DynamoDB declare all 20, while Spanner's 17 declarations receive unsupported
-API defaults for the three Feature 002 names.
+structural footprint are each at or below 390 KiB. Above either bound, the
+state-dependent result is outside this release's portable contract and may
+succeed or fail under native provider limits. The SDK performs no read/merge
+preflight; native rejections remain non-retryable, reason-coded provider-limit
+errors after at most one attempted native update. TTL timing is outside the
+portable contract, and callers requiring fixed absolute expiry MUST NOT call
+`update()` on TTL-bearing items until behavior is normalized.
+
+Each built-in provider's effective set has 18 rows: Cosmos DB and DynamoDB
+explicitly declare all 18, while Spanner's 17 declarations receive the one core
+Feature 002 unsupported API default.
 `CapabilitySet` does not backfill unrelated known names omitted by an arbitrary
 legacy or third-party provider.
 
 ## Provider execution
 
-| Provider | Accepted plan | Missing document | Existing absolute TTL expiry |
+| Provider | Accepted plan | Missing document | Observed TTL behavior (outside portable contract) |
 |---|---|---|---|
 | Cosmos DB | one direct patch through 10 fields | direct 404 → `NOT_FOUND` | not preserved; `_ts` advances |
 | DynamoDB | one aliased conditional `UpdateItem` | failed existence guard → `NOT_FOUND` | preserved; `ttlExpiry` is not assigned |
-| Spanner | no provider plan; shared capability rejection | not reached | unsupported by API default |
+| Spanner | no provider plan; shared capability rejection | not reached | not reached |
 
 Cosmos and Dynamo add no adapter read, replacement write, or retry loop.
 
@@ -271,6 +275,7 @@ client.upsert(address, key, completeDocument);
 write. Read-then-upsert is not atomic, and this release has no exact portable
 atomic full-document replace-if-present equivalent.
 
-Changing TTL through a complete write is distinct from preserving an existing
-absolute expiry during partial update. Callers requiring the latter MUST check
-`partial_update_preserves_ttl_expiry`; `partial_update` alone is insufficient.
+Changing TTL through a complete write is distinct from TTL timing during
+partial update. The latter is outside this release's portable contract. Until
+behavior is normalized, callers requiring an existing absolute expiry to remain
+fixed MUST NOT call `update()` on TTL-bearing items.

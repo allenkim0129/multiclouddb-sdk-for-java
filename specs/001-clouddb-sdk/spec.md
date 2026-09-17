@@ -12,12 +12,15 @@ As an application developer, I can use a single SDK interface to perform create,
 
 Partial `update()` is capability-gated: Cosmos DB and DynamoDB support it in
 this release; the current Spanner provider receives the API-default
-`PARTIAL_UPDATE` unsupported declaration before provider I/O. Callers that
-require an existing absolute TTL expiry to remain unchanged must also require
-`PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY`. DynamoDB supports that capability because
-`UpdateItem` leaves `ttlExpiry` unchanged; Cosmos DB does not because
-`patchItem` advances `_ts` and restarts the TTL countdown, and Spanner receives
-the unsupported API default.
+`PARTIAL_UPDATE` unsupported declaration before provider I/O. Portable behavior
+is guaranteed only when both the resulting logical document's serialized JSON
+and portable structural footprint are at or below 390 KiB. TTL timing is
+outside this release's portable contract: DynamoDB `UpdateItem` happens to
+leave `ttlExpiry` unchanged, while Cosmos DB `patchItem` advances `_ts` and
+restarts relative TTL. Until behavior is normalized, callers requiring fixed
+absolute expiry must not call `update()` on TTL-bearing items.
+
+Follow-up normalization is tracked in [#113](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/113) for absolute TTL expiry and [#114](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/114) for state-dependent resulting size.
 
 **Why this priority**: This is the core value proposition: portability across Cosmos DB, DynamoDB, and Spanner without rewriting the application’s data access layer.
 
@@ -127,12 +130,13 @@ As an application developer, I can determine whether a feature/behavior is porta
 
 1. **Given** a provider that does not support a requested capability, **When** the application attempts that operation, **Then** it receives a structured error indicating the capability gap and how to handle it.
 2. **Given** any built-in provider, **When** the application reads its effective
-   capabilities, **Then** it receives 20 rows, including API-supplied
-   unsupported defaults for omitted Feature 002 capability declarations.
+   capabilities, **Then** it receives 18 rows; Cosmos DB and DynamoDB explicitly
+   declare 18, while Spanner declares 17 and receives only the omitted core
+   `PARTIAL_UPDATE` unsupported default.
 3. **Given** a TTL-bearing item whose absolute expiry must not move, **When**
-   the application evaluates partial-update support, **Then** it separately
-   checks `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY`; DynamoDB reports supported,
-   while Cosmos DB and Spanner report unsupported.
+   the application evaluates partial-update support, **Then** it treats TTL
+   timing as outside the portable contract and does not call `update()` until
+   TTL behavior is normalized.
 
 ---
 
@@ -809,9 +813,11 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
   it is produced so oversized POJO or custom-serializer output is not fully
   materialized. `update()` MUST NOT read and merge the existing item to prevalidate
   result size. Its base result envelope requires both serialized JSON and portable
-  structural footprint at or below 390 KiB; results above either bound require
-  `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE` and remain subject to provider-native
-  ceilings after one attempted atomic write.
+  structural footprint at or below 390 KiB. State-dependent results above either
+  bound are outside this release's portable contract and MAY succeed or fail
+  under provider-native ceilings after at most one attempted atomic write.
+  Native size rejection MUST remain reason-coded, non-retryable
+  `UNSUPPORTED_CAPABILITY`.
 - **FR-062**: The SDK MUST define and document uniform quota limits for provider resources (e.g., maximum logical partition size) so that applications can anticipate constraints regardless of the selected provider.
 - **FR-063**: When a provider-specific quota limit is reached (e.g., partition size exceeded, throughput exhausted), the SDK MUST surface the failure through the standard provider-neutral error model with clear categorization and actionable guidance.
 - **FR-064**: The public
@@ -822,15 +828,13 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
   `MAX_PARTIAL_UPDATE_FIELDS=10` so applications can perform pre-validation or
   display the portable write limits without duplicating literals. These five size, structure, name, nesting, and field-count limits are the
   complete public constant surface.
-- **FR-064a**: `CapabilitySet` MUST supply unsupported defaults for the three
-  Feature 002 names `PARTIAL_UPDATE`,
-  `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`, and
-  `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY`, without synthesizing unrelated omitted
-  names. Every built-in provider's effective set MUST contain 20 rows. DynamoDB
-  MUST advertise TTL-expiry preservation because partial update leaves the
-  absolute `ttlExpiry` unchanged. Cosmos DB MUST advertise it unsupported
-  because `patchItem` advances `_ts` and restarts the TTL countdown. Spanner
-  omits the declaration and receives the unsupported API default.
+- **FR-064a**: `CapabilitySet` MUST supply an unsupported default only for an
+  omitted `PARTIAL_UPDATE` declaration, without synthesizing unrelated omitted
+  names. Every built-in provider's effective set MUST contain 18 rows. Cosmos
+  DB and DynamoDB MUST explicitly declare 18; Spanner MUST declare 17 and
+  receive the one core default. TTL timing MUST remain outside the portable
+  partial-update contract; callers requiring fixed absolute expiry MUST NOT
+  call `update()` on TTL-bearing items until behavior is normalized.
 
 #### Change Data Capture / Change Feed Requirements
 
@@ -1216,9 +1220,9 @@ The following operators and functions form the portable query subset, available 
   document, using a case-insensitive top-level provider-owned name (`id`,
   `partitionKey`, `sortKey`, `ttl`, `ttlExpiry`, or `data`), or using an
   underscore-prefixed top-level name is rejected consistently before provider I/O.
-- **SC-023a**: Every built-in provider exposes 20 effective capability rows.
-  DynamoDB reports `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY` supported; Cosmos DB
-  and the API-default Spanner entry report it unsupported.
+- **SC-023a**: Every built-in provider exposes 18 effective capability rows.
+  Cosmos DB and DynamoDB explicitly declare 18; Spanner declares 17 and
+  receives only the core `PARTIAL_UPDATE` unsupported API default.
 - **SC-024**: When a provider-specific quota limit is reached (e.g., partition size exceeded), the SDK surfaces a provider-neutral error with clear categorization and actionable guidance, consistent across all providers.
 - **SC-025**: Every Java source file (main and test) across all modules carries the standard Microsoft copyright header (`// Copyright (c) Microsoft Corporation. All rights reserved.` / `// Licensed under the MIT License.`) as its first two lines. A `LICENSE` file exists at the repository root with the full MIT license text. Both are verifiable by inspection of any file in the repository.
 - **SC-026**: A change feed consumer can receive a chronologically ordered stream of create and update events from a collection on all providers that support change feed, by changing configuration only.
@@ -1296,9 +1300,9 @@ The following operators and functions form the portable query subset, available 
 - **Uniform write-input envelope**: The SDK enforces separate 390 KiB serialized
   and structural bounds across all providers, plus portable value-shape, field-name, nesting, and complete-write
   reserved-name constraints. Cosmos DB and Spanner support larger native items, but the shared
-  envelope guarantees inputs remain DynamoDB-safe. Partial-update results above
-  either base bound require the separately advertised extended-result
-  capability.
+  envelope guarantees inputs remain DynamoDB-safe. State-dependent
+  partial-update results above either base bound are outside this release's
+  portable contract and may succeed or fail under provider-native limits.
 - **Uniform quota limits**: The SDK documents and surfaces provider quota constraints (e.g., logical partition size limits, throughput caps) in a uniform way. While exact quota values may differ by provider, the SDK ensures that quota-related failures are reported through the standard error model with consistent categorization.
 - **Multi-tenancy patterns**: The SDK does not enforce tenant isolation. Multi-tenant applications can use partition key schemes to scope data by tenant (e.g., including an organization code in the partition key value) and use the existing `partitionKey` query scope (FR-039) to restrict queries to a single tenant's data. For stronger isolation (per-tenant encryption, noisy-neighbor protection), applications should use collection-per-tenant or account-per-tenant patterns with provider fleet management features. This is a deployment architecture decision, not an SDK-level concern.
 - Every Java source file currently present in the repository's modules, in both
@@ -1428,9 +1432,9 @@ This checklist is used to accept the feature as “done” at the spec level.
 - [ ] `PortableWriteLimits` exposes both 399,360-byte write bounds, the
   50,000-byte field-name limit, 31-container nesting limit, and 10-field
   partial-update limit for application pre-validation.
-- [ ] Every built-in effective capability set contains 20 rows; DynamoDB alone
-  supports `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY`, while Cosmos DB and the
-  API-default Spanner entry report it unsupported.
+- [ ] Every built-in effective capability set contains 18 rows; Cosmos DB and
+  DynamoDB explicitly declare 18, while Spanner declares 17 and receives only
+  the core `PARTIAL_UPDATE` unsupported API default.
 - [ ] When a provider-specific quota limit is reached, the SDK surfaces a provider-neutral error with clear categorization and actionable guidance.
 - [ ] Quota-related errors are consistent in format across all providers.
 

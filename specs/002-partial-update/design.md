@@ -18,15 +18,17 @@ void update(
 
 Cosmos DB and DynamoDB move to native partial-update operations and advertise
 the core capability. That capability covers results whose serialized JSON and
-portable structural footprint are each at most 390 KiB. Cosmos also advertises the optional extended-result capability for its
-larger native envelope; DynamoDB explicitly does not.
-TTL-expiry preservation is a third, independent capability: DynamoDB advertises
-it because `UpdateItem` leaves `ttlExpiry` unchanged, while Cosmos DB advertises
-it unsupported because `patchItem` advances `_ts` and restarts the TTL
-countdown.
+portable structural footprint are each at most 390 KiB. State-dependent results
+above either bound are outside this release's portable contract and may succeed
+or fail under native provider limits. TTL timing is also outside the portable
+contract: DynamoDB `UpdateItem` happens to leave `ttlExpiry` unchanged, while
+Cosmos DB `patchItem` advances `_ts` and restarts relative TTL.
 
-Spanner continues to omit all three Feature 002 capabilities, so `CapabilitySet`
-supplies unsupported defaults. Its write path remains unchanged. The shared default
+The proposed provider-specific size and TTL capabilities were removed during
+review because single-provider behavior does not establish a portable contract.
+
+Spanner continues to omit the core Feature 002 capability, so `CapabilitySet`
+supplies its unsupported default. Its write path remains unchanged. The shared default
 client owns portable read/query identity cleanup, while the only Spanner production
 adjustment matches `FIELD_DATA` metadata to physical columns case-insensitively and
 preserves caller field spelling. Neither change enables partial update. Future
@@ -44,13 +46,12 @@ For field names and value shapes supported by the provider mapping:
 - case-distinct non-reserved names are separate literal fields, including when
   present in the same request;
 - logical field assignments are atomic and replay-idempotent, while provider-maintained
-  metadata and TTL timing remain capability-specific; and
+  metadata and TTL timing remain outside the portable contract; and
 - a missing document returns `NOT_FOUND` without creating it.
 
 The operation does not support nested paths, remove, increment, conditional
-field predicates, or update TTL. The core operation also does not promise that
-an existing absolute TTL expiry remains fixed; callers requiring that guarantee
-must inspect `partial_update_preserves_ttl_expiry`.
+field predicates, or update TTL. Until TTL timing is normalized, callers
+requiring a fixed absolute expiry must not call `update()` on TTL-bearing items.
 
 ### 2.1 Release boundary
 
@@ -145,36 +146,36 @@ reason-coded path after at most one attempted atomic update.
 | Capability | Meaning |
 |---|---|
 | `partial_update` | Core shallow set/replace operation when serialized result JSON and structural footprint are each <= 390 KiB. |
-| `partial_update_extended_result_size` | Provider supports results above either 390 KiB base bound up to its documented native ceiling. |
-| `partial_update_preserves_ttl_expiry` | Provider leaves an existing TTL-bearing item's absolute expiry unchanged. |
 
-The default client gates `partial_update`. Result size depends on existing state, so
-the SDK does not read/merge before writing and cannot classify an individual call
-before delegation. Callers that require portable behavior keep the logical result
-within both 390 KiB bounds. Above either boundary they inspect the extended-result capability and
-handle reason-coded native size failures. Case-distinct field identity remains part
-of the base operation. Fixed absolute TTL expiry is not part of the base
-operation and requires the separate TTL-preservation capability.
+The default client gates `partial_update`. Result size depends on existing state,
+so the SDK does not read/merge before writing and cannot classify an individual
+call before delegation. Callers that require portable behavior keep the logical
+result within both 390 KiB bounds. Above either boundary, the result is outside
+this release's portable contract and may succeed or fail under native provider
+limits. Native size failures remain reason-coded and non-retryable after at most
+one attempted native update. Case-distinct field identity remains part of the
+base operation. Fixed absolute TTL expiry is not part of the portable contract.
 
-| Provider | Core | Extended result size | Preserves absolute TTL expiry |
+| Provider | Core capability | Result above either 390 KiB bound | TTL timing on an existing TTL-bearing item |
 |---|---|---|---|
-| Cosmos DB | supported | supported up to 2 MiB | unsupported; patch advances `_ts` and restarts countdown |
-| DynamoDB | supported | unsupported | supported; `ttlExpiry` remains unchanged |
-| Spanner | unsupported by API default | unsupported by API default | unsupported by API default |
+| Cosmos DB | supported | outside portable contract; subject to 2 MiB native limit | non-portable: patch advances `_ts` and restarts relative TTL |
+| DynamoDB | supported | outside portable contract; subject to 400 KiB native limit | non-portable implementation detail: `ttlExpiry` remains unchanged |
+| Spanner | unsupported by API default | not reached | not reached |
 
 ```text
 provider declares partial_update=true
   -> shared gate passes
   -> serialized result and structural footprint <= 390 KiB: portable base envelope
-  -> result above either bound: consult partial_update_extended_result_size
+  -> result above either bound: outside portable contract; native outcome applies
 
-provider omits any Feature 002 capability
-  -> CapabilitySet inserts that capability's unsupported default
+provider omits partial_update
+  -> CapabilitySet inserts the core unsupported default
 ```
 
-Each built-in provider exposes 20 effective rows. Cosmos DB and DynamoDB declare
-all 20; an older Spanner provider's 17 declarations receive the three Feature 002
-unsupported defaults without a provider release. `CapabilitySet` does not
+Each built-in provider exposes 18 effective rows. Cosmos DB and DynamoDB
+explicitly declare all 18; an older Spanner provider's 17 declarations receive
+the one core Feature 002 unsupported default without a provider release.
+`CapabilitySet` does not
 synthesize unrelated known names omitted by arbitrary partial declarations.
 
 ## 5. Cosmos DB design
@@ -188,9 +189,9 @@ Each raw field name becomes one RFC 6901 segment:
 ```
 
 Every assignment uses `CosmosPatchOperations.set`. No key or TTL operation is
-added. The patch advances Cosmos DB `_ts`, so Cosmos explicitly reports
-`partial_update_preserves_ttl_expiry` unsupported: an existing relative TTL
-countdown restarts even though the reserved TTL fields are not assigned.
+added. The patch advances Cosmos DB `_ts`, so an existing relative TTL countdown
+restarts even though the reserved TTL fields are not assigned. This behavior is
+outside the portable contract.
 
 ### 5.2 Single-patch plan
 
@@ -256,8 +257,8 @@ ConditionExpression:
 
 The value mapper preserves STRING/NUMBER/BOOL/NULL/MAP/LIST shapes.
 Because the expression does not assign `ttlExpiry`, DynamoDB preserves the
-existing absolute expiry and advertises
-`partial_update_preserves_ttl_expiry`.
+existing absolute expiry. This is an implementation detail, not a portable
+guarantee.
 
 
 The shared 10-field limit keeps every portable call safely below the DynamoDB
@@ -313,10 +314,10 @@ tests that prove exact-limit delegation and one-byte-over zero delegation. Share
 live conformance verifies exact-limit create/upsert on every provider and
 exact-limit partial update on the capability-supporting Cosmos and DynamoDB paths.
 
-Capability conformance verifies all 20 effective rows for every built-in
-provider, the unchanged extended-result matrix (Cosmos supported, DynamoDB and
-Spanner unsupported), and the TTL-preservation matrix (DynamoDB supported,
-Cosmos DB and Spanner unsupported).
+Capability conformance verifies all 18 effective rows and the core
+partial-update matrix for every built-in provider. Provider-specific native
+result limits and TTL timing remain implementation evidence rather than
+capability matrices.
 
 `CosmosConformanceTest` and `DynamoConformanceTest` seed native items below their
 service limits, apply small portable updates that would push the results above
@@ -345,11 +346,10 @@ client.upsert(
     OperationOptions.builder().ttlSeconds(3600).build());
 ```
 
-This migration sets or replaces TTL through a complete write. It is separate
-from preserving an already established absolute expiry during partial update.
-Callers requiring the latter must check
-`PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY`; the core capability alone is
-insufficient.
+This migration sets or replaces TTL through a complete write. TTL timing during
+partial update is outside this release's portable contract. Until behavior is
+normalized, callers requiring an already established absolute expiry to remain
+fixed must not call `update()` on TTL-bearing items.
 
 ## 9. Scope boundaries
 

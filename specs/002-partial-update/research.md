@@ -17,8 +17,8 @@ Deliberately leave portable Spanner partial update unsupported. The shared defau
 client performs portable read/query identity cleanup after provider mapping, and
 the Spanner write path remains unchanged. The only Spanner production adjustment
 matches `FIELD_DATA` metadata to physical columns case-insensitively to preserve
-caller field spelling. `CapabilitySet` supplies unsupported defaults for all three
-Feature 002 capabilities when the provider omits them.
+caller field spelling. `CapabilitySet` supplies an unsupported default only for
+the core Feature 002 capability when the provider omits it.
 The default client gates the operation, so a valid Spanner update returns
 non-retryable `UNSUPPORTED_CAPABILITY` before provider delegation.
 
@@ -98,42 +98,34 @@ punctuation through escaping and aliases.
 **Why**: provider-specific TTL mutation would break portable behavior and make
 replay time-relative.
 
-## Decision 6 — Separate the portable and extended result envelopes
+## Decision 6 — Keep one portable result envelope
 
-- `partial_update`: core shallow set/replace behavior when serialized result JSON
-  and portable structural footprint are each at most 390 KiB.
-- `partial_update_extended_result_size`: support above either 390 KiB base bound
-  through the provider documented native ceiling.
+`partial_update` covers core shallow set/replace behavior only when serialized
+result JSON and portable structural footprint are each at most 390 KiB.
+State-dependent results above either bound are outside this release's portable
+contract and may succeed or fail under provider-native ceilings.
 
-Cosmos advertises the core and extended-result capabilities and supports
-extended results up to 2 MiB.
-Dynamo advertises the core capability and explicitly marks extended results
-unsupported. Spanner omits them; its capability set is normalized independently
-from the TTL-expiry capability described below.
-Normalization is capability-specific and does not populate unrelated omissions
-in arbitrary legacy or third-party sets.
+The proposed provider-specific larger-result capability was removed during
+review because Cosmos-only support did not establish a portable contract.
+Result size depends on stored state, and a read/merge preflight would add cost
+and a race. Native failures therefore retain stable, structured reasons and
+limits after at most one attempted native update. Portable resulting-size
+normalization continues in [#114](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/114).
 
-Result size depends on stored state. A read/merge preflight would add cost and a
-race, so callers needing portability keep results within both 390 KiB bounds and inspect the
-extended capability before relying on larger results. Native failures retain stable,
-structured reasons and limits.
+## Decision 7 — Keep TTL timing outside the portable contract
 
-## Decision 7 — Separate TTL-expiry preservation from partial update
+The proposed provider-specific TTL-preservation capability was removed during
+review because DynamoDB-only behavior did not establish a portable contract.
 
-Add `partial_update_preserves_ttl_expiry` without changing the meaning of
-`partial_update` or `partial_update_extended_result_size`.
+- DynamoDB `UpdateItem` does not assign `ttlExpiry`, so the existing absolute
+  expiry happens to remain unchanged.
+- Cosmos DB `patchItem` advances `_ts`, which restarts the countdown for a
+  TTL-bearing item.
 
-- DynamoDB advertises support because the `UpdateItem` expression does not
-  assign `ttlExpiry`, so the existing absolute expiry is unchanged.
-- Cosmos DB advertises unsupported because `patchItem` advances `_ts`, which
-  restarts the countdown for a TTL-bearing item.
-- Spanner and legacy omissions receive the API-default unsupported value while
-  shared result cleanup and the Spanner mapper casing fix remain independent of
-  partial update.
-
-**Why**: base shallow update is portable even though provider TTL clocks differ.
-Callers requiring fixed absolute expiry need a separate discoverable guarantee;
-silently treating `partial_update` as that guarantee would be incorrect.
+Until behavior is normalized, callers requiring fixed absolute expiry must not
+call `update()` on TTL-bearing items. Shared result cleanup and the Spanner
+mapper casing fix remain independent of partial update. Portable TTL-expiry
+normalization continues in [#113](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/113).
 
 ## Decision 8 — Keep every accepted update to one native write
 
@@ -219,11 +211,11 @@ delegation while one byte over does not. When each emulator is available, shared
 create/upsert on every provider and partial update on Cosmos/DynamoDB.
 Concrete Cosmos and DynamoDB regressions continue to exercise their native
 result-item limits.
-Capability conformance asserts 20 effective rows for each built-in provider,
-the Cosmos-supported/Dynamo-and-Spanner-unsupported extended-result matrix, and
-the Dynamo-supported/Cosmos-and-Spanner-unsupported TTL-preservation matrix.
-An older Spanner provider's 17 declarations receive exactly the three Feature
-002 unsupported defaults, while unrelated omissions remain absent.
+Capability conformance asserts 18 effective rows and the core partial-update
+matrix for each built-in provider. Provider-specific native result limits and
+TTL timing remain implementation evidence rather than capability matrices. An
+older Spanner provider's 17 declarations receive exactly the one core Feature
+002 unsupported default, while unrelated omissions remain absent.
 
 ## Decision 14 — Preserve migration intent
 
@@ -231,9 +223,10 @@ Callers that require complete replacement move to `upsert()` and must be told
 that it creates a missing document. TTL-bearing updates also move to a complete
 create/upsert write.
 
-That migration changes TTL through a complete write. A caller performing a
-partial update on an already TTL-bearing item and requiring the absolute expiry
-to stay fixed instead checks `partial_update_preserves_ttl_expiry`.
+That migration changes TTL through a complete write. TTL timing during partial
+update is outside this release's portable contract. Until behavior is
+normalized, a caller requiring an already TTL-bearing item's absolute expiry to
+stay fixed must not call `update()`.
 
 No compatibility flag or new `replace()` method is added. Read-then-upsert is
 not atomic, and this release has no exact portable atomic full-document

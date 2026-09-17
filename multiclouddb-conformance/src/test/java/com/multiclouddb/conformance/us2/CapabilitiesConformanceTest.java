@@ -20,10 +20,6 @@ public abstract class CapabilitiesConformanceTest {
 
     protected abstract boolean partialUpdateSupported();
 
-    protected abstract boolean extendedPartialUpdateResultSupported();
-
-    protected abstract boolean partialUpdatePreservesTtlExpiry();
-
     @Test
     void capabilitiesReturnsNonEmptySet() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
@@ -56,9 +52,7 @@ public abstract class CapabilitiesConformanceTest {
                     Capability.RESULT_LIMIT,
                     Capability.ROW_LEVEL_TTL,
                     Capability.WRITE_TIMESTAMP,
-                    Capability.PARTIAL_UPDATE,
-                    Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE,
-                    Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY
+                    Capability.PARTIAL_UPDATE
             };
             for (String name : knownNames) {
                 assertNotNull(caps.get(name),
@@ -72,7 +66,7 @@ public abstract class CapabilitiesConformanceTest {
     void builtInCapabilityCountMatchesReleaseScope() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            int expected = 20;
+            int expected = 18;
             assertEquals(expected, caps.all().size(),
                     "Built-in provider " + provider().id() + " should expose exactly "
                             + expected + " effective capabilities");
@@ -90,36 +84,6 @@ public abstract class CapabilitiesConformanceTest {
             assertNotNull(partialUpdate.notes());
             assertFalse(partialUpdate.notes().isBlank(),
                     "PARTIAL_UPDATE notes must describe support or the unsupported boundary");
-        }
-    }
-
-    @Test
-    void extendedPartialUpdateResultSizeCapabilityMatchesReleaseScope() throws Exception {
-        try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
-            CapabilitySet caps = client.capabilities();
-            Capability extendedResultSize = caps.get(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE);
-            assertNotNull(extendedResultSize);
-            assertEquals(extendedPartialUpdateResultSupported(),
-                    extendedResultSize.supported(),
-                    "Unexpected effective PARTIAL_UPDATE_EXTENDED_RESULT_SIZE value for "
-                            + provider().id());
-            assertNotNull(extendedResultSize.notes());
-            assertFalse(extendedResultSize.notes().isBlank(),
-                    "PARTIAL_UPDATE_EXTENDED_RESULT_SIZE notes must describe the provider envelope");
-        }
-    }
-
-    @Test
-    void partialUpdateTtlExpiryCapabilityMatchesReleaseScope() throws Exception {
-        try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
-            Capability capability = client.capabilities().get(
-                    Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY);
-            assertNotNull(capability);
-            assertEquals(partialUpdatePreservesTtlExpiry(), capability.supported(),
-                    "Unexpected effective PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY value for "
-                            + provider().id());
-            assertNotNull(capability.notes());
-            assertFalse(capability.notes().isBlank());
         }
     }
 

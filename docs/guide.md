@@ -595,12 +595,11 @@ if (client.capabilities().isSupported(Capability.PARTIAL_UPDATE)) {
 | **DynamoDB** | One conditional, aliased `UpdateItem SET ...` request with `attribute_exists(partitionKey)`. | The portable API accepts at most 10 fields per call. DynamoDB can reject the one attempted update if the resulting item would exceed the provider-native ceiling. Accepted calls consume one item update's write capacity. |
 | **Spanner** | No provider call in this release. | The API defaults an omitted `PARTIAL_UPDATE` declaration to unsupported and rejects valid calls before Spanner I/O. |
 
-Each built-in provider exposes 20 effective capability rows. Cosmos DB and
-DynamoDB declare all 20; Spanner declares 17 and receives API-supplied unsupported
-defaults for `PARTIAL_UPDATE`, `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`, and
-`PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY`.
-Arbitrary legacy or third-party partial declarations are not expanded to all
-well-known names. Cosmos DB and DynamoDB share the same normalized update
+Each built-in provider exposes 18 effective capability rows. Cosmos DB and
+DynamoDB explicitly declare all 18; Spanner declares 17 and receives the
+API-supplied unsupported default only for omitted `PARTIAL_UPDATE`. Unrelated
+omitted names in legacy or third-party declarations remain absent. Cosmos DB
+and DynamoDB share the same normalized update
 contract: at most 10 fields, literal top-level set/replace semantics, one atomic
 native write, and `NOT_FOUND` for a missing item. Both preserve case-distinct
 non-reserved field names, including `foo` and `Foo` when both occur in the same
@@ -616,24 +615,20 @@ includes UTF-8 names, three bytes per map/list container, and one byte per neste
 element. Limit failures are non-retryable `INVALID_REQUEST` with zero provider
 I/O and stable reason plus actual/maximum details.
 
-The base `PARTIAL_UPDATE` contract guarantees a resulting logical document whose
-serialized JSON and portable structural footprint are independently at or below
-390 KiB. `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE` makes larger results explicit:
-Cosmos DB advertises support up to its 2 MiB native ceiling; DynamoDB advertises
-unsupported, and an older provider that omits the capability receives the API
-unsupported default. Because result size depends on stored state, the SDK
-performs no read/merge preflight.
+The `PARTIAL_UPDATE` portable contract applies only when both the resulting
+logical document's serialized JSON and portable structural footprint are at or
+below 390 KiB. A state-dependent result above either bound is outside this
+release's portable contract and may succeed or fail under native provider
+limits. Because result size depends on stored state, the SDK performs no
+read/merge preflight. A native size rejection remains reason-coded,
+non-retryable `UNSUPPORTED_CAPABILITY` after at most one attempted native
+write.
 
-`PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY` is independent of that unchanged
-extended-result capability. Base `PARTIAL_UPDATE` does not promise that an
-existing TTL-bearing item's absolute expiry stays fixed. Callers requiring that
-guarantee must check the preservation capability in addition to
-`PARTIAL_UPDATE`. DynamoDB supports it because `UpdateItem` leaves the absolute
-`ttlExpiry` attribute unchanged. Cosmos DB explicitly does not because
-`patchItem` advances `_ts` and restarts the Cosmos TTL countdown. Spanner and
-omitted declarations receive the unsupported API default. The capability adds
-no I/O: the API remains synchronous, and accepted updates still use one atomic
-native write with no read/merge.
+TTL timing is outside this release's portable partial-update contract.
+DynamoDB `UpdateItem` happens to leave the absolute `ttlExpiry` unchanged,
+while Cosmos DB `patchItem` advances `_ts` and restarts relative TTL. Until
+this behavior is normalized, callers requiring a fixed absolute expiry must not
+call `update()` on TTL-bearing items.
 
 Spanner omits `PARTIAL_UPDATE`; `CapabilitySet` supplies the unsupported default
 so older Spanner provider versions remain compatible. Valid calls fail locally
@@ -1707,20 +1702,11 @@ I/O with non-retryable `INVALID_REQUEST`. To replace a complete document and set
 TTL, call `upsert()` with the complete desired document and remember that
 `upsert()` creates the item when it is missing.
 
-An existing TTL set by an earlier complete write is a separate concern. If a
-partial update must leave its absolute expiry fixed, require both capabilities:
-
-```java
-CapabilitySet caps = client.capabilities();
-if (caps.isSupported(Capability.PARTIAL_UPDATE)
-        && caps.isSupported(Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY)) {
-    client.update(address, key, Map.of("status", "shipped"));
-}
-```
-
-DynamoDB satisfies this guarantee by leaving `ttlExpiry` unchanged. Cosmos DB
-does not: `patchItem` advances `_ts`, restarting the Cosmos TTL countdown.
-Spanner receives the unsupported API default.
+An existing TTL set by an earlier complete write is a separate concern. TTL
+timing is outside the portable partial-update contract: DynamoDB `UpdateItem`
+happens to leave `ttlExpiry` unchanged, while Cosmos DB `patchItem` advances
+`_ts` and restarts relative TTL. Until this behavior is normalized, callers
+requiring a fixed absolute expiry must not call `update()` on TTL-bearing items.
 
 ---
 

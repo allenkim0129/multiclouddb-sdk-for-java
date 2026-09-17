@@ -5,7 +5,10 @@
 
 ## Scope and consistency
 
-- [x] Spanner omits all three Feature 002 capabilities and keeps its write path unchanged; shared read/query identity cleanup occurs in the default client, and the only provider production adjustment restores caller field casing during row mapping.
+- [x] Spanner omits the core Feature 002 `partial_update` capability and keeps
+  its write path unchanged; shared read/query identity cleanup occurs in the
+  default client, and the only provider production adjustment restores caller
+  field casing during row mapping.
 - [x] No artifact requires a portable Spanner partial-update data path, schema,
   capability declaration, or E2E update helper; changelog and tests describe the boundary.
 - [x] Spanner partial update is described as deliberately unsupported in this
@@ -42,18 +45,20 @@
 - [x] Structural failures are zero-I/O, reason-coded `INVALID_REQUEST` with actual/maximum details; existing-state result overflow remains native without a read/merge preflight.
 - [x] The core `partial_update` gate and future unsupported-provider error are
   explicit.
-- [x] The base result envelope requires both serialized JSON and structural footprint
-  at or below 390 KiB, and `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`
-  explicitly distinguishes Cosmos extended support from DynamoDB and
-  legacy-provider unsupported behavior.
-- [x] `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY` is distinct and does not change
-  `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`: DynamoDB supports fixed absolute expiry,
-  Cosmos does not because patch advances `_ts`, and Spanner/legacy omissions
-  default to unsupported. Callers requiring fixed expiry must inspect it.
-- [x] Every built-in provider exposes 20 effective capability rows; omitted
-  `PARTIAL_UPDATE`, `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`, and
-  `PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY` declarations default to unsupported,
-  while unrelated omissions in arbitrary partial sets remain absent.
+- [x] The base result envelope requires both serialized JSON and structural
+  footprint at or below 390 KiB. State-dependent larger results are explicitly
+  outside this release's portable contract and may succeed or fail under native
+  provider limits.
+- [x] TTL timing is explicitly outside the portable contract: DynamoDB happens
+  to leave `ttlExpiry` unchanged, while Cosmos patch advances `_ts` and restarts
+  relative TTL. Callers requiring fixed absolute expiry must not call
+  `update()` on TTL-bearing items until behavior is normalized.
+- [x] The proposed provider-specific size and TTL capabilities were removed
+  during review because a single-provider capability does not establish a
+  portable contract.
+- [x] Every built-in provider exposes 18 effective capability rows; only an
+  omitted `PARTIAL_UPDATE` declaration defaults to unsupported, while unrelated
+  omissions in arbitrary partial sets remain absent.
 - [x] `PortableWriteLimits` exposes exactly six input/structure constants:
   both 399,360-byte limits, 50,000-byte nested/partial-update names,
   128-character complete-write top-level names, 31 nested containers, and 10
@@ -67,15 +72,15 @@
 - [x] No read, replace, independent patch loop, or adapter retry is allowed.
 - [x] The planner defensively enforces the 10-field limit for direct SPI calls.
 - [x] Update HTTP 413 is a state-dependent 2,097,152-byte result-item
-  capability error after one attempted patch; non-update 413 behavior is
-  unchanged.
+  `UNSUPPORTED_CAPABILITY` error after one attempted patch; non-update 413
+  behavior is unchanged.
 - [x] Field names are sorted so map iteration order cannot change the native plan.
 - [x] Exact 408/410 transient mapping is specified.
 - [x] Diagnostics exclude payloads and secrets.
 - [x] Disabling write response bodies is conditioned on preserving metadata used
   by existing write paths.
-- [x] Cosmos explicitly reports TTL-expiry preservation unsupported because
-  `patchItem` advances `_ts` and restarts the TTL countdown.
+- [x] Cosmos records the non-portable TTL behavior: `patchItem` advances `_ts`
+  and restarts the relative TTL countdown.
 
 ## DynamoDB
 
@@ -89,7 +94,7 @@
   metadata, and does not add a read preflight.
 - [x] Conditional failure maps to `NOT_FOUND`.
 - [x] No read, `PutItem`, TTL assignment, or adapter retry is allowed.
-- [x] DynamoDB reports TTL-expiry preservation supported because `UpdateItem`
+- [x] DynamoDB records the non-portable implementation detail that `UpdateItem`
   leaves the absolute `ttlExpiry` attribute unchanged.
 
 ## Testing and delivery
@@ -110,8 +115,9 @@
   complete-write top-level name.
 - [x] Shared-client and conformance coverage strips adapter-owned fields from
   read/query results and proves an in-envelope read result can be reused by `upsert()`.
-- [x] Capability conformance covers all 20 effective rows and both independent
-  Feature 002 optional-capability matrices.
+- [x] Capability conformance covers all 18 effective rows and the core Feature
+  002 capability matrix. Earlier optional-capability matrix work is retained as
+  superseded history and was removed from the final contract during review.
 - [x] Current DynamoDB Local and Spanner emulator validation ran; the Spanner
   evidence covers the deliberate unsupported boundary and provider-direct
   legacy regression, not live production validation.

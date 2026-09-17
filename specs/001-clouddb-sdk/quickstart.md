@@ -377,19 +377,17 @@ if (caps.isSupported(Capability.RESULT_LIMIT)) {
     // Safe to set limit() on QueryRequest
 }
 
-// Check partial update separately from absolute TTL-expiry preservation.
+// Check partial-update support before calling update().
 if (caps.isSupported(Capability.PARTIAL_UPDATE)) {
-    if (caps.isSupported(Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY)) {
-        // DynamoDB: an existing ttlExpiry remains unchanged.
-    } else {
-        // Cosmos patch advances _ts and restarts its TTL countdown.
-        // Spanner rejects partial update through the API-default capability.
-    }
+    // Do not call update() on a TTL-bearing item when fixed absolute expiry is required.
 }
 ```
 
-`CapabilitySet` supplies unsupported defaults for
-`PARTIAL_UPDATE`, `PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`, and
-`PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY` when a provider omits them. Each built-in
-provider exposes 20 effective capability rows; unrelated omitted capability
-names are not backfilled.
+`CapabilitySet` supplies an unsupported default only when a provider omits
+`PARTIAL_UPDATE`. Each built-in provider exposes 18 effective capability rows:
+Cosmos DB and DynamoDB explicitly declare 18, while Spanner declares 17 and
+receives that one default. Unrelated omitted capability names are not
+backfilled. Portable partial-update behavior applies only while both resulting
+logical-document size measures remain at or below 390 KiB. TTL timing is outside
+the contract; DynamoDB happens to leave `ttlExpiry` unchanged, while Cosmos DB
+patch advances `_ts` and restarts relative TTL.

@@ -49,10 +49,5 @@ public final class DynamoCapabilities {
             // surface through structured provider-limit errors.
             Capability.PARTIAL_UPDATE_CAP.withNotes(
                     "One conditional aliased UpdateItem SET expression per accepted update; "
-                    + "portable limit: 10 fields; native limit: 400 KiB resulting item"),
-            Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE_UNSUPPORTED.withNotes(
-                    "Results above the portable 390 KiB document envelope are not portable; "
-                    + "DynamoDB has a 400 KiB native item limit"),
-            Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY_CAP.withNotes(
-                    "UpdateItem leaves the absolute ttlExpiry attribute unchanged")));
+                    + "portable limit: 10 fields; native limit: 400 KiB resulting item")));
 }

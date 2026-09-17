@@ -47,8 +47,8 @@ values.
 
 Spanner partial update is deliberately unsupported in this feature release.
 Targeted provider changes enforce baseline complete-write and portable-result
-contracts only, while `CapabilitySet` defaults all three omitted Feature 002
-capabilities to unsupported. After shared validation, a valid call returns
+contracts only, while `CapabilitySet` defaults the omitted core Feature 002
+capability to unsupported. After shared validation, a valid call returns
 non-retryable `UNSUPPORTED_CAPABILITY` with
 `capability=partial_update` before any Spanner provider I/O. The Spanner emulator
 ran shared gate coverage and the provider-direct legacy regression; this is not
@@ -130,22 +130,15 @@ Cosmos DB and DynamoDB currently advertise it; Spanner does not. The default
 client gate is a typed safety failure path, not a substitute for caller gating.
 
 `PARTIAL_UPDATE` covers results whose serialized JSON and portable structural
-footprint are each at most 390 KiB. Before relying on a result above either bound, check `Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE`: Cosmos
-supports it up to 2 MiB; DynamoDB and API-normalized older providers do not.
+footprint are each at most 390 KiB. A state-dependent result above either bound
+is outside this release's portable contract and may succeed or fail under native
+provider limits.
 
-TTL-expiry preservation is separate from the core and extended-result
-capabilities above. If an
-existing TTL-bearing item must retain its fixed absolute expiry, also check:
-
-```java
-boolean preservesExpiry = client.capabilities().isSupported(
-    Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY);
-```
-
-DynamoDB supports this because `UpdateItem` leaves `ttlExpiry` unchanged.
-Cosmos DB does not because `patchItem` advances `_ts` and restarts the TTL
-countdown. Spanner and legacy omissions receive the API-default unsupported
-value. `PARTIAL_UPDATE` alone does not make this guarantee.
+TTL timing is outside the portable partial-update contract. DynamoDB
+`UpdateItem` happens to leave `ttlExpiry` unchanged, while Cosmos DB
+`patchItem` advances `_ts` and restarts relative TTL. Until behavior is
+normalized, callers requiring fixed absolute expiry must not call `update()` on
+TTL-bearing items.
 
 The SDK performs no read/merge preflight because result size depends on stored state.
 Complete `create()`/`upsert()` documents use the same binary-value, name, depth,
@@ -214,9 +207,10 @@ client.upsert(
     OperationOptions.builder().ttlSeconds(3600).build());
 ```
 
-Setting TTL through a complete write is different from preserving an existing
-absolute expiry during partial update. For the latter, require
-`PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY`.
+Setting TTL through a complete write is different from TTL timing during
+partial update. The latter is outside this release's portable contract. Until
+behavior is normalized, callers requiring an existing absolute expiry to remain
+fixed must not call `update()` on TTL-bearing items.
 
 `upsert()` creates a missing document. It is not an atomic replacement guarded
 by existence, read-then-upsert is not atomic, and this release has no exact

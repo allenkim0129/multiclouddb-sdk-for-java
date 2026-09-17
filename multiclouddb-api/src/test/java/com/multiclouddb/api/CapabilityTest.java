@@ -26,32 +26,12 @@ class CapabilityTest {
     }
 
     @Test
-    @DisplayName("Missing extended partial-update result-size capability defaults to unsupported")
-    void missingExtendedPartialUpdateResultSizeDefaultsToUnsupported() {
-        CapabilitySet capabilities = new CapabilitySet(List.of(Capability.PARTIAL_UPDATE_CAP));
-
-        assertFalse(capabilities.isSupported(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE));
-        assertNotNull(capabilities.get(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE));
-    }
-
-    @Test
-    @DisplayName("Missing partial-update TTL-preservation capability defaults to unsupported")
-    void missingPartialUpdateTtlPreservationDefaultsToUnsupported() {
-        CapabilitySet capabilities = new CapabilitySet(List.of(Capability.PARTIAL_UPDATE_CAP));
-
-        assertFalse(capabilities.isSupported(
-                Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY));
-        assertNotNull(capabilities.get(
-                Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY));
-    }
-
-    @Test
-    @DisplayName("Normalization adds only the three partial-update defaults")
+    @DisplayName("Normalization adds only the core partial-update default")
     void normalizationDoesNotSynthesizeUnrelatedKnownCapabilities() {
         CapabilitySet legacyProviderCapabilities = new CapabilitySet(
                 List.of(Capability.TRANSACTIONS_CAP));
 
-        assertEquals(4, legacyProviderCapabilities.all().size());
+        assertEquals(2, legacyProviderCapabilities.all().size());
         assertNull(legacyProviderCapabilities.get(Capability.CROSS_PARTITION_QUERY),
                 "An omitted known capability without an API default must remain absent");
         assertFalse(legacyProviderCapabilities.isSupported(Capability.CROSS_PARTITION_QUERY));
@@ -66,31 +46,6 @@ class CapabilityTest {
         assertTrue(capabilities.isSupported(Capability.PARTIAL_UPDATE));
         assertSame(Capability.PARTIAL_UPDATE_CAP,
                 capabilities.get(Capability.PARTIAL_UPDATE));
-    }
-
-    @Test
-    @DisplayName("Explicit extended partial-update result-size support overrides the API default")
-    void explicitExtendedPartialUpdateResultSizeSupportOverridesDefault() {
-        CapabilitySet capabilities = new CapabilitySet(List.of(
-                Capability.PARTIAL_UPDATE_CAP,
-                Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE_CAP));
-
-        assertTrue(capabilities.isSupported(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE));
-        assertSame(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE_CAP,
-                capabilities.get(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE));
-    }
-
-    @Test
-    @DisplayName("Explicit partial-update TTL preservation overrides the API default")
-    void explicitPartialUpdateTtlPreservationOverridesDefault() {
-        CapabilitySet capabilities = new CapabilitySet(List.of(
-                Capability.PARTIAL_UPDATE_CAP,
-                Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY_CAP));
-
-        assertTrue(capabilities.isSupported(
-                Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY));
-        assertSame(Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY_CAP,
-                capabilities.get(Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY));
     }
 
     @Test
@@ -174,14 +129,9 @@ class CapabilityTest {
         assertTrue(registered.contains(Capability.CROSS_PARTITION_QUERY_UNSUPPORTED));
         assertTrue(registered.contains(Capability.PARTIAL_UPDATE_CAP));
         assertTrue(registered.contains(Capability.PARTIAL_UPDATE_UNSUPPORTED));
-        assertTrue(registered.contains(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE_CAP));
-        assertTrue(registered.contains(Capability.PARTIAL_UPDATE_EXTENDED_RESULT_SIZE_UNSUPPORTED));
-        assertTrue(registered.contains(Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY_CAP));
-        assertTrue(registered.contains(
-                Capability.PARTIAL_UPDATE_PRESERVES_TTL_EXPIRY_UNSUPPORTED));
-        // 17 pre-built names x supported/unsupported.
-        assertTrue(registered.size() >= 34,
-                "expected at least 34 entries (17 x 2), got " + registered.size());
+        // 15 pre-built names x supported/unsupported.
+        assertTrue(registered.size() >= 30,
+                "expected at least 30 entries (15 x 2), got " + registered.size());
     }
 
     @Test
