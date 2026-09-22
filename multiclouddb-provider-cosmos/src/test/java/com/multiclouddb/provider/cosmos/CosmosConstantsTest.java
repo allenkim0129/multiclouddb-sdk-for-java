@@ -6,7 +6,11 @@ package com.multiclouddb.provider.cosmos;
 import com.azure.cosmos.ConsistencyLevel;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -37,6 +41,21 @@ class CosmosConstantsTest {
     @DisplayName("CONFIG_TENANT_ID key value")
     void configTenantIdKey() {
         assertEquals("tenantId", CosmosConstants.CONFIG_TENANT_ID);
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "REMOVED_CONNECTION_MODE_CONFIG, connectionMode",
+            "REMOVED_GATEWAY_HTTP2_CONFIG, gatewayHttp2Enabled",
+            "REMOVED_GATEWAY_V2_CONFIG, gatewayV2Enable",
+            "REMOVED_THIN_CLIENT_CONFIG, thinClientEnabled"
+    })
+    @DisplayName("Rejected legacy keys retain their values and package-private visibility")
+    void removedConfigKeysRemainPackagePrivate(String fieldName, String expectedValue)
+            throws ReflectiveOperationException {
+        Field field = CosmosConstants.class.getDeclaredField(fieldName);
+        assertEquals(expectedValue, field.get(null));
+        assertEquals(0, field.getModifiers() & (Modifier.PUBLIC | Modifier.PROTECTED | Modifier.PRIVATE));
     }
 
     // ── Consistency ───────────────────────────────────────────────────────────

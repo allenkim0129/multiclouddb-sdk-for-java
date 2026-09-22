@@ -45,10 +45,6 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     private static final Logger LOG = LoggerFactory.getLogger(CosmosProviderClient.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
-    private static final String REMOVED_CONNECTION_MODE_CONFIG = "connectionMode";
-    private static final String REMOVED_GATEWAY_HTTP2_CONFIG = "gatewayHttp2Enabled";
-    private static final String REMOVED_GATEWAY_V2_CONFIG = "gatewayV2Enable";
-    private static final String REMOVED_THIN_CLIENT_CONFIG = "thinClientEnabled";
 
     private final CosmosClient cosmosClient;
     private final MulticloudDbClientConfig config;
@@ -145,21 +141,23 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     }
 
     private static void validateTransportConfig(MulticloudDbClientConfig config) {
-        if (config.connection().containsKey(REMOVED_CONNECTION_MODE_CONFIG)) {
+        if (config.connection().containsKey(CosmosConstants.REMOVED_CONNECTION_MODE_CONFIG)) {
             throw new IllegalArgumentException(
-                    "Cosmos connection property 'connectionMode' is no longer supported; "
+                    "Cosmos connection property '" + CosmosConstants.REMOVED_CONNECTION_MODE_CONFIG
+                            + "' is no longer supported; "
                             + "Gateway mode is always used");
         }
-        if (config.connection().containsKey(REMOVED_GATEWAY_HTTP2_CONFIG)) {
+        if (config.connection().containsKey(CosmosConstants.REMOVED_GATEWAY_HTTP2_CONFIG)) {
             throw new IllegalArgumentException(
-                    "Cosmos connection property 'gatewayHttp2Enabled' is not supported; "
+                    "Cosmos connection property '" + CosmosConstants.REMOVED_GATEWAY_HTTP2_CONFIG
+                            + "' is not supported; "
                             + "Gateway HTTP/2 is always enabled");
         }
-        if (config.connection().containsKey(REMOVED_GATEWAY_V2_CONFIG)) {
-            throw unsupportedGatewayVersionOption(REMOVED_GATEWAY_V2_CONFIG);
+        if (config.connection().containsKey(CosmosConstants.REMOVED_GATEWAY_V2_CONFIG)) {
+            throw unsupportedGatewayVersionOption(CosmosConstants.REMOVED_GATEWAY_V2_CONFIG);
         }
-        if (config.connection().containsKey(REMOVED_THIN_CLIENT_CONFIG)) {
-            throw unsupportedGatewayVersionOption(REMOVED_THIN_CLIENT_CONFIG);
+        if (config.connection().containsKey(CosmosConstants.REMOVED_THIN_CLIENT_CONFIG)) {
+            throw unsupportedGatewayVersionOption(CosmosConstants.REMOVED_THIN_CLIENT_CONFIG);
         }
     }
 

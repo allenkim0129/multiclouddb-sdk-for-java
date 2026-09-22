@@ -30,6 +30,11 @@ public final class CosmosConstants {
     /** Connection config key for the Azure tenant ID (optional — used with DefaultAzureCredential). */
     public static final String CONFIG_TENANT_ID = "tenantId";
 
+    // Rejected legacy keys, not supported configuration options.
+    static final String REMOVED_CONNECTION_MODE_CONFIG = "connectionMode";
+    static final String REMOVED_GATEWAY_HTTP2_CONFIG = "gatewayHttp2Enabled";
+    static final String REMOVED_GATEWAY_V2_CONFIG = "gatewayV2Enable";
+    static final String REMOVED_THIN_CLIENT_CONFIG = "thinClientEnabled";
 
     // ── Consistency ───────────────────────────────────────────────────────────
 
