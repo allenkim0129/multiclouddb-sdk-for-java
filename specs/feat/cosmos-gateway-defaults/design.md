@@ -239,8 +239,11 @@ The wrapper does not catch or success-shape native connectivity failures.
 - Logging assertions distinguish the construction snapshot from actual
   per-request routing.
 - Validation tests cover all four removed transport keys.
-- Existing builder mocks use the `gatewayMode(GatewayConnectionConfig)`
-  overload.
+- `CosmosGatewayDefaultsTest` uses a fluent default answer for builder mocks
+  and captures the argument passed to `gatewayMode(GatewayConnectionConfig)`.
+  Existing `CosmosConsistencyTest` and `CosmosPostCloseTest` initializers still
+  stub the no-argument `gatewayMode()`; the constructor discards the config
+  overload's return value.
 - Cosmos emulator conformance confirms the fixed transport remains compatible
   with the emulator.
 
