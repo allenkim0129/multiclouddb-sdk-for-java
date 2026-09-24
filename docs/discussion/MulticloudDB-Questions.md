@@ -1,20 +1,14 @@
 # MulticloudDB SDK: Customer Questions
 
-Customer discussion · September 24, 2026 · 9 questions
+Customer discussion · September 24, 2026 · 8 questions
 
 These questions will help us confirm your application requirements before we finalize the MulticloudDB SDK's behavior across Cosmos DB, DynamoDB, and Spanner.
 
 Please focus on current and planned workloads, with examples where possible. We want to understand your requirements and constraints, not ask you to choose an implementation.
 
-## Portability & integrations
+## Integrations
 
-### 1. Portability vs. native SDK behavior
-
-Portability means consistent behavior for supported inputs and operations across databases, even when their native SDKs differ.
-
-**To achieve portability, what differences from each database's native SDK would be acceptable, and which native features or behaviors must we preserve?**
-
-### 2. Direct database access
+### 1. Direct database access
 
 Access outside the MulticloudDB SDK can make the physical storage schema important to other consumers.
 
@@ -22,9 +16,9 @@ Access outside the MulticloudDB SDK can make the physical storage schema importa
 
 **If yes:** Will they only read the data, or also write to it?
 
-### 3. Field names and storage schema
+### 2. Field names and storage schema
 
-> **Only if Q2 is yes — otherwise, skip.**
+> **Only if Q1 is yes — otherwise, skip.**
 
 Direct queries and external tools may depend on specific field names or document structures.
 
@@ -32,7 +26,7 @@ Direct queries and external tools may depend on specific field names or document
 
 ## Data requirements
 
-### 4. Query results
+### 3. Query results
 
 Queries can return full documents, selected fields (projections), or aggregate values such as counts and totals.
 
@@ -40,7 +34,7 @@ Queries can return full documents, selected fields (projections), or aggregate v
 
 **If needed:** Please share one example query and its expected result.
 
-### 5. Proposed size and structure limits
+### 4. Proposed size and structure limits
 
 Common SDK limits must account for each database's constraints and the provider mapping. These proposed limits are not final and still need validation:
 
@@ -55,7 +49,7 @@ Each document must pass both size checks independently; they are not a combined 
 
 **Would any current or planned documents or workloads exceed these proposed limits or be blocked by them?**
 
-### 6. Data representation
+### 5. Data representation
 
 Serialization determines how application values are represented in a document, including date and time formats.
 
@@ -65,7 +59,7 @@ Serialization determines how application values are represented in a document, i
 
 ## Numeric guarantees
 
-### 7. Numeric types, range, and precision
+### 6. Numeric types, range, and precision
 
 Database numeric limits differ. Precision is the total number of significant digits; scale describes decimal places.
 
@@ -73,15 +67,15 @@ Database numeric limits differ. Precision is the total number of significant dig
 
 **Also confirm:** Must we support your current and planned values, or the full possible range of those Cassandra types?
 
-### 8. Exact values and rounding
+### 7. Exact values and rounding
 
 Preserving a number through storage and retrieval does not automatically guarantee exact comparisons, sorting, or arithmetic.
 
 **Which operations require exact numeric values or results, and where, if anywhere, is rounding acceptable?**
 
-**Example:** Please share a representative calculation or query and its expected result, unless already covered in Q4.
+**Example:** Please share a representative calculation or query and its expected result, unless already covered in Q3.
 
-### 9. Out-of-range numeric values
+### 8. Out-of-range numeric values
 
 Once the numeric contract meets your requirements above, the proposed default is an explicit error for values outside that contract, rather than silent rounding or conversion.
 
