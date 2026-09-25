@@ -55,6 +55,8 @@ The orchestrator passes:
 - Do not flag style nits unless they obscure correctness.
 - Do not produce more than ~7 findings — keep signal high, noise
   low.
+- Do not edit files or post to GitHub. This is a read-only role; return
+  findings only to the orchestrator.
 
 ## Output
 

@@ -157,7 +157,13 @@ document why they aren't cheap to exercise end-to-end.
 **Mandatory escalation:** any cross-provider divergence not gated by
 `CapabilitySet` stays 🔴, regardless of perceived severity.
 
-## What "review only" means
+## Review and publication boundaries
+
+This section is the canonical publication policy. The orchestrator
+references this state machine; agent files must not restate or override
+its invariants.
+
+### Review and edit gate
 
 - Comment on the gap. Cite the **exact file path** and (where
   applicable) the section/line where the missing change belongs.
@@ -165,9 +171,62 @@ document why they aren't cheap to exercise end-to-end.
   matters** (tie the consequence back to the portability or
   doc-alignment invariant), and offer a concrete suggestion when
   possible (e.g., the exact CHANGELOG line text).
-- **You never push commits, never open PRs, never post GitHub comments
-  yourself** — even when explicitly approved by the user. On explicit
-  approval the portability-review agent edits working-tree files only
-  and leaves them unstaged for the author to commit and push.
+- The review phase is read-only and ends at a hard gate. All reviewer
+  subagents remain read-only; only the orchestrator may apply fixes
+  after the user explicitly approves them.
+- Applying fixes does **not** authorize publication. The orchestrator
+  leaves changes unstaged, uncommitted, and unpushed by default.
+- The orchestrator may commit only after the user explicitly requests
+  it or approves an immediately preceding commit proposal. Apply
+  approval does not authorize a commit.
+
+### Push-mode state machine
+
+- Push mode starts as **`confirm_each`** for every portability-review
+  workflow. In this mode the orchestrator shows the exact remote,
+  destination branch, PR, and commit range, then obtains a fresh,
+  single-use confirmation before each `git push`.
+- "Enable auto-push for this PR" activates
+  **`auto_push_current_pr`**. "Disable auto-push", "turn auto-push
+  off", or "ask before pushes" restores `confirm_each`. The
+  orchestrator echoes the resulting mode and scope after every switch.
+- The user may explicitly enable **`auto_push_current_pr`** for one
+  exact PR during the current review workflow. The orchestrator records
+  and echoes the repository, PR number, head repository/owner, head
+  branch, and destination remote. While those values still match, it
+  announces each push but doesn't pause for confirmation.
+- Auto-push remains valid only while the destination exactly matches
+  the recorded PR head, the PR is open with an unchanged head identity,
+  required validation passed, unrelated changes remain excluded, and
+  the outgoing range contains only agent-created commits for findings
+  approved in the current review workflow.
+- Auto-push is session-scoped. It never authorizes applying fixes,
+  committing, PR actions, force-pushing, hook bypasses, or history
+  rewrites.
+- Auto-push resets to `confirm_each` when disabled, when review scope or
+  PR-head identity changes, when the PR closes or merges, when validation
+  fails, when unexpected commits appear, or when the workflow/session
+  ends. It never carries into a later review workflow.
+
+### Branch and history safety
+
+- The repository **default branch** means GitHub's canonical integration
+  branch (`defaultBranchRef`, usually `main`). The orchestrator must
+  never push directly to that branch.
+- Existing PR head branches are valid and preferred push targets when
+  updating those PRs. The orchestrator resolves the head repository,
+  owner, remote, and branch and must not push to the PR base by mistake.
+- If work starts on the default branch and isn't updating an existing PR
+  head, create a descriptively named feature branch before staging.
+- An authorized commit or push includes only paths changed for approved
+  findings, preserves unrelated work, and avoids force-pushing,
+  amending, bypassing hooks, or rewriting history.
+
+### PR actions
+
+- The orchestrator may open or update PRs and post review comments when
+  the user explicitly authorizes the specific target and content. Each
+  authorization is action-specific rather than blanket permission, and
+  every posted review comment includes the required AI disclosure.
 - Style, formatting, and naming nits are out of scope unless they
   obscure the portability or doc-alignment story.
