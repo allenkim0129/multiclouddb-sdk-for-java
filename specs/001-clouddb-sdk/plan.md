@@ -42,9 +42,10 @@ V2 availability and the Azure SDK owns connectivity probing and per-request
 routing. Pre-release transport keys are rejected, and construction logs policy
 rather than a negotiated route.
 
-The feature specification, research, configuration contract, and detailed
-design are in
-[`../feat/cosmos-gateway-defaults/`](../feat/cosmos-gateway-defaults/).
+The durable transport rationale is in
+[Architecture - Cosmos Gateway Transport](../../docs/architecture.md#cosmos-gateway-transport).
+Configuration and migration guidance is maintained in the
+[Configuration Reference](../../docs/configuration.md#transport-defaults).
 
 ### What Already Exists
 

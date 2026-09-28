@@ -44,7 +44,7 @@ Select a provider and supply its connection and auth properties.
 
 | Key | Description |
 |-----|-------------|
-| `multiclouddb.connection.endpoint` | Cosmos DB account URI or emulator URI |
+| `multiclouddb.connection.endpoint` | Required, non-blank Cosmos DB account URI or emulator URI |
 | `multiclouddb.connection.key` | Master key (omit for Azure Identity auth) |
 | `multiclouddb.connection.tenantId` | Azure AD tenant ID (optional, for Entra ID) |
 | `multiclouddb.connection.consistencyLevel` | Read consistency override (optional — see below) |
@@ -68,6 +68,8 @@ Select a provider and supply its connection and auth properties.
 The provider always uses **Gateway mode with HTTP/2 enabled**. Connection mode
 and HTTP version are intentionally not configurable. HTTP/2 is required for
 Gateway V2 and newer Cosmos features supported by Multicloud DB.
+See [Architecture - Cosmos Gateway Transport](architecture.md#cosmos-gateway-transport)
+for the design rationale and service/SDK boundary.
 
 #### Automatic Gateway version selection
 
@@ -83,8 +85,8 @@ The wrapper neither reads nor writes Azure SDK internal thin-client flags.
 Gateway version remains controlled by Cosmos account configuration and native
 SDK routing logic rather than a Multicloud DB connection property.
 
-After successful client construction, the provider logs Gateway mode, HTTP/2
-enablement, and that Gateway routing is selected automatically. This is a
+After successful client construction, the provider emits one INFO log with
+Gateway mode, HTTP/2 enablement, and automatic Gateway routing selection. This is a
 configuration snapshot, not a negotiated route, because selection occurs after
 construction and may vary by request.
 
@@ -92,9 +94,16 @@ construction and may vary by request.
 
 `connectionMode`, `gatewayHttp2Enabled`, and the pre-release
 `gatewayV2Enable`/`thinClientEnabled` keys are rejected instead of being
-silently ignored. Remove them from existing configuration. Gateway mode and
-HTTP/2 are fixed, while Gateway version selection belongs to the account and
-Azure SDK.
+silently ignored. Their presence throws `IllegalArgumentException` with
+migration guidance before native builder construction, credential work, or
+network I/O, even for fixed-equivalent values such as `connectionMode=gateway`
+or `gatewayHttp2Enabled=true`.
+
+Remove all four keys from existing configuration; no replacement transport
+setting is needed. Gateway mode and HTTP/2 are fixed, while Gateway version
+selection belongs to the account and Azure SDK. The public connection-mode
+constants are also removed. Applications that require Direct/RNTBD must
+construct and use an Azure SDK client directly, outside the portable wrapper.
 
 ### Consistency Level
 
