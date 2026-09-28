@@ -124,9 +124,9 @@ mvn clean install -DskipTests
 
 ```java
 import com.multiclouddb.api.*;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.util.Map;
 
 // Configure - provider selected entirely by config, not code
 Properties props = new Properties();
@@ -166,7 +166,7 @@ QueryRequest query = QueryRequest.builder()
         .maxPageSize(25)
         .build();
 QueryPage page = client.query(todos, query);
-for (JsonNode item : page.items()) {
+for (Map<String, Object> item : page.items()) {
     System.out.println(item);
 }
 // Cosmos → SELECT * FROM c WHERE (c.status = @status)
