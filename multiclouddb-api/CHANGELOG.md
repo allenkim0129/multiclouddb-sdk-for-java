@@ -7,85 +7,33 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-### Breaking changes — strict Lowest-Common-Denominator (LCD) portability
+### Changed
 
-This release enforces strict LCD portability: any feature not supported by **all
-three** providers (Cosmos, DynamoDB, Spanner) has been removed from the public
-API. Application code that compiled against earlier betas may need migration.
-See the *Migration guide* section below.
+- Clarified existing optional query scoping, native expressions, provider-specific
+  ordering and limits. There is no common cumulative cap or client-side page
+  truncation; public API behavior is unchanged.
+- Clarified the common supported capability baseline versus optional extensions.
+  DynamoDB rejects explicit `ORDER_BY`; extended change-feed history requires
+  opt-in and is supported on Cosmos/Spanner, not DynamoDB.
+- Clarified existing TTL setup, replacement-write behavior, and opt-in metadata
+  availability. Provider support differences and execution remain unchanged.
+- Strengthened local regression coverage for TTL/metadata options, validation,
+  `DocumentResult` constructors, and baseline/optional capability declarations.
+  These unit/static checks do not verify service-level TTL expiration.
 
-#### Removed types
+## [0.1.0-beta.2] — 2026-06-17
 
-- `DocumentMetadata` (and `DocumentResult.metadata()`) — write-metadata
-  (`lastModified`, `ttlExpiry`, `version`) is not uniformly available across all
-  three providers, so the type is removed. `DocumentResult.read()` now returns
-  the document `ObjectNode` directly.
+### Added
 
-#### Removed members on `QueryRequest`
-
-- `nativeExpression()` and `Builder.nativeExpression(String)` — the
-  provider-native query escape hatch is removed. All queries must use the
-  portable expression DSL.
-- `orderBy(String, SortDirection)` and the per-page `SortOrder` API — only one
-  portable ordering is exposed: orderBy is restricted to the `sortKey` field
-  with `ASC` or `DESC` (see *Behavioural changes* below).
-- `limit(int)` — server-side `TOP N` is not portable to DynamoDB. The new
-  `maxResults(int)` cap (client-side single-page truncation) replaces it.
-
-#### Removed members on `OperationOptions`
-
-- `ttlSeconds()` and `Builder.ttlSeconds(long)` — row-level TTL is not
-  supported by Spanner.
-- `includeMetadata()` and `Builder.includeMetadata(boolean)` — write-timestamp
-  metadata is not supported by DynamoDB or Spanner.
-
-#### Removed `Capability` constants
-
-- `CROSS_PARTITION_QUERY`, `NATIVE_SQL_QUERY`, `RESULT_LIMIT`, `LIKE_OPERATOR`,
-  `ORDER_BY` is **kept** but its semantics are restricted to the `sortKey`
-  field, `ENDS_WITH`, `REGEX_MATCH`, `CASE_FUNCTIONS`, `ROW_LEVEL_TTL`,
-  `WRITE_TIMESTAMP`. The portable capability set now contains exactly seven
-  capabilities: `CONTINUATION_TOKEN_PAGING`, `TRANSACTIONS`, `BATCH_OPERATIONS`,
-  `STRONG_CONSISTENCY`, `CHANGE_FEED`, `PORTABLE_QUERY_EXPRESSION`, `ORDER_BY`.
-
-### Behavioural changes
-
-- **`QueryRequest.partitionKey` is now required.** Building a `QueryRequest`
-  without a partition key throws `IllegalArgumentException`. Cross-partition
-  queries are not portable to DynamoDB and are no longer exposed.
-- **`QueryRequest.orderBy` accepts only `sortKey`.** The portable ordering
-  contract is "ascending or descending by the document's sort key, within a
-  partition". Other field names are rejected at builder time. The default
-  ordering (no `orderBy` call) is ASC by `sortKey`.
-- **`QueryRequest.maxResults(int)` (new)** — cross-provider cap on the total
-  number of items returned by `query()`. Enforced client-side by truncating
-  the page returned from the provider; the underlying continuation token is
-  still surfaced on the truncated page. Replaces the removed `limit()`.
-
-### Migration guide
-
-| Removed/Changed | Replacement |
-|----------------|-------------|
-| `QueryRequest.builder().nativeExpression("SELECT …")` | Rewrite using the portable expression DSL. If the source query relied on provider-specific operators (`LIKE`, regex, etc.), the application must add a filter pass in code. |
-| `QueryRequest.builder().limit(25)` | `QueryRequest.builder().maxResults(25)` |
-| `QueryRequest.builder().orderBy("createdAt", DESC)` | `QueryRequest.builder().orderBy("sortKey", DESC)`. The sort field must be `sortKey` (the document's MulticloudDbKey sort component). |
-| Cross-partition `QueryRequest` (no `partitionKey` set) | Set a `partitionKey`. Workloads that need to scan multiple partitions must paginate per partition. |
-| `OperationOptions.builder().ttlSeconds(3_600)` | Manage TTL at the container/table level via the provider's native console; do not pass per-document TTL. |
-| `OperationOptions.builder().includeMetadata(true)` | Removed. There is no portable equivalent. |
-| `result.metadata().lastModified() / .ttlExpiry() / .version()` | Removed. There is no portable equivalent. |
-| `Capability.CROSS_PARTITION_QUERY`, `NATIVE_SQL_QUERY`, `RESULT_LIMIT`, `LIKE_OPERATOR`, `ENDS_WITH`, `REGEX_MATCH`, `CASE_FUNCTIONS`, `ROW_LEVEL_TTL`, `WRITE_TIMESTAMP` | Removed. Every remaining capability is supported by all three providers; runtime capability checks for portable code are unnecessary. |
+- Portable change-feed API in `com.multiclouddb.api.changefeed`: `ChangeFeedCursor` (opaque, persistable via `toToken()` / `fromToken(...)` with a `now()` live-tip sentinel), `ChangeFeedPage` (events + `nextCursor` + `hasMore`/`terminal`), `ChangeEvent` (with stable `providerEventId` for dedup), `ChangeType`, and `CursorExpiredException`. Two new entry points on `MulticloudDbClient`: `listCursors(ResourceAddress)` and `readChanges(ResourceAddress, ChangeFeedCursor[, OperationOptions])`. Provider SPI methods default to `UNSUPPORTED_CAPABILITY` so existing adapters compile unchanged. The cursor wire format is opaque, version-tagged Base64URL JSON; the 24-hour portable baseline is enforced client-side on the token's last-issued timestamp. `OperationOptions.timeout()` is not enforced on the change-feed path in this release (wall-clock follows each provider's page-fetch budget).
+- New error category `MulticloudDbErrorCategory.CURSOR_EXPIRED` carrying a canonical `providerDetails.reason` set (`TOKEN_AGED_OUT`, `PROVIDER_TRIMMED`, `ITERATOR_EXPIRED`, `MALFORMED`, `VERSION_UNSUPPORTED`, `PROVIDER_MISMATCH`, `RESOURCE_MISMATCH`), exported as public `CursorTokenCodec.REASON_*` constants so providers share a single source of truth.
+- New error category `MulticloudDbErrorCategory.CLIENT_CLOSED` surfaced by a `DefaultMulticloudDbClient` post-close guard on every public entry point (replaces provider-specific `IllegalStateException` leaks). `MulticloudDbClient.close()` is now idempotent.
+- Extended change-feed retention opt-in: `ChangeFeedConfig.extendedRetention(Duration)` (validates `> 24h`), wired into `MulticloudDbClientConfig.changeFeed(...)`, plus the new well-known `Capability.EXTENDED_CHANGE_FEED_HISTORY`. The `MulticloudDbClientFactory.create(...)` build-time gate refuses to instantiate a client whose provider does not declare the capability, surfacing `UNSUPPORTED_CAPABILITY(reason="extended_retention_unavailable")` before any I/O. The cursor token wire format carries an optional `"e"` field stamping the opted-in retention so a persisted cursor under a 7-day opt-in can be resumed beyond 24h up to the configured window without `TOKEN_AGED_OUT`; older tokens (no `"e"`) keep the 24h floor.
+- `OperationNames.LIST_CURSORS`, `READ_CHANGES`, `PROVISION_SCHEMA` propagated through `MulticloudDbError.operation()` and `OperationDiagnostics`.
 
 ### Documentation
 
-- **`MulticloudDbClient.delete(...)` is documented as idempotent — silent on
-  missing key.** The Javadoc now declares that deleting a key that does not
-  exist is a silent no-op on every provider, which is the true LCD across
-  Cosmos (404 swallowed), DynamoDB (`DeleteItem` is idempotent natively) and
-  Spanner (`Mutation.delete` is idempotent natively). Callers that need to detect a missing key should use
-  `MulticloudDbClient.read(...)`, which returns `null` on every provider
-  when the key does not exist (non-mutating). `update()` also throws
-  `NOT_FOUND` on a missing key, but it requires a document body and
-  **overwrites on hit**, so it is not a safe pure existence probe.
+- `MulticloudDbClient.delete(...)` is documented as idempotent on every provider — a missing key is a silent no-op (LCD of Cosmos 404 swallow, DynamoDB native idempotence, and Spanner `Mutation.delete`). Callers needing to detect a missing key should use `read(...)`, which returns `null` when the key is missing.
 
 ## [0.1.0-beta.1] — 2026-04-23
 

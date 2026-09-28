@@ -31,29 +31,50 @@ public abstract class CapabilitiesConformanceTest {
     void allKnownCapabilityNamesPresent() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            // All 7 strict-LCD capability names must be declared
             String[] knownNames = {
                     Capability.CONTINUATION_TOKEN_PAGING,
                     Capability.TRANSACTIONS,
                     Capability.BATCH_OPERATIONS,
                     Capability.STRONG_CONSISTENCY,
                     Capability.CHANGE_FEED,
+                    Capability.EXTENDED_CHANGE_FEED_HISTORY,
                     Capability.PORTABLE_QUERY_EXPRESSION,
-                    Capability.ORDER_BY
+                    Capability.ORDER_BY,
+                    Capability.CROSS_PARTITION_QUERY,
+                    Capability.NATIVE_SQL_QUERY,
+                    Capability.RESULT_LIMIT,
+                    Capability.LIKE_OPERATOR,
+                    Capability.ENDS_WITH,
+                    Capability.REGEX_MATCH,
+                    Capability.CASE_FUNCTIONS,
+                    Capability.ROW_LEVEL_TTL,
+                    Capability.WRITE_TIMESTAMP
             };
             for (String name : knownNames) {
                 assertNotNull(caps.get(name),
                         "Provider " + provider().id() + " must declare capability: " + name);
             }
+            assertEquals(knownNames.length, caps.all().size(),
+                    "Providers must declare the baseline and optional extensions, including unsupported ones");
         }
     }
 
     @Test
-    void capabilityCountIs7() throws Exception {
+    void commonBaselineIsSupported() throws Exception {
         try (MulticloudDbClient client = ConformanceHarness.createClient(provider())) {
             CapabilitySet caps = client.capabilities();
-            assertEquals(7, caps.all().size(),
-                    "Provider " + provider().id() + " should declare exactly 7 capabilities (strict-LCD)");
+            String[] baseline = {
+                    Capability.CONTINUATION_TOKEN_PAGING,
+                    Capability.TRANSACTIONS,
+                    Capability.BATCH_OPERATIONS,
+                    Capability.STRONG_CONSISTENCY,
+                    Capability.CHANGE_FEED,
+                    Capability.PORTABLE_QUERY_EXPRESSION
+            };
+            for (String name : baseline) {
+                assertTrue(caps.isSupported(name),
+                        "Provider " + provider().id() + " must support baseline capability: " + name);
+            }
         }
     }
 

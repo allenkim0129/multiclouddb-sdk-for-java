@@ -7,61 +7,41 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-### Changed — strict Lowest-Common-Denominator (LCD) portability
+### Changed
 
-The DynamoDB provider has been updated to align with the strict LCD contract in
-the `multiclouddb-api` module. See the API CHANGELOG for the full
-breaking-change list.
+- Clarified existing optional partition scoping, Query/Scan routing, native
+  PartiQL, and per-page `limit`. Unsupported `CROSS_PARTITION_QUERY` and
+  `NATIVE_SQL_QUERY` declarations do not block those legacy execution paths;
+  explicit `ORDER_BY`, including sortKey ordering, remains unsupported.
+- Clarified that page-local sorting is not global scan order or a snapshot,
+  pages are not truncated into a cumulative cap, and extended-history opt-in
+  remains rejected. Provider execution is unchanged.
+- Clarified existing table TTL setup, replacement writes, expiry recalculation
+  at each write, and opt-in expiry metadata despite `WRITE_TIMESTAMP=false`.
+- Strengthened local mock regressions for TTL writes, exact create/update
+  conditions and unconditional upserts, and opt-in expiry reads. These checks
+  do not verify service-level expiration or add write-timestamp support.
 
-#### Removed query routing
+## [0.1.0-beta.2] — 2026-06-22
 
-- **Cross-partition `Scan` routing is removed.** Every `QueryRequest` now
-  carries a `partitionKey` by construction, so the DynamoDB provider always
-  routes to the native `Query` API with a `KeyConditionExpression`. The
-  `executeScan(...)`, `executeScanWithFilter(...)`, and `validateResultSetControl(...)`
-  helpers in `DynamoProviderClient` are removed (they were used only for
-  cross-partition / `LIMIT` paths that no longer exist).
-- The `Top N` (`QueryRequest.limit`) path is removed; `QueryRequest.maxResults(int)`
-  is enforced client-side by `DefaultMulticloudDbClient`.
+> **Requires `multiclouddb-api` 0.1.0-beta.2 or later** — this release consumes API surface (change-feed cursors, `CLIENT_CLOSED` envelope, `ChangeFeedConfig.extendedRetention(...)` opt-in gating) introduced in API beta.2. The dependency is pinned in the published POM.
 
-#### `orderBy` semantics narrowed
+### Added
 
-- The portable API now exposes only `orderBy("sortKey", ASC|DESC)`. The Dynamo
-  provider maps this to `ScanIndexForward(true|false)` on the underlying
-  `QueryRequest`. The default (no `orderBy` call) is ASC. The per-page in-memory
-  sort previously applied to multi-page scans is no longer needed and has been
-  removed.
-
-#### Removed capability declarations
-
-The following capabilities are no longer declared by `DynamoCapabilities`
-because the corresponding API surface has been removed from `multiclouddb-api`:
-`CROSS_PARTITION_QUERY`, `NATIVE_SQL_QUERY`, `RESULT_LIMIT`, `LIKE_OPERATOR`,
-`ENDS_WITH`, `REGEX_MATCH`, `CASE_FUNCTIONS`, `ROW_LEVEL_TTL`,
-`WRITE_TIMESTAMP`. (`CROSS_PARTITION_QUERY` and `ORDER_BY` previously declared
-`supported=false` for DynamoDB; now that the strict-LCD set retains only
-capabilities supported by every provider, the explicit unsupported markers are
-also gone.)
-
-### Documentation
-
-- **`delete()` of a missing key remains a silent no-op (idempotent).** The
-  Dynamo provider issues an unconditional `DeleteItem`, so a delete of a
-  key that does not exist is silently ignored — matching the LCD behaviour
-  of Cosmos (404 swallowed) and Spanner (`Mutation.delete` is idempotent
-  natively). No `attribute_exists` guard is added, so deletes do not pay
-  the conditional-write WCU surcharge. Documented in the API Javadoc on
-  `MulticloudDbClient.delete(...)` and in `docs/guide.md`. Callers needing to detect a
-  missing key should use `read()`, which returns `null` on every provider
-  when the key does not exist.
+- Change-feed reader backed by DynamoDB Streams (`DescribeStream`, `GetShardIterator`, `GetRecords`). `listCursors` returns one cursor per open shard at the live tip with a pre-resolved `LATEST` iterator (`@@ITER:<iterator>` continuation), avoiding the silent event loss that an `ANCHOR_NOW` sentinel produces between mint and first read. `readChanges` drains one shard's page per call, rotates the partition list across shards so multi-shard cursors are not starved, transitions to an `AFTER_SEQUENCE_NUMBER` continuation on the first observed record (good for the full 24-hour stream retention), and absorbs shard splits/closes by re-describing the stream and emitting child shards on the next cursor. `TrimmedDataAccessException` is mapped to `CursorExpiredException(reason=PROVIDER_TRIMMED)`; `ExpiredIteratorException` (~5-minute iterator idle timeout) is mapped to `reason=ITERATOR_EXPIRED`. Change-event payloads preserve the full DynamoDB type system (`M`/`L`/`SS`/`NS`/nested) via the shared `DynamoItemMapper`. The target table must have `StreamSpecification(NEW_AND_OLD_IMAGES)` enabled; otherwise the reader fails fast with `UNSUPPORTED_CAPABILITY(reason="stream_not_enabled")`.
+- `DynamoCapabilities` explicitly declares `EXTENDED_CHANGE_FEED_HISTORY_UNSUPPORTED` (DynamoDB Streams is fixed at 24h server-side; an SDK-managed archive-on-read path via customer-provisioned Kafka brokers is on the v1.x roadmap). Callers that opt in to `ChangeFeedConfig.extendedRetention(...)` fail fast at client-build time via the API-module factory gate; `DynamoProviderClient`'s constructor carries a defence-in-depth mirror gate so SPI-direct integrators (`ServiceLoader` consumers bypassing the factory) cannot silently drop the opt-in.
+- Default sort-key ordering: scan paths (`executeScan`, `executeScanWithFilter`, `queryWithTranslation`) sort items per-page by sort key ascending, matching DynamoDB's native `Query` API and the Cosmos provider's global default. Per-page only — multi-page scans retain DynamoDB's token-based traversal order across pages.
+- Typed `CLIENT_CLOSED` envelope on every post-close CRUD / query / provisioning / change-feed entry point. `close()` is idempotent and also disposes the embedded `DynamoDbStreamsClient`.
 
 ### Changed
 
-- **`BETWEEN` translation now wraps in parentheses** (`(field BETWEEN ? AND ?)`).
-  Mirrors the parenthesised form emitted by sibling translators so cross-provider
-  query stitching is uniform. PartiQL parses both forms correctly, so this is
-  not a correctness fix on Dynamo — purely a consistency improvement. The
-  output of `TranslatedQuery.whereClause()` is now parenthesised.
+- `SORT_KEY_ASC` comparator handles numeric sort keys with type-aware comparison (`Long`/`Integer` use their native compare; mixed numerics fall back to `BigDecimal`) so integers beyond `2^53` are no longer truncated through `Double.compare`.
+- `BETWEEN` translation wraps in parentheses (`(field BETWEEN ? AND ?)`) for cross-provider consistency.
+
+### Documentation
+
+- `delete()` of a missing key is documented as a silent no-op (idempotent); the Dynamo provider issues an unconditional `DeleteItem` and does not pay the conditional-write WCU surcharge.
+- AWS SDK v2 (2.34.x) bundles the DynamoDB Streams client classes inside the main `software.amazon.awssdk:dynamodb` artifact at `software.amazon.awssdk.services.dynamodb.streams.*` (verified against the published `dynamodb-2.34.0.jar`); no separate `dynamodbstreams` dependency is required. If `aws-sdk.version` is bumped, re-verify that the Streams classes remain bundled.
 
 ## [0.1.0-beta.1] — 2026-04-23
 

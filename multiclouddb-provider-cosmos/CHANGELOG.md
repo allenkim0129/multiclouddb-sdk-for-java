@@ -7,74 +7,42 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-### Changed — strict Lowest-Common-Denominator (LCD) portability
+### Changed
 
-The Cosmos provider has been updated to align with the strict LCD contract in
-the `multiclouddb-api` module. See the API CHANGELOG for the full breaking-change
-list.
+- Clarified existing optional query scoping, native SQL, field ordering, `TOP N`,
+  and default `c.id ASC` caller-order/aggregate guards. Query execution, the
+  absence of client-side cumulative truncation, and extended-history opt-in
+  provisioning/error checks remain unchanged.
+- Clarified existing container TTL prerequisites/defaults, replacement writes,
+  and opt-in `_ts`/ETag metadata availability; provider execution is unchanged.
+- Strengthened local mock regressions for TTL writes and exact request
+  partition/id routing, metadata opt-in/default behavior, and system-field
+  stripping without response mutation. These are not service TTL-expiration
+  or HTTP 404-path tests.
 
-#### Removed capability declarations
+## [0.1.0-beta.2] — 2026-06-17
 
-The following Cosmos-only / cross-provider-asymmetric capabilities are no longer
-declared by `CosmosCapabilities` because the corresponding API surface has been
-removed from `multiclouddb-api`: `CROSS_PARTITION_QUERY`, `NATIVE_SQL_QUERY`,
-`RESULT_LIMIT`, `LIKE_OPERATOR`, `ENDS_WITH`, `REGEX_MATCH`, `CASE_FUNCTIONS`,
-`ROW_LEVEL_TTL`, `WRITE_TIMESTAMP`. Cosmos retains support for these features
-natively; they are simply no longer exposed through the portable API.
-
-#### Removed query-translation paths
-
-- `Top N` translation (formerly `SELECT TOP n c.* …`) is removed from
-  `CosmosProviderClient.query()`. `QueryRequest.maxResults(int)` is enforced
-  client-side via a single-page truncation in `DefaultMulticloudDbClient`.
-- The `nativeExpression()` passthrough is removed.
-- `orderBy(<field>, …)` is no longer translated to `ORDER BY c.<field>`; only
-  `orderBy("sortKey", …)` is accepted, and Cosmos maps it to `ORDER BY c.id`.
-
-### Documentation
-
-- **`delete()` of a missing key remains a silent no-op (idempotent).** The
-  Cosmos provider continues to swallow the native 404 from
-  `deleteItem(...)`, matching the LCD behaviour of DynamoDB
-  (`DeleteItem` is idempotent natively) and Spanner (`Mutation.delete` is
-  idempotent natively). Documented in the API Javadoc on
-  `MulticloudDbClient.delete(...)` and in `docs/guide.md`. No caller-visible
-  behaviour change. Callers needing to detect a missing key should use `read()`, which
-  returns `null` on every provider when the key does not exist.
+> **Requires `multiclouddb-api` 0.1.0-beta.2 or later** — this release consumes API surface (change-feed cursors, `CLIENT_CLOSED` envelope, `EXTENDED_CHANGE_FEED_HISTORY` capability) introduced in API beta.2. The dependency is pinned in the published POM.
 
 ### Added
 
-- `consistencyLevel` connection config key for opt-in client-level read consistency
-  override (applied uniformly to every read from a given client instance). Valid values (case-insensitive): `STRONG`, `BOUNDED_STALENESS`, `SESSION`,
-  `CONSISTENT_PREFIX`, `EVENTUAL`. When absent, read requests inherit the Cosmos DB
-  account's configured default. See `docs/configuration.md` — *Consistency Level*.
+- Change-feed reader backed by `CosmosContainer.queryChangeFeed(...)` and `getFeedRanges()`. `listCursors` mints one cursor per feed range at the live tip via a one-item warmup query that captures a real continuation token (with a `@@PIT:<epoch-millis>` fallback for older SDKs). `readChanges` drains one page per call, rotates the partition list across ranges so multi-range cursors are not starved, and uses All-Versions-and-Deletes (AVAD) mode so `ChangeEvent.type()` distinguishes `CREATE` / `UPDATE` / `DELETE`. The target container must be provisioned with an AVAD `ChangeFeedPolicy`; non-AVAD containers surface the Cosmos 400 BadRequest through the normalised envelope on the first read. HTTP 410 GONE on `queryChangeFeed` is mapped to `CursorExpiredException(reason=PROVIDER_TRIMMED)`.
+- Extended-retention provisioning: `CosmosProviderClient.ensureContainer(address)` provisions an AVAD `ChangeFeedPolicy` carrying the duration from `ChangeFeedConfig.extendedRetention(...)` when the user opted in, and reads back the active policy after `createContainerIfNotExists(...)` — throwing `UNSUPPORTED_CAPABILITY(reason="extended_retention_not_enacted")` (with `requestedRetention` and `activeRetention` in `providerDetails`) when a pre-existing container's retention does not match the request. A 400 BadRequest whose message fingerprint indicates the Cosmos account lacks Continuous Backup is re-mapped to `UNSUPPORTED_CAPABILITY(reason="continuous_backup_required")` so callers do not have to substring-match raw messages. `CosmosCapabilities` declares `EXTENDED_CHANGE_FEED_HISTORY_CAP` (up to 30 days via Continuous Backup; 7d minimum).
+- `consistencyLevel` connection config key for opt-in client-level read consistency override. Valid case-insensitive values: `STRONG`, `BOUNDED_STALENESS`, `SESSION`, `CONSISTENT_PREFIX`, `EVENTUAL`. When absent, reads inherit the Cosmos DB account's configured default. See `docs/configuration.md` — *Consistency Level*.
+- Typed `CLIENT_CLOSED` envelope on every post-close CRUD / query / provisioning / change-feed entry point, replacing leaked `IllegalStateException`s from azure-cosmos. `close()` is idempotent under concurrent callers; the underlying `cosmosClient.close()` is invoked exactly once.
 
 ### Changed
 
-- Removed the hardcoded `ConsistencyLevel.SESSION` override from `CosmosClientBuilder`.
-  Previously all reads were forced to `SESSION` regardless of the account's configured
-  default. **Migration note:** accounts with a default of `STRONG` or `BOUNDED_STALENESS`
-  will now serve reads at their configured level (higher latency / higher RU cost than
-  before). Accounts configured to `SESSION` are unaffected. To restore the previous
-  behaviour explicitly, set `multiclouddb.connection.consistencyLevel=SESSION`.
+- Removed the hardcoded `ConsistencyLevel.SESSION` override from `CosmosClientBuilder`. Accounts with a default of `STRONG` or `BOUNDED_STALENESS` will now serve reads at their configured level (higher latency / RU cost than before). Accounts configured to `SESSION` are unaffected. To restore the previous behaviour explicitly, set `multiclouddb.connection.consistencyLevel=SESSION`.
+- `BETWEEN` translation now wraps in parentheses (`(c.field BETWEEN @lo AND @hi)`). Without this, Cosmos NoSQL's parser binds the inner `AND` together with any trailing logical `AND`, producing a `BadRequest` for predicates like `age BETWEEN @lo AND @hi AND marker = @m`. The output of `TranslatedQuery.whereClause()` is now parenthesised.
 
 ### Removed
 
-- `CosmosConstants.CONSISTENCY_LEVEL_DEFAULT` (`public static final ConsistencyLevel`,
-  previously `ConsistencyLevel.SESSION`) — removed without a deprecation cycle; the project
-  is pre-release. Callers referencing this constant should use `ConsistencyLevel.SESSION`
-  directly.
+- `CosmosConstants.CONSISTENCY_LEVEL_DEFAULT` (`public static final ConsistencyLevel`, previously `ConsistencyLevel.SESSION`) — removed without a deprecation cycle; the project is pre-release. Callers referencing this constant should use `ConsistencyLevel.SESSION` directly.
 
-### Fixed
+### Documentation
 
-- **`BETWEEN` translation now wraps in parentheses** (`(c.field BETWEEN @lo AND @hi)`).
-  Without the wrapping parens, Cosmos NoSQL's parser greedily binds the
-  `BETWEEN`'s inner `AND` together with any trailing logical `AND`, producing
-  a *"Syntax error, incorrect syntax near 'AND'"* `BadRequest` for predicates
-  like `age BETWEEN @lo AND @hi AND marker = @m`. The output of
-  `TranslatedQuery.whereClause()` is now parenthesised — backward-compatible
-  at the query-execution level, but consumers that string-match the where
-  clause should update their expectations.
+- `delete()` of a missing key is documented as a silent no-op (idempotent); the Cosmos provider continues to swallow the native 404.
 
 ## [0.1.0-beta.1] — 2026-04-23
 

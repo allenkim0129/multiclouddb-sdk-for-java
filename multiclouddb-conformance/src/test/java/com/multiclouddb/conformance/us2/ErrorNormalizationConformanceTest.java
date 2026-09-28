@@ -4,10 +4,17 @@
 package com.multiclouddb.conformance.us2;
 
 import com.multiclouddb.api.*;
+import com.multiclouddb.api.changefeed.ChangeFeedCursor;
+import com.multiclouddb.api.changefeed.CursorExpiredException;
+import com.multiclouddb.api.changefeed.internal.CursorAnchor;
+import com.multiclouddb.api.changefeed.internal.CursorToken;
+import com.multiclouddb.api.changefeed.internal.CursorTokenCodec;
+import com.multiclouddb.api.changefeed.internal.PartitionPosition;
 import com.multiclouddb.conformance.ConformanceConfig;
 import com.multiclouddb.conformance.ConformanceHarness;
 import org.junit.jupiter.api.*;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -190,5 +197,50 @@ public abstract class ErrorNormalizationConformanceTest {
         // Diagnostics must be populated on every reproduction.
         assertDiagnosticsPopulated(first, "update");
         assertDiagnosticsPopulated(second, "update");
+    }
+
+    /**
+     * Codec-side aged-token path is a pure-offline test that any provider
+     * passes identically — it lives in the abstract suite (and therefore runs
+     * once per provider) because the assertions are part of the cross-provider
+     * structured-error contract surfaced through {@link CursorExpiredException}:
+     * the same shape (CURSOR_EXPIRED, non-retryable, operation="fromToken",
+     * providerDetails.reason="TOKEN_AGED_OUT") must reach the caller regardless
+     * of which provider was active when the cursor was originally minted.
+     */
+    @Test
+    @Order(4)
+    @DisplayName("fromToken(aged) carries CURSOR_EXPIRED + reason=TOKEN_AGED_OUT and operation=fromToken")
+    void agedTokenIsFullyNormalized() {
+        // Mint a token whose issuedAt is older than the 24h portable age cap
+        // (CursorTokenCodec.MAX_TOKEN_AGE_MILLIS). The resource binding and
+        // partition list make this look like a real resumable token (not an
+        // unhydrated now() sentinel — those bypass the age check).
+        long stale = System.currentTimeMillis() - (25L * 60L * 60L * 1000L);
+        CursorToken token = new CursorToken(
+                providerId(),
+                ConformanceHarness.defaultAddress(providerId()),
+                stale,
+                CursorAnchor.CONTINUING,
+                List.of(new PartitionPosition("p-0", "c-0")));
+        String wire = CursorTokenCodec.encode(token);
+
+        CursorExpiredException ex = assertThrows(CursorExpiredException.class,
+                () -> ChangeFeedCursor.fromToken(wire),
+                "fromToken of an aged token must throw CursorExpiredException");
+
+        assertNotNull(ex.error(), "CursorExpiredException must carry a structured error");
+        assertEquals(MulticloudDbErrorCategory.CURSOR_EXPIRED, ex.error().category(),
+                "aged-token must normalize to CURSOR_EXPIRED");
+        assertEquals("fromToken", ex.error().operation(),
+                "Error.operation() must record the offline codec path, not a provider op name");
+        assertFalse(ex.error().retryable(),
+                "CURSOR_EXPIRED on an aged token must not be marked retryable — the cursor cannot recover by retry");
+        assertNotNull(ex.error().providerDetails(),
+                "CursorExpiredException must carry providerDetails so callers can branch on reason");
+        assertEquals(CursorTokenCodec.REASON_TOKEN_AGED_OUT,
+                ex.error().providerDetails().get(CursorTokenCodec.DETAIL_REASON),
+                "aged-token must carry providerDetails.reason=TOKEN_AGED_OUT so callers can distinguish "
+                        + "client-side age expiry from PROVIDER_TRIMMED");
     }
 }

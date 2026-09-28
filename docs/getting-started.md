@@ -117,7 +117,6 @@ Write a WHERE-clause filter once - the SDK translates it for each provider:
 
 ```java
 QueryRequest query = QueryRequest.builder()
-        .partitionKey("tenant-42")
         .expression("status = @status AND category = @cat")
         .parameters(Map.of("status", "active", "cat", "shopping"))
         .maxPageSize(25)
@@ -129,11 +128,6 @@ for (Map<String, Object> item : page.items()) {
 }
 ```
 
-Every query is **partition-scoped**: `partitionKey(...)` is required on the
-builder. To cap the total number of returned items, call `.maxResults(int)`.
-To reverse the default sort-key ordering, call `.orderBy("sortKey", SortDirection.DESC)` —
-only the `sortKey` field is portable across providers.
-
 The same expression produces different native queries per provider:
 
 | Provider | Generated Native Query |
@@ -144,7 +138,40 @@ The same expression produces different native queries per provider:
 
 ---
 
-## 5. Switch Providers
+## 5. Native Query Escape Hatch
+
+When you need provider-specific query syntax, use `nativeExpression()`:
+
+=== "Cosmos DB"
+
+    ```java
+    QueryRequest q = QueryRequest.builder()
+            .nativeExpression("SELECT * FROM c WHERE c.title LIKE '%flight%'")
+            .maxPageSize(25)
+            .build();
+    ```
+
+=== "DynamoDB"
+
+    ```java
+    QueryRequest q = QueryRequest.builder()
+            .nativeExpression("SELECT * FROM \"todos\" WHERE begins_with(title, 'Ship')")
+            .maxPageSize(25)
+            .build();
+    ```
+
+=== "Spanner"
+
+    ```java
+    QueryRequest q = QueryRequest.builder()
+            .nativeExpression("SELECT * FROM todos WHERE STARTS_WITH(title, 'Ship')")
+            .maxPageSize(25)
+            .build();
+    ```
+
+---
+
+## 6. Switch Providers
 
 Change **only** the properties file - no code changes required:
 
@@ -184,6 +211,42 @@ Change **only** the properties file - no code changes required:
     multiclouddb.connection.instanceId=my-instance
     multiclouddb.connection.databaseId=my-database
     ```
+
+---
+
+## 7. Read Change Events
+
+Subscribe to inserts, updates and deletes with three primitives —
+`ChangeFeedCursor` (opaque, persistable position), `listCursors` (one cursor
+per provider partition), and `readChanges` (one page at a time).
+
+```java
+ResourceAddress orders = new ResourceAddress("appdb", "orders");
+
+// Start from the live tip — historical events are skipped.
+ChangeFeedCursor cursor = ChangeFeedCursor.now();
+
+while (true) {
+    ChangeFeedPage page = client.readChanges(orders, cursor);
+
+    for (ChangeEvent ev : page.events()) {
+        System.out.printf("%s %s @ %s%n",
+                ev.type(), ev.key(), ev.commitTimestamp());
+    }
+
+    cursor = page.nextCursor();
+    persist(cursor.toToken()); // resume from this point on restart
+
+    if (!page.hasMore()) Thread.sleep(500);
+}
+```
+
+> **Provisioning required.** Cosmos containers must enable AVAD mode for the
+> SDK to surface `DELETE`; DynamoDB tables need `StreamSpecification(NEW_AND_OLD_IMAGES)`;
+> Spanner needs `CREATE CHANGE STREAM <collection>_changes FOR <collection>
+> OPTIONS (value_capture_type = 'NEW_ROW')`. See [guide.md - Change Feeds](guide.md#change-feeds)
+> for full setup, multi-thread patterns, expired-cursor recovery, and
+> per-provider semantics.
 
 ---
 

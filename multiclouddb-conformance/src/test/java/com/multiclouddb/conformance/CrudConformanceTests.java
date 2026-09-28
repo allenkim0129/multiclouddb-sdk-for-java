@@ -164,31 +164,29 @@ public abstract class CrudConformanceTests {
     @Test @Order(6)
     @DisplayName("query returns items")
     void queryAll() {
-        String pk = "conf-query-pk";
         for (int i = 1; i <= 3; i++) {
-            client.upsert(getAddress(), MulticloudDbKey.of(pk, "conf-query-" + i),
+            client.upsert(getAddress(), MulticloudDbKey.of("conf-query-" + i, "conf-query-" + i),
                     Map.of("title", "Query Item " + i, "batch", "conformance"));
         }
         QueryPage page = client.query(getAddress(),
-                QueryRequest.builder().partitionKey(pk).maxPageSize(50).build());
+                QueryRequest.builder().expression("SELECT * FROM c").maxPageSize(50).build());
         assertNotNull(page);
         assertFalse(page.items().isEmpty(), "Query should return at least our inserted items");
-        for (int i = 1; i <= 3; i++) safeDelete(MulticloudDbKey.of(pk, "conf-query-" + i));
+        for (int i = 1; i <= 3; i++) safeDelete(MulticloudDbKey.of("conf-query-" + i, "conf-query-" + i));
     }
 
     @Test @Order(7)
     @DisplayName("query with page size limits results")
     void queryPaging() {
-        String pk = "conf-page-pk";
         for (int i = 1; i <= 5; i++) {
-            client.upsert(getAddress(), MulticloudDbKey.of(pk, "conf-page-" + i),
+            client.upsert(getAddress(), MulticloudDbKey.of("conf-page-" + i, "conf-page-" + i),
                     Map.of("title", "Page Item " + i));
         }
         QueryPage page1 = client.query(getAddress(),
-                QueryRequest.builder().partitionKey(pk).maxPageSize(2).build());
+                QueryRequest.builder().expression("SELECT * FROM c").maxPageSize(2).build());
         assertNotNull(page1);
         assertTrue(page1.items().size() <= 2, "Page should respect pageSize limit");
-        for (int i = 1; i <= 5; i++) safeDelete(MulticloudDbKey.of(pk, "conf-page-" + i));
+        for (int i = 1; i <= 5; i++) safeDelete(MulticloudDbKey.of("conf-page-" + i, "conf-page-" + i));
     }
 
     @Test @Order(8)
@@ -240,15 +238,44 @@ public abstract class CrudConformanceTests {
     }
 
     @Test @Order(12)
-    @DisplayName("partitionKey is required: building a QueryRequest without one throws")
-    void partitionKeyRequired() {
-        // Under strict-LCD, every query must be scoped to a partition.
-        // QueryRequest.Builder must reject any build() call that omits partitionKey.
-        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-                () -> QueryRequest.builder().expression("title = @t").parameter("t", "x").build(),
-                "QueryRequest without partitionKey must be rejected at construction time");
-        assertTrue(ex.getMessage() != null && ex.getMessage().toLowerCase().contains("partitionkey"),
-                "Exception message should mention partitionKey, got: " + ex.getMessage());
+    @DisplayName("partitionKey null falls back to cross-partition query (returns items from multiple partitions)")
+    void queryWithoutPartitionKey() {
+        // Per-run unique marker so a long-lived emulator (or leftover items
+        // from a previously failed run) cannot interfere with the assertion:
+        // we only ever see items seeded by *this* invocation.
+        String marker = "cross-conf-" + java.util.UUID.randomUUID();
+        client.upsert(getAddress(), MulticloudDbKey.of("cross-a", "pk-cross-a"), Map.of("title", "Cross-A", "marker", marker));
+        client.upsert(getAddress(), MulticloudDbKey.of("cross-b", "pk-cross-b"), Map.of("title", "Cross-B", "marker", marker));
+
+        // Iterate continuation tokens so we evaluate the *full* result set
+        // for this marker, not just the first page. With a fixed marker we
+        // could otherwise be fooled by leftover rows pushing the seeded items
+        // past page-1.
+        Set<String> seenPartitions = new HashSet<>();
+        String continuation = null;
+        do {
+            QueryRequest.Builder qb = QueryRequest.builder()
+                    .expression("marker = @m")
+                    .parameter("m", marker)
+                    .maxPageSize(200);
+            if (continuation != null) qb.continuationToken(continuation);
+            QueryPage page = client.query(getAddress(), qb.build());
+            assertNotNull(page);
+            for (Map<String, Object> item : page.items()) {
+                String t = str(item, "title");
+                if ("Cross-A".equals(t)) seenPartitions.add("cross-a");
+                else if ("Cross-B".equals(t)) seenPartitions.add("cross-b");
+            }
+            continuation = page.continuationToken();
+        } while (continuation != null);
+
+        // Cross-partition query must return items from BOTH partitions, not just one.
+        assertTrue(seenPartitions.size() >= 2,
+                "Cross-partition query should surface items from at least 2 distinct partitions; saw: "
+                        + seenPartitions);
+
+        safeDelete(MulticloudDbKey.of("cross-a", "pk-cross-a"));
+        safeDelete(MulticloudDbKey.of("cross-b", "pk-cross-b"));
     }
 
     @Test @Order(13)
@@ -356,7 +383,6 @@ public abstract class CrudConformanceTests {
         String unmatchableTitle = "no-document-has-this-title-" + java.util.UUID.randomUUID();
         QueryPage page = client.query(getAddress(),
                 QueryRequest.builder()
-                        .partitionKey("no-match-pk")
                         .expression("title = @t")
                         .parameter("t", unmatchableTitle)
                         .maxPageSize(50)
@@ -464,6 +490,86 @@ public abstract class CrudConformanceTests {
                 "ensureContainer on existing container must not throw");
         assertDoesNotThrow(() -> client.ensureContainer(address),
                 "ensureContainer must be idempotent on subsequent calls");
+    }
+
+    @Test @Order(21)
+    @DisplayName("post-close operations throw MulticloudDbException(CLIENT_CLOSED, retryable=false)")
+    void postCloseOperationsThrowClientClosed() throws Exception {
+        // Use a dedicated throwaway client so the shared @BeforeEach/@AfterEach
+        // lifecycle is not perturbed. The shared `client` field is left untouched,
+        // so @AfterEach will close exactly one (still-open) client as designed.
+        //
+        // Provider-portability contract: after close(), every public CRUD/query/
+        // provisioning entry point must surface a typed CLIENT_CLOSED envelope
+        // rather than leaking a raw IllegalStateException from the underlying
+        // SDK (azure-cosmos, aws-sdk, google-cloud-spanner). Telemetry,
+        // retry-policy, and circuit-breaker layers all branch on the typed
+        // category, so a raw exception would silently bypass those layers and
+        // be classified as a generic transport error.
+        //
+        // CLIENT_CLOSED must also be retryable()==false: closing is a terminal
+        // lifecycle state, and a retrying caller would loop indefinitely.
+        MulticloudDbClient throwaway = createClient();
+        throwaway.close();
+
+        ResourceAddress address = getAddress();
+        String marker = "closed-" + UUID.randomUUID().toString().substring(0, 8);
+        MulticloudDbKey key = MulticloudDbKey.of(marker, marker);
+        QueryRequest q = QueryRequest.builder().build();
+
+        // Mutating ops fail before any network call, so no cleanup is needed —
+        // the closed client cannot have written anything.
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.create(address, key, Map.of("k", "v"), null)),
+                "create");
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.read(address, key, null)),
+                "read");
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.update(address, key, Map.of("k", "v"), null)),
+                "update");
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.upsert(address, key, Map.of("k", "v"), null)),
+                "upsert");
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.delete(address, key, null)),
+                "delete");
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.query(address, q, null)),
+                "query");
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.ensureDatabase(address.database())),
+                "ensureDatabase");
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.ensureContainer(address)),
+                "ensureContainer");
+        // Schema contents are irrelevant here: checkOpen() at
+        // DefaultMulticloudDbClient.provisionSchema runs *before* any
+        // delegation to the SPI default, so a closed client throws
+        // CLIENT_CLOSED before the SPI's empty-schema no-op
+        // (MulticloudDbProviderClient.provisionSchema) is ever consulted.
+        // The non-empty schema is kept only to match the shape callers
+        // would normally pass.
+        Map<String, List<String>> schema = Map.of(
+                address.database(), List.of(address.collection()));
+        assertClientClosed(assertThrows(MulticloudDbException.class,
+                () -> throwaway.provisionSchema(schema)),
+                "provisionSchema");
+    }
+
+    private static void assertClientClosed(MulticloudDbException ex, String operation) {
+        assertEquals(MulticloudDbErrorCategory.CLIENT_CLOSED, ex.error().category(),
+                operation + ": post-close operation must surface CLIENT_CLOSED, not "
+                        + ex.error().category());
+        assertFalse(ex.error().retryable(),
+                operation + ": CLIENT_CLOSED must be non-retryable (terminal lifecycle state)");
+        // Telemetry / diagnostics / retry layers branch on the operation name to
+        // attribute post-close failures; assert it matches the caller's op so a
+        // future regression renaming the OperationNames constants or wiring the
+        // wrong constant into a checkOpen() call fails loudly here.
+        assertEquals(operation, ex.error().operation(),
+                operation + ": post-close error must attribute operation to the caller's op, "
+                        + "not '" + ex.error().operation() + "'");
     }
 
     // ── Portable expression runtime parity ────────────────────────────────────

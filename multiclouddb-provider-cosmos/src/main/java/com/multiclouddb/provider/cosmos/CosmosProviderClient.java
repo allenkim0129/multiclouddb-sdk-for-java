@@ -19,6 +19,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.regex.Pattern;
@@ -47,6 +48,17 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
 
     private final CosmosClient cosmosClient;
     private final MulticloudDbClientConfig config;
+    private final CosmosChangeFeedReader changeFeedReader;
+    /**
+     * Lifecycle flag flipped by {@link #close()}. Public CRUD/query/provisioning
+     * entry points check this first via {@link #checkOpen(String)} and throw
+     * {@link MulticloudDbErrorCategory#CLIENT_CLOSED} instead of leaking the
+     * underlying {@code IllegalStateException} that the azure-cosmos SDK would
+     * surface after its own close. Declared {@code volatile} so cross-thread
+     * close → operation racing observes the flip without locking; double-close
+     * is guarded by the {@code synchronized} {@link #close()} method.
+     */
+    private volatile boolean closed = false;
 
 
     /**
@@ -114,6 +126,15 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
         builder.userAgentSuffix(SdkUserAgent.userAgent(config));
 
         this.cosmosClient = builder.buildClient();
+        // Stamp the configured extendedRetention onto every minted cursor so a
+        // persisted token can outlive the 24h portable baseline up to the
+        // server-side AVAD retention window. Defaults to the baseline when
+        // the opt-in is not set, keeping the wire form unchanged for the
+        // common case.
+        long effectiveRetentionMillis = config.changeFeed().extendedRetention()
+                .map(java.time.Duration::toMillis)
+                .orElse(com.multiclouddb.api.changefeed.internal.CursorTokenCodec.MAX_TOKEN_AGE_MILLIS);
+        this.changeFeedReader = new CosmosChangeFeedReader(ProviderId.COSMOS, effectiveRetentionMillis);
         LOG.info("Cosmos client created for endpoint: {}", endpoint);
         LOG.info("Cosmos read consistency: {}", readConsistencyOverride != null ? readConsistencyOverride : "account default");
     }
@@ -141,11 +162,15 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.CREATE);
         try {
             CosmosContainer container = getContainer(address);
             ObjectNode doc = toObjectNode(document);
             doc.put(CosmosConstants.FIELD_ID, key.sortKey() != null ? key.sortKey() : key.partitionKey());
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
+            if (options != null && options.ttlSeconds() != null) {
+                doc.put(CosmosConstants.FIELD_TTL, options.ttlSeconds());
+            }
             PartitionKey pk = resolvePartitionKey(key);
             CosmosItemResponse<ObjectNode> response = container.createItem(doc, pk, new CosmosItemRequestOptions());
             logItemDiagnostics(OperationNames.CREATE, address, response);
@@ -171,6 +196,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public DocumentResult read(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
+        checkOpen(OperationNames.READ);
         try {
             CosmosContainer container = getContainer(address);
             PartitionKey pk = resolvePartitionKey(key);
@@ -187,7 +213,20 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
             ObjectNode item = raw.deepCopy();
             CosmosConstants.SYSTEM_FIELDS.forEach(item::remove);
 
-            return new DocumentResult(item);
+            DocumentMetadata metadata = null;
+            if (options != null && options.includeMetadata()) {
+                DocumentMetadata.Builder metaBuilder = DocumentMetadata.builder();
+                if (response.getETag() != null) {
+                    metaBuilder.version(response.getETag());
+                }
+                // _ts is a Unix epoch second — expose as lastModified
+                JsonNode tsNode = raw.get(CosmosConstants.SYS_TIMESTAMP);
+                if (tsNode != null && tsNode.isNumber()) {
+                    metaBuilder.lastModified(Instant.ofEpochSecond(tsNode.longValue()));
+                }
+                metadata = metaBuilder.build();
+            }
+            return new DocumentResult(item, metadata);
         } catch (CosmosException e) {
             if (e.getStatusCode() == 404) {
                 return null;
@@ -214,12 +253,16 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.UPDATE);
         try {
             CosmosContainer container = getContainer(address);
             ObjectNode doc = toObjectNode(document);
             String cosmosId = key.sortKey() != null ? key.sortKey() : key.partitionKey();
             doc.put(CosmosConstants.FIELD_ID, cosmosId);
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
+            if (options != null && options.ttlSeconds() != null) {
+                doc.put(CosmosConstants.FIELD_TTL, options.ttlSeconds());
+            }
             PartitionKey pk = resolvePartitionKey(key);
             CosmosItemResponse<ObjectNode> response = container.replaceItem(doc, cosmosId, pk, new CosmosItemRequestOptions());
             logItemDiagnostics(OperationNames.UPDATE, address, response);
@@ -244,11 +287,15 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.UPSERT);
         try {
             CosmosContainer container = getContainer(address);
             ObjectNode doc = toObjectNode(document);
             doc.put(CosmosConstants.FIELD_ID, key.sortKey() != null ? key.sortKey() : key.partitionKey());
             doc.put(CosmosConstants.FIELD_PARTITION_KEY, key.partitionKey());
+            if (options != null && options.ttlSeconds() != null) {
+                doc.put(CosmosConstants.FIELD_TTL, options.ttlSeconds());
+            }
             PartitionKey pk = resolvePartitionKey(key);
             CosmosItemResponse<ObjectNode> response = container.upsertItem(doc, pk, new CosmosItemRequestOptions());
             logItemDiagnostics(OperationNames.UPSERT, address, response);
@@ -274,6 +321,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void delete(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
+        checkOpen(OperationNames.DELETE);
         try {
             CosmosContainer container = getContainer(address);
             PartitionKey pk = resolvePartitionKey(key);
@@ -292,13 +340,27 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     /**
      * Executes a query and returns a single page of results.
      * <p>
-     * Used by the SDK when no portable filter expression is set (partition scan).
-     * If {@link QueryRequest#partitionKey()} is set, the query is scoped to that
-     * single logical partition. The portable expression pipeline is invoked
-     * directly via {@link #queryWithTranslation} when an expression is present.
+     * Query routing logic (evaluated in order):
+     * <ol>
+     *   <li>If {@link QueryRequest#nativeExpression()} is set, it is used as-is as the
+     *       Cosmos SQL string (native passthrough).</li>
+     *   <li>If {@link QueryRequest#expression()} is set, it is used as the Cosmos SQL
+     *       WHERE expression.</li>
+     *   <li>If neither is set, {@code SELECT * FROM c} is used (full container scan).</li>
+     * </ol>
+     * Named parameters ({@code @name} syntax) from {@link QueryRequest#parameters()} are
+     * bound as {@link SqlParameter} values. Parameter names that do not already start with
+     * {@code @} are prefixed automatically.
+     * <p>
+     * If {@link QueryRequest#partitionKey()} is set, the query is scoped to a single
+     * logical partition via {@link CosmosQueryRequestOptions#setPartitionKey}, avoiding
+     * a cross-partition fan-out.
+     * <p>
+     * Only the first page of results is returned; pass the returned
+     * {@link QueryPage#continuationToken()} in the next request to page forward.
      *
      * @param address the logical database + container to query
-     * @param query   query request containing partition key, page size, and
+     * @param query   query request containing expression, parameters, page size, and
      *                optional continuation token
      * @param options operation options (currently unused by this provider)
      * @return a page of results; {@link QueryPage#continuationToken()} is non-null when
@@ -307,16 +369,26 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public QueryPage query(ResourceAddress address, QueryRequest query, OperationOptions options) {
+        checkOpen(OperationNames.QUERY);
         try {
             CosmosContainer container = getContainer(address);
             CosmosQueryRequestOptions queryOptions = new CosmosQueryRequestOptions();
-            queryOptions.setPartitionKey(new PartitionKey(query.partitionKey()));
+            if (query.partitionKey() != null) {
+                queryOptions.setPartitionKey(new PartitionKey(query.partitionKey()));
+            }
             if (query.maxPageSize() != null) {
                 queryOptions.setMaxBufferedItemCount(query.maxPageSize());
             }
 
-            String expression = CosmosConstants.QUERY_SELECT_ALL;
-            expression = applyResultSetControl(expression, query);
+            String expression = query.nativeExpression() != null ? query.nativeExpression() : query.expression();
+            if (expression == null || expression.isBlank()) {
+                expression = CosmosConstants.QUERY_SELECT_ALL;
+            }
+
+            // Apply TOP N and ORDER BY for non-native expressions
+            if (query.nativeExpression() == null) {
+                expression = applyResultSetControl(expression, query);
+            }
 
             List<SqlParameter> sqlParams = new ArrayList<>();
             if (query.parameters() != null) {
@@ -388,10 +460,13 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     @Override
     public QueryPage queryWithTranslation(ResourceAddress address, TranslatedQuery translated,
             QueryRequest query, OperationOptions options) {
+        checkOpen(OperationNames.QUERY_WITH_TRANSLATION);
         try {
             CosmosContainer container = getContainer(address);
             CosmosQueryRequestOptions queryOptions = new CosmosQueryRequestOptions();
-            queryOptions.setPartitionKey(new PartitionKey(query.partitionKey()));
+            if (query.partitionKey() != null) {
+                queryOptions.setPartitionKey(new PartitionKey(query.partitionKey()));
+            }
             if (query.maxPageSize() != null) {
                 queryOptions.setMaxBufferedItemCount(query.maxPageSize());
             }
@@ -450,7 +525,52 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
 
     @Override
     public void close() {
-        cosmosClient.close();
+        if (closed) return;
+        synchronized (this) {
+            if (closed) return;
+            closed = true;
+            cosmosClient.close();
+        }
+    }
+
+    /**
+     * Guards public entry points against use after {@link #close()}.
+     * <p>
+     * Provider-level mirror of the facade guard in
+     * {@code DefaultMulticloudDbClient.checkOpen(String)}: callers that talk
+     * directly to the SPI (e.g., conformance harnesses, test fixtures) still
+     * see a typed {@link MulticloudDbErrorCategory#CLIENT_CLOSED} envelope
+     * rather than a raw {@code IllegalStateException} from azure-cosmos.
+     *
+     * @param operation the caller's operation name from {@link OperationNames}
+     */
+    private void checkOpen(String operation) {
+        if (closed) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.CLIENT_CLOSED,
+                    "CosmosProviderClient has been closed",
+                    ProviderId.COSMOS, operation, false, Map.of()));
+        }
+    }
+
+    // ── Change Feed ──────────────────────────────────────────────────────────
+
+    @Override
+    public java.util.List<com.multiclouddb.api.changefeed.ChangeFeedCursor> listCursors(
+            ResourceAddress address) {
+        checkOpen(OperationNames.LIST_CURSORS);
+        CosmosContainer container = getContainer(address);
+        return changeFeedReader.listCursors(container, address);
+    }
+
+    @Override
+    public com.multiclouddb.api.changefeed.ChangeFeedPage readChanges(
+            ResourceAddress address,
+            com.multiclouddb.api.changefeed.ChangeFeedCursor cursor,
+            OperationOptions options) {
+        checkOpen(OperationNames.READ_CHANGES);
+        CosmosContainer container = getContainer(address);
+        return changeFeedReader.readChanges(container, address, cursor, options);
     }
 
     // ── Provisioning ─────────────────────────────────────────────────────────
@@ -476,6 +596,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void ensureDatabase(String database) {
+        checkOpen(OperationNames.ENSURE_DATABASE);
         try {
             cosmosClient.createDatabaseIfNotExists(database);
             LOG.info("ensureDatabase: created or verified Cosmos database '{}'", database);
@@ -496,16 +617,146 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void ensureContainer(ResourceAddress address) {
+        checkOpen(OperationNames.ENSURE_CONTAINER);
         try {
             CosmosDatabase db = cosmosClient.getDatabase(address.database());
             CosmosContainerProperties props = new CosmosContainerProperties(
                     address.collection(), CosmosConstants.PARTITION_KEY_PATH);
+            // If the user opted in to extended change-feed retention via
+            // MulticloudDbClientConfig.builder().changeFeed(ChangeFeedConfig
+            // .builder().extendedRetention(...).build()), provision the
+            // container with an AVAD ChangeFeedPolicy carrying that retention.
+            // The build-time capability gate in MulticloudDbClientFactory
+            // guarantees we only get here if the provider declared
+            // EXTENDED_CHANGE_FEED_HISTORY_CAP, so the policy is always safe
+            // to set when hasExtendedRetention() is true.
+            boolean optIn = config.changeFeed().hasExtendedRetention();
+            Duration requestedRetention = optIn
+                    ? config.changeFeed().extendedRetention().orElseThrow()
+                    : null;
+            if (optIn) {
+                props.setChangeFeedPolicy(
+                        ChangeFeedPolicy.createAllVersionsAndDeletesPolicy(requestedRetention));
+                LOG.info("ensureContainer: provisioning Cosmos container '{}/{}' with "
+                                + "AVAD ChangeFeedPolicy retention={}",
+                        address.database(), address.collection(), requestedRetention);
+            }
             db.createContainerIfNotExists(props);
             LOG.info("ensureContainer: created or verified Cosmos container '{}/{}'",
                     address.database(), address.collection());
+
+            // Cosmos's createContainerIfNotExists is a no-op when the container
+            // already exists — props (including the new ChangeFeedPolicy) is
+            // silently discarded. Under the opt-in path we must read back the
+            // container's active policy and refuse silently honouring an
+            // already-existing non-AVAD or weaker-retention container. Cosmos
+            // has no public SDK API to update an existing container's
+            // ChangeFeedPolicy in place, so the correct behaviour is to throw
+            // UNSUPPORTED_CAPABILITY(reason=extended_retention_not_enacted)
+            // with both requested and active retention values so the operator
+            // can drop-and-recreate or roll back the opt-in.
+            if (optIn) {
+                CosmosContainer existing = db.getContainer(address.collection());
+                CosmosContainerProperties active = existing.read().getProperties();
+                ChangeFeedPolicy activePolicy = active.getChangeFeedPolicy();
+                // Coalesce BOTH null axes:
+                //   (a) activePolicy == null  →  no ChangeFeedPolicy at all
+                //   (b) activePolicy != null  →  AVAD-retention getter returns
+                //       null when the policy is LATEST_VERSION (the Cosmos
+                //       Java SDK's convention for "this getter is not
+                //       applicable to this policy mode")
+                // Without (b), a container created with the historical pre-
+                // AVAD default policy throws NullPointerException on
+                // activeAvadRetention.toString() / Map.of(...) below, leaking
+                // a provider-specific exception type through the portable
+                // surface instead of the documented UNSUPPORTED_CAPABILITY
+                // envelope.
+                Duration activeAvadRetention = activePolicy == null
+                        ? null
+                        : activePolicy.getRetentionDurationForAllVersionsAndDeletesPolicy();
+                if (!requestedRetention.equals(activeAvadRetention)) {
+                    String activeDescription;
+                    if (activePolicy == null) {
+                        activeDescription = "no ChangeFeedPolicy at all";
+                    } else if (activeAvadRetention == null) {
+                        activeDescription = "a non-AVAD ChangeFeedPolicy "
+                                + "(LATEST_VERSION — the historical default)";
+                    } else {
+                        activeDescription = "an AVAD ChangeFeedPolicy with retention="
+                                + activeAvadRetention;
+                    }
+                    throw new MulticloudDbException(new MulticloudDbError(
+                            MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                            "Cosmos container '" + address.database() + "/" + address.collection()
+                                    + "' already exists with " + activeDescription + ". "
+                                    + "Cosmos cannot update an existing container's ChangeFeedPolicy "
+                                    + "in place — ensureContainer cannot enact the requested "
+                                    + "extendedRetention(" + requestedRetention + ") without "
+                                    + "dropping and recreating the container. Drop the container "
+                                    + "(losing data!) and re-run ensureContainer, or revert to "
+                                    + (activeAvadRetention != null
+                                            ? "ChangeFeedConfig.extendedRetention(" + activeAvadRetention + ")."
+                                            : "the default ChangeFeedConfig (no extended retention)."),
+                            ProviderId.COSMOS, OperationNames.ENSURE_CONTAINER, false,
+                            // String.valueOf is null-safe so Map.of never sees null.
+                            // "capability" mirrors the factory and Dynamo gates so
+                            // observability consumers grouping by providerDetails.capability
+                            // never see null on this failure path.
+                            Map.of("reason", "extended_retention_not_enacted",
+                                    "capability", Capability.EXTENDED_CHANGE_FEED_HISTORY,
+                                    "requestedRetention", requestedRetention.toString(),
+                                    "activeRetention", String.valueOf(activeAvadRetention))));
+                }
+            }
         } catch (CosmosException e) {
+            // Only consult the continuous-backup fingerprint when the caller
+            // actually opted in to extended retention. Without this gate, v1
+            // callers can see UNSUPPORTED_CAPABILITY where they used to see
+            // INVALID_REQUEST for unrelated 400s that mention PITR / continuous
+            // backup — breaking the "bit-for-bit identical to v1" guarantee
+            // documented for callers that never touch ChangeFeedConfig.
+            if (config.changeFeed().hasExtendedRetention()) {
+                MulticloudDbException normalized =
+                        maybeContinuousBackupRequired(e, OperationNames.ENSURE_CONTAINER);
+                if (normalized != null) throw normalized;
+            }
             throw CosmosErrorMapper.map(e, OperationNames.ENSURE_CONTAINER);
         }
+    }
+
+    /**
+     * Re-maps a Cosmos 400 BadRequest whose message fingerprint indicates the
+     * account does not have Continuous Backup enabled (a prerequisite for AVAD
+     * change-feed policies with >7d retention) into a portable
+     * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY UNSUPPORTED_CAPABILITY}
+     * envelope tagged {@code reason=continuous_backup_required}.
+     * <p>
+     * Without this re-mapping a callers would see a generic INVALID_REQUEST
+     * and have to substring-match the message to disambiguate provisioning
+     * failures from genuine input validation. Returns {@code null} if the
+     * exception does not match the fingerprint, so the caller falls through
+     * to the generic mapper.
+     */
+    private MulticloudDbException maybeContinuousBackupRequired(CosmosException e, String operation) {
+        if (e.getStatusCode() != 400) return null;
+        String msg = e.getMessage();
+        if (msg == null) return null;
+        String lower = msg.toLowerCase(Locale.ROOT);
+        boolean fingerprint = false;
+        for (String needle : CosmosConstants.CONTINUOUS_BACKUP_FINGERPRINTS) {
+            if (lower.contains(needle)) { fingerprint = true; break; }
+        }
+        if (!fingerprint) return null;
+        return new MulticloudDbException(new MulticloudDbError(
+                MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                "Cosmos account does not have Continuous Backup enabled, which is required "
+                        + "for AVAD ChangeFeedPolicy (the basis for portable change-feed history "
+                        + "beyond the 24h baseline). Enable Continuous Backup (7d or 30d tier) on "
+                        + "the account; the tier ceiling caps the maximum value you can pass to "
+                        + "ChangeFeedConfig.extendedRetention(...). Underlying message: " + msg,
+                ProviderId.COSMOS, operation, false,
+                Map.of("reason", "continuous_backup_required",
+                        "statusCode", String.valueOf(e.getStatusCode()))), e);
     }
 
     /**
@@ -584,20 +835,21 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
-     * Applies ORDER BY from the query request to a Cosmos SQL string.
+     * Applies TOP N (limit) and ORDER BY from the query request to a Cosmos SQL string.
      * <p>
-     * Under strict LCD, the public API restricts {@code orderBy} to the
-     * {@code "sortKey"} field — this method translates it to {@code ORDER BY c.id}
-     * (Cosmos uses the {@code id} field as the document identifier, which the
-     * SDK populates from {@link MulticloudDbKey#sortKey()}).
+     * For TOP N: rewrites {@code SELECT} to {@code SELECT TOP N} when limit is set.
      * <p>
-     * When no explicit {@code orderBy} is supplied a default {@code ORDER BY c.id ASC}
-     * is appended to match DynamoDB's implicit sort-key ordering. The default is
-     * skipped when:
+     * For ORDER BY: appends {@code ORDER BY c.field ASC/DESC} when an explicit
+     * {@code orderBy} is set, or appends {@code ORDER BY c.id ASC} as a default for
+     * all queries without an explicit order (to match DynamoDB's implicit sort behavior).
+     * <p>
+     * The default {@code ORDER BY} is <b>skipped</b> when:
      * <ul>
-     *   <li>The SQL already contains an {@code ORDER BY} clause (idempotency guard).</li>
+     *   <li>The SQL already contains an {@code ORDER BY} clause (idempotency guard —
+     *       uses a word-boundary regex so string literals containing "order by" are
+     *       not mistakenly detected).</li>
      *   <li>The SQL contains an aggregate function ({@code COUNT}, {@code SUM},
-     *       {@code MIN}, {@code MAX}, {@code AVG}) or {@code GROUP BY} —
+     *       {@code MIN}, {@code MAX}, {@code AVG}) or a {@code GROUP BY} clause —
      *       Cosmos DB rejects {@code ORDER BY} on aggregate queries.</li>
      * </ul>
      * <p>
@@ -606,22 +858,61 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     static String applyResultSetControl(String sql, QueryRequest query) {
         String result = sql;
 
+        // Apply TOP N — rewrite SELECT to SELECT TOP N using a boolean flag to
+        // track success, avoiding false positives from field names that contain
+        // the substring "TOP" (e.g. "topic", "topology", "stopper").
+        if (query.limit() != null) {
+            boolean topApplied = false;
+
+            // Pattern 1: "SELECT VALUE c ..." — Cosmos scalar projection
+            String r1 = result.replaceFirst("(?i)^SELECT\\s+VALUE\\s+c\\b",
+                    "SELECT TOP " + query.limit() + " VALUE c");
+            if (!r1.equals(result)) {
+                result = r1;
+                topApplied = true;
+            }
+
+            // Pattern 2: "SELECT * ..." — full document projection
+            if (!topApplied) {
+                String r2 = result.replaceFirst("(?i)^SELECT\\s+\\*",
+                        "SELECT TOP " + query.limit() + " *");
+                if (!r2.equals(result)) {
+                    result = r2;
+                    topApplied = true;
+                }
+            }
+
+            // Pattern 3: any other SELECT (custom projections, aliases, etc.)
+            if (!topApplied) {
+                result = result.replaceFirst("(?i)^SELECT\\b",
+                        "SELECT TOP " + query.limit());
+            }
+        }
+
+        // Apply ORDER BY
         if (query.orderBy() != null && !query.orderBy().isEmpty()) {
             StringBuilder orderClause = new StringBuilder(" ORDER BY ");
             for (int i = 0; i < query.orderBy().size(); i++) {
                 SortOrder so = query.orderBy().get(i);
                 if (i > 0) orderClause.append(", ");
-                // sortKey → c.id mapping (validated at QueryRequest level).
-                orderClause.append("c.").append(CosmosConstants.FIELD_ID)
-                        .append(" ").append(so.direction().name());
+                orderClause.append("c.").append(so.field()).append(" ").append(so.direction().name());
             }
             result = result + orderClause;
         } else if (!containsOrderBy(result) && !containsAggregate(result)) {
-            // Match DynamoDB's implicit sort-key ordering on every query.
-            // Guards skip the default when:
-            //   1. SQL already has ORDER BY (prevents duplicate clause).
-            //   2. SQL contains aggregates (Cosmos forbids ORDER BY with aggregates).
-            result = result + " ORDER BY c." + CosmosConstants.FIELD_ID + " ASC";
+            // DynamoDB Query implicitly sorts by range key within a partition; DynamoDB
+            // Scan sorts per-page in memory. Cosmos has no implicit ordering, so always
+            // append ORDER BY c.id ASC to ensure sorted results on every query.
+            // For single-page results both providers return identically sorted output.
+            // For multi-page cross-partition queries Cosmos is globally sorted server-side,
+            // which is strictly better than DynamoDB's per-page sort — this is a documented
+            // capability difference, not a bug.
+            // Guards:
+            //  1. Skip if SQL already has ORDER BY (prevents double-ORDER BY on native exprs).
+            //     Uses word-boundary regex — plain contains() would falsely match string
+            //     literals like WHERE c.note = 'place order by friday'.
+            //  2. Skip if SQL is an aggregate query (COUNT/SUM/MIN/MAX/AVG, GROUP BY) —
+            //     Cosmos DB rejects ORDER BY on aggregate expressions at runtime.
+            result = result + " ORDER BY c.id ASC";
         }
 
         return result;

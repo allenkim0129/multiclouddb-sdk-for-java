@@ -4,6 +4,7 @@
 package com.multiclouddb.provider.dynamo;
 
 import com.multiclouddb.api.CapabilitySet;
+import com.multiclouddb.api.DocumentMetadata;
 import com.multiclouddb.api.DocumentResult;
 import com.multiclouddb.api.MulticloudDbClientConfig;
 import com.multiclouddb.api.MulticloudDbError;
@@ -86,6 +87,17 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
 
     private final MulticloudDbClientConfig config;
     private final DynamoDbClient dynamoClient;
+    private final DynamoChangeFeedReader changeFeedReader;
+    /**
+     * Lifecycle flag flipped by {@link #close()}. Public CRUD/query/provisioning
+     * entry points consult {@link #checkOpen(String)} first so a post-close call
+     * always surfaces {@link MulticloudDbErrorCategory#CLIENT_CLOSED} instead of
+     * leaking the {@code IllegalStateException} that the AWS SDK would throw
+     * once {@code DynamoDbClient.close()} is invoked. Declared {@code volatile}
+     * for cross-thread visibility without locking; the {@code synchronized}
+     * {@link #close()} method handles double-close idempotency.
+     */
+    private volatile boolean closed = false;
 
     /**
      * Constructs a DynamoDB provider client from the supplied configuration.
@@ -105,6 +117,28 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      * @param config client configuration carrying connection, auth, and options
      */
     public DynamoProviderClient(MulticloudDbClientConfig config) {
+        // SPI-level defence-in-depth: even when an integrator bypasses
+        // MulticloudDbClientFactory and constructs DynamoProviderClient
+        // directly (via ServiceLoader<MulticloudDbProviderAdapter>), the
+        // extended-retention opt-in must still fail fast. DynamoDB Streams is
+        // fixed at 24h server-side — silently dropping the opt-in would leak
+        // a misconfigured client into production.
+        if (config.changeFeed().hasExtendedRetention()) {
+            java.time.Duration requested = config.changeFeed().extendedRetention().orElseThrow();
+            throw new MulticloudDbException(new com.multiclouddb.api.MulticloudDbError(
+                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    "DynamoDB Streams is fixed at 24h server-side; "
+                            + "ChangeFeedConfig.extendedRetention(" + requested + ") is not honoured. "
+                            + "Drain Streams into a customer-provisioned Kafka cluster for >24h history. "
+                            + "See docs/guide.md → 'Extending change-feed history beyond 24h'.",
+                    ProviderId.DYNAMO,
+                    "create",
+                    false,
+                    java.util.Map.of(
+                            "reason", "extended_retention_unavailable",
+                            "capability", com.multiclouddb.api.Capability.EXTENDED_CHANGE_FEED_HISTORY,
+                            "requestedRetention", requested.toString())));
+        }
         this.config = config;
         String region   = config.connection().getOrDefault(DynamoConstants.CONFIG_REGION, DynamoConstants.REGION_DEFAULT);
         String endpoint = config.connection().get(DynamoConstants.CONFIG_ENDPOINT);
@@ -137,6 +171,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
         }
 
         this.dynamoClient = builder.build();
+        this.changeFeedReader = DynamoChangeFeedReader.create(ProviderId.DYNAMO, config);
         LOG.info("DynamoDB client created for region: {}, endpoint: {}", region,
                 endpoint != null ? endpoint : "default");
     }
@@ -144,6 +179,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     /** Package-private constructor for testing — injects a pre-configured {@link DynamoDbClient}. */
     DynamoProviderClient(DynamoDbClient dynamoClient) {
         this.dynamoClient = dynamoClient;
+        this.changeFeedReader = null;
         this.config = MulticloudDbClientConfig.builder()
                 .provider(com.multiclouddb.api.ProviderId.DYNAMO)
                 .build();
@@ -176,11 +212,16 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.CREATE);
         try {
             Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             item.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));
+            if (options != null && options.ttlSeconds() != null) {
+                long expiryEpoch = Instant.now().getEpochSecond() + options.ttlSeconds();
+                item.put(DynamoConstants.ATTR_TTL_EXPIRY, AttributeValue.fromN(String.valueOf(expiryEpoch)));
+            }
 
             PutItemRequest request = PutItemRequest.builder()
                     .tableName(resolveTableName(address))
@@ -213,6 +254,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public DocumentResult read(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
+        checkOpen(OperationNames.READ);
         try {
             Map<String, AttributeValue> keyMap = new LinkedHashMap<>();
             keyMap.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
@@ -240,7 +282,17 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
                         ProviderId.DYNAMO, OperationNames.READ, false, null));
             }
 
-            return new DocumentResult(doc);
+            DocumentMetadata metadata = null;
+            if (options != null && options.includeMetadata()) {
+                DocumentMetadata.Builder metaBuilder = DocumentMetadata.builder();
+                // Extract TTL expiry if the attribute is present on the item.
+                JsonNode ttlNode = doc.get(DynamoConstants.ATTR_TTL_EXPIRY);
+                if (ttlNode != null && ttlNode.isNumber()) {
+                    metaBuilder.ttlExpiry(Instant.ofEpochSecond(ttlNode.longValue()));
+                }
+                metadata = metaBuilder.build();
+            }
+            return new DocumentResult(doc, metadata);
         } catch (DynamoDbException e) {
             throw DynamoErrorMapper.map(e, OperationNames.READ);
         }
@@ -263,11 +315,16 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.UPDATE);
         try {
             Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             item.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));
+            if (options != null && options.ttlSeconds() != null) {
+                long expiryEpoch = Instant.now().getEpochSecond() + options.ttlSeconds();
+                item.put(DynamoConstants.ATTR_TTL_EXPIRY, AttributeValue.fromN(String.valueOf(expiryEpoch)));
+            }
 
             PutItemRequest request = PutItemRequest.builder()
                     .tableName(resolveTableName(address))
@@ -314,11 +371,16 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options) {
+        checkOpen(OperationNames.UPSERT);
         try {
             Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             item.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));
+            if (options != null && options.ttlSeconds() != null) {
+                long expiryEpoch = Instant.now().getEpochSecond() + options.ttlSeconds();
+                item.put(DynamoConstants.ATTR_TTL_EXPIRY, AttributeValue.fromN(String.valueOf(expiryEpoch)));
+            }
 
             PutItemRequest request = PutItemRequest.builder()
                     .tableName(resolveTableName(address))
@@ -350,6 +412,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void delete(ResourceAddress address, MulticloudDbKey key, OperationOptions options) {
+        checkOpen(OperationNames.DELETE);
         try {
             Map<String, AttributeValue> keyMap = new LinkedHashMap<>();
             keyMap.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
@@ -400,10 +463,15 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public QueryPage query(ResourceAddress address, QueryRequest query, OperationOptions options) {
+        checkOpen(OperationNames.QUERY);
         try {
+            validateResultSetControl(query, OperationNames.QUERY);
             String tableName = resolveTableName(address);
             int pageSize = query.maxPageSize() != null ? query.maxPageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
-            boolean ascending = isSortKeyAscending(query);
+            // Respect Top N limit: cap the page size to avoid over-fetching
+            if (query.limit() != null) {
+                pageSize = Math.min(pageSize, query.limit());
+            }
 
             // Deserialize continuation token if present
             Map<String, AttributeValue> exclusiveStartKey = null;
@@ -411,15 +479,41 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
                 exclusiveStartKey = DynamoContinuationToken.decode(query.continuationToken());
             }
 
-            // No filter expression → Query API scoped to partitionKey (O(partition size))
-            if (query.expression() == null || query.expression().isBlank()) {
-                return executeQueryByPartitionKey(address, tableName, query.partitionKey(),
-                        null, null, pageSize, exclusiveStartKey, ascending);
+            // If nativeExpression is set, use PartiQL passthrough
+            if (query.nativeExpression() != null && !query.nativeExpression().isBlank()) {
+                String stmt = query.nativeExpression();
+                Map<String, Object> params = query.parameters();
+                if (query.partitionKey() != null) {
+                    stmt = appendPartitionKeyCondition(stmt);
+                    LinkedHashMap<String, Object> combined = new LinkedHashMap<>();
+                    if (params != null) combined.putAll(params);
+                    combined.put(DynamoConstants.QUERY_PARTITION_KEY_PARAM, query.partitionKey());
+                    params = combined;
+                }
+                return executePartiQL(stmt, params, pageSize, query.continuationToken());
             }
 
-            // With filter expression → Query API with KeyConditionExpression + FilterExpression
-            return executeQueryByPartitionKey(address, tableName, query.partitionKey(),
-                    query.expression(), query.parameters(), pageSize, exclusiveStartKey, ascending);
+            // If expression is null/blank or the generic "SELECT * FROM c":
+            // - With partitionKey: use DynamoDB Query API (O(partition size)) not Scan+Filter (O(table size))
+            // - Without partitionKey: full-table scan (no alternative)
+            if (query.expression() == null || query.expression().isBlank()
+                    || query.expression().trim().equalsIgnoreCase(DynamoConstants.QUERY_SELECT_ALL_COSMOS)) {
+                if (query.partitionKey() != null) {
+                    return executeQueryByPartitionKey(address, tableName, query.partitionKey(),
+                            null, null, pageSize, exclusiveStartKey);
+                }
+                return executeScan(tableName, pageSize, exclusiveStartKey);
+            }
+
+            // Legacy expression path:
+            // - With partitionKey: Query API with KeyConditionExpression + FilterExpression
+            // - Without partitionKey: Scan with FilterExpression (no key to scope on)
+            if (query.partitionKey() != null) {
+                return executeQueryByPartitionKey(address, tableName, query.partitionKey(),
+                        query.expression(), query.parameters(), pageSize, exclusiveStartKey);
+            }
+            return executeScanWithFilter(tableName, query.expression(), query.parameters(),
+                    pageSize, exclusiveStartKey);
         } catch (DynamoDbException e) {
             throw DynamoErrorMapper.map(e, OperationNames.QUERY);
         }
@@ -454,8 +548,14 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     @Override
     public QueryPage queryWithTranslation(ResourceAddress address, TranslatedQuery translated,
             QueryRequest query, OperationOptions options) {
+        checkOpen(OperationNames.QUERY_WITH_TRANSLATION);
         try {
+            validateResultSetControl(query, OperationNames.QUERY_WITH_TRANSLATION);
             int pageSize = query.maxPageSize() != null ? query.maxPageSize() : DynamoConstants.PAGE_SIZE_DEFAULT;
+            // Respect Top N limit
+            if (query.limit() != null) {
+                pageSize = Math.min(pageSize, query.limit());
+            }
             List<AttributeValue> params = new ArrayList<>();
             for (Object val : translated.positionalParameters()) {
                 params.add(DynamoItemMapper.toAttributeValue(val));
@@ -471,8 +571,10 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
             }
 
             // Inject partition key scoping as a partitionKey equality condition
-            stmt = appendPartitionKeyCondition(stmt);
-            params.add(DynamoItemMapper.toAttributeValue(query.partitionKey()));
+            if (query.partitionKey() != null) {
+                stmt = appendPartitionKeyCondition(stmt);
+                params.add(DynamoItemMapper.toAttributeValue(query.partitionKey()));
+            }
 
             ExecuteStatementRequest.Builder stmtBuilder = ExecuteStatementRequest.builder()
                     .statement(stmt)
@@ -491,13 +593,12 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
                 items.add(DynamoItemMapper.attributeMapToMap(item));
             }
 
-            // PartiQL ExecuteStatement returns items in undefined order. Sort by
-            // sortKey to match the implicit ordering of DynamoDB Query within a
-            // partition. Direction is determined by the request's orderBy clause
-            // (validated to be sortKey-only at the API layer). Sort applies within
-            // this page only; see SORT_KEY_ASC for the multi-page limitation note.
-            boolean ascending = isSortKeyAscending(query);
-            items.sort(ascending ? SORT_KEY_ASC : SORT_KEY_ASC.reversed());
+            // PartiQL ExecuteStatement returns items in undefined order for scans.
+            // Sort by sort key (ascending) to match the implicit ordering of
+            // DynamoDB Query within a partition and the Cosmos provider's default
+            // ORDER BY c.id ASC. Ordering applies within this page only; see
+            // SORT_KEY_ASC for the multi-page limitation note.
+            items.sort(SORT_KEY_ASC);
 
             OperationDiagnostics diag = buildQueryDiagnostics(OperationNames.QUERY_WITH_TRANSLATION, address,
                     response.responseMetadata().requestId(),
@@ -511,8 +612,56 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
+     * Executes a native PartiQL {@code ExecuteStatement} and returns a page of results.
+     * <p>
+     * Parameter values are extracted from the supplied map in insertion order and
+     * converted to DynamoDB {@link AttributeValue}s. The DynamoDB
+     * {@code nextToken} is used for pagination (not the SDK-level
+     * {@link DynamoContinuationToken} Base64 format used by Scan).
+     *
+     * @param statement  the PartiQL statement string
+     * @param parameters query parameters (values converted to {@link AttributeValue}s in
+     *                   insertion order)
+     * @param pageSize   maximum number of items to return
+     * @param nextToken  DynamoDB pagination token from a previous call, or {@code null}
+     * @return a page of results
+     */
+    private QueryPage executePartiQL(String statement, Map<String, Object> parameters,
+            int pageSize, String nextToken) {
+        List<AttributeValue> params = new ArrayList<>();
+        if (parameters != null) {
+            for (Object val : parameters.values()) {
+                params.add(DynamoItemMapper.toAttributeValue(val));
+            }
+        }
+
+        ExecuteStatementRequest.Builder stmtBuilder = ExecuteStatementRequest.builder()
+                .statement(statement)
+                .limit(pageSize);
+
+        if (!params.isEmpty()) stmtBuilder.parameters(params);
+        if (nextToken != null && !nextToken.isBlank()) stmtBuilder.nextToken(nextToken);
+
+        java.time.Instant partiqlStart = java.time.Instant.now();
+        ExecuteStatementResponse response = dynamoClient.executeStatement(stmtBuilder.build());
+
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (Map<String, AttributeValue> item : response.items()) {
+            items.add(DynamoItemMapper.attributeMapToMap(item));
+        }
+
+        OperationDiagnostics partiqlDiag = buildQueryDiagnostics(DynamoConstants.OP_QUERY_PARTIQL, null,
+                response.responseMetadata().requestId(),
+                response.consumedCapacity(), items.size(), response.nextToken(),
+                java.time.Duration.between(partiqlStart, java.time.Instant.now()), response.sdkHttpResponse());
+
+        return new QueryPage(items, response.nextToken(), partiqlDiag);
+    }
+
+    /**
      * Executes a DynamoDB <em>Query</em> scoped to a single partition (hash key) using
-     * {@code KeyConditionExpression}. This is O(partition size).
+     * {@code KeyConditionExpression}. This is O(partition size), compared to
+     * {@link #executeScanWithFilter} which performs a full-table Scan and is O(table size).
      *
      * <p>If {@code filterExpression} is provided it is applied as a {@code FilterExpression}
      * <em>after</em> the key-condition lookup; the caller must not include partition key
@@ -531,7 +680,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      */
     private QueryPage executeQueryByPartitionKey(ResourceAddress address, String tableName, String partitionKeyValue,
             String filterExpression, Map<String, Object> filterParameters,
-            int pageSize, Map<String, AttributeValue> exclusiveStartKey, boolean ascending) {
+            int pageSize, Map<String, AttributeValue> exclusiveStartKey) {
         Map<String, AttributeValue> expressionValues = new LinkedHashMap<>();
         expressionValues.put(DynamoConstants.KEY_CONDITION_PK_PARAM,
                 AttributeValue.fromS(partitionKeyValue));
@@ -555,7 +704,6 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
                         .keyConditionExpression(DynamoConstants.KEY_CONDITION_EXPRESSION)
                         .expressionAttributeValues(expressionValues)
                         .limit(pageSize)
-                        .scanIndexForward(ascending)
                         .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL);
 
         if (filterExpression != null && !filterExpression.isBlank()) {
@@ -583,6 +731,122 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
                 java.time.Duration.between(keyQueryStart, java.time.Instant.now()), response.sdkHttpResponse());
 
         return new QueryPage(items, continuationToken, keyCondDiag);
+    }
+
+    /**
+     * Executes a full-table DynamoDB {@code Scan} with no filter and returns a page of
+     * results.
+     * <p>
+     * Pagination uses {@code exclusiveStartKey} (decoded from the portable
+     * {@link DynamoContinuationToken}) and encodes the returned
+     * {@code lastEvaluatedKey} back into the portable token format.
+     *
+     * @param tableName        the physical DynamoDB table name
+     * @param pageSize         maximum number of items to return
+     * @param exclusiveStartKey the DynamoDB exclusive start key for pagination, or
+     *                         {@code null} for the first page
+     * @return a page of results
+     */
+    private QueryPage executeScan(String tableName, int pageSize,
+            Map<String, AttributeValue> exclusiveStartKey) {
+        ScanRequest.Builder scanBuilder = ScanRequest.builder()
+                .tableName(tableName)
+                .limit(pageSize)
+                .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL);
+
+        if (exclusiveStartKey != null) scanBuilder.exclusiveStartKey(exclusiveStartKey);
+
+        java.time.Instant scanStart = java.time.Instant.now();
+        ScanResponse response = dynamoClient.scan(scanBuilder.build());
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (Map<String, AttributeValue> item : response.items()) {
+            items.add(DynamoItemMapper.attributeMapToMap(item));
+        }
+
+        // DynamoDB Scan returns items in undefined hash-key order. Sort by sort key
+        // (ascending) to match the implicit ordering of DynamoDB Query within a
+        // partition and the Cosmos provider's default ORDER BY c.id ASC. Ordering
+        // applies within this page only; see SORT_KEY_ASC for the multi-page
+        // limitation note.
+        items.sort(SORT_KEY_ASC);
+
+        String continuationToken = null;
+        if (response.lastEvaluatedKey() != null && !response.lastEvaluatedKey().isEmpty()) {
+            continuationToken = DynamoContinuationToken.encode(response.lastEvaluatedKey());
+        }
+
+        OperationDiagnostics scanDiag = buildQueryDiagnostics(DynamoConstants.OP_QUERY_SCAN, null,
+                response.sdkHttpResponse().firstMatchingHeader(DynamoConstants.HEADER_REQUEST_ID).orElse(null),
+                response.consumedCapacity(), items.size(), continuationToken,
+                java.time.Duration.between(scanStart, java.time.Instant.now()), response.sdkHttpResponse());
+
+        return new QueryPage(items, continuationToken, scanDiag);
+    }
+
+    /**
+     * Executes a DynamoDB {@code Scan} with a filter expression and returns a page of
+     * results.
+     * <p>
+     * Parameter names that do not already start with {@code :} are prefixed
+     * automatically. Pagination uses the same {@link DynamoContinuationToken} encoding
+     * as {@link #executeScan}.
+     *
+     * @param tableName        the physical DynamoDB table name
+     * @param filterExpression the DynamoDB filter expression string
+     * @param parameters       expression attribute values (keys are param names, may
+     *                         or may not include the {@code :} prefix)
+     * @param pageSize         maximum number of items to return
+     * @param exclusiveStartKey DynamoDB exclusive start key for pagination, or
+     *                         {@code null} for the first page
+     * @return a page of results
+     */
+    private QueryPage executeScanWithFilter(String tableName, String filterExpression,
+            Map<String, Object> parameters, int pageSize,
+            Map<String, AttributeValue> exclusiveStartKey) {
+        Map<String, AttributeValue> expressionValues = new LinkedHashMap<>();
+        if (parameters != null) {
+            for (Map.Entry<String, Object> entry : parameters.entrySet()) {
+                String paramName = entry.getKey().startsWith(DynamoConstants.FILTER_PARAM_PREFIX)
+                        ? entry.getKey()
+                        : DynamoConstants.FILTER_PARAM_PREFIX + entry.getKey();
+                expressionValues.put(paramName, DynamoItemMapper.toAttributeValue(entry.getValue()));
+            }
+        }
+
+        ScanRequest.Builder scanBuilder = ScanRequest.builder()
+                .tableName(tableName)
+                .filterExpression(filterExpression)
+                .limit(pageSize)
+                .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL);
+
+        if (!expressionValues.isEmpty()) scanBuilder.expressionAttributeValues(expressionValues);
+        if (exclusiveStartKey != null) scanBuilder.exclusiveStartKey(exclusiveStartKey);
+
+        java.time.Instant filterScanStart = java.time.Instant.now();
+        ScanResponse response = dynamoClient.scan(scanBuilder.build());
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (Map<String, AttributeValue> item : response.items()) {
+            items.add(DynamoItemMapper.attributeMapToMap(item));
+        }
+
+        // DynamoDB Scan returns items in undefined hash-key order. Sort by sort key
+        // (ascending) to match the implicit ordering of DynamoDB Query within a
+        // partition and the Cosmos provider's default ORDER BY c.id ASC. Ordering
+        // applies within this page only; see SORT_KEY_ASC for the multi-page
+        // limitation note.
+        items.sort(SORT_KEY_ASC);
+
+        String continuationToken = null;
+        if (response.lastEvaluatedKey() != null && !response.lastEvaluatedKey().isEmpty()) {
+            continuationToken = DynamoContinuationToken.encode(response.lastEvaluatedKey());
+        }
+
+        OperationDiagnostics filterDiag = buildQueryDiagnostics(DynamoConstants.OP_QUERY_SCAN_FILTER, null,
+                response.sdkHttpResponse().firstMatchingHeader(DynamoConstants.HEADER_REQUEST_ID).orElse(null),
+                response.consumedCapacity(), items.size(), continuationToken,
+                java.time.Duration.between(filterScanStart, java.time.Instant.now()), response.sdkHttpResponse());
+
+        return new QueryPage(items, continuationToken, filterDiag);
     }
 
     /**
@@ -661,17 +925,23 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     }
 
     /**
-     * Returns the requested sort direction for the {@code sortKey} field
-     * (defaults to ascending when no orderBy is specified).
+     * Validates result-set control fields in a query request.
      * <p>
-     * {@link QueryRequest} validates that orderBy fields are sortKey-only, so we
-     * only need to inspect the first (and only allowed) direction.
+     * DynamoDB does not support server-side ORDER BY; any non-empty {@code orderBy}
+     * list throws {@link MulticloudDbException} with
+     * {@link MulticloudDbErrorCategory#UNSUPPORTED_CAPABILITY}.
+     * {@code limit} is supported via the DynamoDB Scan/PartiQL {@code LIMIT} parameter.
      */
-    private static boolean isSortKeyAscending(QueryRequest query) {
-        if (query.orderBy() == null || query.orderBy().isEmpty()) {
-            return true;
+    private void validateResultSetControl(QueryRequest query, String operation) {
+        if (query.orderBy() != null && !query.orderBy().isEmpty()) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    "DynamoDB does not support ORDER BY. Check Capability.ORDER_BY before calling query().",
+                    ProviderId.DYNAMO,
+                    operation,
+                    false,
+                    null));
         }
-        return query.orderBy().get(0).direction() == com.multiclouddb.api.SortDirection.ASC;
     }
 
     @Override
@@ -686,7 +956,63 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
 
     @Override
     public void close() {
-        dynamoClient.close();
+        if (closed) return;
+        synchronized (this) {
+            if (closed) return;
+            closed = true;
+            dynamoClient.close();
+            if (changeFeedReader != null) changeFeedReader.close();
+        }
+    }
+
+    /**
+     * Guards public entry points against use after {@link #close()}.
+     * <p>
+     * Provider-level mirror of the facade guard in
+     * {@code DefaultMulticloudDbClient.checkOpen(String)}: callers that talk
+     * directly to the SPI (e.g., conformance harnesses, test fixtures) still
+     * see a typed {@link MulticloudDbErrorCategory#CLIENT_CLOSED} envelope
+     * rather than a raw {@code IllegalStateException} from the AWS SDK.
+     *
+     * @param operation the caller's operation name from {@link OperationNames}
+     */
+    private void checkOpen(String operation) {
+        if (closed) {
+            throw new MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.CLIENT_CLOSED,
+                    "DynamoProviderClient has been closed",
+                    ProviderId.DYNAMO, operation, false, Map.of()));
+        }
+    }
+
+    // ── Change Feed ─────────────────────────────────────────────────────────
+
+    @Override
+    public java.util.List<com.multiclouddb.api.changefeed.ChangeFeedCursor> listCursors(
+            ResourceAddress address) {
+        checkOpen(OperationNames.LIST_CURSORS);
+        if (changeFeedReader == null) {
+            throw new com.multiclouddb.api.MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    "Change feed reader not initialized (test-only constructor)",
+                    ProviderId.DYNAMO, OperationNames.LIST_CURSORS, false, java.util.Map.of()));
+        }
+        return changeFeedReader.listCursors(dynamoClient, address, resolveTableName(address));
+    }
+
+    @Override
+    public com.multiclouddb.api.changefeed.ChangeFeedPage readChanges(
+            ResourceAddress address,
+            com.multiclouddb.api.changefeed.ChangeFeedCursor cursor,
+            OperationOptions options) {
+        checkOpen(OperationNames.READ_CHANGES);
+        if (changeFeedReader == null) {
+            throw new com.multiclouddb.api.MulticloudDbException(new MulticloudDbError(
+                    MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                    "Change feed reader not initialized (test-only constructor)",
+                    ProviderId.DYNAMO, OperationNames.READ_CHANGES, false, java.util.Map.of()));
+        }
+        return changeFeedReader.readChanges(dynamoClient, address, resolveTableName(address), cursor, options);
     }
 
     // ── Provisioning ────────────────────────────────────────────────────────
@@ -698,6 +1024,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void ensureDatabase(String database) {
+        checkOpen(OperationNames.ENSURE_DATABASE);
         LOG.debug("ensureDatabase is a no-op for DynamoDB (database={})", database);
     }
 
@@ -726,6 +1053,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      */
     @Override
     public void ensureContainer(ResourceAddress address) {
+        checkOpen(OperationNames.ENSURE_CONTAINER);
         String tableName = resolveTableName(address);
         try {
             TableStatus status = describeTableStatus(tableName);

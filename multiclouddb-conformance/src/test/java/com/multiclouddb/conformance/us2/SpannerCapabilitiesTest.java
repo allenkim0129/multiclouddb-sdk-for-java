@@ -11,8 +11,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Spanner capability conformance test — verifies all capabilities are
- * supported.
+ * Spanner capability conformance test for query extensions and
+ * the extended change-feed history opt-in.
  */
 @Tag("spanner")
 @Tag("emulator")
@@ -23,16 +23,21 @@ public class SpannerCapabilitiesTest extends CapabilitiesConformanceTest {
     }
 
     @Test
-    void spannerSupportsAllLcdCapabilities() throws Exception {
+    void spannerSupportsAllQueryDsl() throws Exception {
         try (var client = com.multiclouddb.conformance.ConformanceHarness.createClient(ProviderId.SPANNER)) {
             var caps = client.capabilities();
-            assertTrue(caps.isSupported(Capability.CONTINUATION_TOKEN_PAGING));
-            assertTrue(caps.isSupported(Capability.TRANSACTIONS));
-            assertTrue(caps.isSupported(Capability.BATCH_OPERATIONS));
-            assertTrue(caps.isSupported(Capability.STRONG_CONSISTENCY));
-            assertTrue(caps.isSupported(Capability.CHANGE_FEED));
-            assertTrue(caps.isSupported(Capability.PORTABLE_QUERY_EXPRESSION));
+            assertTrue(caps.isSupported(Capability.LIKE_OPERATOR));
             assertTrue(caps.isSupported(Capability.ORDER_BY));
+            assertTrue(caps.isSupported(Capability.ENDS_WITH));
+            assertTrue(caps.isSupported(Capability.REGEX_MATCH));
+            assertTrue(caps.isSupported(Capability.CASE_FUNCTIONS));
+        }
+    }
+    @Test
+    void spannerExtendedChangeFeedHistorySupported() throws Exception {
+        try (var client = com.multiclouddb.conformance.ConformanceHarness.createClient(ProviderId.SPANNER)) {
+            assertTrue(client.capabilities().isSupported(Capability.EXTENDED_CHANGE_FEED_HISTORY),
+                    "Spanner must support EXTENDED_CHANGE_FEED_HISTORY — declared via CREATE CHANGE STREAM ... OPTIONS(retention_period)");
         }
     }
 }

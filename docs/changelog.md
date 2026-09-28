@@ -11,40 +11,31 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
-**Breaking changes — strict Lowest-Common-Denominator (LCD) portability:**
+**Changed:**
 
-This release enforces strict LCD portability: any feature not supported by **all
-three** providers (Cosmos, DynamoDB, Spanner) has been removed from the public
-API. See `multiclouddb-api/CHANGELOG.md` for the full migration guide.
+- Clarified existing optional query scoping, native expressions, provider-specific
+  ordering and limits. There is no common cumulative cap or client-side page
+  truncation; public API behavior is unchanged.
+- Clarified the common supported capability baseline versus optional extensions.
+  DynamoDB rejects explicit `ORDER_BY`; extended change-feed history requires
+  opt-in and is supported on Cosmos/Spanner, not DynamoDB.
+- Clarified existing TTL setup, replacement-write behavior, and opt-in metadata
+  availability. Provider support differences and execution remain unchanged.
+- Strengthened local regression coverage for TTL/metadata options, validation,
+  `DocumentResult` constructors, and baseline/optional capability declarations.
+  These unit/static checks do not verify service-level TTL expiration.
 
-- **Removed types:** `DocumentMetadata`. `DocumentResult.read()` now returns
-  the document `ObjectNode` directly.
-- **Removed `QueryRequest` members:** `nativeExpression()`, `limit()`, and
-  arbitrary-field `orderBy()`.
-- **Removed `OperationOptions` members:** `ttlSeconds()`, `includeMetadata()`.
-- **Removed `Capability` constants:** `CROSS_PARTITION_QUERY`,
-  `NATIVE_SQL_QUERY`, `RESULT_LIMIT`, `LIKE_OPERATOR`, `ENDS_WITH`,
-  `REGEX_MATCH`, `CASE_FUNCTIONS`, `ROW_LEVEL_TTL`, `WRITE_TIMESTAMP`. Only
-  seven portable capabilities remain: `CONTINUATION_TOKEN_PAGING`,
-  `TRANSACTIONS`, `BATCH_OPERATIONS`, `STRONG_CONSISTENCY`, `CHANGE_FEED`,
-  `PORTABLE_QUERY_EXPRESSION`, `ORDER_BY` (restricted to the `sortKey` field).
-- **`QueryRequest.partitionKey` is now required.** Building a `QueryRequest`
-  without a partition key throws `IllegalArgumentException`.
-- **`QueryRequest.orderBy(...)` accepts only `"sortKey"`** with `ASC` / `DESC`.
-- **`QueryRequest.maxResults(int)` (new)** — client-side cap on the total
-  number of items returned by `query()`. Replaces the removed `limit()`.
+**Added:**
+
+- Portable change-feed API in `com.multiclouddb.api.changefeed`: `ChangeFeedCursor` (opaque, persistable via `toToken()` / `fromToken(...)` with a `now()` live-tip sentinel), `ChangeFeedPage` (events + `nextCursor` + `hasMore`/`terminal`), `ChangeEvent` (with stable `providerEventId` for dedup), `ChangeType`, and `CursorExpiredException`. Two new entry points on `MulticloudDbClient`: `listCursors(ResourceAddress)` and `readChanges(ResourceAddress, ChangeFeedCursor[, OperationOptions])`. Provider SPI methods default to `UNSUPPORTED_CAPABILITY` so existing adapters compile unchanged. The cursor wire format is opaque, version-tagged Base64URL JSON; the 24-hour portable baseline is enforced client-side on the token''s last-issued timestamp. `OperationOptions.timeout()` is not enforced on the change-feed path in this release.
+- New error category `MulticloudDbErrorCategory.CURSOR_EXPIRED` carrying a canonical `providerDetails.reason` set (`TOKEN_AGED_OUT`, `PROVIDER_TRIMMED`, `ITERATOR_EXPIRED`, `MALFORMED`, `VERSION_UNSUPPORTED`, `PROVIDER_MISMATCH`, `RESOURCE_MISMATCH`), exported as public `CursorTokenCodec.REASON_*` constants.
+- New error category `MulticloudDbErrorCategory.CLIENT_CLOSED` surfaced by a `DefaultMulticloudDbClient` post-close guard on every public entry point (replaces provider-specific `IllegalStateException` leaks). `MulticloudDbClient.close()` is now idempotent.
+- Extended change-feed retention opt-in: `ChangeFeedConfig.extendedRetention(Duration)` (validates `> 24h`), wired into `MulticloudDbClientConfig.changeFeed(...)`, plus the new `Capability.EXTENDED_CHANGE_FEED_HISTORY`. The factory''s build-time gate refuses to instantiate a client whose provider does not declare the capability, surfacing `UNSUPPORTED_CAPABILITY(reason="extended_retention_unavailable")` before any I/O. The cursor token wire format carries an optional `"e"` field stamping the opted-in retention so a persisted cursor under a 7-day opt-in can be resumed beyond 24h up to the configured window without `TOKEN_AGED_OUT`; older tokens (no `"e"`) keep the 24h floor.
+- `OperationNames.LIST_CURSORS`, `READ_CHANGES`, `PROVISION_SCHEMA` propagated through `MulticloudDbError.operation()` and `OperationDiagnostics`.
 
 **Documentation:**
 
-- `MulticloudDbClient.delete(...)` is documented as idempotent — silent on
-  missing key. The Javadoc now declares that deleting a key that does not
-  exist is a silent no-op on every provider, which is the true LCD across
-  Cosmos (404 swallowed), DynamoDB (`DeleteItem` is idempotent natively) and
-  Spanner (`Mutation.delete` is idempotent natively). Callers that need to detect a missing key should use
-  `MulticloudDbClient.read(...)`, which returns `null` on every provider
-  when the key does not exist (non-mutating). `update()` also throws
-  `NOT_FOUND` on a missing key, but it requires a document body and
-  **overwrites on hit**, so it is not a safe pure existence probe.
+- `MulticloudDbClient.delete(...)` is documented as idempotent on every provider — a missing key is a silent no-op. Callers needing to detect a missing key should use `read(...)`.
 
 ### [0.1.0-beta.1] - 2026-04-23
 
@@ -83,74 +74,36 @@ API. See `multiclouddb-api/CHANGELOG.md` for the full migration guide.
 
 ### [Unreleased]
 
-**Changed — strict LCD portability:**
-
-Aligned with `multiclouddb-api`'s strict LCD contract. See
-`multiclouddb-api/CHANGELOG.md` for the full breaking-change list.
-
-- `CosmosCapabilities` no longer declares the removed capabilities
-  (`CROSS_PARTITION_QUERY`, `NATIVE_SQL_QUERY`, `RESULT_LIMIT`,
-  `LIKE_OPERATOR`, `ENDS_WITH`, `REGEX_MATCH`, `CASE_FUNCTIONS`,
-  `ROW_LEVEL_TTL`, `WRITE_TIMESTAMP`). Cosmos retains support for these
-  features natively; they are simply no longer exposed through the portable
-  API.
-- `SELECT TOP n` translation is removed; `maxResults(int)` is enforced
-  client-side via a single-page truncation in `DefaultMulticloudDbClient`.
-- `nativeExpression()` passthrough is removed.
-- `orderBy("sortKey", …)` is mapped to `ORDER BY c.id`; arbitrary-field
-  orderBy is removed.
-
 **Added:**
 
-- `consistencyLevel` connection config key for opt-in client-level read
-  consistency override (applied uniformly to every read from a given client
-  instance). Valid values
-  (case-insensitive): `STRONG`, `BOUNDED_STALENESS`, `SESSION`,
-  `CONSISTENT_PREFIX`, `EVENTUAL`. When absent, read requests inherit the
-  Cosmos DB account's configured default. See `docs/configuration.md` —
-  *Consistency Level*.
+- Change-feed reader backed by `CosmosContainer.queryChangeFeed(...)` and `getFeedRanges()`. `listCursors` mints one cursor per feed range at the live tip via a one-item warmup query that captures a real continuation token (with a `@@PIT:<epoch-millis>` fallback for older SDKs). `readChanges` drains one page per call, rotates the partition list across ranges so multi-range cursors are not starved, and uses All-Versions-and-Deletes (AVAD) mode so `ChangeEvent.type()` distinguishes `CREATE` / `UPDATE` / `DELETE`. The target container must be provisioned with an AVAD `ChangeFeedPolicy`. HTTP 410 GONE on `queryChangeFeed` is mapped to `CursorExpiredException(reason=PROVIDER_TRIMMED)`.
+- Extended-retention provisioning: `CosmosProviderClient.ensureContainer(address)` provisions an AVAD `ChangeFeedPolicy` carrying the duration from `ChangeFeedConfig.extendedRetention(...)` when the user opted in, and reads back the active policy — throwing `UNSUPPORTED_CAPABILITY(reason="extended_retention_not_enacted")` when a pre-existing container''s retention does not match. A 400 BadRequest whose message fingerprint indicates the Cosmos account lacks Continuous Backup is re-mapped to `UNSUPPORTED_CAPABILITY(reason="continuous_backup_required")`. `CosmosCapabilities` declares `EXTENDED_CHANGE_FEED_HISTORY_CAP` (up to 30 days via Continuous Backup; 7d minimum).
+- `consistencyLevel` connection config key for opt-in client-level read consistency override (`STRONG`, `BOUNDED_STALENESS`, `SESSION`, `CONSISTENT_PREFIX`, `EVENTUAL`). When absent, reads inherit the account''s configured default.
+- Typed `CLIENT_CLOSED` envelope on every post-close entry point, replacing leaked `IllegalStateException`s from azure-cosmos. `close()` is idempotent under concurrent callers.
 
 **Changed:**
 
-- Removed the hardcoded `ConsistencyLevel.SESSION` override from
-  `CosmosClientBuilder`. Previously all reads were forced to `SESSION`
-  regardless of the account's configured default. **Migration note:**
-  accounts with a default of `STRONG` or `BOUNDED_STALENESS` will now serve
-  reads at their configured level (higher latency / higher RU cost than
-  before). Accounts configured to `SESSION` are unaffected. To restore the
-  previous behaviour explicitly, set
-  `multiclouddb.connection.consistencyLevel=SESSION`.
+- Clarified existing optional query scoping, native SQL, field ordering, `TOP N`,
+  and default `c.id ASC` caller-order/aggregate guards. Query execution, the
+  absence of client-side cumulative truncation, and extended-history opt-in
+  provisioning/error checks remain unchanged.
+- Clarified existing container TTL prerequisites/defaults, replacement writes,
+  and opt-in `_ts`/ETag metadata availability; provider execution is unchanged.
+- Strengthened local mock regressions for TTL writes and exact request
+  partition/id routing, metadata opt-in/default behavior, and system-field
+  stripping without response mutation. These are not service TTL-expiration
+  or HTTP 404-path tests.
+
+- Removed the hardcoded `ConsistencyLevel.SESSION` override from `CosmosClientBuilder`. Accounts with a default of `STRONG` or `BOUNDED_STALENESS` will now serve reads at their configured level. To restore the previous behaviour, set `multiclouddb.connection.consistencyLevel=SESSION`.
+- `BETWEEN` translation now wraps in parentheses (`(c.field BETWEEN @lo AND @hi)`) to avoid a Cosmos NoSQL parser ambiguity with trailing `AND`.
 
 **Removed:**
 
-- `CosmosConstants.CONSISTENCY_LEVEL_DEFAULT`
-  (`public static final ConsistencyLevel`, previously
-  `ConsistencyLevel.SESSION`) — removed without a deprecation cycle; the
-  project is pre-release. Callers referencing this constant should use
-  `ConsistencyLevel.SESSION` directly.
-
-**Changed:**
-
-- `BETWEEN` translation now wraps in parentheses
-  (`(c.field BETWEEN @lo AND @hi)`). Without the wrapping parens, Cosmos
-  NoSQL's parser greedily binds the `BETWEEN`'s inner `AND` together with any
-  trailing logical `AND`, producing a *"Syntax error, incorrect syntax near
-  'AND'"* `BadRequest` for predicates like
-  `age BETWEEN @lo AND @hi AND marker = @m`. The output of
-  `TranslatedQuery.whereClause()` is now parenthesised — backward-compatible
-  at the query-execution level, but consumers that string-match the where
-  clause should update their expectations.
+- `CosmosConstants.CONSISTENCY_LEVEL_DEFAULT` — removed without a deprecation cycle (pre-release). Callers should use `ConsistencyLevel.SESSION` directly.
 
 **Documentation:**
 
-- `delete()` of a missing key remains a silent no-op (idempotent). The
-  Cosmos provider continues to swallow the native 404 from `deleteItem(...)`,
-  matching the LCD behaviour of DynamoDB (`DeleteItem` is idempotent
-  natively) and Spanner (`Mutation.delete` is idempotent natively).
-  Documented in the API Javadoc on `MulticloudDbClient.delete(...)` and in
-  `docs/guide.md`. No caller-visible behaviour change. Callers needing to
-  detect a missing key should use `read()`, which returns `null` on every
-  provider when the key does not exist.
+- `delete()` of a missing key is documented as a silent no-op (idempotent); the Cosmos provider continues to swallow the native 404.
 
 ### [0.1.0-beta.1] - 2026-04-23
 
@@ -174,43 +127,35 @@ Aligned with `multiclouddb-api`'s strict LCD contract. See
 
 ### [Unreleased]
 
-**Changed — strict LCD portability:**
+**Added:**
 
-Aligned with `multiclouddb-api`'s strict LCD contract. See
-`multiclouddb-api/CHANGELOG.md` for the full breaking-change list.
-
-- **Cross-partition `Scan` routing is removed.** Every `QueryRequest` now
-  carries a `partitionKey` by construction, so the DynamoDB provider always
-  routes to the native `Query` API with a `KeyConditionExpression`.
-- `orderBy` is narrowed to `orderBy("sortKey", ASC|DESC)`, mapped to
-  `ScanIndexForward(true|false)`. Default is ASC.
-- `QueryRequest.maxResults(int)` is enforced client-side by
-  `DefaultMulticloudDbClient`; the old `limit()` path is removed.
-- `DynamoCapabilities` no longer declares the removed capabilities
-  (`CROSS_PARTITION_QUERY`, `NATIVE_SQL_QUERY`, `RESULT_LIMIT`,
-  `LIKE_OPERATOR`, `ENDS_WITH`, `REGEX_MATCH`, `CASE_FUNCTIONS`,
-  `ROW_LEVEL_TTL`, `WRITE_TIMESTAMP`).
+- Change-feed reader backed by DynamoDB Streams (`DescribeStream`, `GetShardIterator`, `GetRecords`). `listCursors` returns one cursor per open shard at the live tip with a pre-resolved `LATEST` iterator (`@@ITER:<iterator>` continuation), avoiding silent event loss between mint and first read. `readChanges` drains one shard''s page per call, rotates the partition list across shards, transitions to an `AFTER_SEQUENCE_NUMBER` continuation on the first observed record, and absorbs shard splits/closes. `TrimmedDataAccessException` → `CursorExpiredException(reason=PROVIDER_TRIMMED)`; `ExpiredIteratorException` → `reason=ITERATOR_EXPIRED`. Change-event payloads preserve the full DynamoDB type system via the shared `DynamoItemMapper`. The target table must have `StreamSpecification(NEW_AND_OLD_IMAGES)` enabled; otherwise `UNSUPPORTED_CAPABILITY(reason="stream_not_enabled")`.
+- `DynamoCapabilities` declares `EXTENDED_CHANGE_FEED_HISTORY_UNSUPPORTED` (DynamoDB Streams is fixed at 24h server-side; SDK-managed archive-on-read via customer-provisioned Kafka is on the v1.x roadmap). Callers that opt in to `ChangeFeedConfig.extendedRetention(...)` fail fast at client-build time via the API-module factory gate; the `DynamoProviderClient` constructor mirrors the gate for SPI-direct integrators.
+- Default sort-key ordering: scan paths sort items per-page by sort key ascending, matching DynamoDB''s native `Query` API and the Cosmos provider''s default. Per-page only.
+- Typed `CLIENT_CLOSED` envelope on every post-close entry point. `close()` is idempotent and also disposes the embedded `DynamoDbStreamsClient`.
 
 **Changed:**
 
-- `BETWEEN` translation now wraps in parentheses (`(field BETWEEN ? AND ?)`).
-  Mirrors the parenthesised form emitted by sibling translators so
-  cross-provider query stitching is uniform. PartiQL parses both forms
-  correctly, so this is not a correctness fix on Dynamo — purely a
-  consistency improvement. The output of `TranslatedQuery.whereClause()` is
-  now parenthesised.
+- Clarified existing optional partition scoping, Query/Scan routing, native
+  PartiQL, and per-page `limit`. Unsupported `CROSS_PARTITION_QUERY` and
+  `NATIVE_SQL_QUERY` declarations do not block those legacy execution paths;
+  explicit `ORDER_BY`, including sortKey ordering, remains unsupported.
+- Clarified that page-local sorting is not global scan order or a snapshot,
+  pages are not truncated into a cumulative cap, and extended-history opt-in
+  remains rejected. Provider execution is unchanged.
+- Clarified existing table TTL setup, replacement writes, expiry recalculation
+  at each write, and opt-in expiry metadata despite `WRITE_TIMESTAMP=false`.
+- Strengthened local mock regressions for TTL writes, exact create/update
+  conditions and unconditional upserts, and opt-in expiry reads. These checks
+  do not verify service-level expiration or add write-timestamp support.
+
+- `SORT_KEY_ASC` comparator handles numeric sort keys with type-aware comparison (Long/Integer use native compare; mixed numerics fall back to `BigDecimal`) so integers beyond `2^53` are no longer truncated.
+- `BETWEEN` translation wraps in parentheses (`(field BETWEEN ? AND ?)`) for cross-provider consistency.
 
 **Documentation:**
 
-- `delete()` of a missing key remains a silent no-op (idempotent). The
-  Dynamo provider issues an unconditional `DeleteItem`, so a delete of a key
-  that does not exist is silently ignored — matching the LCD behaviour of
-  Cosmos (404 swallowed) and Spanner (`Mutation.delete` is idempotent
-  natively). No `attribute_exists` guard is added, so deletes do not pay the
-  conditional-write WCU surcharge. Documented in the API Javadoc on
-  `MulticloudDbClient.delete(...)` and in `docs/guide.md`. Callers needing to
-  detect a missing key should use `read()`, which returns `null` on every
-  provider when the key does not exist.
+- `delete()` of a missing key is documented as a silent no-op (idempotent); the Dynamo provider issues an unconditional `DeleteItem`.
+- AWS SDK v2 (2.34.x) bundles the DynamoDB Streams client classes inside the main `software.amazon.awssdk:dynamodb` artifact at `software.amazon.awssdk.services.dynamodb.streams.*` (verified against the published `dynamodb-2.34.0.jar`); no separate `dynamodbstreams` dependency is required. If `aws-sdk.version` is bumped, re-verify that the Streams classes remain bundled.
 
 ### [0.1.0-beta.1] - 2026-04-23
 
@@ -231,43 +176,57 @@ Aligned with `multiclouddb-api`'s strict LCD contract. See
 
 ### [Unreleased]
 
-**Changed — strict LCD portability:**
+**Added:**
 
-Aligned with `multiclouddb-api`'s strict LCD contract. See
-`multiclouddb-api/CHANGELOG.md` for the full breaking-change list.
-
-- `nativeExpression()` passthrough is removed.
-- `query.limit(int)` translation is removed; `maxResults(int)` is enforced
-  client-side by `DefaultMulticloudDbClient`.
-- `orderBy("sortKey", ASC|DESC)` is the only accepted form; mapped to
-  `ORDER BY sortKey ASC|DESC`. Default is ASC.
-- `DocumentMetadata` extraction is removed (the type itself is gone from the
-  API). `read()` now returns the raw document only.
-- `SpannerCapabilities` no longer declares the removed capabilities
-  (`NATIVE_SQL_QUERY`, `RESULT_LIMIT`, `LIKE_OPERATOR`, `ENDS_WITH`,
-  `REGEX_MATCH`, `CASE_FUNCTIONS`, `ROW_LEVEL_TTL`, `WRITE_TIMESTAMP`,
-  `CROSS_PARTITION_QUERY`).
+- Change-feed reader backed by Spanner change streams via the `READ_<stream>` TVF (single-use read-only transaction; 5-second bounded window per call). `listCursors` bootstraps the partition tree with a `NULL` partition token and anchors each cursor''s bookmark at `max(now, childStart)` so `now()` cursors honour their live-tip contract on the emulator. `readChanges` drains a bounded window, absorbs `child_partitions_record` rows (splits/merges), rotates the partition list, and surfaces `isTerminal()=true` when a cursor''s sole partition closes without children. Each `data_change_record.mod` becomes one `ChangeEvent` with a stable `providerEventId` (`<server_transaction_id>:<commit_ts>:<record_sequence>:<mod_index>`). `INVALID_ARGUMENT` / `NOT_FOUND` / `OUT_OF_RANGE` on the TVF → `CursorExpiredException(reason=PROVIDER_TRIMMED)`.
+- Per-collection change-stream name resolution: defaults to `<collection>_changes`; override via the `changeStream.<collection>` connection key.
+- Extended-retention provisioning: `SpannerProviderClient.ensureContainer(address)` emits an idempotent `CREATE CHANGE STREAM <name> FOR <table> OPTIONS (value_capture_type = ''NEW_ROW'', retention_period = ''<value>'')` when the user opted in. `value_capture_type = ''NEW_ROW''` ensures `mods.new_values` carries the full post-image (the GoogleSQL default of `OLD_AND_NEW_VALUES` only carries the mutated columns). The duplicate-name path reads back the active `retention_period` from `INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS` and throws `UNSUPPORTED_CAPABILITY(reason="extended_retention_not_enacted")` on mismatch. `INVALID_ARGUMENT` from `updateDatabaseDdl(...)` mentioning `retention_period` → `UNSUPPORTED_CAPABILITY(reason="retention_exceeds_native_max")`. `SpannerCapabilities` declares `EXTENDED_CHANGE_FEED_HISTORY_CAP` (default 24h; up to 7d natively).
+- Typed `CLIENT_CLOSED` envelope replacing prior raw `IllegalStateException` from `checkOpen()`. `close()` is idempotent; post-close errors attribute the failing operation instead of `"checkOpen"`.
 
 **Changed:**
 
-- `BETWEEN` translation now wraps in parentheses
-  (`(field BETWEEN @lo AND @hi)`). Mirrors the parenthesised form emitted by
-  sibling translators so cross-provider query stitching is uniform.
-  GoogleSQL parses both forms correctly, so this is not a correctness fix on
-  Spanner — purely a consistency improvement. The output of
-  `TranslatedQuery.whereClause()` is now parenthesised.
+- Clarified existing optional partition scoping, native GoogleSQL, field
+  ordering, and per-page `limit` on non-native paths. Native query-option
+  handling, PK/SK defaults and tiebreakers, and caller-order/literal/aggregate
+  guards remain unchanged; ordering is not a concurrent-write snapshot and
+  pages are not truncated into a cumulative cap.
+- Clarified existing extended-history opt-in provisioning/error checks,
+  unsupported TTL (the option is ignored), and opt-in empty metadata objects.
+  Provider execution and capability declarations remain unchanged.
+- Strengthened local mock regressions with independent create-mutation
+  table/operation/key/value expectations and separate metadata opt-in/default
+  checks. The zero-column read fixture verifies the empty metadata shell,
+  not payload round-tripping or service-level TTL behavior.
+
+- `upsert(address, key, document)` uses Spanner `INSERT_OR_UPDATE` (was `REPLACE`). `REPLACE` is internally delete-then-insert, which change streams surface as `mod_type=INSERT` — making a second upsert of the same key appear as `ChangeType.CREATE` instead of `ChangeType.UPDATE`. `INSERT_OR_UPDATE` matches Cosmos AVAD and DynamoDB Streams.
+- Spanner instance creation in `ensureDatabase` is gated to emulator mode. In production the instance is expected to pre-exist; only the database is created.
+- Complex container values (`Map`, `Collection`) round-trip through STRING columns using an unambiguous prefix marker (`U+0001` + `mcdb:json:`).
+- `BETWEEN` translation wraps in parentheses (`(field BETWEEN @lo AND @hi)`) for cross-provider consistency.
+
+**Breaking changes:**
+
+- `update()` is a partial update preserving previously written fields (read-modify-write transaction). **Known cross-provider asymmetry:** Cosmos and DynamoDB `update()` are still full-document replaces.
+- Document field named `data` is rejected with `MulticloudDbException(INVALID_REQUEST)` (case-insensitive — Spanner resolves column names case-insensitively). The `data` column is reserved for the internal `FIELD_DATA` metadata.
+- `upsert()` is a full document replace; columns absent from the upserted document become NULL on read (matches the Cosmos / DynamoDB upsert contract).
+- Customer-managed tables require a `data STRING(MAX)` column. Tables created by `ensureContainer()` already include it; tables provisioned outside the SDK must run `ALTER TABLE <table> ADD COLUMN data STRING(MAX);`.
+- `ensureDatabase(name)` throws `MulticloudDbException(INVALID_REQUEST)` when `name` does not match the configured `databaseId`.
+- Lifecycle errors are typed: `checkOpen()` throws `MulticloudDbException(CLIENT_CLOSED)`, `ensureDatabase` name-mismatch throws `MulticloudDbException(INVALID_REQUEST)`, replacing the prior raw `IllegalStateException` / `IllegalArgumentException`.
+- `SpannerRowMapper.toMap()` preserves explicitly written `null` values; callers iterating `page.items().get(i)` must tolerate `null`.
+
+**Fixed:**
+
+- Default `ORDER BY` no longer fires for aggregate / `GROUP BY` queries (GoogleSQL rejects with `column not aggregated`). It also no longer duplicates primary-key columns when the caller already sorts by them, and `ORDER BY` detection ignores string literals (so `WHERE comment = ''please ORDER BY date''` is no longer a false positive).
+- Legacy / pre-`FIELD_DATA` rows preserve every column on read and `update()`. When `FIELD_DATA` is absent or malformed, the reader applies the historical "no metadata => no filtering" rule; `update()` deliberately leaves `FIELD_DATA` alone so the reader''s fallback continues to project all legacy columns. A subsequent `upsert()` or `create()` promotes the row into the metadata regime.
+- `ensureDatabase()` / `ensureContainer()` no longer leak raw `RuntimeException` on non-Spanner failures. `InterruptedException` → `TRANSIENT_FAILURE`; non-Spanner causes inside the admin `ExecutionException` → `PROVIDER_ERROR`.
+- `setMutationValue` no longer fails on common Java types (e.g. `java.time.Instant`) — JSON serialisation is restricted to `Map`/`Collection`; every other type falls back to `value.toString()`.
+
+**Known limitations:**
+
+- `setMutationValue` / `bindParameter` write `(String) null` for null values regardless of the target column type. Writing `null` into a Spanner `INT64`, `BOOL`, or `FLOAT64` column will be rejected. Workaround: pass a typed zero / sentinel value, or wrap the column in a STRING.
 
 **Documentation:**
 
-- `delete()` of a missing key remains a silent no-op (idempotent). The
-  Spanner provider continues to use `Mutation.delete(table, Key.of(pk, sk))`
-  via `databaseClient.write(...)`, which is idempotent natively — deleting a
-  row that does not exist returns success without modifying state. This
-  matches the LCD behaviour of Cosmos (404 swallowed) and DynamoDB
-  (`DeleteItem` is idempotent natively). Documented in the API Javadoc on
-  `MulticloudDbClient.delete(...)` and in `docs/guide.md`. Callers needing to
-  detect a missing key should use `read()`, which returns `null` on every
-  provider when the key does not exist.
+- `delete()` of a missing key is documented as a silent no-op (idempotent); `Mutation.delete(table, Key.of(pk, sk))` is idempotent natively.
 
 ### [0.1.0-beta.1] - 2026-04-23
 

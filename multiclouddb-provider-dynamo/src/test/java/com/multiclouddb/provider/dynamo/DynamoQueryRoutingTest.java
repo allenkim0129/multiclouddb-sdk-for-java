@@ -6,6 +6,9 @@ package com.multiclouddb.provider.dynamo;
 import com.multiclouddb.api.QueryPage;
 import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
+import com.multiclouddb.api.MulticloudDbException;
+import com.multiclouddb.api.MulticloudDbErrorCategory;
+import com.multiclouddb.api.SortDirection;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -14,6 +17,7 @@ import software.amazon.awssdk.http.SdkHttpResponse;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
+import software.amazon.awssdk.services.dynamodb.model.ScanResponse;
 
 import java.util.Collections;
 import java.util.Map;
@@ -26,23 +30,41 @@ import static org.mockito.Mockito.*;
 /**
  * Unit tests that verify DynamoDB API routing inside {@link DynamoProviderClient#query}.
  *
- * <p>Under the strict-LCD contract every {@link QueryRequest} requires a
- * {@code partitionKey}, so the provider always routes to the DynamoDB Query API
- * (never Scan). These tests assert:
+ * <p>Specifically asserts:
  * <ul>
- *   <li>A query with a {@code partitionKey} invokes {@code DynamoDbClient.query()}
+ *   <li>A query with a {@code partitionKey} must invoke {@code DynamoDbClient.query()}
  *       with a {@code KeyConditionExpression} — never {@code scan()}.</li>
- *   <li>A query with both a {@code partitionKey} and a portable filter expression
- *       invokes {@code query()} with both {@code keyConditionExpression} and
+ *   <li>A query without a {@code partitionKey} must invoke {@code DynamoDbClient.scan()}
+ *       — never {@code query()}.</li>
+ *   <li>A query with both a {@code partitionKey} and a filter expression invokes
+ *       {@code query()} with both {@code keyConditionExpression} and
  *       {@code filterExpression} set.</li>
- *   <li>{@code orderBy(sortKey, DESC)} sets {@code scanIndexForward(false)} on
- *       the underlying request.</li>
  * </ul>
+ *
+ * <p>Uses a mock {@link DynamoDbClient} injected via the package-private constructor
+ * to isolate routing logic from network I/O.
  */
 class DynamoQueryRoutingTest {
 
     private DynamoDbClient mockDynamoClient;
     private DynamoProviderClient client;
+
+    @Test
+    void explicitOrderingRemainsUnsupportedIncludingSortKey() {
+        for (String field : new String[] {"sortKey", "createdAt"}) {
+            for (SortDirection direction : SortDirection.values()) {
+                QueryRequest request = QueryRequest.builder()
+                        .partitionKey("pk-001")
+                        .orderBy(field, direction)
+                        .build();
+                MulticloudDbException error = assertThrows(MulticloudDbException.class,
+                        () -> client.query(new ResourceAddress("testdb", "users"), request, null));
+                assertEquals(MulticloudDbErrorCategory.UNSUPPORTED_CAPABILITY,
+                        error.error().category());
+            }
+        }
+        verifyNoInteractions(mockDynamoClient);
+    }
 
     @BeforeEach
     void setUp() {
@@ -59,6 +81,13 @@ class DynamoQueryRoutingTest {
         when(mockDynamoClient.query(any(
                 software.amazon.awssdk.services.dynamodb.model.QueryRequest.class)))
                 .thenReturn(queryResponse);
+
+        ScanResponse scanResponse = mock(ScanResponse.class);
+        when(scanResponse.items()).thenReturn(Collections.emptyList());
+        when(scanResponse.lastEvaluatedKey()).thenReturn(Collections.emptyMap());
+        when(scanResponse.sdkHttpResponse()).thenReturn(httpResponse);
+        when(scanResponse.consumedCapacity()).thenReturn(null);
+        when(mockDynamoClient.scan(any(ScanRequest.class))).thenReturn(scanResponse);
 
         client = new DynamoProviderClient(mockDynamoClient);
     }
@@ -87,13 +116,13 @@ class DynamoQueryRoutingTest {
     }
 
     @Test
-    @DisplayName("query() with partitionKey and portable expression sets both KeyConditionExpression and FilterExpression")
+    @DisplayName("query() with partitionKey and filter sets both KeyConditionExpression and FilterExpression")
     void queryWithPartitionKeyAndExpressionSetsKeyConditionAndFilter() {
         ResourceAddress address = new ResourceAddress("testdb", "orders");
         QueryRequest request = QueryRequest.builder()
                 .partitionKey("pk-002")
-                .expression("status = @s")
-                .parameters(Map.of("s", "active"))
+                .expression("status = :s")
+                .parameters(Map.of(":s", "active"))
                 .build();
 
         client.query(address, request, null);
@@ -110,39 +139,32 @@ class DynamoQueryRoutingTest {
     }
 
     @Test
-    @DisplayName("query() with orderBy(sortKey, DESC) sets scanIndexForward(false)")
-    void queryWithDescSortReversesScanDirection() {
-        ResourceAddress address = new ResourceAddress("testdb", "events");
-        QueryRequest request = QueryRequest.builder()
-                .partitionKey("pk-003")
-                .orderBy("sortKey", com.multiclouddb.api.SortDirection.DESC)
-                .build();
+    @DisplayName("query() without partitionKey routes to DynamoDB Scan, not Query API")
+    void queryWithoutPartitionKeyUsesScan() {
+        ResourceAddress address = new ResourceAddress("testdb", "users");
+        QueryRequest request = QueryRequest.builder().build();
 
-        client.query(address, request, null);
+        QueryPage page = client.query(address, request, null);
 
-        ArgumentCaptor<software.amazon.awssdk.services.dynamodb.model.QueryRequest> captor =
-                ArgumentCaptor.forClass(
-                        software.amazon.awssdk.services.dynamodb.model.QueryRequest.class);
-        verify(mockDynamoClient).query(captor.capture());
-        assertEquals(Boolean.FALSE, captor.getValue().scanIndexForward(),
-                "orderBy(sortKey, DESC) must set scanIndexForward(false)");
+        assertNotNull(page);
+        verify(mockDynamoClient).scan(any(ScanRequest.class));
+        verify(mockDynamoClient, never()).query(any(
+                software.amazon.awssdk.services.dynamodb.model.QueryRequest.class));
     }
 
     @Test
-    @DisplayName("query() with default sort (no orderBy) sets scanIndexForward(true)")
-    void queryWithDefaultSortIsAscending() {
-        ResourceAddress address = new ResourceAddress("testdb", "events");
+    @DisplayName("query() without partitionKey but with expression routes to Scan with FilterExpression")
+    void queryWithExpressionButNoPartitionKeyUsesScanFilter() {
+        ResourceAddress address = new ResourceAddress("testdb", "users");
         QueryRequest request = QueryRequest.builder()
-                .partitionKey("pk-004")
+                .expression("age > :a")
+                .parameters(Map.of(":a", 30))
                 .build();
 
         client.query(address, request, null);
 
-        ArgumentCaptor<software.amazon.awssdk.services.dynamodb.model.QueryRequest> captor =
-                ArgumentCaptor.forClass(
-                        software.amazon.awssdk.services.dynamodb.model.QueryRequest.class);
-        verify(mockDynamoClient).query(captor.capture());
-        assertEquals(Boolean.TRUE, captor.getValue().scanIndexForward(),
-                "No orderBy implies ascending scanIndexForward(true)");
+        verify(mockDynamoClient).scan(any(ScanRequest.class));
+        verify(mockDynamoClient, never()).query(any(
+                software.amazon.awssdk.services.dynamodb.model.QueryRequest.class));
     }
 }

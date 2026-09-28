@@ -39,7 +39,7 @@ switch providers by changing a single properties file, with zero code changes.
 | **Vendor lock-in** | Single `MulticloudDbClient` interface - portable CRUD + query |
 | **Divergent query languages** | Portable DSL auto-translated to Cosmos SQL, PartiQL, or GoogleSQL |
 | **Migration pain** | Switch providers by changing one property - zero code changes |
-| **Feature uncertainty** | Strict Lowest-Common-Denominator portability — if it's in the API, every provider supports it |
+| **Feature uncertainty** | Common baseline plus capability-gated extensions with explicit unsupported declarations |
 | **Cross-provider testing** | Conformance suite runs identical tests against every provider |
 
 ---
@@ -72,11 +72,11 @@ Automatically translated to Cosmos SQL, DynamoDB PartiQL, or Spanner GoogleSQL.
 
 <div class="card" markdown>
 
-### :material-shield-check: Strict LCD Portability
+### :material-shield-check: Baseline and Capability Introspection
 
-Every API in `multiclouddb-api` is supported by **all three** providers.
-No asymmetric capabilities, no native-provider escape hatches. Code that
-compiles will run identically on any configured provider.
+The common baseline targets **all three** providers. Optional extensions,
+such as extended change-feed history, remain explicitly capability-gated;
+unsupported opt-ins fail fast rather than silently changing behavior.
 
 [Learn more →](compatibility.md)
 
@@ -97,8 +97,9 @@ Partition-scoped queries for efficient within-partition reads.
 
 ### :material-test-tube: Conformance Testing
 
-396+ tests across API and provider modules. Identical CRUD + query tests
-run against every provider emulator.
+Unit and mock tests (`mvn -Punit test`) are separate from service-backed
+conformance tests, which require provider emulators. Selecting individual
+classes with `-Dtest` does not run the full unit suite or certify service parity.
 
 [Learn more →](contributing.md)
 
@@ -190,7 +191,7 @@ try (MulticloudDbClient client = MulticloudDbClientFactory.create(config)) {
 
 // CRUD - same code for every provider
 ResourceAddress todos = new ResourceAddress("mydb", "todos");
-MulticloudDbKey key = MulticloudDbKey.of("todo-1", "todo-1");
+MulticloudDbKey key = MulticloudDbKey.of("shopping", "todo-1");
 Map<String, Object> doc = Map.of(
     "id", "todo-1",
     "status", "active",
@@ -200,12 +201,16 @@ client.upsert(todos, key, doc);
 
 // Query with portable expressions - auto-translated per provider
 QueryRequest query = QueryRequest.builder()
-    .partitionKey("shopping")           // every query is partition-scoped
+    .partitionKey("shopping")           // optional partition scoping
     .expression("status = @status")
     .parameter("status", "active")
     .maxPageSize(25)
     .build();
 QueryPage page = client.query(todos, query);
+
+// Point read and cleanup use the same partition and sort key as the write.
+DocumentResult result = client.read(todos, key);
+client.delete(todos, key);
 }
 ```
 

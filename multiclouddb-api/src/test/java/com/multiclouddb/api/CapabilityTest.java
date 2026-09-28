@@ -82,7 +82,7 @@ class CapabilityTest {
     }
 
     @Test
-    @DisplayName("All 7 LCD well-known singletons appear in registeredValues() (supported+unsupported = 14)")
+    @DisplayName("Baseline and optional-extension singletons appear in registeredValues()")
     void registeredValuesContainsWellKnownSingletons() {
         var registered = Capability.registeredValues();
         assertTrue(registered.contains(Capability.TRANSACTIONS_CAP));
@@ -94,8 +94,17 @@ class CapabilityTest {
         assertTrue(registered.contains(Capability.STRONG_CONSISTENCY_CAP));
         assertTrue(registered.contains(Capability.CONTINUATION_TOKEN_PAGING_CAP));
         assertTrue(registered.contains(Capability.PORTABLE_QUERY_EXPRESSION_CAP));
-        assertTrue(registered.size() >= 14,
-                "expected at least 14 entries (7 × 2), got " + registered.size());
+        assertTrue(registered.contains(Capability.EXTENDED_CHANGE_FEED_HISTORY_CAP));
+        assertTrue(registered.contains(Capability.EXTENDED_CHANGE_FEED_HISTORY_UNSUPPORTED));
+        assertTrue(registered.contains(Capability.CROSS_PARTITION_QUERY_CAP));
+        assertTrue(registered.contains(Capability.CROSS_PARTITION_QUERY_UNSUPPORTED));
+        assertTrue(registered.contains(Capability.NATIVE_SQL_QUERY_CAP));
+        assertTrue(registered.contains(Capability.LIKE_OPERATOR_UNSUPPORTED));
+        assertTrue(registered.contains(Capability.ENDS_WITH_UNSUPPORTED));
+        assertTrue(registered.contains(Capability.REGEX_MATCH_UNSUPPORTED));
+        assertTrue(registered.contains(Capability.CASE_FUNCTIONS_UNSUPPORTED));
+        assertTrue(registered.size() >= 28,
+                "expected at least 28 entries (14 singleton pairs), got " + registered.size());
     }
 
     @Test

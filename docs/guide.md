@@ -6,6 +6,10 @@ and architecture overview, see the [Getting Started](getting-started.md) guide. 
 portable API surface and error mapping reference, see
 [Compatibility](compatibility.md).
 
+The common LCD baseline is distinct from optional capability-gated extensions.
+Extended change-feed history remains an explicit opt-in on Cosmos and Spanner;
+DynamoDB declares it unsupported and rejects the opt-in before I/O.
+
 ---
 
 ## Table of Contents
@@ -51,6 +55,19 @@ portable API surface and error mapping reference, see
   - [Limiting Results](#limiting-results)
   - [Ordering Results](#ordering-results)
   - [Combining with Native Expressions](#combining-with-native-expressions)
+- [Change Feeds](#change-feeds)
+  - [When to use change feeds](#when-to-use-change-feeds)
+  - [The three primitives](#the-three-primitives)
+  - [Provider provisioning prerequisites](#provider-provisioning-prerequisites)
+  - [Reading a change feed (single-thread)](#reading-a-change-feed-single-thread)
+  - [Persisting cursors across restarts](#persisting-cursors-across-restarts)
+  - [Recovering from an expired cursor](#recovering-from-an-expired-cursor)
+  - [Multi-threaded pattern (one worker per cursor)](#multi-threaded-pattern-one-worker-per-cursor)
+  - [Provider semantics & caveats](#provider-semantics--caveats)
+- [Extending change-feed history beyond 24 hours](#extending-change-feed-history-beyond-24-hours)
+  - [Fail-fast capability gate](#fail-fast-capability-gate)
+  - [How the opt-in is honoured](#how-the-opt-in-is-honoured)
+  - [Cost callout — read before opting in](#cost-callout--read-before-opting-in)
 - [Document TTL (Time-to-Live)](#document-ttl-time-to-live)
   - [Prerequisite: Enable Container-Level TTL](#prerequisite-enable-container-level-ttl)
   - [Writing with TTL](#writing-with-ttl)
@@ -280,15 +297,17 @@ performance and scalability. Here are common strategies:
 **Entity-per-partition** (`MulticloudDbKey.of(pk, pk)`):
 - Every document gets its own partition
 - Optimal for point reads - always a single-partition operation
-- The portable API does not allow queries across partitions, so this layout is
-  unsuitable for queries that need to span "all items of type X"
+- Queries may omit the partition key: Cosmos and Spanner retain unscoped
+  queries, and DynamoDB retains its Scan route. These can cost more than a
+  targeted query when searching "all items of type X"; DynamoDB still declares
+  `CROSS_PARTITION_QUERY` unsupported rather than treating Scan as that capability
 - Works well when you don't need to query within groups
 
 **Grouped partitions** (`MulticloudDbKey.of(parentId, childId)`):
 - Related documents share a partition
 - Point reads still work (the SDK resolves the full key)
 - Queries within the group can be **partition-scoped** - much more efficient
-- Requires knowing the partition key value at query time
+- Efficient partition-scoped queries require knowing the partition key value
 
 **Rule of thumb**: If you frequently query "give me all X within Y", use Y
 as the partition key. If you only read documents by their ID, use the
@@ -768,23 +787,21 @@ Continuation tokens are **opaque strings** - their format differs by provider
 (Cosmos uses its own JSON token, DynamoDB uses an encoded last-evaluated-key,
 Spanner uses a numeric offset). Never parse or construct them manually.
 
-### Partition-Wide Scan (No Filter)
+### Full Scan (No Filter)
 
-To retrieve all documents in a single partition, omit the expression. The
-`partitionKey` is still required:
+To retrieve all documents in a collection (a full scan), omit the expression:
 
 ```java
 QueryRequest scanAll = QueryRequest.builder()
-    .partitionKey("portfolio-alpha")
     .maxPageSize(100)
     .build();
 
 QueryPage page = client.query(addr, scanAll);
 ```
 
-> **Warning**: Even within a single partition, scanning every document is
-> more expensive than an indexed filter. Always prefer expression-based
-> filtering when possible.
+> **Warning**: Full scans read every document in the collection. For large
+> datasets, this is expensive (cross-partition in Cosmos, full table scan in
+> DynamoDB and Spanner). Always prefer expression-based filtering when possible.
 
 ### Expression-Based Filtering
 
@@ -845,16 +862,44 @@ QueryRequest complex = QueryRequest.builder()
     .build();
 ```
 
-### No Native-Expression Passthrough
+### Native Expression Passthrough
 
-The portable API does **not** expose `nativeExpression()` or a `nativeClient()`
-accessor. All queries must go through the portable expression DSL so that
-switching providers requires zero code changes. If your workload needs
-provider-specific features (Cosmos `LIKE`, DynamoDB PartiQL, Spanner regex,
-aggregate functions, server-side `ORDER BY` on non-sortKey fields, server-side
-`LIMIT`, etc.), call the native provider SDK directly outside of
-`MulticloudDbClient`. Doing so opts you out of portability — the strict-LCD
-SDK deliberately does not provide a half-way escape hatch.
+When you need provider-specific features not available in the portable DSL
+(e.g., `LIKE`, `ORDER BY`, aggregate functions), bypass the portable layer
+with `nativeExpression()`:
+
+```java
+// Cosmos DB - full SQL capability
+QueryRequest cosmosQuery = QueryRequest.builder()
+    .nativeExpression(
+        "SELECT c.symbol, c.marketValue FROM c " +
+        "WHERE c.portfolioId = @pid ORDER BY c.marketValue DESC"
+    )
+    .parameter("pid", "portfolio-alpha")
+    .maxPageSize(10)
+    .build();
+
+// DynamoDB - PartiQL syntax
+QueryRequest dynamoQuery = QueryRequest.builder()
+    .nativeExpression(
+        "SELECT * FROM \"acme-risk-db__positions\" " +
+        "WHERE begins_with(symbol, 'AA')"
+    )
+    .maxPageSize(10)
+    .build();
+
+// Spanner - GoogleSQL syntax
+QueryRequest spannerQuery = QueryRequest.builder()
+    .nativeExpression(
+        "SELECT * FROM positions WHERE STARTS_WITH(symbol, 'AA') " +
+        "ORDER BY marketValue DESC LIMIT 10"
+    )
+    .build();
+```
+
+> **Warning**: `expression` and `nativeExpression` are **mutually exclusive** -
+> setting both throws an error. Native expressions break portability: switching
+> providers requires rewriting the query.
 
 ### Translation Pipeline
 
@@ -887,84 +932,96 @@ expression string and parameters.
 ### Why Partition Keys Matter for Queries
 
 In distributed databases, the **partition key determines where data lives
-physically**. The portable API requires every `QueryRequest` to be partition-
-scoped — `partitionKey()` is mandatory at builder time:
+physically**. This has a direct impact on query performance:
 
 - **Partition-scoped query**: When the query filter includes the partition key
   value, the database can go directly to the relevant partition. This is
   **O(partition size)**, not O(total data).
-- **Cross-partition fan-out is not supported** by the portable API. DynamoDB
-  cannot serve cross-partition queries portably; to keep the surface uniform,
-  the API does not expose them on any provider.
+- **Cross-partition query (fan-out)**: When the partition key is not included
+  in the filter, the database must scan **all partitions**. This is expensive
+  and may not be supported in all providers.
 
 #### Cosmos DB
 
-Cosmos DB partitions data by the `/partitionKey` path. The SDK sets the
-partition key option on every query, so each query reads only one logical
-partition.
+Cosmos DB partitions data by the `/partitionKey` path. When a query includes
+`partitionKey = @value`, Cosmos reads only that partition. Without it, the query
+fans out across all partitions (requires the `cosmos.crossPartitionQuery`
+feature flag).
 
 #### DynamoDB
 
-DynamoDB uses the hash key (`partitionKey`) as the partition key. The SDK
-translates each query into a native `Query` on the hash key value.
+DynamoDB uses the hash key (`partitionKey`) as the partition key. Queries within
+a partition (using the hash key) are efficient. Without it, a full table **Scan**
+is required.
 
 #### Spanner
 
 Spanner distributes data across splits based on the primary key prefix. The
 `(partitionKey, sortKey)` composite primary key provides locality for documents
-sharing the same `partitionKey` prefix; the SDK adds `partitionKey = @pk` to
-every query.
+sharing the same `partitionKey` prefix.
 
 ### Combining Expression Filters with Key Design
 
 The most efficient queries combine **good key design** with **expression
 filtering**. Example: positions within a portfolio.
 
-#### Anti-pattern: Entity-per-partition + Per-partition iteration
+#### Approach 1: Entity-per-partition + Full Scan + Client-Side Filter
 
 ```java
 // Key: MulticloudDbKey.of(positionId, positionId) - each position in its own partition
 
-// Required by the portable API: one query per known positionId
-for (String positionId : knownPositionIds) {
-    QueryRequest q = QueryRequest.builder()
-        .partitionKey(positionId)
-        .maxPageSize(50)
-        .build();
-    QueryPage page = client.query(addr, q);
-    // ... filter portfolioId in Java
-}
+// Query: fetch ALL positions, filter in Java
+List<Map<String, Object>> allPositions = client.query(addr,
+    QueryRequest.builder().maxPageSize(200).build()
+).items();
+
+List<Map<String, Object>> filtered = allPositions.stream()
+    .filter(p -> "portfolio-alpha".equals(p.get("portfolioId")))
+    .toList();
 ```
 
-**Problem**: Requires N round-trips (one per partition) and the caller still
-needs to know every `positionId`. Filtering happens client-side. O(N) where
-N = total positions.
-```
+**Problem**: Reads every position document, performs a cross-partition scan,
+then discards most results. O(N) where N = total positions across all
+portfolios.
 
-**Problem**: Requires N round-trips (one per partition) and the caller still
-needs to know every `positionId`. Filtering happens client-side. O(N) where
-N = total positions.
-
-#### Best practice: Partition-per-parent + Expression Filter
+#### Approach 2: Entity-per-partition + Expression Filter (Better)
 
 ```java
-// Key: MulticloudDbKey.of(portfolioId, positionId) - positions grouped by portfolio
+// Key: MulticloudDbKey.of(positionId, positionId) - still entity-per-partition
 
-// Query: the database reads only the "portfolio-alpha" partition
+// Query: let the database filter - only matching documents are returned
 QueryRequest query = QueryRequest.builder()
-    .partitionKey("portfolio-alpha")
-    .expression("sector = @sector")
-    .parameter("sector", "Technology")
+    .expression("portfolioId = @pid")
+    .parameter("pid", "portfolio-alpha")
     .maxPageSize(50)
     .build();
 
 List<Map<String, Object>> positions = client.query(addr, query).items();
 ```
 
-By using `portfolioId` as the partition key (first argument to
-`MulticloudDbKey.of`), the database scopes the query to a single partition.
-Combined with the expression filter, this is a **single-partition read** -
-the most efficient pattern possible.
+**Better**: The database applies the filter - you only receive matching
+documents. But this is still a cross-partition scan (the database still reads
+all partitions, it just doesn't return non-matching documents).
+
+#### Approach 3: Partition-per-parent + Expression Filter (Best)
+
+```java
+// Key: MulticloudDbKey.of(portfolioId, positionId) - positions grouped by portfolio
+
+// Query: the database knows to read only the "portfolio-alpha" partition
+QueryRequest query = QueryRequest.builder()
+    .expression("portfolioId = @pid")
+    .parameter("pid", "portfolio-alpha")
+    .maxPageSize(50)
+    .build();
+
+List<Map<String, Object>> positions = client.query(addr, query).items();
+```
+
+**Best**: By using `portfolioId` as the partition key (first argument to
+`MulticloudDbKey.of`), the database can scope the query to a single partition. Combined with
+the expression filter, this is a **single-partition read** - the most efficient
+pattern possible.
 
 > **Note on DynamoDB**: When documents use `MulticloudDbKey.of(portfolioId, positionId)`,
 > `portfolioId` becomes the hash key (`"partitionKey"` attribute) and
@@ -975,13 +1032,14 @@ the most efficient pattern possible.
 ### Partition-Scoped Queries with `QueryRequest.partitionKey()`
 
 The SDK provides a **portable partition-scoping mechanism** via
-`QueryRequest.partitionKey()`. Every `QueryRequest` must set the partition
-key value, and each provider maps it to its native partition-scoping mechanism:
+`QueryRequest.partitionKey()`. Instead of relying on the query expression to
+include the partition key implicitly, you can set it explicitly on the query
+request. Each provider maps this to its native partition-scoping mechanism:
 
 | Provider | What `.partitionKey(value)` Does |
 |----------|----------------------------------|
 | **Cosmos DB** | Sets `CosmosQueryRequestOptions.setPartitionKey(new PartitionKey(value))` - query reads only that logical partition |
-| **DynamoDB** | Issues a native `Query` on the hash key (`partitionKey = :pk`) instead of a `Scan` |
+| **DynamoDB** | Adds a `partitionKey = :pk` equality condition to the scan filter - restricts results to items sharing the given hash key value |
 | **Spanner** | Adds a `partitionKey = @pk` equality condition to the SQL WHERE clause |
 
 #### Basic Usage
@@ -989,9 +1047,9 @@ key value, and each provider maps it to its native partition-scoping mechanism:
 ```java
 // Scope query to a specific partition (e.g., a portfolio)
 QueryRequest query = QueryRequest.builder()
-    .partitionKey("portfolio-alpha")
     .expression("sector = @sector")
     .parameter("sector", "Technology")
+    .partitionKey("portfolio-alpha")
     .maxPageSize(50)
     .build();
 
@@ -1013,27 +1071,53 @@ QueryRequest allInPartition = QueryRequest.builder()
 QueryPage page = client.query(positionsAddr, allInPartition);
 ```
 
-This reads only the documents belonging to `"portfolio-alpha"`.
+This is far more efficient than a full cross-partition scan - it reads only
+the documents belonging to `"portfolio-alpha"`.
 
-#### partitionKey is mandatory
+#### Cross-Partition Query (Default)
 
-When `partitionKey` is omitted, building the `QueryRequest` throws
-`IllegalArgumentException`. The portable API requires every query to be
-partition-scoped because cross-partition scans are not supported by DynamoDB.
-Workloads that need to read across multiple partitions must paginate per
-partition.
+When `partitionKey` is not set (or set to `null`), the query fans out across
+all partitions - the same behavior as before:
+
+```java
+// No partitionKey → cross-partition scan
+QueryRequest crossPartition = QueryRequest.builder()
+    .expression("severity = @sev")
+    .parameter("sev", "CRITICAL")
+    .maxPageSize(25)
+    .build();
+```
+
+#### Combining with Native Expressions
+
+`partitionKey()` works with both portable and native expressions:
+
+```java
+// Portable expression + partition scoping
+QueryRequest portable = QueryRequest.builder()
+    .expression("marketValue > @min")
+    .parameter("min", 100000.0)
+    .partitionKey("portfolio-alpha")
+    .build();
+
+// Native Cosmos SQL + partition scoping
+QueryRequest native = QueryRequest.builder()
+    .nativeExpression("SELECT c.symbol, c.marketValue FROM c ORDER BY c.marketValue DESC")
+    .partitionKey("portfolio-alpha")
+    .build();
+```
 
 #### Performance Impact
 
-| Provider | With required `.partitionKey()` |
-|----------|---------------------------------|
-| Cosmos DB | Single-partition read (no fan-out) |
-| DynamoDB | Native `Query` API filtered by hash key |
-| Spanner | Filtered by partition key column |
+| Query Type | Cosmos DB | DynamoDB | Spanner |
+|------------|-----------|----------|---------|
+| With `.partitionKey()` | Single-partition read | Filtered by hash key | Filtered by partition key |
+| Without `.partitionKey()` | Cross-partition fan-out | Full table scan | Full table scan |
+| **Cost difference** | 1 partition vs. N partitions | 1 filter vs. full scan | 1 filter vs. full scan |
 
-> **Best practice**: Choose a partition key that aligns with your read
-> patterns. Since the portable API enforces partition scoping, the partition
-> key is the primary lever for read efficiency on every provider.
+> **Best practice**: Always set `.partitionKey()` when you know the partition
+> value at query time. This is especially important for Cosmos DB, where
+> cross-partition queries consume significantly more RU/s.
 
 ---
 
@@ -1101,33 +1185,473 @@ table across all providers.
 
 ## Result Set Control
 
-Every `QueryRequest` is partition-scoped and returns items sorted by `sortKey`
-ascending by default. Two portable controls are available:
+The SDK supports portable `limit` (Top N) and `orderBy` on providers that declare the respective capabilities. Both are **capability-gated**: callers should check provider capabilities before using them. Unsupported options are not guaranteed to be silently ignored; providers may fail fast with `UNSUPPORTED_CAPABILITY` (for example, DynamoDB when `orderBy` is specified). Also note that DynamoDB's `result_limit` support is **per-page**, not a global Top N across the full logical result set.
 
-- `maxResults(int)` — cap on the total number of items returned by `query()`.
-  Enforced client-side: the SDK truncates the page returned from the provider
-  after fetching it.
-- `orderBy("sortKey", ASC|DESC)` — reverse the default ascending order. Only
-  the literal field name `"sortKey"` is accepted; any other field name is
-  rejected at builder time.
+### Checking Capabilities
+
+```java
+CapabilitySet caps = client.capabilities();
+boolean canLimit  = caps.isSupported(Capability.RESULT_LIMIT);
+boolean canOrder  = caps.isSupported(Capability.ORDER_BY);
+```
+
+| Capability | Cosmos DB | DynamoDB | Spanner |
+|------------|:---------:|:--------:|:-------:|
+| `result_limit` | ✓ (`SELECT TOP N`) | ✗ (per-page `limit` still accepted) | ✓ (per-page `LIMIT`) |
+| `order_by` | ✓ | ✗ | ✓ |
+
+> **Note:** DynamoDB declares `result_limit=false`; its `limit` still caps the
+> current scan/query page. Spanner also applies `limit` per page. Neither is a
+> cumulative cap across continuation tokens. Ordering does not provide a
+> snapshot across concurrent writes.
+
+### Limiting Results
 
 ```java
 QueryRequest q = QueryRequest.builder()
-        .partitionKey("portfolio-42")                    // required
         .expression("score >= @min")
         .parameter("min", 80)
-        .maxResults(10)                                  // cap to 10 items total
-        .orderBy("sortKey", SortDirection.DESC)          // newest sortKey first
+        .limit(10)                        // provider-specific limit semantics
         .build();
 
 QueryPage page = client.query(address, q);
 System.out.println("Got " + page.items().size() + " items");
 ```
 
-`maxResults` differs from `maxPageSize`: `maxPageSize` is a hint to the
-provider's pager (one network round-trip per page); `maxResults` is the
-total-items cap on the items the caller will see, regardless of provider page
-sizing.
+### Ordering Results
+
+```java
+QueryRequest q = QueryRequest.builder()
+        .expression("portfolioId = @pid")
+        .parameter("pid", "portfolio-42")
+        .orderBy("marketValue", SortDirection.DESC)   // sort descending
+        .orderBy("symbol",      SortDirection.ASC)    // secondary sort
+        .limit(20)
+        .build();
+```
+
+`SortOrder` validates field names against `[A-Za-z_][A-Za-z0-9_.]*` at construction time, rejecting any character that could be used for injection.
+
+### Combining with Native Expressions
+
+Handling of `orderBy` and `limit` with `nativeExpression` is provider-specific. For Cosmos DB and Spanner native passthrough, these fields are ignored and the native query string is sent as provided. For DynamoDB `ExecuteStatement`, `limit` is still applied, and setting `orderBy` causes an error. Use provider-native syntax for ordering/limiting when you need exact control over native query execution:
+
+```java
+// Cosmos DB native - full SQL control
+QueryRequest q = QueryRequest.builder()
+        .nativeExpression(
+            "SELECT TOP 10 c.symbol, c.marketValue FROM c " +
+            "ORDER BY c.marketValue DESC")
+        .build();
+```
+
+---
+
+## Change Feeds
+
+Change feeds let you read the **ordered stream of modifications** (`CREATE`,
+`UPDATE`, `DELETE`) to a collection, so downstream systems can react to data
+changes without polling the full collection. The SDK exposes a single portable
+model that works the same across Cosmos DB, DynamoDB Streams, and Spanner
+change streams.
+
+### When to use change feeds
+
+Use the change-feed API when you need to:
+
+- Materialise a downstream view (search index, cache, analytics warehouse)
+  from an authoritative store.
+- Trigger workflows when documents change (notifications, audit pipelines,
+  webhooks).
+- Replicate a subset of data to another system.
+
+Change feeds are **not** a replacement for `query()`. They surface change
+events in commit order, not snapshot semantics; if you need a consistent
+point-in-time read of a whole collection, use `query()`.
+
+### The three primitives
+
+| Type / Method | Purpose |
+|---|---|
+| `ChangeFeedCursor` | An opaque, immutable position in the stream. Persist via `cursor.toToken()` / `ChangeFeedCursor.fromToken(String)`; the token wire format is intentionally opaque and may evolve across SDK versions. |
+| `ChangeFeedCursor.now()` | A provider-agnostic sentinel meaning "the live tip at the time of the next read". The first `readChanges` call hydrates it. |
+| `client.listCursors(address)` | Discovers the current set of provider-side partitions and returns one cursor per partition, each positioned at the live tip. Use this to seed a multi-threaded reader. On Cosmos this fetches the feed ranges and runs a one-item warmup query per range to capture a live-tip continuation, so the RU cost scales with the partition count; cache the cursors for the lifetime of your reader rather than calling `listCursors` per page. |
+| `client.readChanges(address, cursor)` | Drains **one page** of events from `cursor` and returns a `ChangeFeedPage` carrying `events`, `nextCursor`, `hasMore`, and `terminal` flags. |
+| `CursorExpiredException` | Thrown when the SDK detects that a cursor can no longer be honoured (provider trimmed events, client-side 24h age cap, malformed/wrong-provider/wrong-resource token). |
+
+Cursors are **opaque to your application**. Persist them as the
+`String` returned by `cursor.toToken()` and restore them with
+`ChangeFeedCursor.fromToken(String)` — do not introspect the token
+structure.
+
+Check capability before you call:
+
+```java
+CapabilitySet caps = client.capabilities();
+if (!caps.isSupported(Capability.CHANGE_FEED)) {
+    throw new IllegalStateException(
+            "Provider " + client.providerId() + " does not support change feeds");
+}
+```
+
+### Provider provisioning prerequisites
+
+The SDK does **not** auto-provision change-stream infrastructure on
+`provisionSchema()` — you must configure it once per collection so that
+CREATE / UPDATE / DELETE distinctions are preserved.
+
+| Provider | What you must provision | How |
+|---|---|---|
+| **Azure Cosmos DB** | Container created with an **All-Versions-and-Deletes (AVAD)** change-feed policy, on an account that supports it. | Configure container settings in Azure Portal / ARM / Bicep; with the Java SDK, attach `ChangeFeedPolicy.createAllVersionsAndDeletesPolicy(Duration)` to the `CosmosContainerProperties` you pass to `createContainerIfNotExists`. |
+| **Amazon DynamoDB** | Table stream enabled with `StreamSpecification(NEW_AND_OLD_IMAGES)`. | Enable via `UpdateTable` API or table console. The 24-hour retention is fixed by the service. |
+| **Google Cloud Spanner** | `CREATE CHANGE STREAM <name> FOR <table> OPTIONS (value_capture_type = 'NEW_ROW')` DDL applied to the database. | Run as part of your schema migration. The default stream name resolved by the SDK is `<collection>_changes`; override per collection with the `changeStream.<collection>` connection key. |
+
+Without these, the first `listCursors` or `readChanges` call surfaces a
+portable `UNSUPPORTED_CAPABILITY` (or `PROVIDER_ERROR` on unhandled
+shapes) carrying a provider-specific `reason` discriminator:
+
+| Provider | Error class | `providerDetails.reason` |
+|---|---|---|
+| Cosmos | `MulticloudDbException(UNSUPPORTED_CAPABILITY)` mapped from a Cosmos 400 BadRequest whose message mentions AVAD / `ChangeFeedPolicy`. | `avad_not_enabled` |
+| DynamoDB | `MulticloudDbException(UNSUPPORTED_CAPABILITY)` (table stream not enabled, or `StreamSpecification` not `NEW_AND_OLD_IMAGES`). | `stream_not_enabled` |
+| Spanner | `MulticloudDbException(UNSUPPORTED_CAPABILITY)` (referenced change stream missing or pointed at the wrong table). | `stream_not_enabled` |
+
+All three normalise to the same portable category, so a single
+`catch (MulticloudDbException e)` branch on
+`e.error().category() == UNSUPPORTED_CAPABILITY` works across providers;
+inspect `e.error().providerDetails().get("reason")` only if the call
+site needs to surface the specific provisioning hint.
+
+### Reading a change feed (single-thread)
+
+```java
+ResourceAddress address = new ResourceAddress("appdb", "orders");
+
+// Start from the live tip (skip historical events).
+ChangeFeedCursor cursor = ChangeFeedCursor.now();
+
+while (true) {
+    ChangeFeedPage page = client.readChanges(address, cursor);
+
+    for (ChangeEvent ev : page.events()) {
+        System.out.printf("%s %s commitTs=%s%n",
+                ev.type(), ev.key(), ev.commitTimestamp());
+        applyDownstream(ev);
+    }
+
+    cursor = page.nextCursor();
+    persist(cursor.toToken()); // save after every successful batch
+
+    if (!page.hasMore()) {
+        // Caught up. Sleep briefly to avoid hot-spinning the provider.
+        Thread.sleep(500);
+    }
+}
+```
+
+### Persisting cursors across restarts
+
+`ChangeFeedCursor` is engineered so a single `String` is the complete state.
+Persist `cursor.toToken()` after **every successful** batch — typically in the
+same transaction as the downstream side-effect to guarantee at-least-once
+delivery:
+
+```java
+String token = cursor.toToken();
+saveTokenToDurableStore(workerId, token);
+
+// On restart:
+ChangeFeedCursor restored = ChangeFeedCursor.fromToken(
+        loadTokenFromDurableStore(workerId));
+```
+
+The token carries:
+
+- The provider id (`cosmos` / `dynamo` / `spanner`).
+- The resource binding (`database/collection`).
+- The per-partition continuation positions.
+- An issued-at timestamp, refreshed every time the SDK returns a `nextCursor`.
+
+If a restored token's issued-at is more than **24 hours** in the past, the
+SDK throws `CursorExpiredException` client-side without contacting the
+provider — see the [recovery guidance](#recovering-from-an-expired-cursor)
+below.
+
+### Recovering from an expired cursor
+
+`CursorExpiredException` is thrown on `readChanges` (or eagerly on
+`ChangeFeedCursor.fromToken` for client-side issues) when the cursor cannot
+be honoured. The reason is exposed in
+`exception.error().providerDetails().get("reason")`:
+
+| `reason` | Cause | Recovery |
+|---|---|---|
+| `TOKEN_AGED_OUT` | The cursor's issued-at is > 24 h old. | Mint a fresh `ChangeFeedCursor.now()` and accept the gap. |
+| `PROVIDER_TRIMMED` | The provider trimmed events the cursor was about to read (Cosmos 410, Dynamo `TrimmedDataAccessException`, Spanner partition outside retention). | Re-bootstrap with `listCursors()` and accept the gap. |
+| `ITERATOR_EXPIRED` | A persisted server-side iterator handle aged out before its next read (today: DynamoDB Streams' ~5-minute inactivity window on a persisted shard iterator). Events at that position may still exist but the bookmark is no longer addressable. | Re-bootstrap with `listCursors()` from the live tip; records produced between the expired iterator's position and the new live tip will be skipped. |
+| `MALFORMED` / `VERSION_UNSUPPORTED` | Token isn't a valid SDK token, or was minted by a newer codec. | Reject the token and start fresh. |
+| `PROVIDER_MISMATCH` / `RESOURCE_MISMATCH` | Token was minted against a different provider or `database/collection`. | Operator / configuration error — do not silently restart; alert. |
+
+The portable recovery pattern is:
+
+```java
+try {
+    page = client.readChanges(address, cursor);
+} catch (CursorExpiredException e) {
+    String reason = e.error().providerDetails().getOrDefault("reason", "");
+    if ("PROVIDER_MISMATCH".equals(reason) || "RESOURCE_MISMATCH".equals(reason)) {
+        throw e; // configuration bug — fail loud.
+    }
+    // Best-effort restart at the live tip; downstream will get a gap.
+    LOG.warn("Cursor expired ({}). Restarting from live tip.", reason);
+    cursor = ChangeFeedCursor.now();
+    continue;
+}
+```
+
+### Multi-threaded pattern (one worker per cursor)
+
+For throughput, scale horizontally by dedicating **one worker thread per
+cursor** returned by `listCursors`. Each worker drives its own cursor; the
+SDK does not require coordination between workers.
+
+A complete runnable worker-pool example will ship in a follow-up release. The
+sketch:
+
+```java
+List<ChangeFeedCursor> cursors = client.listCursors(address);
+ExecutorService pool = Executors.newFixedThreadPool(cursors.size());
+for (ChangeFeedCursor seed : cursors) {
+    pool.submit(() -> runWorker(client, address, seed));
+}
+
+// In runWorker:
+ChangeFeedCursor cursor = restoredOr(seed);
+while (!Thread.currentThread().isInterrupted()) {
+    ChangeFeedPage page = client.readChanges(address, cursor);
+    for (ChangeEvent ev : page.events()) apply(ev);
+    cursor = page.nextCursor();
+    persistPerWorker(workerId, cursor.toToken());
+    if (!page.hasMore()) Thread.sleep(500);
+}
+```
+
+Provider-side partition splits and merges are absorbed transparently by the
+SDK: the next cursor's token carries the updated set of partitions, so the
+worker continues without re-listing.
+
+### Provider semantics & caveats
+
+| Concern | Cosmos DB | DynamoDB | Spanner |
+|---|---|---|---|
+| Maximum history horizon | 24 h baseline; up to 30 d via opt-in (`ChangeFeedConfig.extendedRetention`) provisioning an AVAD `ChangeFeedPolicy` (Continuous Backup tier–capped) | **24 h fixed** (DynamoDB Streams is service-bounded) | 24 h baseline; up to 7 d via opt-in (`ChangeFeedConfig.extendedRetention`) emitted as `CREATE CHANGE STREAM ... OPTIONS(retention_period)` |
+| `commitTimestamp` source | AVAD `metadata.crts`, falling back to `_ts` (second resolution) | `ApproximateCreationDateTime` (sub-second, approximate) | True commit timestamp (microsecond) |
+| Emits `DELETE`? | Yes (AVAD policy required) | Yes (with `NEW_AND_OLD_IMAGES`) | Yes |
+| CREATE vs UPDATE distinguishable? | Yes (via AVAD `metadata.operationType`) | Yes (via `OperationType`) | Yes (via `mod_type`) |
+| Partition discovery cost | Cheap — `getFeedRanges()` is a metadata call | One `DescribeStream` per call | One bootstrap TVF call |
+
+For applications that need history older than 24 h with cross-provider
+portability, the default 24-hour baseline is the lowest common denominator
+(DynamoDB Streams is service-bounded). To extend the floor on Cosmos and
+Spanner — at the cost of losing parity with the Dynamo adapter — see
+[Extending change-feed history beyond 24 hours](#extending-change-feed-history-beyond-24-hours)
+below. The compatibility matrix in [compatibility.md](compatibility.md)
+calls out the per-provider ceilings.
+
+`commitTimestamp` is documented as "the provider's authoritative ordering
+timestamp," not necessarily a true commit time. Use it for ordering and
+checkpointing, not as a precise clock reading.
+
+---
+
+## Extending change-feed history beyond 24 hours
+
+The portable change-feed read path ships with a 24-hour history floor on
+every provider. To request a longer server-side retention window, opt in via
+`ChangeFeedConfig.builder().extendedRetention(Duration)` on
+`MulticloudDbClientConfig`:
+
+```java
+MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
+        .provider(ProviderId.COSMOS)
+        .connection("endpoint", "...")
+        .changeFeed(ChangeFeedConfig.builder()
+                .extendedRetention(Duration.ofDays(7))
+                .build())
+        .build();
+
+try (MulticloudDbClient client = MulticloudDbClientFactory.create(config)) {
+    client.ensureContainer(ResourceAddress.of("orders", "events"));
+    // ...
+}
+```
+
+### Fail-fast capability gate
+
+At client-build time the SDK reads the provider's `CapabilitySet` and refuses
+to construct the client when the requested provider does not declare
+`Capability.EXTENDED_CHANGE_FEED_HISTORY`:
+
+| Provider | `EXTENDED_CHANGE_FEED_HISTORY` |
+|---|---|
+| Cosmos DB | ✅ supported |
+| Spanner | ✅ supported |
+| DynamoDB | ❌ not supported (server-side stream retention is fixed at 24 h) |
+
+When the capability is absent the SDK throws
+`MulticloudDbException` with category `UNSUPPORTED_CAPABILITY` and
+`providerDetails.reason="extended_retention_unavailable"` — the gate throws
+before any change-feed-substrate I/O is issued, and the underlying provider
+client (already constructed by `adapter.createClient(...)`) is `close()`-d on
+the same path so no control-plane channels leak.
+
+### How the opt-in is honoured
+
+| Provider | `ensureContainer()` behaviour | Failure → portable mapping |
+|---|---|---|
+| Cosmos DB | Sets an AVAD `ChangeFeedPolicy` on the container properties carrying the requested retention. | If the account lacks Continuous Backup, returns `UNSUPPORTED_CAPABILITY` (`reason=continuous_backup_required`). |
+| Spanner | Emits `CREATE CHANGE STREAM <table>_changes FOR <table> OPTIONS (value_capture_type = 'NEW_ROW', retention_period = '<value>')` after the table-create (the `NEW_ROW` capture type matches what the SDK's change-feed reader requires for full-row payloads). If a stream of the same name already exists with a different retention, `ensureContainer()` reads back the active retention via `INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS` and refuses to silently honour the mismatch — it throws `UNSUPPORTED_CAPABILITY` (`reason=extended_retention_not_enacted`, with both `requestedRetention` and `activeRetention` in `providerDetails`) so the divergence is loud rather than a silent retention drop. The stream name matches the reader's default convention so `listCursors()` / `readChanges()` transparently pick it up. | If the requested retention exceeds the database's native maximum, returns `UNSUPPORTED_CAPABILITY` (`reason=retention_exceeds_native_max`). |
+
+`ChangeFeedConfig` defaults (`ChangeFeedConfig.defaults()`) leave behaviour
+**bit-for-bit identical to v1** — the opt-in surface is purely additive.
+
+### Cost callout — read before opting in
+
+Extending the change-feed history window changes the bill differently on each
+provider; the windows are **not interchangeable**. Plan the request against
+the price driver that actually moves on your provider:
+
+- **Cosmos DB** — extended retention requires Continuous Backup. The
+  Continuous-Backup tiers (7-day and 30-day) are billed monthly per
+  *provisioned-storage GB* — flat-rate by tier, not by change-volume.
+  Verify your account is on the tier that covers the requested window before
+  opting in.
+- **Spanner** — change-stream retention beyond the default 7 days requires a
+  database explicitly configured for extended retention. Cost scales with
+  **change-data volume × retention** (writes that hit columns covered by the
+  stream are billed for the full retention window). Wide tables with
+  high-cardinality updates can produce a much larger bill at 30-day retention
+  than at 1-day retention.
+- **DynamoDB** — not applicable; server-side stream retention is fixed at
+  24 h. For >24 h history with Dynamo today, drain the stream into a
+  customer-provisioned Kafka cluster (outside the SDK).
+
+The portable 24-hour baseline incurs no extra cost on any provider.
+
+> **Roadmap — DynamoDB Kafka path:** A v1.x item will close the Dynamo
+> capability gap by archiving DynamoDB Streams into a customer-provisioned
+> Kafka cluster. Once shipped, callers will opt in to
+> `ChangeFeedConfig.extendedRetention(...)` against Dynamo by additionally
+> wiring Kafka broker configuration on `MulticloudDbClientConfig` — the
+> consumer-facing `listCursors()` / `readChanges()` surface stays unchanged,
+> so the only adapter-specific delta is the broker config at client-build
+> time.
+
+---
+## Document TTL (Time-to-Live)
+
+Set a per-document expiry at write time using `OperationOptions.ttlSeconds()`. Supported on `create()`, `upsert()`, and `update()`.
+
+### Prerequisite: Enable Container-Level TTL
+
+TTL is enforced at the provider level and requires the collection to be configured with TTL support before writing TTL-bearing documents.
+
+| Provider | Required Setup |
+|----------|----------------|
+| Cosmos DB | Enable "Default Time to Live" on the container (set to `-1` for item-level control) |
+| DynamoDB | Enable TTL on the table specifying `ttlExpiry` as the TTL attribute |
+| Spanner | No native row-level TTL - `ROW_LEVEL_TTL=false`; `ttlSeconds` is silently ignored |
+
+### Writing with TTL
+
+```java
+OperationOptions opts = OperationOptions.builder()
+        .ttlSeconds(3_600)          // expire in 1 hour
+        .build();
+
+// TTL on create
+client.create(address, key, doc, opts);
+
+// TTL on upsert (create-or-replace)
+client.upsert(address, key, doc, opts);
+
+// Reapply the requested TTL on update
+client.update(address, key, updatedDoc, opts);
+```
+
+### Checking TTL Support
+
+```java
+if (client.capabilities().isSupported(Capability.ROW_LEVEL_TTL)) {
+    client.create(address, key, doc, OperationOptions.builder()
+            .ttlSeconds(86_400)
+            .build());
+} else {
+    // Provider will ignore ttlSeconds; write without TTL
+    client.create(address, key, doc);
+}
+```
+
+> **Important:** Cosmos and DynamoDB replace the document on `update()` and
+> `upsert()`. Omitting `ttlSeconds` does not preserve a previously stored TTL
+> field unless it is supplied in the replacement payload. Cosmos may then use
+> its container default TTL. Pass the option on each write when you need a
+> per-document TTL; DynamoDB recalculates the expiry from that write's time.
+
+---
+
+## Document Metadata
+
+Read write-metadata (last-modified timestamp, TTL expiry, version/ETag) by setting `includeMetadata(true)` on read operations. Metadata is **null by default** to avoid unnecessary overhead.
+
+### Reading Metadata
+
+```java
+OperationOptions opts = OperationOptions.builder()
+        .includeMetadata(true)
+        .build();
+
+DocumentResult result = client.read(address, key, opts);
+DocumentMetadata meta = result == null ? null : result.metadata();
+
+if (meta != null) {
+    System.out.println("Last modified : " + meta.lastModified());
+    System.out.println("Expires at    : " + meta.ttlExpiry());    // null if no TTL
+    System.out.println("Version/ETag  : " + meta.version());
+}
+```
+
+### Provider Metadata Availability
+
+| Field | Cosmos DB | DynamoDB | Spanner |
+|-------|:---------:|:--------:|:-------:|
+| `lastModified` | ✓ (from `_ts`) | ✗ | ✗ |
+| `ttlExpiry` | ✗ | ✓ (stored attribute) | ✗ |
+| `version` | ✓ (ETag) | ✗ | ✗ |
+
+Fields the provider cannot supply are returned as `null`. `WRITE_TIMESTAMP`
+declares timestamp support, not whether the read option can be used:
+DynamoDB can return stored TTL expiry with `WRITE_TIMESTAMP=false`, while
+Spanner returns an empty metadata object when requested. Metadata is null
+without opt-in; a missing document returns null from `read()`.
+
+```java
+if (client.capabilities().isSupported(Capability.WRITE_TIMESTAMP)) {
+    DocumentResult r = client.read(address, key,
+            OperationOptions.builder().includeMetadata(true).build());
+    if (r != null && r.metadata() != null) {
+        System.out.println(r.metadata().lastModified());
+    }
+}
+```
+
+### System Property Stripping
+
+Cosmos point reads strip `_ts`, `_etag`, `_rid`, `_self`, `_attachments`, `id`,
+and `partitionKey` from `document()`, extracting requested metadata from the
+original response. DynamoDB returns stored attributes (including `ttlExpiry`);
+Spanner hides its internal `data` field-tracking column. Do not infer identical
+payload shapes from the presence of the common metadata API.
 
 ---
 
@@ -1139,7 +1663,11 @@ data leaves the client. This limit applies to `create()`, `upsert()`, and
 
 ### Why 399 KB, not 400 KB?
 
-Providers inject additional fields (`partitionKey`, `sortKey`, `id`) before writing. DynamoDB measures its 400 KB limit against the internal wire format, which can be larger than raw JSON bytes. The 1 KB safety margin prevents valid-looking documents from exceeding the wire limit after field injection.
+Providers inject additional fields (`partitionKey`, `sortKey`, `id`, and TTL
+fields when requested) before writing. DynamoDB measures its 400 KB limit
+against the internal wire format, which can be larger than raw JSON bytes.
+The 1 KB margin reserves space for injected fields; it is not a full
+provider-wire-size calculation.
 
 ### Validation Behaviour
 

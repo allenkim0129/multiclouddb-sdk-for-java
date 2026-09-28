@@ -14,65 +14,40 @@ import static org.junit.jupiter.api.Assertions.*;
 class QueryRequestTest {
 
     @Test
-    @DisplayName("Builder defaults: required partitionKey, otherwise minimal")
+    @DisplayName("Builder defaults: all fields null / empty")
     void builderDefaults() {
-        QueryRequest q = QueryRequest.builder()
-                .partitionKey("pk-1")
-                .build();
+        QueryRequest q = QueryRequest.builder().build();
         assertNull(q.expression());
-        assertEquals("pk-1", q.partitionKey());
+        assertNull(q.nativeExpression());
+        assertNull(q.partitionKey());
         assertTrue(q.parameters().isEmpty());
         assertNull(q.maxPageSize());
-        assertNull(q.maxResults());
         assertNull(q.continuationToken());
-        assertTrue(q.orderBy().isEmpty());
-    }
-
-    @Test
-    @DisplayName("partitionKey is required — null throws")
-    void partitionKeyRequiredNull() {
-        assertThrows(IllegalArgumentException.class,
-                () -> QueryRequest.builder().build(),
-                "QueryRequest must reject construction without a partitionKey");
-    }
-
-    @Test
-    @DisplayName("partitionKey is required — blank throws")
-    void partitionKeyRequiredBlank() {
-        assertThrows(IllegalArgumentException.class,
-                () -> QueryRequest.builder().partitionKey("   ").build());
     }
 
     @Test
     @DisplayName("Builder full: all fields set via bulk parameters()")
     void builderFull() {
         QueryRequest q = QueryRequest.builder()
-                .expression("status = @status")
+                .expression("SELECT * FROM c WHERE c.status = @status")
                 .parameters(Map.of("@status", "active"))
                 .maxPageSize(25)
-                .maxResults(100)
                 .continuationToken("tok123")
                 .partitionKey("tenant-1")
-                .orderBy("sortKey", SortDirection.ASC)
                 .build();
 
-        assertEquals("status = @status", q.expression());
+        assertEquals("SELECT * FROM c WHERE c.status = @status", q.expression());
         assertEquals("active", q.parameters().get("@status"));
         assertEquals(25, q.maxPageSize());
-        assertEquals(100, q.maxResults());
         assertEquals("tok123", q.continuationToken());
         assertEquals("tenant-1", q.partitionKey());
-        assertEquals(1, q.orderBy().size());
-        assertEquals("sortKey", q.orderBy().get(0).field());
-        assertEquals(SortDirection.ASC, q.orderBy().get(0).direction());
     }
 
     @Test
     @DisplayName("parameter(name,value) accumulates single entries")
     void singleEntryParameter() {
         QueryRequest q = QueryRequest.builder()
-                .partitionKey("p")
-                .expression("a = @a AND b = @b")
+                .expression("SELECT * FROM c WHERE c.a = @a AND c.b = @b")
                 .parameter("@a", "foo")
                 .parameter("@b", 42)
                 .build();
@@ -86,7 +61,6 @@ class QueryRequestTest {
     @DisplayName("parameter(name,value) and parameters(Map) can be mixed")
     void mixedParameterBuilding() {
         QueryRequest q = QueryRequest.builder()
-                .partitionKey("p")
                 .parameters(Map.of("@x", "first"))
                 .parameter("@y", "second")
                 .build();
@@ -99,7 +73,6 @@ class QueryRequestTest {
     @DisplayName("parameters() is unmodifiable — mutations throw")
     void parametersMapIsImmutable() {
         QueryRequest q = QueryRequest.builder()
-                .partitionKey("p")
                 .parameter("@a", "1")
                 .build();
         assertThrows(UnsupportedOperationException.class,
@@ -111,35 +84,24 @@ class QueryRequestTest {
     void bulkParametersDefensiveCopy() {
         Map<String, Object> source = new HashMap<>();
         source.put("@a", "original");
-        QueryRequest q = QueryRequest.builder()
-                .partitionKey("p")
-                .parameters(source).build();
+        QueryRequest q = QueryRequest.builder().parameters(source).build();
 
-        source.put("@a", "mutated");
-        source.put("@b", "injected");
+        source.put("@a", "mutated");   // mutate source after build
+        source.put("@b", "injected");  // add new key after build
 
-        assertEquals("original", q.parameters().get("@a"));
-        assertFalse(q.parameters().containsKey("@b"));
+        assertEquals("original", q.parameters().get("@a"),
+                "QueryRequest must not reflect post-build mutations to the source map");
+        assertFalse(q.parameters().containsKey("@b"),
+                "Keys added after build must not appear in QueryRequest");
     }
 
     @Test
-    @DisplayName("orderBy is restricted to the 'sortKey' field — other fields throw")
-    void orderByRestrictedToSortKey() {
+    @DisplayName("expression and nativeExpression are mutually exclusive")
+    void mutuallyExclusiveExpressions() {
         assertThrows(IllegalArgumentException.class, () ->
                 QueryRequest.builder()
-                        .partitionKey("p")
-                        .orderBy("name", SortDirection.ASC)
-                        .build(),
-                "orderBy must reject non-sortKey fields under strict LCD");
-    }
-
-    @Test
-    @DisplayName("maxResults must be >= 1")
-    void maxResultsMustBePositive() {
-        assertThrows(IllegalArgumentException.class, () ->
-                QueryRequest.builder()
-                        .partitionKey("p")
-                        .maxResults(0)
+                        .expression("SELECT * FROM c")
+                        .nativeExpression("SELECT * FROM c")
                         .build());
     }
 
@@ -147,12 +109,12 @@ class QueryRequestTest {
     @DisplayName("toString contains key fields")
     void toStringContainsFields() {
         QueryRequest q = QueryRequest.builder()
-                .partitionKey("pk-1")
-                .expression("a = @a")
+                .expression("SELECT * FROM c")
                 .maxPageSize(10)
+                .partitionKey("pk-1")
                 .build();
         String s = q.toString();
-        assertTrue(s.contains("a = @a"));
+        assertTrue(s.contains("SELECT * FROM c"));
         assertTrue(s.contains("10"));
         assertTrue(s.contains("pk-1"));
     }

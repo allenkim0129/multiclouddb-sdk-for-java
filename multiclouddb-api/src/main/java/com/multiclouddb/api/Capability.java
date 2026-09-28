@@ -11,10 +11,10 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * A named capability that may be supported (or not) by a provider.
  * <p>
- * Under strict LCD the public API only exposes features supported by every
- * provider — so the well-known capability set is small. Capabilities remain
- * useful for documentation, runtime introspection, and forward-compatibility
- * with future portable features.
+ * The common baseline follows Lowest-Common-Denominator (LCD) portability.
+ * Optional extensions may have different provider support and must be
+ * explicitly declared and capability-gated. For example, extended change-feed
+ * history is supported by Cosmos and Spanner but not by DynamoDB.
  * <p>
  * <h3>Usage</h3>
  * Well-known capabilities are exposed as pre-built singleton pairs:
@@ -36,16 +36,25 @@ public final class Capability {
      */
     private static final Map<String, Capability> REGISTRY = new ConcurrentHashMap<>();
 
-    // ── Well-known LCD capability name constants ─────────────────────────────
-    // Only capabilities supported by ALL providers are exposed.
+    // ── Well-known baseline and optional-extension capability names ──────────
 
     public static final String CONTINUATION_TOKEN_PAGING    = "continuation_token_paging";
+    public static final String CROSS_PARTITION_QUERY        = "cross_partition_query";
     public static final String TRANSACTIONS                 = "transactions";
     public static final String BATCH_OPERATIONS             = "batch_operations";
     public static final String STRONG_CONSISTENCY           = "strong_consistency";
+    public static final String NATIVE_SQL_QUERY             = "native_sql_query";
     public static final String CHANGE_FEED                  = "change_feed";
+    public static final String EXTENDED_CHANGE_FEED_HISTORY = "extended_change_feed_history";
     public static final String PORTABLE_QUERY_EXPRESSION    = "portable_query_expression";
+    public static final String LIKE_OPERATOR                = "like_operator";
     public static final String ORDER_BY                     = "order_by";
+    public static final String ENDS_WITH                    = "ends_with";
+    public static final String REGEX_MATCH                  = "regex_match";
+    public static final String CASE_FUNCTIONS               = "case_functions";
+    public static final String RESULT_LIMIT                 = "result_limit";
+    public static final String ROW_LEVEL_TTL                = "row_level_ttl";
+    public static final String WRITE_TIMESTAMP              = "write_timestamp";
 
     // ── Pre-built singleton instances ─────────────────────────────────────────
 
@@ -53,6 +62,19 @@ public final class Capability {
     public static final Capability CONTINUATION_TOKEN_PAGING_CAP    = intern(CONTINUATION_TOKEN_PAGING, true);
     /** Unsupported singleton — continuation token paging. */
     public static final Capability CONTINUATION_TOKEN_PAGING_UNSUPPORTED = intern(CONTINUATION_TOKEN_PAGING, false);
+
+    public static final Capability CROSS_PARTITION_QUERY_CAP = intern(CROSS_PARTITION_QUERY, true);
+    public static final Capability CROSS_PARTITION_QUERY_UNSUPPORTED = intern(CROSS_PARTITION_QUERY, false);
+    public static final Capability NATIVE_SQL_QUERY_CAP = intern(NATIVE_SQL_QUERY, true);
+    public static final Capability NATIVE_SQL_QUERY_UNSUPPORTED = intern(NATIVE_SQL_QUERY, false);
+    public static final Capability LIKE_OPERATOR_CAP = intern(LIKE_OPERATOR, true);
+    public static final Capability LIKE_OPERATOR_UNSUPPORTED = intern(LIKE_OPERATOR, false);
+    public static final Capability ENDS_WITH_CAP = intern(ENDS_WITH, true);
+    public static final Capability ENDS_WITH_UNSUPPORTED = intern(ENDS_WITH, false);
+    public static final Capability REGEX_MATCH_CAP = intern(REGEX_MATCH, true);
+    public static final Capability REGEX_MATCH_UNSUPPORTED = intern(REGEX_MATCH, false);
+    public static final Capability CASE_FUNCTIONS_CAP = intern(CASE_FUNCTIONS, true);
+    public static final Capability CASE_FUNCTIONS_UNSUPPORTED = intern(CASE_FUNCTIONS, false);
 
     /** Supported singleton — multi-document transactions. */
     public static final Capability TRANSACTIONS_CAP                 = intern(TRANSACTIONS, true);
@@ -74,12 +96,17 @@ public final class Capability {
     /** Unsupported singleton — change feed. */
     public static final Capability CHANGE_FEED_UNSUPPORTED          = intern(CHANGE_FEED, false);
 
+    /** Supported singleton — change-feed history beyond the 24h portable baseline. */
+    public static final Capability EXTENDED_CHANGE_FEED_HISTORY_CAP         = intern(EXTENDED_CHANGE_FEED_HISTORY, true);
+    /** Unsupported singleton — provider cannot retain change-feed history past 24h. */
+    public static final Capability EXTENDED_CHANGE_FEED_HISTORY_UNSUPPORTED = intern(EXTENDED_CHANGE_FEED_HISTORY, false);
+
     /** Supported singleton — portable query expression DSL. */
     public static final Capability PORTABLE_QUERY_EXPRESSION_CAP    = intern(PORTABLE_QUERY_EXPRESSION, true);
     /** Unsupported singleton — portable query expression. */
     public static final Capability PORTABLE_QUERY_EXPRESSION_UNSUPPORTED = intern(PORTABLE_QUERY_EXPRESSION, false);
 
-    /** Supported singleton — ORDER BY (restricted to sortKey field). */
+    /** Supported singleton — ORDER BY clause; check provider support before use. */
     public static final Capability ORDER_BY_CAP                     = intern(ORDER_BY, true);
     /** Unsupported singleton — ORDER BY. */
     public static final Capability ORDER_BY_UNSUPPORTED             = intern(ORDER_BY, false);
