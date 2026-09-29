@@ -95,6 +95,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
           cache: 'maven'
+          cache-jdk: false
 
       - name: Start Azure Cosmos DB Emulator
         shell: pwsh
