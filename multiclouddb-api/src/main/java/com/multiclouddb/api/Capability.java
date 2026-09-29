@@ -17,10 +17,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * history is supported by Cosmos and Spanner but not by DynamoDB.
  * <p>
  * <h3>Usage</h3>
- * Well-known capabilities are exposed as pre-built singleton pairs:
+ * Some well-known capabilities expose pre-built singleton pairs, for example:
  * {@code Capability.TRANSACTIONS_CAP} (supported) and
  * {@code Capability.TRANSACTIONS_UNSUPPORTED} (unsupported).
- * Providers use these directly instead of constructing new instances.
+ * Providers can use these pairs directly. Names without public singleton pairs,
+ * such as {@link #RESULT_LIMIT}, {@link #ROW_LEVEL_TTL}, and {@link #WRITE_TIMESTAMP},
+ * can use {@link #of(String, boolean)} to obtain notes-free interned instances.
  *
  * <h3>Extensibility</h3>
  * Third-party providers can register additional capabilities via
@@ -127,7 +129,8 @@ public final class Capability {
 
     /**
      * Return the interned instance for the given name/supported pair (no notes).
-     * Well-known capabilities return the pre-built singleton; unknown names are
+     * Returns an existing pre-built singleton when the name/supported pair has one.
+     * Other pairs, including well-known names without public singleton fields, are
      * registered and interned on first call.
      */
     public static Capability of(String name, boolean supported) {

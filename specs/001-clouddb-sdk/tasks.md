@@ -603,6 +603,10 @@ RBAC-mode database creation. Simplifies `ResourceProvisioner` sample to use sing
 
 **Goal**: `QueryRequest` supports an optional result limit (Top N) and optional ORDER BY, enabling efficient "top K results" queries. ORDER BY is capability-gated: only Cosmos DB and Spanner support it. All three providers support LIMIT N.
 
+**Implementation status (2026-09)**: The completed tasks below record the API and provider work actually delivered, including the per-page caps in T143/T144. They do not mark the across-page Top N requirement in FR-052 and [issue #25](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/25) complete. DynamoDB/Spanner continuation requests can still return more than N items in total. See the [result-limit implementation status](spec.md#result-set-control-requirements) and [current provider behavior](../../docs/compatibility.md#query-extensions-and-native-expressions).
+
+- [ ] [US5 follow-up / FR-052] Implement and verify a remaining-result budget across continuation requests so the total returned items do not exceed N. This cumulative behavior is deferred and unimplemented; the existing per-page caps and provider-specific SQL limits are not cross-provider, all-query-path completion of the requirement.
+
 ### New Types for User Story 5
 
 - [x] T139 [P] [US5] Create `SortDirection` enum with values `ASC` and `DESC`. Create `SortOrder` final class with fields `String field` (validated non-null, non-empty) and `SortDirection direction` (non-null), a static factory `SortOrder.of(String field, SortDirection direction)`, and `field()` / `direction()` accessors.
