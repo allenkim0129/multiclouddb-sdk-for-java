@@ -74,9 +74,10 @@ Automatically translated to Cosmos SQL, DynamoDB PartiQL, or Spanner GoogleSQL.
 
 ### :material-shield-check: Baseline and Capability Introspection
 
-The common baseline targets **all three** providers. Optional extensions,
-such as extended change-feed history, remain explicitly capability-gated;
-unsupported opt-ins fail fast rather than silently changing behavior.
+The common baseline targets **all three** providers. Implemented capability
+gates, such as extended change-feed history, reject unsupported opt-ins.
+Spanner currently ignores TTL hints; the required FR-057 error gate remains
+unimplemented. See [TTL implementation status](compatibility.md#ttl-and-read-metadata).
 
 [Learn more →](compatibility.md)
 
