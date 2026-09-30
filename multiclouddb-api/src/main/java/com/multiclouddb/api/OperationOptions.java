@@ -54,7 +54,9 @@ public final class OperationOptions {
     /**
      * Document TTL hint in seconds for create/update/upsert operations, or {@code null}
      * when no TTL hint was supplied. A null hint does not guarantee removal of an existing TTL.
-     * Providers that do not support {@link Capability#ROW_LEVEL_TTL} will ignore this field.
+     * The current built-in provider without {@link Capability#ROW_LEVEL_TTL} support,
+     * Spanner, ignores this field. This does not satisfy FR-057's required unsupported-TTL
+     * error; the fail-fast capability gate remains unimplemented follow-up work.
      */
     public Integer ttlSeconds() {
         return ttlSeconds;
@@ -96,7 +98,9 @@ public final class OperationOptions {
 
         /**
          * Sets a document TTL hint for create/update/upsert operations.
-         * Providers without {@link Capability#ROW_LEVEL_TTL} support ignore it.
+         * Spanner currently ignores this hint because it lacks {@link Capability#ROW_LEVEL_TTL}.
+         * The FR-057 unsupported-TTL error gate remains unimplemented; see
+         * {@link OperationOptions#ttlSeconds()} for the current implementation gap.
          * Leaving this unset supplies no TTL hint; see {@link OperationOptions#ttlSeconds()}.
          *
          * @param ttlSeconds time-to-live in seconds (must be >= 1)

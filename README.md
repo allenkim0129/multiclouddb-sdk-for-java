@@ -124,7 +124,6 @@ mvn clean install -DskipTests
 
 ```java
 import com.multiclouddb.api.*;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.Map;
 
@@ -145,10 +144,7 @@ MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
 MulticloudDbClient client = MulticloudDbClientFactory.create(config);
 
 // CRUD - same code for every provider
-ObjectMapper mapper = new ObjectMapper();
-ObjectNode doc = mapper.createObjectNode();
-doc.put("title", "Buy groceries");
-doc.put("completed", false);
+Map<String, Object> doc = Map.of("title", "Buy groceries", "completed", false);
 
 ResourceAddress todos = new ResourceAddress("mydb", "todos");
 MulticloudDbKey key = MulticloudDbKey.of("todo-1", "todo-1");   // partitionKey + sortKey
@@ -156,22 +152,24 @@ MulticloudDbKey key = MulticloudDbKey.of("todo-1", "todo-1");   // partitionKey 
 client.upsert(todos, key, doc);                  // Create or replace (upsert)
 DocumentResult result = client.read(todos, key); // Point read → returns DocumentResult
 ObjectNode document = result.document();         // The document payload
-client.delete(todos, key);                       // Delete
 
 // Query with portable expressions - automatically translated per provider
 QueryRequest query = QueryRequest.builder()
-        .partitionKey("shopping")            // optional: scope to one partition
-        .expression("status = @status")
-        .parameter("status", "active")
+        .partitionKey(key.partitionKey())    // query the partition just written
+        .expression("completed = @completed")
+        .parameter("completed", false)
         .maxPageSize(25)
         .build();
 QueryPage page = client.query(todos, query);
 for (Map<String, Object> item : page.items()) {
     System.out.println(item);
 }
-// Cosmos → SELECT * FROM c WHERE (c.status = @status)
-// DynamoDB → SELECT * FROM "todos" WHERE (status = ?)
-// Spanner → SELECT * FROM `todos` WHERE (status = @status)
+// Predicate translation (partition scoping is applied separately):
+// Cosmos → c.completed = @completed
+// DynamoDB → completed = ? (bound to false)
+// Spanner → completed = @completed
+
+client.delete(todos, key);                       // Cleanup after querying
 ```
 
 ### 4. Switch providers
@@ -319,26 +317,26 @@ Providers are discovered at runtime via Java's `ServiceLoader`:
 
 ### Why Key Is an Explicit Parameter
 
-You may notice that every CRUD operation requires an explicit `Key` parameter,
+You may notice that every CRUD operation requires an explicit `MulticloudDbKey` parameter,
 even on writes where the key material could theoretically be extracted from the
 document:
 
 ```java
 // Key is always explicit - never extracted from the document
-client.upsert(addr, Key.of("tenant-1", "pos-42"), doc);
+client.upsert(addr, MulticloudDbKey.of("tenant-1", "pos-42"), doc);
 ```
 
 Some database SDKs (notably the Azure Cosmos DB SDK) extract the partition key
 and ID from the document body automatically. Multicloud DB deliberately does **not**
 do this, for several reasons:
 
-1. **Each provider maps Key fields differently.** Cosmos DB stores `Key.sortKey()` as the built-in `id` field, while DynamoDB and Spanner store it as a `sortKey` attribute/column. A convention-based extractor would need provider-specific logic, undermining portability.
+1. **Each provider maps key fields differently.** Cosmos DB stores `MulticloudDbKey.sortKey()` as the built-in `id` field, while DynamoDB and Spanner store it as a `sortKey` attribute/column. A convention-based extractor would need provider-specific logic, undermining portability.
 
-2. **`read()` and `delete()` have no document.** These operations require a Key with nothing to extract from. Making writes work differently would create an inconsistent API.
+2. **`read()` and `delete()` have no document.** These operations require a `MulticloudDbKey` with nothing to extract from. Making writes work differently would create an inconsistent API.
 
-3. **The Key is always authoritative.** Providers overwrite any `id`/`partitionKey` fields in the document with the Key values (see [Document Field Injection](docs/guide.md#document-field-injection) in the developer guide). This prevents accidental mismatches.
+3. **The key is always authoritative.** Providers overwrite any `id`/`partitionKey` fields in the document with the key values (see [Document Field Injection](docs/guide.md#document-field-injection) in the developer guide). This prevents accidental mismatches.
 
-4. **Compile-time safety.** A missing Key is a compiler error. A missing field in a JSON document is a runtime error deep in the provider layer.
+4. **Compile-time safety.** Omitting the required `MulticloudDbKey` argument is a compiler error. A missing field in a JSON document is a runtime error deep in the provider layer.
 
 See the [developer guide](docs/guide.md#why-key-is-an-explicit-parameter) for the full rationale and per-provider field mapping details.
 
@@ -356,7 +354,8 @@ This is a deliberate trade-off:
 
 - **Pro:** common-baseline code targets all three providers through one contract.
   Optional extensions require capability checks and retain fail-fast
-  `UNSUPPORTED_CAPABILITY` errors when unavailable.
+  `UNSUPPORTED_CAPABILITY` errors when unavailable, except for the currently
+  unimplemented unsupported-TTL gate described under [Document TTL](#document-ttl).
 - **Con:** native query syntax, expression functions, field ordering, and
   `limit` semantics vary by provider. Check capability support before using
   those features; DynamoDB explicitly rejects `orderBy`, including `sortKey`.
@@ -546,6 +545,9 @@ client.update(address, key, updatedDoc, opts);
 TTL requires collection-level configuration first (enable "Default TTL" on the
 Cosmos DB container; enable TTL on the DynamoDB table using `ttlExpiry` as the
 attribute name). Spanner ignores `ttlSeconds` (`ROW_LEVEL_TTL=false`).
+This is current behavior, not fulfillment of FR-057: the required unsupported-TTL
+fail-fast gate remains unimplemented follow-up work. See the
+[TTL implementation status](specs/001-clouddb-sdk/spec.md#document-ttl-and-write-metadata-requirements).
 
 ---
 

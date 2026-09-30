@@ -709,6 +709,7 @@ The SDK enforces a strict no-code-escape-hatch policy to preserve portability:
 
 - **FR-056**: The SDK MUST support setting a time-to-live (TTL) duration (in seconds) on individual documents during create or upsert operations. When set, the provider MUST automatically remove the document after the specified duration.
 - **FR-057**: Row-level TTL MUST be a capability-gated feature. When TTL is set on a provider that does not support row-level TTL, the SDK MUST raise a clear error indicating the capability is unavailable.
+  - *Implementation status (2026-09):* This requirement remains in force but is not implemented for unsupported TTL requests. Spanner currently ignores `ttlSeconds` and can perform the write without TTL instead of raising the required capability error. The unsupported-TTL fail-fast gate is deferred, unimplemented follow-up work tracked in [US6 tasks](tasks.md#phase-16-user-story-6--document-ttl-and-write-metadata-priority-p2). Current-behavior regression tests do not establish FR-057 conformance. See [current TTL behavior and limitations](../../docs/compatibility.md#ttl-and-read-metadata).
 - **FR-058**: When reading a document, the SDK MUST return available document metadata — including approximate remaining TTL (when set) and last write timestamp — in a portable metadata envelope alongside the document payload.
 - **FR-059**: Document metadata retrieval MUST be optional and opt-in. Applications that do not request metadata MUST NOT incur additional overhead or behavioral changes.
 

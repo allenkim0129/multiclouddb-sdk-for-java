@@ -74,6 +74,7 @@ class SpannerTtlMetadataTest {
         }
     }
 
+    // Current-behavior regression, not FR-057 conformance: the unsupported-TTL gate is unimplemented.
     @Test
     void unsupportedTtlDoesNotAlterExpectedCreateMutation() {
         assertFalse(client.capabilities().isSupported(Capability.ROW_LEVEL_TTL));

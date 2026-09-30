@@ -645,6 +645,10 @@ RBAC-mode database creation. Simplifies `ResourceProvisioner` sample to use sing
 
 **Goal**: Applications can set a TTL on individual documents at write time (where supported) and retrieve document metadata (remaining TTL + write timestamp) on reads via an opt-in `OperationOptions` flag. `read()` returns `DocumentResult` wrapping the document and optional metadata.
 
+**Implementation status (2026-09)**: The completed API, metadata and capability-declaration tasks below do not mark FR-057's unsupported-TTL error requirement complete. Spanner currently ignores the TTL hint, so current-behavior regression tests are not capability-gate conformance tests. The [FR-057 requirement](spec.md#document-ttl-and-write-metadata-requirements) is retained; see [current provider behavior](../../docs/compatibility.md#ttl-and-read-metadata).
+
+- [ ] [US6 follow-up / FR-057] Implement and verify a fail-fast capability gate that raises a clear unsupported-capability error when TTL is requested on a provider without row-level TTL support. This remains deferred and unimplemented; preserving the current ignore behavior is not completion of the requirement.
+
 ### New Types for User Story 6
 
 - [x] T147 [P] [US6] Create `DocumentMetadata` final class with `Instant lastModified()`, `Instant ttlExpiry()`, `String version()` accessors and a static builder. Create `DocumentResult` final class with `ObjectNode document()` and `DocumentMetadata metadata()` (nullable) accessors.

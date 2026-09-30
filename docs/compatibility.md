@@ -92,6 +92,15 @@ QueryPage page = client.query(address, query);
 | `metadata().ttlExpiry()` | null | Stored `ttlExpiry`, if present | null |
 | `metadata().version()` | ETag | null | null |
 
+**Implementation gap (FR-057):** The table describes current behavior, not
+fulfillment of the required unsupported-TTL error. Spanner currently ignores a
+TTL hint and can write without expiry. The
+[FR-057 MUST requirement](../specs/001-clouddb-sdk/spec.md#document-ttl-and-write-metadata-requirements)
+is unchanged; the fail-fast capability gate remains
+[deferred, unimplemented US6 follow-up](../specs/001-clouddb-sdk/tasks.md#phase-16-user-story-6--document-ttl-and-write-metadata-priority-p2).
+Check `ROW_LEVEL_TTL` before requesting expiry; do not rely on the SDK to reject
+an unsupported TTL request today.
+
 `OperationOptions.ttlSeconds()` applies to create/update/upsert and must be
 positive. `includeMetadata(true)` requests metadata on point reads; metadata is
 null by default. Unsupported `WRITE_TIMESTAMP` does not disable this read
