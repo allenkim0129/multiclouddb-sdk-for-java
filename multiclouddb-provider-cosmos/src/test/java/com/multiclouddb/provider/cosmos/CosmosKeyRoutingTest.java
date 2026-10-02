@@ -21,6 +21,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.MockedConstruction;
 
+import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -62,15 +63,23 @@ class CosmosKeyRoutingTest {
                     .build());
             ResourceAddress address = new ResourceAddress("db", "records");
             // The nested object is ordinary input data; the provider does not add an envelope.
-            Map<String, Object> payload = Map.of("document",
-                    Map.of("id", "business-id", "partitionKey", "business-partition", "status", "OPEN"));
+            Map<String, Object> businessSnapshot =
+                    Map.of("id", "business-id", "partitionKey", "business-partition", "status", "OPEN");
+            Map<String, Object> snapshot = Map.of("document", businessSnapshot,
+                    "id", "conflicting-id", "partitionKey", "conflicting-partition");
+            Map<String, Object> payload = new HashMap<>(snapshot);
+            payload.put("document", new HashMap<>(businessSnapshot));
             for (String partition : new String[]{"account-a", "account-b"}) {
                 MulticloudDbKey key = MulticloudDbKey.of(partition, sortKey);
                 String id = sortKey == null ? partition : sortKey;
                 PartitionKey nativePartition = new PartitionKey(partition);
                 client.create(address, key, payload, null);
+                assertEquals(snapshot, payload);
                 client.update(address, key, payload, null);
+                assertEquals(snapshot, payload);
                 client.upsert(address, key, payload, null);
+                assertEquals(snapshot, payload);
+                when(response.getItem()).thenReturn(null);
                 assertNull(client.read(address, key, null));
                 client.delete(address, key, null);
 
@@ -87,10 +96,19 @@ class CosmosKeyRoutingTest {
                     assertEquals("business-partition", stored.at("/document/partitionKey").textValue());
                     assertEquals("OPEN", stored.at("/document/status").textValue());
                 }
-                verify(container).readItem(eq(id), eq(nativePartition), any(), eq(ObjectNode.class));
+                ObjectNode nativeItem = created.getValue().deepCopy();
+                nativeItem.put("_etag", "native-version");
+                ObjectNode nativeSnapshot = nativeItem.deepCopy();
+                when(response.getItem()).thenReturn(nativeItem);
+                ObjectNode returned = client.read(address, key, null).document();
+                ObjectNode expected = nativeSnapshot.deepCopy();
+                expected.remove(java.util.List.of("id", "partitionKey", "_etag"));
+                assertEquals(expected, returned, "current Cosmos reads strip native root identity and system fields");
+                assertEquals(nativeSnapshot, nativeItem, "read mapping must not mutate the native response");
+                verify(container, times(2)).readItem(eq(id), eq(nativePartition), any(), eq(ObjectNode.class));
                 verify(container).deleteItem(eq(id), eq(nativePartition), any());
             }
-            assertEquals(1, payload.size(), "native key injection must not mutate caller input");
+            assertEquals(snapshot, payload, "native key injection must not mutate caller input");
             verifyNoMoreInteractions(container);
         }
     }

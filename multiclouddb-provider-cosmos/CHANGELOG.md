@@ -9,7 +9,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
-- Request-level key/routing regression tests for current CRUD paths, partition-scoped IDs, sort-key fallback, and nested business fields. This adds no new envelope or serialization API.
+- Request-level key/routing regression tests for current CRUD paths, partition-scoped IDs, sort-key fallback, native-key collisions, caller-input preservation, and successful-read key visibility. Nested business fields remain distinct from native keys. This adds no new envelope or serialization API.
 
 ## [0.1.0-beta.2] — 2026-06-17
 

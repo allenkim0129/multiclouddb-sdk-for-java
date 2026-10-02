@@ -37,15 +37,23 @@ CF1 and Q1 concern the details of already-selected result distinctions, not reop
 
 ```mermaid
 flowchart LR
-    D["G0: document clarity and review"] --> C["G1: team contract decisions"]
-    C --> I["G2: implementation scope approval"]
+    D["G0: document clarity and review"] --> C["G1: required contract decisions"]
+    C --> A["G2: dependent implementation scope approval"]
+    A --> F["Dependent foundation implementation"]
     D --> S["Oct 2: policy-independent increments / Draft PR"]
-    S --> M["G3/G4: validation before integration"]
-    I --> M["G3/G4: validation before integration"]
-    M --> R["G5: release approval"]
+    S --> W["Policy-independent implementation"]
+    W --> V["Run validation / collect evidence - not approval"]
+    F --> V
+    A --> G["G3: separate integration approval requires contracts and evidence"]
+    V --> G
+    G --> P["PR 105 implementation and validation"]
+    P --> H["G4: separate PR 105 integration approval"]
+    H --> R["G5: coordinated preview approval"]
 ```
 
 **A draft can pass G0 document review without satisfying all of G1, G2, or G5.** The scoped October 2 authorization does not complete those gates. An agreed direction with missing contract deliverables remains incomplete. This revision does not claim that review has already passed.
+
+Validation may run on an authorized increment while other contracts remain open. Arrows into G3 denote jointly required prerequisites, not permission to integrate: neither a passing test nor scoped implementation authorization grants merge approval.
 
 ### 0.2 Canonical, deduplicated decision agenda
 
@@ -701,11 +709,11 @@ This can separate system and business identifiers. It does not decide that only 
 
 **Payload is not the whole database item.** In this example, `document` is the business-data object; `id`, `partitionKey`, and `document` are all inside the stored Cosmos item. "Outside the payload" does not mean outside the item. A business `document.id` does not replace the native root `id`.
 
-| Provider | Native identity/routing requirement | Current code at base `9cc6eb0` (not the candidate envelope) |
-|---|---|---|
-| Cosmos | Root string `id`; partition value at the container's configured JSON path, which can be nested; request partition value must match storage | Writes inject root `id` and `partitionKey`; provisioning uses `/partitionKey`. Point requests use the same separate `MulticloudDbKey`. Arbitrary existing partition paths are not thereby supported. |
-| Dynamo | Table/index key attributes must be top-level scalars: String, Number, or Binary, not sets, lists, or maps | Writes inject root String attributes `partitionKey` and `sortKey`; get/delete use those exact attributes. A nested `document.date` cannot directly serve as a GSI key. |
-| Spanner | Primary key consists of table columns, not fields inside a JSON cell | Writes set String columns `partitionKey` and `sortKey`; reads bind both, deletes use their composite key. Business fields currently use columns and legacy nested-value encoding, not a newly implemented native JSON envelope. |
+| Provider | Native identity/routing requirement | Current code at base `9cc6eb0` (not the candidate envelope) | Current point-read payload, not future E7 |
+|---|---|---|---|
+| Cosmos | Root string `id`; partition value at the container's configured JSON path, which can be nested; request partition value must match storage | Writes inject root `id` and `partitionKey`; provisioning uses `/partitionKey`. Point requests use the same separate `MulticloudDbKey`. Arbitrary existing partition paths are not thereby supported. | Removes root `id`, `partitionKey`, and Cosmos system fields from a copy; nested business fields remain. |
+| Dynamo | Table/index key attributes must be top-level scalars: String, Number, or Binary, not sets, lists, or maps | Writes inject root String attributes `partitionKey` and `sortKey`; get/delete use those exact attributes. A nested `document.date` cannot directly serve as a GSI key. | Returns converted item attributes, including native `partitionKey` and `sortKey`; does not strip them from the document. |
+| Spanner | Primary key consists of table columns, not fields inside a JSON cell | Writes set String columns `partitionKey` and `sortKey`; reads bind both, deletes use their composite key. Business fields currently use columns and legacy nested-value encoding, not a newly implemented native JSON envelope. | Returns non-null key columns plus business columns selected by valid `data` field metadata; omits the internal `data` column. Legacy metadata handling is described in Section 13.2.2. |
 
 The inspected SDK accepts a separate `MulticloudDbKey`: its partition string supplies `partitionKey`; its sort string supplies Cosmos `id` or Dynamo/Spanner `sortKey`. If the sort key is absent, the partition string supplies both values. No extra encoding is applied on these paths. `components()` is documented for future use and is not consumed by these mappings. `ResourceAddress` selects a resource, not an item: Cosmos uses database/container; Dynamo uses `database + "__" + collection`; Spanner uses the configured database and `address.collection()` as table.
 
@@ -1064,16 +1072,21 @@ Principal risks:
 
 ```mermaid
 flowchart TD
-    T["G1: team contract decisions"] --> A["G2: implementation scope approval"]
-    A --> F["Foundation implementation based on main"]
-    S["Oct 2: policy-independent increments / Draft PR"] --> F
-    F --> FV["Foundation conformance, benchmark, and provider-cost evidence"]
-    FV --> I["G3: integrate foundation into main"]
-    I --> P["Rebase and reimplement PR 105"]
-    P --> PV["Partial-update and foundation regression validation"]
-    PV --> PI["G4: integrate PR 105"]
-    PI --> R["G5: coordinated preview approval"]
+    D["G0: document clarity and review"] --> C["G1: required contract decisions"]
+    C --> A["G2: dependent implementation scope approval"]
+    A --> F["Dependent foundation implementation"]
+    D --> S["Oct 2: policy-independent increments / Draft PR"]
+    S --> W["Policy-independent implementation"]
+    W --> V["Run validation / collect evidence - not approval"]
+    F --> V
+    A --> G["G3: separate integration approval requires contracts and evidence"]
+    V --> G
+    G --> P["PR 105 implementation and validation"]
+    P --> H["G4: separate PR 105 integration approval"]
+    H --> R["G5: coordinated preview approval"]
 ```
+
+This uses the same approval boundaries as Section 0.1. Validation can execute before all contracts are settled; G3 still requires the complete applicable contracts, scope, conformance/benchmark/provider-cost evidence, and separate integration approval. The two incoming arrows to G3 are joint prerequisites, not alternative routes around a gate. PR #105 is rebased and reimplemented only after foundation integration, then requires partial-update and foundation regression evidence before G4.
 
 | Gate | Required before passing | Meaning |
 |---|---|---|
@@ -1110,11 +1123,11 @@ An explicit unsupported scope still needs approved rejection behavior. "Discuss 
 
 ### 16.2 Incremental readiness and key-mapping evidence
 
-The first increment adds executable request/mutation regression coverage and the key-placement explanation in Section 11.3. It changes no production mapping or public API and is **not the completed serialization foundation**. The three `*KeyRoutingTest` classes exercise existing create/update/upsert/read/delete paths with an explicit sort key and with its existing fallback, including the same ID in two partitions. Cosmos/Dynamo additionally check that nested business key names remain separate from native keys; Spanner checks its actual column-based path, including the transaction's lookup and mutation keys.
+The first increment adds executable request/mutation regression coverage and the key-placement explanation in Section 11.3. It changes no production mapping or public API and is **not the completed serialization foundation**. The three `*KeyRoutingTest` classes exercise existing create/update/upsert/read/delete paths with an explicit sort key and with its existing fallback, including the same ID in two partitions. They characterize the effective native request when input contains conflicting top-level key fields, verify mutable input remains equal to an independent snapshot, and cover both not-found and successful mocked reads. These are current-behavior observations, not future collision or E7 approvals. Cosmos/Dynamo additionally check that nested business key names remain separate from native keys; Spanner checks its actual column-based path, including the transaction's lookup and mutation keys and absence of additional transaction interactions.
 
 | Area | First-increment evidence or remaining blocker |
 |---|---|
-| Current request targeting | Captured native requests/mutations check key positions/values, resource names, Dynamo create/update conditions, and no additional database-client calls on these paths. They do not prove service-side persistence, atomicity, retries, or error behavior. |
+| Current request targeting | Captured native requests/mutations check key positions/values, resource names, Dynamo create/update conditions, and no additional database-client or Spanner transaction calls on these paths. Successful read fixtures characterize native-to-public mapping only; they do not prove service-side persistence, atomicity, retries, or error behavior. |
 | Complete neutral model | Section 4.1.1 approves mathematical-value equality with retained scale. Numeric representation/domain, special values, ingress and resource bounds remain open; no `NumberValue` implementation is introduced by this first increment. Java equality approval is not approval of the portable storage domain. |
 | Explicit codec / optional Jackson adapter | Requires the complete value model plus L1-L3 construction budgets and C3/C5/C6 support/failure contracts. No placeholder codec, string-only substitute model, or automatic customer conversion is introduced. |
 | New key/envelope mapping | E1/E2/E7 and collision/mutation ownership remain open. Verify routing against actual Cosmos partition paths; logical top-level fields need not be physical root fields. Test missing/conflicting keys and preserve customer partition strategy/cardinality before adopting a layout. |

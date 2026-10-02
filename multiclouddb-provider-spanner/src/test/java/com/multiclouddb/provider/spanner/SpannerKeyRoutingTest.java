@@ -3,12 +3,14 @@
 
 package com.multiclouddb.provider.spanner;
 
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.ReadContext;
 import com.google.cloud.spanner.ResultSet;
+import com.google.cloud.spanner.ResultSets;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
@@ -26,6 +28,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -83,20 +86,44 @@ class SpannerKeyRoutingTest {
                     .connection("emulatorHost", "localhost:1")
                     .build());
             ResourceAddress address = new ResourceAddress("logical-db", "records");
-            Map<String, Object> payload = Map.of("status", "OPEN");
+            Map<String, Object> snapshot = Map.of("status", "OPEN",
+                    "partitionKey", "conflicting-partition", "sortKey", "conflicting-id");
+            Map<String, Object> payload = new HashMap<>(snapshot);
             for (String partition : new String[]{"account-a", "account-b"}) {
                 MulticloudDbKey key = MulticloudDbKey.of(partition, sortKey);
+                String id = sortKey == null ? partition : sortKey;
                 client.create(address, key, payload, null);
+                assertEquals(snapshot, payload);
                 client.update(address, key, payload, null);
+                assertEquals(snapshot, payload);
                 client.upsert(address, key, payload, null);
+                assertEquals(snapshot, payload);
+                when(read.executeQuery(any(Statement.class))).thenReturn(rows);
                 assertNull(client.read(address, key, null));
+                Struct nativeRow = Struct.newBuilder()
+                        .set("partitionKey").to(partition)
+                        .set("sortKey").to(id)
+                        .set("status").to("OPEN")
+                        .set("data").to("[\"status\"]")
+                        .set("unwritten").to("not-in-document")
+                        .build();
+                when(read.executeQuery(any(Statement.class)))
+                        .thenReturn(ResultSets.forRows(nativeRow.getType(), List.of(nativeRow)));
+                ObjectNode returned = client.read(address, key, null).document();
+                assertEquals(3, returned.size());
+                assertEquals(partition, returned.get("partitionKey").textValue());
+                assertEquals(id, returned.get("sortKey").textValue());
+                assertEquals("OPEN", returned.get("status").textValue());
+                assertFalse(returned.has("data"));
+                assertFalse(returned.has("unwritten"));
                 client.delete(address, key, null);
             }
+            assertEquals(snapshot, payload, "native key injection must not mutate caller input");
         }
         assertEquals(6, writes.size());
         assertEquals(2, updates.size());
         ArgumentCaptor<Statement> queries = ArgumentCaptor.forClass(Statement.class);
-        verify(read, times(2)).executeQuery(queries.capture());
+        verify(read, times(4)).executeQuery(queries.capture());
         for (int index = 0; index < 2; index++) {
             String partition = index == 0 ? "account-a" : "account-b";
             String id = sortKey == null ? partition : sortKey;
@@ -119,15 +146,18 @@ class SpannerKeyRoutingTest {
             deleted.getKeySet().getKeys().forEach(deletedKeys::add);
             assertEquals(List.of(Key.of(partition, id)), deletedKeys);
             verify(transaction).readRow("records", Key.of(partition, id), List.of("data"));
-            Statement query = queries.getAllValues().get(index);
-            assertEquals("SELECT * FROM records WHERE partitionKey = @partitionKey AND sortKey = @sortKey",
-                    query.getSql());
-            assertEquals(partition, query.getParameters().get("partitionKey").getString());
-            assertEquals(id, query.getParameters().get("sortKey").getString());
+            verify(transaction).buffer(updated);
+            for (Statement query : queries.getAllValues().subList(index * 2, index * 2 + 2)) {
+                assertEquals("SELECT * FROM records WHERE partitionKey = @partitionKey AND sortKey = @sortKey",
+                        query.getSql());
+                assertEquals(partition, query.getParameters().get("partitionKey").getString());
+                assertEquals(id, query.getParameters().get("sortKey").getString());
+            }
         }
+        verifyNoMoreInteractions(transaction);
         verify(spanner).getDatabaseClient(DatabaseId.of("test-project", "test-instance", "configured-db"));
         verify(database, times(6)).write(any());
-        verify(database, times(2)).singleUse();
+        verify(database, times(4)).singleUse();
         verify(database, times(2)).readWriteTransaction();
         verifyNoMoreInteractions(database);
     }
