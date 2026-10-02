@@ -1123,19 +1123,75 @@ An explicit unsupported scope still needs approved rejection behavior. "Discuss 
 
 ### 16.2 Incremental readiness and key-mapping evidence
 
-The first increment adds executable request/mutation regression coverage and the key-placement explanation in Section 11.3. It changes no production mapping or public API and is **not the completed serialization foundation**. The three `*KeyRoutingTest` classes exercise existing create/update/upsert/read/delete paths with an explicit sort key and with its existing fallback, including the same ID in two partitions. They characterize the effective native request when input contains conflicting top-level key fields, verify mutable input remains equal to an independent snapshot, and cover both not-found and successful mocked reads. These are current-behavior observations, not future collision or E7 approvals. Cosmos/Dynamo additionally check that nested business key names remain separate from native keys; Spanner checks its actual column-based path, including the transaction's lookup and mutation keys and absence of additional transaction interactions.
+**Delivery boundary:** this increment implements regression tests and documentation, with **zero production mapper or public API changes**. Neutral `Document`/`DocumentValue`, application codecs, the optional Jackson adapter, and API Jackson removal are not implemented. Existing provider behavior exercised by a new test is not a newly delivered feature or an approved future policy.
 
-| Area | First-increment evidence or remaining blocker |
-|---|---|
-| Current request targeting | Captured native requests/mutations check key positions/values, resource names, Dynamo create/update conditions, and no additional database-client or Spanner transaction calls on these paths. Successful read fixtures characterize native-to-public mapping only; they do not prove service-side persistence, atomicity, retries, or error behavior. |
-| Complete neutral model | Section 4.1.1 approves mathematical-value equality with retained scale. Numeric representation/domain, special values, ingress and resource bounds remain open; no `NumberValue` implementation is introduced by this first increment. Java equality approval is not approval of the portable storage domain. |
-| Explicit codec / optional Jackson adapter | Requires the complete value model plus L1-L3 construction budgets and C3/C5/C6 support/failure contracts. No placeholder codec, string-only substitute model, or automatic customer conversion is introduced. |
-| New key/envelope mapping | E1/E2/E7 and collision/mutation ownership remain open. Verify routing against actual Cosmos partition paths; logical top-level fields need not be physical root fields. Test missing/conflicting keys and preserve customer partition strategy/cardinality before adopting a layout. |
-| Queries/indexes/native tools | E3/Q1 logical-to-physical query, projection, patch, and index paths remain unimplemented. Native readable fields are required; no automatic index-key materialization, scan workaround, or hidden reads are authorized. |
-| Conditional writes and partial updates | Existing request shape is characterized, not full service-side conditional-write conformance. PR #105's partial-update contract is not implemented at this base; nested flexibility, operation budgets, and item-targeting regression require the selected mapping first. |
-| Integration/release | Existing error/token direction approvals and October 1 requirements remain intact. G1 details, G3-G5 evidence/approval, Cassandra migration, and two-reviewer validation are not completed by these tests or by opening a Draft PR. |
+**Revision boundary:** code/test review baseline `40c34a1bc3b989d49629ab3a431a3f966d6a9cc8` includes the A01/B01-B04 corrections. This traceability description is a later documentation-only update; review of that baseline does not imply review of this later text or completion of the whole foundation.
 
-These tests intentionally do not validate an imaginary Spanner JSON layout, general numeric fidelity, or a new collision policy. Additional read-back, concurrent-write, condition-failure, and live-provider tests are required when the actual mapping is selected.
+#### 16.2.1 Implementation entry points
+
+All paths below are repository-relative; links resolve from this design document. Each class contains one parameterized test method, executed with a null sort key and with `"shared-id"`. Each invocation exercises both `"account-a"` and `"account-b"`.
+
+| New test file and method | Existing production path executed, not changed | Harness boundary |
+|---|---|---|
+| [CosmosKeyRoutingTest][key-test-cosmos] — `writesAndPointOperationsUseTheSameNativeIdentity(String)` | [CosmosProviderClient][key-client-cosmos]: `create`, `update`, `upsert`, `read`, `delete`, `resolvePartitionKey`, `getContainer` | Mockito intercepts `CosmosClientBuilder` construction and supplies client/database/container mocks. Real provider code constructs `ObjectNode` requests and maps the supplied response; no Cosmos service is contacted. |
+| [DynamoKeyRoutingTest][key-test-dynamo] — `writesAndPointOperationsUseTheSameTopLevelScalarKeys(String)` | [DynamoProviderClient][key-client-dynamo]: `create`, `update`, `upsert`, `read`, `delete`; [DynamoItemMapper][key-mapper-dynamo] conversion | The existing package-private client constructor receives a mock `DynamoDbClient`. Real request builders and mapper execute; responses are fixtures, not a persisted item store. |
+| [SpannerKeyRoutingTest][key-test-spanner] — `writesReadsAndTransactionalUpdatesUseTheSamePrimaryKeyColumns(String)` | [SpannerProviderClient][key-client-spanner]: CRUD, `writeDocumentFields`, `writeFullDocument`; [SpannerRowMapper][key-mapper-spanner]: `toJsonNode` | Mockito replaces `SpannerOptions.newBuilder`, database/read/transaction clients, and invokes the transaction callback once. The successful read uses a real in-memory `ResultSets.forRows` fixture, not a Spanner connection or transaction engine. |
+
+#### 16.2.2 Part-by-part assertions and limits
+
+The test links in Section 16.2.1 identify the exact methods for every row below.
+
+| Part added or clarified | How the new evidence works | What it does not establish |
+|---|---|---|
+| Native CRUD identity and resource routing | Cosmos captures create/replace/upsert bodies and verifies read/delete `id` plus `PartitionKey`, using database `db` / container `records`. Dynamo captures `PutItem`, `GetItem`, and `DeleteItem` with `db__records`, root String `partitionKey`/`sortKey`, create `attribute_not_exists` and update `attribute_exists` conditions. Spanner captures INSERT/UPDATE/INSERT_OR_UPDATE/DELETE mutations, key-bound SELECT statements, and transaction `readRow`; configuration selects `configured-db`, address selects table `records`. | Service execution, conditional failure/error normalization, actual resource schemas, or support for an arbitrary existing Cosmos partition-key path. |
+| Null sort-key fallback | Both parameter values traverse all CRUD methods. Expected native ID/sort key is the separate key's partition string when sort key is null, otherwise the explicit sort string. | New key extraction, encoding, missing-partition acceptance, or composite `components()` support. |
+| Partition isolation at request level | The `"shared-id"` invocation repeats operations under two partitions and checks each body, mutation, query binding, and point-operation key against that partition. | Persisting two live records or proving isolation/concurrency in a database; mocks do not maintain state. |
+| Top-level collision baseline (B01) | Mutable input deliberately supplies conflicting native-key names. Existing Cosmos/Dynamo overwrite them in native requests; Spanner skips those input fields and uses its separately set key columns. Captured outputs in all three use `MulticloudDbKey`, while nested Cosmos/Dynamo business key names remain intact. | A future `Document` collision policy. The effective native identity agrees despite different implementation mechanisms; the conflicting top-level business values are not stored under those native-key names. |
+| Successful and absent reads (B02) | Each partition has an absent-result call and a successful fixture call. Cosmos maps a copy of the captured create body plus `_etag`, stripping root `id`/`partitionKey`/`_etag` and retaining nested data. Dynamo returns native root keys plus the nested object. Spanner's fixture has keys, `status`, `data = ["status"]`, and `unwritten`; output contains keys and `status`, but neither `data` nor `unwritten`. | Future E7 normalization, metadata-option behavior, every native type, or a database write/read round trip. Cosmos absence here is a null response item, not a simulated HTTP 404; Dynamo uses `hasItem=false`; Spanner uses an empty result set. |
+| Caller and native-response nonmutation (B04) | All three compare a mutable input map with an independent immutable snapshot after each write and at the end. Cosmos/Dynamo also use separately copied nested maps. Cosmos compares the native response tree with a deep snapshot after `read` to detect destructive field stripping. | General graph immutability or concurrent caller mutation safety. Native-response nonmutation is explicitly asserted for Cosmos, not exhaustively for all provider response types. |
+| Spanner transaction interaction guard (A01) | Verify the expected `readRow("records", Key.of(partition, id), ["data"])` and the exact buffered UPDATE for each partition, then `verifyNoMoreInteractions(transaction)`. Database/client interaction guards also cover the exercised paths. | Actual retry count, network request cost, transaction atomicity, or race handling. The mock invokes a callback once and cannot measure server-side behavior. |
+| Gate clarification (B03) | Sections 0.1 and 16 use the same nodes and approval boundaries: scoped work may run validation, while dependent implementation and G3 integration require their own contracts, scope, evidence, and approval. | Passing all G1/G2 contracts, permission to merge/release, or approval of a proposed envelope. This is a documentation change, not runtime behavior. |
+
+**Remaining optional test extensions:** R01 would link Spanner's captured written `FIELD_DATA` to the successful-read fixture and assert the exact emitted field set. Currently the fixture supplies `["status"]` independently; the test validates read filtering and key targeting, not the entire write-metadata-to-read chain. R02 would exercise the full Cosmos `SYSTEM_FIELDS` set; the current fixture covers `id`, `partitionKey`, and `_etag`, not `_ts`, `_rid`, `_self`, and `_attachments`. Neither extension is implemented or claimed complete here.
+
+#### 16.2.3 Validation record
+
+Implementation-owner run on Java 17: **6 tests, 0 failures, 0 errors, 0 skipped**, two invocations in each of the three classes. This is the reported run for the code now in `40c34a1`, not an independent reviewer execution or a new run for this documentation-only edit.
+
+```text
+mvn -q -Punit -pl multiclouddb-provider-cosmos,multiclouddb-provider-dynamo,multiclouddb-provider-spanner -am "-Dtest=CosmosKeyRoutingTest,DynamoKeyRoutingTest,SpannerKeyRoutingTest" "-Dsurefire.failIfNoSpecifiedTests=false" test
+```
+
+The selected command compiles the reactor prerequisites and runs only these regressions. It is not the full unit/conformance suite, emulator/live-provider validation, a benchmark, or proof of service cost. Additional persisted read-back, concurrent-write, condition-failure, and mapping-specific tests remain necessary.
+
+#### 16.2.4 Design workstream delivery status
+
+Statuses describe changes delivered by **this increment**, not whether older SDK functionality exists. "Decision pending" is not an implicit rejection or an implementation default.
+
+| Design workstream | Status in this increment | Evidence and next boundary |
+|---|---|---|
+| Current key/routing regression baseline | **Delivered: tests only** | Sections 16.2.1-16.2.3; native key placement, collision characterization, successful/absent reads, and nonmutation guards. Production mapping remains unchanged. |
+| Design requirements, approval gates, traceability | **Delivered: documentation only** | Sections 0.4, 11.3, 16 and this traceability update preserve meeting requirements, identify actual native positions, and separate evidence from approval. |
+| Immutable neutral model, null/absence, binary kind | **Not started; detailed contracts pending** | Section 4 directions exist, but no new `Document`/value classes or binary-write rejection implementation. Constructors, recursive equality and relevant read profiles remain to specify. |
+| Numeric values and fidelity | **Decision pending; implementation not started** | Section 4.1.1 approves Java mathematical equality with retained scale only. Representation/domain, special values, ingress, budgets, provider encoding/range/scale fidelity and rounding remain open. |
+| Explicit app codecs, TypeRef, optional Jackson adapter | **Not started; support/failure decisions pending** | C3/C5/C6 and L1-L3; no placeholder codec or automatic customer conversion added. |
+| API/SPI migration and Jackson removal | **Not started** | Section 4.3 and Section 6 list the coordinated transition. Existing API `ObjectNode` and internal Jackson dependencies remain. |
+| Validation, duplicates, reserved names, resource budgets | **Not started; detailed decisions pending** | L1-L3/E5; no new constants, budget defaults, normalization, reserved-name policy, or lower-only override implementation introduced. Collision fixtures document the old path only. |
+| Physical envelope, native access, key/result visibility | **Decision pending; implementation not started** | E1-E3/E7. Current read differences are evidence, not new E7 approval. Actual Cosmos partition paths, native indexing and customer partition semantics still need mapping-specific validation. |
+| Query shapes/parameters and change-feed images | **Not started; mappings pending** | Q1/C2/CF1; no new Document/Projection/Value or Full/Partial/None wrapper implementation, path translation, or native-type guarantee. |
+| Error diagnostics and continuation tokens | **Not started; detailed contracts pending** | Existing Section 12 direction and Section 13.2 query-only legacy exclusion remain; no exception API, token format/parser or pagination implementation changed. |
+| Conditional writes and PR #105 partial updates | **Baseline request evidence only; new implementation not started** | Dynamo condition strings are checked, not failure semantics. PR #105 shallow updates, operation budgets, nested flexibility and resulting-size/atomicity guarantees remain follow-on work. |
+| Cassandra/legacy migration and rollout | **Not started; scope/profile decisions pending** | E4/C1/ROLL1; no data conversion, legacy reader, format detection, rollout or migration deployment added. |
+| Conformance, benchmarks, provider cost, integration/release | **Not delivered by this slice** | Only the selected unit tests were run. P1 criteria and G3-G5 evidence/approvals remain; a Draft PR or review pass is not foundation completion. |
+
+[key-test-cosmos]: ../../multiclouddb-provider-cosmos/src/test/java/com/multiclouddb/provider/cosmos/CosmosKeyRoutingTest.java
+[key-test-dynamo]: ../../multiclouddb-provider-dynamo/src/test/java/com/multiclouddb/provider/dynamo/DynamoKeyRoutingTest.java
+[key-test-spanner]: ../../multiclouddb-provider-spanner/src/test/java/com/multiclouddb/provider/spanner/SpannerKeyRoutingTest.java
+[key-client-cosmos]: ../../multiclouddb-provider-cosmos/src/main/java/com/multiclouddb/provider/cosmos/CosmosProviderClient.java
+[key-client-dynamo]: ../../multiclouddb-provider-dynamo/src/main/java/com/multiclouddb/provider/dynamo/DynamoProviderClient.java
+[key-client-spanner]: ../../multiclouddb-provider-spanner/src/main/java/com/multiclouddb/provider/spanner/SpannerProviderClient.java
+[key-mapper-dynamo]: ../../multiclouddb-provider-dynamo/src/main/java/com/multiclouddb/provider/dynamo/DynamoItemMapper.java
+[key-mapper-spanner]: ../../multiclouddb-provider-spanner/src/main/java/com/multiclouddb/provider/spanner/SpannerRowMapper.java
 
 ## 17. Team Decision Records and Evidence
 
