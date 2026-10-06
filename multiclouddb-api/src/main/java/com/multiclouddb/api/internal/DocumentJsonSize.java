@@ -32,7 +32,7 @@ final class DocumentJsonSize {
 
     private void add(long bytes) {
         size += bytes;
-        if (size > limit) throw new IllegalArgumentException("Document exceeds maximum logical JSON size.");
+        if (size > limit) throw new SizeExceeded(size);
     }
 
     private void value(DocumentValue value) {
@@ -68,7 +68,7 @@ final class DocumentJsonSize {
         } else if (value instanceof NullValue) {
             add(4);
         } else if (value instanceof BinaryValue) {
-            throw new IllegalArgumentException("Portable document writes do not support binary values.");
+            throw new UnsupportedBinary();
         }
     }
 
@@ -84,6 +84,21 @@ final class DocumentJsonSize {
             } else {
                 add(c <= 0x7f ? 1 : c <= 0x7ff ? 2 : 3);
             }
+        }
+    }
+
+    static final class SizeExceeded extends IllegalArgumentException {
+        final long observedBytes;
+
+        SizeExceeded(long observedBytes) {
+            super("Document exceeds maximum logical JSON size.");
+            this.observedBytes = observedBytes;
+        }
+    }
+
+    static final class UnsupportedBinary extends IllegalArgumentException {
+        UnsupportedBinary() {
+            super("Portable document writes do not support binary values.");
         }
     }
 }

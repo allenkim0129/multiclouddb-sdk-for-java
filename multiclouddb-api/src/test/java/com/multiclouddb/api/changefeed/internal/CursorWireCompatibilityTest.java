@@ -6,6 +6,8 @@ package com.multiclouddb.api.changefeed.internal;
 import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.ResourceAddress;
 import com.multiclouddb.api.changefeed.CursorExpiredException;
+import com.multiclouddb.api.changefeed.ChangeFeedCursor;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -72,6 +74,30 @@ class CursorWireCompatibilityTest {
     private static CursorToken token(List<PartitionPosition> positions) {
         return new CursorToken(ProviderId.COSMOS, new ResourceAddress("todoapp", "todos"),
                 NOW, CursorAnchor.CONTINUING, positions);
+    }
+
+    @Test
+    void publicDecoderRejectsLegacyLexicalFailures() {
+        String json = "{\"v\":1,\"p\":\"cosmos\",\"i\":" + System.currentTimeMillis()
+                + ",\"a\":\"CONTINUING\",\"s\":[{\"id\":\"p0\",\"c\":\"normal\"}]}";
+        assertAll(List.of(json.replace("\"v\":1", "\"v\":TRUE"),
+                json.replace("\"normal\"", "Null"), json.replace("\"normal\"", "fAlSe"),
+                json.replace("normal", "line\nbreak"), json.replace("normal", "literal\ttab"),
+                json.replace("normal", "escaped\\'quote"), json.replace("normal", "escaped\\\nline"))
+                .stream().<org.junit.jupiter.api.function.Executable>map(invalid -> () -> {
+                    assertThrows(java.io.IOException.class, () -> new ObjectMapper().readTree(invalid));
+                    CursorExpiredException failure = assertThrows(CursorExpiredException.class,
+                            () -> ChangeFeedCursor.fromToken(wire(invalid)));
+                    assertEquals(CursorTokenCodec.REASON_MALFORMED, failure.error().providerDetails().get("reason"));
+                }));
+    }
+
+    @Test
+    void publicDecoderKeepsEscapesDuplicateLastWinsTrailingRootsAndCoercion() {
+        String json = "{\"v\":99,\"v\":true,\"p\":\"cosmos\",\"i\":" + System.currentTimeMillis()
+                + ",\"a\":\"CONTINUING\",\"s\":[{\"id\":12,\"c\":\"line\\nbreak\\ttab\"}]} false";
+        ChangeFeedCursor cursor = ChangeFeedCursor.fromToken(wire(json));
+        assertEquals(List.of(new PartitionPosition("12", "line\nbreak\ttab")), cursor.token().partitions());
     }
 
     private static String wire(String json) {

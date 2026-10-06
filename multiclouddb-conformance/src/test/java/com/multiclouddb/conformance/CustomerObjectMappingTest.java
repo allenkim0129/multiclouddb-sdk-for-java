@@ -104,6 +104,10 @@ class CustomerObjectMappingTest {
             readFixture.get().put("_etag", "provider-value");
             assertTrue(client.read(ADDRESS, KEY).document().get("_etag").isEmpty());
             assertTrue(readFixture.get().has("_etag"), "provider read must not mutate the fixture");
+            for (ObjectNode invalid : invalidNativeDocuments()) {
+                readFixture.set(invalid);
+                assertReadPayloadFailure(client, ProviderId.COSMOS);
+            }
             assertValidationBeforeNativeOperation(client, container);
         }
         verify(nativeClient).close();
@@ -150,6 +154,12 @@ class CustomerObjectMappingTest {
                 assertLiteralMapParity(client, last, Function.identity());
                 assertEquals("1", last.get().item().get("decimal_value").n());
                 assertEquals("123456789012345678901234567890", last.get().item().get("integer_value").n());
+                AttributeValue nested = AttributeValue.builder().s("private-value").build();
+                for (int i = 0; i < 128; i++) nested = AttributeValue.builder().l(nested).build();
+                for (AttributeValue invalid : List.of(nested, AttributeValue.builder().n("1.0E309").build())) {
+                    readFixture.set(Map.of("private-field", invalid));
+                    assertReadPayloadFailure(client, ProviderId.DYNAMO);
+                }
                 assertValidationBeforeNativeOperation(client, nativeClient);
             }
         }
@@ -199,6 +209,14 @@ class CustomerObjectMappingTest {
                 assertEquals(Value.string("123456789012345678901234567890"), last.get().asMap().get("integer_value"));
                 assertEquals(Value.float64((double) 0.1F), last.get().asMap().get("float_value"),
                         "retain Float-to-FLOAT64 mapping, not decimal-to-STRING mapping");
+                for (double invalid : new double[]{Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+                    readFixture.set(Mutation.newInsertBuilder(ADDRESS.collection())
+                            .set("private-field").to(invalid).build());
+                    assertReadPayloadFailure(client, ProviderId.SPANNER);
+                }
+                readFixture.set(Mutation.newInsertBuilder(ADDRESS.collection()).set("private-field")
+                        .to(Value.json("[".repeat(128) + "null" + "]".repeat(128))).build());
+                assertReadPayloadFailure(client, ProviderId.SPANNER);
                 assertValidationBeforeNativeOperation(client, nativeClient);
                 Document reserved = JacksonDocumentCodec.createDefault().encode(Map.of("Data", 1), MAP);
                 assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, assertThrows(MulticloudDbException.class,
@@ -257,6 +275,33 @@ class CustomerObjectMappingTest {
         client.upsert(ADDRESS, KEY, independent);
         readFixture.accept(captured.get());
         assertEquals(plain, plainCodec.decode(client.read(ADDRESS, KEY).document(), PlainCustomerCodec.Customer.class));
+    }
+
+    private static List<ObjectNode> invalidNativeDocuments() throws IOException {
+        ObjectMapper mapper = new ObjectMapper();
+        JsonNode nested = mapper.getNodeFactory().textNode("private-value");
+        for (int i = 0; i < 128; i++) nested = mapper.createArrayNode().add(nested);
+        JsonNode brokenBinary = mock(JsonNode.class);
+        when(brokenBinary.getNodeType()).thenReturn(com.fasterxml.jackson.databind.node.JsonNodeType.BINARY);
+        when(brokenBinary.deepCopy()).thenReturn(brokenBinary);
+        when(brokenBinary.binaryValue()).thenThrow(new IOException("private native diagnostic"));
+        return List.of(mapper.createObjectNode().set("private-field", nested),
+                mapper.createObjectNode().put("private-field", new BigDecimal(BigInteger.ONE, 1025)),
+                mapper.createObjectNode().put("private-field", BigInteger.TEN.pow(1024)),
+                mapper.createObjectNode().putPOJO("private-field", "private-value"),
+                mapper.createObjectNode().set("private-field", brokenBinary));
+    }
+
+    private static void assertReadPayloadFailure(MulticloudDbClient client, ProviderId provider) {
+        MulticloudDbException failure = assertThrows(MulticloudDbException.class, () -> client.read(ADDRESS, KEY));
+        assertEquals(MulticloudDbErrorCategory.PROVIDER_ERROR, failure.error().category());
+        assertEquals(provider, failure.error().provider());
+        assertEquals("read", failure.error().operation());
+        assertFalse(failure.error().retryable());
+        assertEquals(Map.of("reason", "invalid_document_payload"), failure.error().providerDetails());
+        assertEquals("Provider response cannot be represented as a Document value.", failure.error().message());
+        assertNull(failure.getCause());
+        assertEquals(0, failure.getSuppressed().length);
     }
 
     private static <R> void assertLiteralMapParity(MulticloudDbClient client, Supplier<R> captured,

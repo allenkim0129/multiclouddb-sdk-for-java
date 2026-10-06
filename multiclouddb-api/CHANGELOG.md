@@ -22,10 +22,15 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   use `Document`; `ChangeEvent.data()` uses nullable `DocumentValue` without new
   image classification or changed provider image selection. Query Map/Object
   contracts are unchanged.
-- API compile/runtime dependencies no longer include Jackson. Cursor JSON uses
-  private Gson 2.10.1 with v1 wire/coercion/retention compatibility fixtures.
+- API compile/runtime dependencies no longer include Jackson, but are not empty:
+  SLF4J 2.0.12 and private Gson 2.11.0 remain, plus Gson's transitive
+  `error_prone_annotations` 2.27.0 metadata dependency (static in JPMS).
+  Cursor JSON uses Gson's official `Strictness.STRICT` with public lexical
+  rejection and v1 wire/coercion/retention compatibility fixtures.
   Logical write-size validation preserves the 399 KiB byte profile without
   allocating serialized document JSON and rejects portable binary writes.
+  Binary diagnostics no longer imply size overflow; overflow reports an observed
+  byte-count lower bound at the early cutoff, not an exact full document size.
   Jackson remains a test-only compatibility oracle.
 - Development coordinate is `0.1.0-beta.2-SNAPSHOT`; no release is declared.
   See [customer mapping and migration](../docs/customer-object-mapping.md).

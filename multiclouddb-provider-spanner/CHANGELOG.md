@@ -16,6 +16,11 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   top-level BigDecimal/BigInteger STRING fallback; no new decimal rejection,
   rounding, schema migration or precision guarantee. Jackson is now a direct
   dependency rather than inherited through API.
+- Native-to-model read/feed rejection is a nonretryable `PROVIDER_ERROR` with
+  operation/provider and fixed `invalid_document_payload` reason, without native
+  diagnostic causes. External rows/events with nonfinite numbers or excessive
+  model depth can fail this way; selected event payloads and FIELD_DATA filtering
+  are regression-tested. Existing native fallbacks are not changed.
 - Development coordinate `0.1.0-beta.1-SNAPSHOT` against the coordinated API;
   no release is declared. See [mapping support and migration](../docs/customer-object-mapping.md).
 

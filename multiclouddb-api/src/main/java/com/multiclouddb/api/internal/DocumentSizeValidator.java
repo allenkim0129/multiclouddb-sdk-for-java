@@ -41,7 +41,7 @@ public final class DocumentSizeValidator {
      * @param document  the document to validate
      * @param operation the operation name used for error reporting
      * @throws MulticloudDbException with category {@link MulticloudDbErrorCategory#INVALID_REQUEST}
-     *                               if the document exceeds the size limit
+     *                               if the document exceeds the size limit or contains binary values
      */
     public static void validate(Document document, String operation) {
         if (document == null) {
@@ -49,15 +49,17 @@ public final class DocumentSizeValidator {
         }
         try {
             DocumentJsonSize.measure(document, MAX_BYTES);
-        } catch (IllegalArgumentException e) {
-            throw new MulticloudDbException(new MulticloudDbError(
-                    MulticloudDbErrorCategory.INVALID_REQUEST,
-                    e.getMessage() + " Maximum logical JSON size is " + MAX_BYTES + " bytes (399 KB).",
-                    null,
-                    operation,
-                    false,
-                    null));
+        } catch (DocumentJsonSize.SizeExceeded failure) {
+            throw invalid("Document logical JSON size is at least " + failure.observedBytes
+                    + " bytes (measurement stopped at the limit; not the full size)."
+                    + " Maximum logical JSON size is " + MAX_BYTES + " bytes (399 KB).", operation);
+        } catch (DocumentJsonSize.UnsupportedBinary failure) {
+            throw invalid(failure.getMessage(), operation);
         }
     }
 
+    private static MulticloudDbException invalid(String message, String operation) {
+        return new MulticloudDbException(new MulticloudDbError(
+                MulticloudDbErrorCategory.INVALID_REQUEST, message, null, operation, false, null));
+    }
 }

@@ -13,6 +13,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   nullable DocumentValue change-feed data. Retain existing Map/tree/AttributeValue
   conversion, number parsing limitations, metadata and delete old-image selection.
   Declare Jackson directly rather than inheriting it from API.
+- Native-to-model read/feed rejection is a nonretryable `PROVIDER_ERROR` with
+  operation/provider and fixed `invalid_document_payload` reason, without
+  payload/native diagnostic causes. External rows/events outside the model domain
+  can fail this way; final new/old/empty/absent event payloads are regression-tested.
 - Coordinated `0.1.0-beta.2-SNAPSHOT` development API dependency; no release,
   storage-range expansion or general provider bug fix. See
   [mapping support and migration](../docs/customer-object-mapping.md).

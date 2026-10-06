@@ -40,8 +40,10 @@ these are not newly published releases.
 The API owns immutable `Document`/`DocumentValue`, application-owned
 `DocumentCodec`, neutral `TypeRef` and safe codec errors. CRUD and point reads use
 Document; nullable change-feed payloads use DocumentValue. Query Map/Object
-contracts remain unchanged. The API runtime depends on SLF4J and private Gson
-cursor handling, not Jackson (including transitive or shaded Jackson).
+contracts remain unchanged. The API runtime depends on SLF4J 2.0.12 and private
+Gson 2.11.0 cursor handling, not Jackson (including transitive or shaded Jackson).
+Gson also brings `error_prone_annotations` 2.27.0 into the Maven runtime closure;
+Gson's JPMS requirement for that annotation module is static.
 
 The optional `multiclouddb-serializer-jackson` module implements that contract
 with `JacksonDocumentCodec`, snapshots a customer ObjectMapper and depends on API

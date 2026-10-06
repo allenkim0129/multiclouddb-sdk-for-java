@@ -69,9 +69,11 @@ public final class JacksonDocumentCodec implements DocumentCodec {
     }
 
     /**
-     * Uses the captured typed reader on decoder-owned tokens. Numeric kinds and
-     * binary ownership are preserved without overriding customer deserializers
-     * or coercion settings. No provider metadata is stripped here.
+     * Uses the captured typed reader on decoder-owned tokens. Short and the other
+     * supported numeric kinds are retained; Byte is promoted to Integer because
+     * Jackson has no byte numeric token. The immutable model is not rewritten.
+     * Binary ownership is preserved without overriding customer deserializers or
+     * coercion settings. No provider metadata is stripped here.
      */
     @Override
     public <T> T decode(Document document, TypeRef<T> type) {

@@ -10,7 +10,11 @@ DTO <--explicit codec.decode-- Document <--client.read().document()-- provider
 ```
 
 The API's public declarations and compile/runtime dependency closure are
-Jackson-free. The API still uses SLF4J and private Gson cursor JSON handling.
+Jackson-free, not dependency-free. The API uses SLF4J 2.0.12 and private Gson
+2.11.0 cursor JSON handling. Gson adds `error_prone_annotations` 2.27.0 to the
+Maven runtime closure (annotation metadata, not a second parser); its JPMS
+requirement is static. The API plus these three dependency JARs is the tested
+standalone module path.
 Jackson is optional for application mapping: `multiclouddb-serializer-jackson`
 implements the common contract with `JacksonDocumentCodec`. Native provider
 implementations/SDKs still use Jackson and declare their dependencies explicitly.
@@ -181,8 +185,13 @@ The encoder collects serializer tokens directly into the model. It does not
 serialize JSON bytes, parse them back, or invoke a customer Map deserializer
 merely to materialize an object. `writeObject`/`writeTree` still use the snapshot.
 The decoder emits decoder-owned Jackson TokenBuffer tokens and invokes the
-captured typed reader. Numeric kinds and negative zero survive the token
-boundary; binary leaves are copied, including within objects/arrays, so decoded
+captured typed reader. Short and the other supported numeric kinds, decimal
+scale and negative zero survive the decode token boundary. **Byte is promoted
+to Integer**: Jackson has no byte numeric token, and its stock byte serializer
+also emits an integer. This does not rewrite a Byte payload already in the
+Document. A typed Byte target can still be reconstructed by the configured
+reader; model representation, token representation and reader coercion are
+separate contracts. Binary leaves are copied, including within objects/arrays, so decoded
 DTO or JsonNode mutation cannot mutate the Document.
 
 | Boundary | Behavior |
@@ -209,6 +218,17 @@ their existing internal mapping passes. Reads structurally convert the existing
 native tree without a new default-mapper reinterpretation. These paths incur
 container traversal/allocation; they are not direct native model mapping.
 
+An external or legacy database row/event can be outside the model's finite,
+precision/scale or nesting domain even if the SDK did not write it. Conversion
+then fails as a nonretryable `MulticloudDbException` with `PROVIDER_ERROR`,
+the provider ID, operation `read` or `readChanges`, and fixed detail
+`reason=invalid_document_payload`. It is not automatically classified as an
+invalid caller request. Payloads and native diagnostic causes are not included,
+and values are not silently replaced with null or strings by this conversion.
+The three small provider-local conversion helpers remain duplicated to keep
+Jackson outside API runtime; actual read/feed regressions pin their shared
+conversion/error behavior. Existing native-mapper fallbacks below are unchanged.
+
 | Provider | Retained behavior and limitation |
 |---|---|
 | Cosmos | Map-to-ObjectNode route; existing `/partitionKey` schema, id/partitionKey/TTL overwrite and system-field stripping |
@@ -232,11 +252,17 @@ The wrapper still validates logical JSON size (399 KiB) before provider calls.
 A structural counter preserves the old default Map-to-tree byte profile,
 including escaping and BigDecimal size normalization, without mutating the
 number or allocating serialized document bytes. This is not native storage size.
+Size-overflow diagnostics report the observed byte count as an **at-least lower
+bound** because traversal stops when the limit is crossed, not the complete
+document size. Binary rejection has its own message and does not claim overflow.
 Closed-client-first validation and capability gates remain.
 
 Cursor v1 keeps Base64URL JSON, field omission/order, binding, retention and
-error reasons. Gson 2.10.1 streaming syntax handling is checked against legacy
-goldens/coercion fixtures; opaque Unicode/unpaired UTF-16 is preserved. Valid
+error reasons. Gson 2.11.0 `Strictness.STRICT` syntax handling is checked against
+legacy goldens/coercion fixtures and public `fromToken` lexical-rejection tests,
+including mixed-case literals and unescaped controls. Escaped controls,
+duplicate-last-wins and intentional one-root/trailing-root behavior remain.
+Opaque Unicode/unpaired UTF-16 is preserved. Valid
 Unicode escape spelling may differ without changing decoded cursor content.
 No change-feed token migration waiver is applied.
 
@@ -248,7 +274,7 @@ No change-feed token migration waiver is applied.
 | Common codec/types/errors | API `codec/*`; `TypeRefTest`, `DocumentCodecExceptionTest`; handwritten `PlainCustomerCodec` |
 | Optional Jackson mapping | `JacksonDocumentCodec`, `DocumentGenerator`, `DocumentTokens`, `MapperSnapshot`; corresponding codec/generator/snapshot tests preserve naming/date/generic mapping, coercion configuration, sticky failures, binary DTO/node isolation and safe errors |
 | API runtime without Jackson | `CursorTokenCodec`/`CursorJson`, `DocumentSizeValidator`/`DocumentJsonSize`; `CursorWireCompatibilityTest`, `CursorJsonCompatibilityTest`, existing cursor/factory tests and `DocumentJsonSizeTest` legacy byte-profile comparison |
-| Native boundaries | Three ProviderClient/ChangeFeedReader pairs and provider-local NativeDocuments; existing mapping/lifecycle/feed tests retained |
+| Native boundaries | Three ProviderClient/ChangeFeedReader pairs and provider-local NativeDocuments; `CustomerObjectMappingTest` checks actual read failures, and the three `*ChangeFeedReaderTest` classes assert final event payload selection/null/nesting plus safe model-domain errors |
 | Actual customer workflow | `CustomerObjectMappingTest`: real factory/wrapper/providers, native SDK mocks, custom Jackson and handwritten JDK-only codec through create/upsert/read; Spanner fixture uses captured mutation including FIELD_DATA |
 | Build isolation | API/provider/adapter POMs and module descriptors; runtime dependency/JAR inspection and manual API-only/optional-adapter JPMS consumer checks |
 

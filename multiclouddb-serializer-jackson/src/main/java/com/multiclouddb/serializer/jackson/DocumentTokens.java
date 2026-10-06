@@ -37,6 +37,7 @@ final class DocumentTokens {
             else if (original instanceof Float floating) generator.writeNumber(floating);
             else if (original instanceof Double floating) generator.writeNumber(floating);
             else if (original instanceof Long integer) generator.writeNumber(integer);
+            else if (original instanceof Short integer) generator.writeNumber(integer);
             else generator.writeNumber(original.intValue());
         } else if (value instanceof BinaryValue binary) {
             generator.writeEmbeddedObject(binary.value());

@@ -7,6 +7,7 @@ import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
+import com.google.gson.Strictness;
 import com.google.gson.TypeAdapter;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
@@ -26,7 +27,7 @@ final class CursorJson {
 
     static JsonElement read(String json) throws IOException {
         try (JsonReader reader = new V1Reader(json)) {
-            reader.setLenient(false);
+            reader.setStrictness(Strictness.STRICT);
             // Like the original readTree, consume one root, not additional trailing roots.
             return ELEMENT.read(reader);
         }

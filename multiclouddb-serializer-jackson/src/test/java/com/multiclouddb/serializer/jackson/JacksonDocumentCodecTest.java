@@ -183,6 +183,50 @@ class JacksonDocumentCodecTest {
 
     record IntegerTarget(int number) {}
     record FloatingTarget(float small, double large, BigDecimal decimal) {}
+    record NumberKind(String kind) {}
+    record ByteTarget(byte number) {}
+
+    @Test
+    void decodePreservesShortForGenericMapAndKindSensitiveCustomerReader() {
+        Document document = Document.builder().put("number", NumberValue.of((short) 7)).build();
+        Map<String, Object> decoded = JacksonDocumentCodec.createDefault().decode(
+                document, new TypeRef<Map<String, Object>>() {});
+        assertInstanceOf(Short.class, decoded.get("number"));
+
+        SimpleModule module = new SimpleModule();
+        module.addDeserializer(NumberKind.class, new JsonDeserializer<>() {
+            @Override public NumberKind deserialize(JsonParser parser, DeserializationContext context)
+                    throws IOException {
+                parser.nextToken();
+                parser.nextToken();
+                String kind = parser.getNumberValue().getClass().getSimpleName();
+                parser.nextToken();
+                return new NumberKind(kind);
+            }
+        });
+        JacksonDocumentCodec configured = JacksonDocumentCodec.from(new ObjectMapper().registerModule(module));
+        assertEquals(new NumberKind("Short"), configured.decode(document, NumberKind.class));
+    }
+
+    @Test
+    void byteModelPayloadRemainsByteButJacksonNumericTokensPromoteItToInteger() throws IOException {
+        NumberValue number = NumberValue.of((byte) 7);
+        Document document = Document.builder().put("number", number).build();
+        assertInstanceOf(Byte.class, number.value());
+        assertInstanceOf(Integer.class, JacksonDocumentCodec.createDefault().decode(
+                document, new TypeRef<Map<String, Object>>() {}).get("number"));
+        assertInstanceOf(Integer.class, new ObjectMapper().valueToTree((byte) 7).numberValue());
+        assertEquals(new ByteTarget((byte) 7), JacksonDocumentCodec.createDefault().decode(document, ByteTarget.class),
+                "typed reader conversion is separate from the numeric token representation");
+        try (var tokens = new com.fasterxml.jackson.databind.util.TokenBuffer(new ObjectMapper(), false)) {
+            tokens.writeNumber((short) 7);
+            try (JsonParser parser = tokens.asParser()) {
+                parser.nextToken();
+                assertInstanceOf(Short.class, parser.getNumberValue());
+            }
+        }
+        assertInstanceOf(Byte.class, number.value(), "decode must not rewrite the model payload");
+    }
 
     @Test
     void sameTypeDecodeRetainsNegativeZeroAndDecimalScale() {

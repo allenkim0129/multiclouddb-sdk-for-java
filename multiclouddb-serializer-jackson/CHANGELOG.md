@@ -24,6 +24,9 @@
   Document. TypeRef and DocumentCodecException now belong to the neutral API.
   Existing custom-reader coercion is not replaced with stricter numeric logic;
   model numeric construction follows the documented finite bounded domain.
+- Decode tokens preserve Short rather than prematurely widening to Integer.
+  Byte remains an Integer token because Jackson has no byte numeric token;
+  retained model payload and configured typed-reader coercion are separate.
 - API is now a dependency; the adapter is optional for customer code and not a
   provider dependency. No client registration, POJO overload or module discovery.
 

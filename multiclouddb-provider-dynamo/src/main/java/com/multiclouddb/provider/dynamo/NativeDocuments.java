@@ -5,10 +5,15 @@ package com.multiclouddb.provider.dynamo;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.multiclouddb.api.document.*;
+import com.multiclouddb.api.MulticloudDbError;
+import com.multiclouddb.api.MulticloudDbErrorCategory;
+import com.multiclouddb.api.MulticloudDbException;
+import com.multiclouddb.api.ProviderId;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.Map;
 
 /** Structural conversion after the existing native mapping, without mapper coercion. */
 final class NativeDocuments {
@@ -16,12 +21,27 @@ final class NativeDocuments {
     }
 
     static Document document(JsonNode node) {
-        if (node == null || !node.isObject()) throw new IllegalArgumentException("Expected document object.");
-        return Document.of((ObjectValue) value(node));
+        try {
+            if (node == null || !node.isObject()) throw new IllegalArgumentException("Expected document object.");
+            return Document.of((ObjectValue) value(node, 0));
+        } catch (IllegalArgumentException invalid) {
+            throw invalidPayload("read");
+        }
     }
 
-    static DocumentValue value(JsonNode node) {
-        return value(node, 0);
+    static DocumentValue changeData(JsonNode node) {
+        try {
+            return value(node, 0);
+        } catch (IllegalArgumentException invalid) {
+            throw invalidPayload("readChanges");
+        }
+    }
+
+    private static MulticloudDbException invalidPayload(String operation) {
+        return new MulticloudDbException(new MulticloudDbError(
+                MulticloudDbErrorCategory.PROVIDER_ERROR,
+                "Provider response cannot be represented as a Document value.",
+                ProviderId.DYNAMO, operation, false, Map.of("reason", "invalid_document_payload")));
     }
 
     private static DocumentValue value(JsonNode node, int depth) {
