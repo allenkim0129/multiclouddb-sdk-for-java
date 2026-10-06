@@ -4,7 +4,10 @@
 package com.multiclouddb.serializer.jackson;
 
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.BinaryNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
@@ -77,12 +80,15 @@ public final class JacksonObjectCodec {
 
     /**
      * Uses the captured typed reader on a private copy of the existing read tree.
+     * Standard ObjectNode/ArrayNode containers and BinaryNode byte arrays are
+     * isolated. Opaque POJONode values and custom JsonNode subclasses retain
+     * their own deepCopy semantics and are outside this isolation guarantee.
      * Extra key/metadata fields retain existing provider behavior; ignoring them
      * requires explicit customer configuration. No content is stripped here.
      */
     public <T> T decode(ObjectNode document, TypeRef<T> type) {
         if (document == null || type == null) throw new ObjectCodecException(DECODE, INVALID_ARGUMENT);
-        try (JsonParser parser = snapshot.parserFor(document.deepCopy())) {
+        try (JsonParser parser = snapshot.parserFor(copyReadTree(document))) {
             return snapshot.readerFor(type).readValue(parser);
         } catch (IOException | RuntimeException failure) {
             throw safeFailure(DECODE, failure);
@@ -93,6 +99,29 @@ public final class JacksonObjectCodec {
     public <T> T decode(ObjectNode document, Class<T> type) {
         if (type == null) throw new ObjectCodecException(DECODE, INVALID_ARGUMENT);
         return decode(document, TypeRef.of(type));
+    }
+
+    private static ObjectNode copyReadTree(ObjectNode document) {
+        ObjectNode copy = document.deepCopy();
+        copyBinaryLeaves(copy);
+        return copy;
+    }
+
+    private static JsonNode copyBinaryLeaves(JsonNode node) {
+        // Jackson deepCopy shares value nodes, including BinaryNode's mutable byte[].
+        if (node.getClass() == BinaryNode.class) {
+            byte[] bytes = ((BinaryNode) node).binaryValue();
+            return bytes == null ? node : BinaryNode.valueOf(bytes.clone());
+        }
+        if (node.getClass() == ObjectNode.class) {
+            node.properties().forEach(field -> field.setValue(copyBinaryLeaves(field.getValue())));
+        } else if (node.getClass() == ArrayNode.class) {
+            ArrayNode array = (ArrayNode) node;
+            for (int i = 0; i < array.size(); i++) {
+                array.set(i, copyBinaryLeaves(array.get(i)));
+            }
+        }
+        return node;
     }
 
     private static ObjectCodecException safeFailure(ObjectCodecException.Phase phase, Exception failure) {

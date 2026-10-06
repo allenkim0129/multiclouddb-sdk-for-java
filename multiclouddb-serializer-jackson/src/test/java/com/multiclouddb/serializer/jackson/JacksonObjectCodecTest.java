@@ -220,6 +220,32 @@ class JacksonObjectCodecTest {
     }
 
     @Test
+    void serializerCannotSwallowDepthFailureAndReturnAPartialMap() {
+        for (boolean object : List.of(true, false)) {
+            SimpleModule module = new SimpleModule();
+            module.addSerializer(Message.class, new JsonSerializer<>() {
+                @Override public void serialize(Message value, JsonGenerator g, SerializerProvider provider)
+                        throws IOException {
+                    g.writeStartObject();
+                    g.writeArrayFieldStart("items");
+                    try {
+                        if (object) g.writeStartObject();
+                        else g.writeStartArray();
+                    } catch (IOException deliberatelySwallowed) {
+                        // Reproduce customer code attempting to recover with a partial result.
+                    }
+                    g.writeEndArray();
+                    g.writeEndObject();
+                }
+            });
+            ObjectMapper mapper = new ObjectMapper().registerModule(module);
+            mapper.getFactory().setStreamWriteConstraints(
+                    com.fasterxml.jackson.core.StreamWriteConstraints.builder().maxNestingDepth(2).build());
+            assertSafeFailure(JacksonObjectCodec.from(mapper), INVALID_STRUCTURE);
+        }
+    }
+
+    @Test
     void exposesSafePhaseOnEncodeAndDecodeFailures() {
         ObjectCodecException encode = assertThrows(ObjectCodecException.class,
                 () -> custom((g, v) -> { throw new IllegalArgumentException("secret"); })
@@ -239,6 +265,46 @@ class JacksonObjectCodecTest {
         ObjectNode decoded = JacksonObjectCodec.createDefault().decode(source, ObjectNode.class);
         decoded.put("value", "changed");
         assertEquals("original", source.get("value").textValue());
+    }
+
+    record BinaryDto(byte[] bytes) {}
+    record BinaryTreeDto(byte[] bytes, BinaryDto object, List<BinaryDto> objects, List<byte[]> arrays) {}
+
+    @Test
+    void decodedDtoBinaryArraysDoNotAliasOriginalRootOrNestedNodes() throws Exception {
+        ObjectNode source = binaryTree();
+        BinaryTreeDto decoded = JacksonObjectCodec.createDefault().decode(source, BinaryTreeDto.class);
+        decoded.bytes()[0] = 9;
+        decoded.object().bytes()[0] = 9;
+        decoded.objects().get(0).bytes()[0] = 9;
+        decoded.arrays().get(0)[0] = 9;
+        assertBinaryTreeUnchanged(source);
+    }
+
+    @Test
+    void decodedTreeBinaryArraysDoNotAliasOriginalRootOrNestedNodes() throws Exception {
+        ObjectNode source = binaryTree();
+        ObjectNode decoded = JacksonObjectCodec.createDefault().decode(source, ObjectNode.class);
+        decoded.get("bytes").binaryValue()[0] = 9;
+        decoded.get("object").get("bytes").binaryValue()[0] = 9;
+        decoded.get("objects").get(0).get("bytes").binaryValue()[0] = 9;
+        decoded.get("arrays").get(0).binaryValue()[0] = 9;
+        assertBinaryTreeUnchanged(source);
+    }
+
+    private static ObjectNode binaryTree() {
+        ObjectNode source = TREE_MAPPER.createObjectNode().put("bytes", new byte[]{1, 2});
+        source.putObject("object").put("bytes", new byte[]{3, 4});
+        source.putArray("objects").addObject().put("bytes", new byte[]{5, 6});
+        source.putArray("arrays").add(new byte[]{7, 8});
+        return source;
+    }
+
+    private static void assertBinaryTreeUnchanged(ObjectNode source) throws IOException {
+        assertArrayEquals(new byte[]{1, 2}, source.get("bytes").binaryValue());
+        assertArrayEquals(new byte[]{3, 4}, source.get("object").get("bytes").binaryValue());
+        assertArrayEquals(new byte[]{5, 6}, source.get("objects").get(0).get("bytes").binaryValue());
+        assertArrayEquals(new byte[]{7, 8}, source.get("arrays").get(0).binaryValue());
     }
 
     @Test

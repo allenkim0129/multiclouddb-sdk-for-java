@@ -17,6 +17,12 @@ remove API Jackson dependencies, implement direct provider mapping, or remove
 existing internal serialization passes. Future neutral APIs will require a
 separate migration of this explicit Map/ObjectNode application boundary.
 
+The decode entry point accepts the `ObjectNode` returned by a point read. There
+is no convenience decode entry point for QueryPage Map items or change-feed
+JsonNode payloads. Encoded Maps can also be passed to the existing `update` Map
+API, but this increment's client conformance tests cover only create/upsert/read;
+they do not establish new update behavior or policy.
+
 ## Dependencies and lifecycle
 
 Add `com.microsoft.multiclouddb:multiclouddb-serializer-jackson:0.1.0-SNAPSHOT`
@@ -137,10 +143,19 @@ explicit null entries are retained. Missing fields remain absent.
 | Raw/raw-value JSON, raw UTF-8, binary, embedded values, native type/object IDs, Reader-based strings, numeric text/character-array overloads | Unsupported output fails explicitly; configure customer serializers to emit supported structural/scalar tokens instead |
 | `WRITE_NUMBERS_AS_STRINGS` when a number is emitted | Explicitly unsupported; emit a string token intentionally if that is the application's representation |
 | Pretty-printing, escaping, decimal lexical formatting, nonfinite quoting | Text-output features do not redefine this token-to-Map representation |
-| Decode | Captured typed reader traverses a private copy of the ObjectNode; parser codec APIs work, and no fields are stripped by the adapter |
+| Decode | Captured typed reader traverses a private copy of standard ObjectNode/ArrayNode containers and BinaryNode byte arrays, including nested binary leaves; parser codec APIs work, and no fields are stripped by the adapter |
+
+The decode isolation guarantee covers standard Jackson trees. Opaque POJONode
+values and custom JsonNode subclasses retain their own `deepCopy` semantics;
+arbitrary embedded objects/custom node implementations are not deep-cloned or
+covered by that guarantee. BinaryNode copying protects the supplied read tree
+from DTO byte-array or decoded-node mutations. It does not add binary encoding,
+portable binary writes, or a different provider binary conversion policy.
 
 Jackson's captured stream-write nesting constraint applies to collector
-construction. There is no new portable document budget, public budget
+construction. A failed depth check permanently invalidates that collector, even
+if a custom serializer catches the exception and tries to finish or close it;
+no partial Map can be returned. There is no new portable document budget, public budget
 configuration, exact numeric domain, or memory-size/performance guarantee.
 Outputs are materialized in memory. Existing client write-size validation still
 runs **after encoding**, including its existing serialization work; the codec
@@ -188,14 +203,17 @@ Adapter source/test paths below are under
 
 | Part / files | Methods and behavior | Tests / remaining boundary |
 |---|---|---|
-| `JacksonObjectCodec.java` | `createDefault`, `from`, Class/TypeRef `encodeMap` and `decode`; explicit application ownership, complete Map and copied-tree traversal, safe mapping failures | `JacksonObjectCodecTest`: default/custom/generic/date mapping, source mapper changes, numeric tokens, null/absence, unmodifiable containers, root/duplicate/unsupported failures, Map-deserializer bypass, tree nonmutation and parser codec |
-| `PlainMapGenerator.java` | Direct per-call structural collector; object grammar, duplicate rejection, ordered container freezing and scalar preservation | `PlainMapGeneratorTest`: structural and alternate generator entry points, fail-closed state, UTF-8 and formatting failures; no future Document/NumberValue semantics or portable write acceptance implied |
+| `JacksonObjectCodec.java` | `createDefault`, `from`, Class/TypeRef `encodeMap` and `decode`; explicit application ownership, complete Map and copied-tree traversal, safe mapping failures | `JacksonObjectCodecTest`: default/custom/generic/date mapping, source mapper changes, numeric tokens, null/absence, unmodifiable containers, root/duplicate/unsupported failures, swallowed-depth rejection, Map-deserializer bypass, tree nonmutation, nested binary DTO/node isolation and parser codec |
+| `PlainMapGenerator.java` | Direct per-call structural collector; object grammar, duplicate rejection, ordered container freezing and scalar preservation | `PlainMapGeneratorTest`: structural and alternate generator entry points, sticky failure after object/array depth exceptions and close, UTF-8 and formatting failures; no future Document/NumberValue semantics or portable write acceptance implied |
 | `MapperSnapshot.java` | Independent compatible copy, typed writer/reader, collector and tree parser creation | `MapperSnapshotTest`: copy failures, compatible subclass, JsonMapper, naming/serializer capture and concurrent use; custom collaborators are not deep-cloned |
 | `TypeRef.java`, `ObjectCodecException.java` | Adapter-local type capture and stable safe phase/reason accessors | `TypeRefTest`, `ObjectCodecExceptionTest`; no changes to existing API exports/classes |
 | Root/adapter POMs, adapter `module-info.java` | Optional reactor artifact; Jackson-only dependency boundary; source/Javadoc/JAR packaging | Java 17 / repository Jackson 2.22.1; no broader Jackson-version compatibility claim or release-workflow changes |
 | Conformance `CustomerObjectMappingTest.java` and test dependencies | Actual factory -> wrapper -> Cosmos/Dynamo/Spanner with native SDK mocks; create/upsert/read, custom naming/date/generic DTOs; same literal-Map native requests; input nonmutation; failed encode and existing size/reserved-field rejection before native operations | Spanner read fixture is reconstructed from captured mutation values **including FIELD_DATA**, not an unrelated JSON fixture. These are **E2E unit tests**, not live DB persistence, service numeric acceptance, schema, index or query validation. |
 
 Focused verification:
+
+The adapter-only named-module consumer compile/run was a **manual JPMS smoke
+check**, not an added automated CI test or compatibility matrix.
 
 ```text
 mvn -q -Punit -pl multiclouddb-conformance -am "-Dtest=CustomerObjectMappingTest,JacksonObjectCodecTest,MapperSnapshotTest,PlainMapGeneratorTest,TypeRefTest,ObjectCodecExceptionTest" "-Dsurefire.failIfNoSpecifiedTests=false" test

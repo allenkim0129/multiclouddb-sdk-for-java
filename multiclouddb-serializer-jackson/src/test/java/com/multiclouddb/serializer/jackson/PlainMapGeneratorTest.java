@@ -5,6 +5,8 @@ package com.multiclouddb.serializer.jackson;
 
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.StreamWriteConstraints;
+import com.fasterxml.jackson.core.exc.StreamConstraintsException;
 import com.fasterxml.jackson.core.io.SerializedString;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -93,6 +95,32 @@ class PlainMapGeneratorTest {
         generator.close();
         assertThrows(ObjectCodecException.class, generator::result);
         assertThrows(ObjectCodecException.class, generator::writeStartObject);
+    }
+
+    @Test
+    void objectDepthFailureRemainsFailedAfterCatchAndClose() throws Exception {
+        assertDepthFailureIsSticky(JsonGenerator::writeStartObject);
+    }
+
+    @Test
+    void arrayDepthFailureRemainsFailedAfterCatchAndClose() throws Exception {
+        assertDepthFailureIsSticky(JsonGenerator::writeStartArray);
+    }
+
+    private static void assertDepthFailureIsSticky(Output start) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.getFactory().setStreamWriteConstraints(StreamWriteConstraints.builder().maxNestingDepth(2).build());
+        try (PlainMapGenerator generator = new PlainMapGenerator(mapper)) {
+            generator.writeStartObject();
+            generator.writeFieldName("items");
+            generator.writeStartArray();
+            assertThrows(StreamConstraintsException.class, () -> start.write(generator));
+            assertThrows(ObjectCodecException.class, generator::writeEndArray);
+            assertThrows(ObjectCodecException.class, generator::writeEndObject);
+            assertThrows(ObjectCodecException.class, generator::result);
+            generator.close();
+            assertThrows(ObjectCodecException.class, generator::result);
+        }
     }
 
     @Test

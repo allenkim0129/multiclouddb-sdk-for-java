@@ -6,6 +6,7 @@ package com.multiclouddb.serializer.jackson;
 import com.fasterxml.jackson.core.Base64Variant;
 import com.fasterxml.jackson.core.StreamWriteConstraints;
 import com.fasterxml.jackson.core.base.GeneratorBase;
+import com.fasterxml.jackson.core.exc.StreamConstraintsException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
@@ -56,7 +57,7 @@ final class PlainMapGenerator extends GeneratorBase {
     public void writeStartObject() throws IOException {
         beginValue(true);
         _writeContext = _writeContext.createChildObjectContext();
-        constraints.validateNestingDepth(_writeContext.getNestingDepth());
+        validateNestingDepth();
         frames.push(new Frame(true));
     }
 
@@ -64,8 +65,18 @@ final class PlainMapGenerator extends GeneratorBase {
     public void writeStartArray() throws IOException {
         beginValue(false);
         _writeContext = _writeContext.createChildArrayContext();
-        constraints.validateNestingDepth(_writeContext.getNestingDepth());
+        validateNestingDepth();
         frames.push(new Frame(false));
+    }
+
+    private void validateNestingDepth() throws StreamConstraintsException {
+        try {
+            constraints.validateNestingDepth(_writeContext.getNestingDepth());
+        } catch (StreamConstraintsException failure) {
+            failed = true;
+            frames.clear();
+            throw failure;
+        }
     }
 
     @Override
