@@ -27,6 +27,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `error_prone_annotations` 2.27.0 metadata dependency (static in JPMS).
   Cursor JSON uses Gson's official `Strictness.STRICT` with public lexical
   rejection and v1 wire/coercion/retention compatibility fixtures.
+  A leading U+FEFF is rejected like the legacy String reader; U+FEFF inside
+  string values remains valid and unchanged.
   Logical write-size validation preserves the 399 KiB byte profile without
   allocating serialized document JSON and rejects portable binary writes.
   Binary diagnostics no longer imply size overflow; overflow reports an observed

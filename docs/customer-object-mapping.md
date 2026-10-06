@@ -260,7 +260,9 @@ Closed-client-first validation and capability gates remain.
 Cursor v1 keeps Base64URL JSON, field omission/order, binding, retention and
 error reasons. Gson 2.11.0 `Strictness.STRICT` syntax handling is checked against
 legacy goldens/coercion fixtures and public `fromToken` lexical-rejection tests,
-including mixed-case literals and unescaped controls. Escaped controls,
+including mixed-case literals, unescaped controls and a leading U+FEFF at the
+String input boundary. Literal/escaped U+FEFF inside string values is preserved.
+Escaped controls,
 duplicate-last-wins and intentional one-root/trailing-root behavior remain.
 Opaque Unicode/unpaired UTF-16 is preserved. Valid
 Unicode escape spelling may differ without changing decoded cursor content.

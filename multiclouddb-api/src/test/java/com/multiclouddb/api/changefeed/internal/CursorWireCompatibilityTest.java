@@ -104,6 +104,34 @@ class CursorWireCompatibilityTest {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(json.getBytes(StandardCharsets.UTF_8));
     }
 
+    @Test
+    void publicDecoderRejectsLeadingBomLikeLegacyStringReaderAndHandlesEmptyInput() throws Exception {
+        String valid = json(ChangeFeedCursor.now().toToken());
+        ObjectMapper legacy = new ObjectMapper();
+        assertNotNull(legacy.readTree(valid));
+        String withBom = "\uFEFF" + valid;
+        assertThrows(java.io.IOException.class, () -> legacy.readTree(withBom));
+        assertThrows(java.io.IOException.class, () -> CursorJson.read(""));
+        for (String invalid : List.of(withBom, "")) {
+            CursorExpiredException failure = assertThrows(CursorExpiredException.class,
+                    () -> ChangeFeedCursor.fromToken(wire(invalid)));
+            assertEquals(CursorTokenCodec.REASON_MALFORMED, failure.error().providerDetails().get("reason"));
+        }
+    }
+
+    @Test
+    void publicDecoderPreservesLiteralAndEscapedBomInsideStringValues() throws Exception {
+        String expected = "\uFEFFinside\uFEFF";
+        for (String content : List.of(expected, "\\uFEFFinside\\uFEFF")) {
+            String json = "{\"v\":1,\"p\":\"cosmos\",\"i\":" + System.currentTimeMillis()
+                    + ",\"a\":\"CONTINUING\",\"s\":[{\"id\":\"p0\",\"c\":\"" + content + "\"}]}";
+            assertEquals(expected, new ObjectMapper().readTree(json).get("s").get(0).get("c").textValue());
+            ChangeFeedCursor cursor = ChangeFeedCursor.fromToken(wire(json));
+            assertEquals(expected, cursor.token().partitions().get(0).continuation());
+            assertEquals(cursor.token(), ChangeFeedCursor.fromToken(cursor.toToken()).token());
+        }
+    }
+
     private static String json(String wire) {
         return new String(Base64.getUrlDecoder().decode(wire), StandardCharsets.UTF_8);
     }

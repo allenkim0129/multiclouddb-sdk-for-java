@@ -26,6 +26,10 @@ final class CursorJson {
     }
 
     static JsonElement read(String json) throws IOException {
+        // Match legacy readTree(String), not BOM-tolerant byte-stream parsing.
+        if (!json.isEmpty() && json.charAt(0) == '\uFEFF') {
+            throw new IOException("Unexpected leading cursor JSON BOM.");
+        }
         try (JsonReader reader = new V1Reader(json)) {
             reader.setStrictness(Strictness.STRICT);
             // Like the original readTree, consume one root, not additional trailing roots.
