@@ -6,12 +6,15 @@ package com.multiclouddb.serializer.jackson;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.ObjectWriter;
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.util.TokenBuffer;
+import com.multiclouddb.api.codec.DocumentCodecException;
+import com.multiclouddb.api.codec.TypeRef;
+import com.multiclouddb.api.document.Document;
+import java.io.IOException;
 
-import static com.multiclouddb.serializer.jackson.ObjectCodecException.Phase.CONSTRUCTION;
-import static com.multiclouddb.serializer.jackson.ObjectCodecException.Reason.INVALID_ARGUMENT;
-import static com.multiclouddb.serializer.jackson.ObjectCodecException.Reason.MAPPER_COPY_FAILED;
+import static com.multiclouddb.api.codec.DocumentCodecException.Phase.CONSTRUCTION;
+import static com.multiclouddb.api.codec.DocumentCodecException.Reason.INVALID_ARGUMENT;
+import static com.multiclouddb.api.codec.DocumentCodecException.Reason.MAPPER_COPY_FAILED;
 
 /**
  * Captures mapper configuration without owning customer collaborator lifecycles.
@@ -27,18 +30,18 @@ final class MapperSnapshot {
 
     static MapperSnapshot from(ObjectMapper source) {
         if (source == null) {
-            throw new ObjectCodecException(CONSTRUCTION, INVALID_ARGUMENT);
+            throw new DocumentCodecException(CONSTRUCTION, INVALID_ARGUMENT);
         }
         final ObjectMapper copy;
         try {
             // This is the caller-overridable copy boundary, not a general SDK catch.
             copy = source.copy();
         } catch (RuntimeException failure) {
-            throw new ObjectCodecException(CONSTRUCTION, MAPPER_COPY_FAILED);
+            throw new DocumentCodecException(CONSTRUCTION, MAPPER_COPY_FAILED);
         }
         if (copy == null || copy == source || !source.getClass().isInstance(copy)
                 || copy.getFactory() == source.getFactory()) {
-            throw new ObjectCodecException(CONSTRUCTION, MAPPER_COPY_FAILED);
+            throw new DocumentCodecException(CONSTRUCTION, MAPPER_COPY_FAILED);
         }
         return new MapperSnapshot(copy);
     }
@@ -51,11 +54,18 @@ final class MapperSnapshot {
         return mapper.readerFor(mapper.constructType(type.type()));
     }
 
-    PlainMapGenerator generator() {
-        return new PlainMapGenerator(mapper);
+    DocumentGenerator generator() {
+        return new DocumentGenerator(mapper);
     }
 
-    JsonParser parserFor(ObjectNode document) {
-        return document.traverse(mapper);
+    TokenBuffer tokensFor(Document document) throws IOException {
+        TokenBuffer tokens = new TokenBuffer(mapper, false);
+        try {
+            DocumentTokens.write(tokens, document.root());
+            return tokens;
+        } catch (IOException | RuntimeException failure) {
+            tokens.close();
+            throw failure;
+        }
     }
 }

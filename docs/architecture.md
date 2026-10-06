@@ -31,20 +31,26 @@ multiclouddb-api  ← must be released first if API changed
     └── multiclouddb-provider-spanner  ← independent of other providers
 ```
 
-Providers depend on a released version of `multiclouddb-api`. They are
-independent of each other and can be released separately.
+Released providers depend on a released `multiclouddb-api`. The current breaking
+Document increment builds against coordinated development SNAPSHOT versions;
+these are not newly published releases.
 
 ### Optional customer object mapping
 
-The unpublished `multiclouddb-serializer-jackson` development module provides
-application-owned `JacksonObjectCodec.encodeMap` / `decode` against the existing
-Map-write / ObjectNode-read boundaries. It snapshots a customer ObjectMapper and
-depends only on Jackson; API/providers do not depend on it. There is no automatic
-client registration or POJO overload. Existing provider mappings, validation and
-API Jackson dependencies are unchanged. See
+The API owns immutable `Document`/`DocumentValue`, application-owned
+`DocumentCodec`, neutral `TypeRef` and safe codec errors. CRUD and point reads use
+Document; nullable change-feed payloads use DocumentValue. Query Map/Object
+contracts remain unchanged. The API runtime depends on SLF4J and private Gson
+cursor handling, not Jackson (including transitive or shaded Jackson).
+
+The optional `multiclouddb-serializer-jackson` module implements that contract
+with `JacksonDocumentCodec`, snapshots a customer ObjectMapper and depends on API
+and Jackson. Providers do not depend on this codec module, but still explicitly
+depend on Jackson for their existing internal native mappings. There is no
+automatic client registration or POJO overload. See
 [customer object mapping](customer-object-mapping.md) for usage, configuration,
-provider limitations and file/method/test traceability. The neutral Document and
-broader issue-116 API migration remain separate work.
+provider limitations and file/method/test traceability. Uniform query/image
+contracts and direct native mapping remain later issue-116 work.
 
 ---
 

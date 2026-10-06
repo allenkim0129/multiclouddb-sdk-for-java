@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-package com.multiclouddb.serializer.jackson;
+package com.multiclouddb.api.codec;
 
 import org.junit.jupiter.api.Test;
 

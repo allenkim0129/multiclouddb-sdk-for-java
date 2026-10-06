@@ -3,12 +3,15 @@
 
 package com.multiclouddb.serializer.jackson;
 
+import com.multiclouddb.api.codec.DocumentCodecException;
+
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.StreamWriteConstraints;
 import com.fasterxml.jackson.core.exc.StreamConstraintsException;
 import com.fasterxml.jackson.core.io.SerializedString;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.multiclouddb.api.document.*;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -19,14 +22,14 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
-import static com.multiclouddb.serializer.jackson.ObjectCodecException.Reason.*;
+import static com.multiclouddb.api.codec.DocumentCodecException.Reason.*;
 import static org.junit.jupiter.api.Assertions.*;
 
-class PlainMapGeneratorTest {
+class DocumentGeneratorTest {
     @Test
     void higherLevelGeneratorEntrypointsUseTheSameStructuralCollector() throws Exception {
         ObjectMapper mapper = new ObjectMapper();
-        try (PlainMapGenerator g = new PlainMapGenerator(mapper)) {
+        try (DocumentGenerator g = new DocumentGenerator(mapper)) {
             g.writeStartObject(new Object());
             g.writeFieldName(new SerializedString("text"));
             g.writeString(new SerializedString("a"));
@@ -43,15 +46,15 @@ class PlainMapGeneratorTest {
             g.writeFieldName("nullable");
             g.writeNumber((BigDecimal) null);
             g.writeEndObject();
-            Map<String, Object> output = g.result();
-            assertEquals("a", output.get("text"));
-            assertEquals("bc", output.get("chars"));
-            assertEquals("text", output.get("utf8"));
-            assertEquals(Map.of("value", true), output.get("object"));
-            assertEquals(Map.of("value", "nested"), output.get("tree"));
-            assertEquals(List.of(2, 3), output.get("array"));
+            Map<String, DocumentValue> output = g.result().root().fields();
+            assertEquals(new StringValue("a"), output.get("text"));
+            assertEquals(new StringValue("bc"), output.get("chars"));
+            assertEquals(new StringValue("text"), output.get("utf8"));
+            assertEquals(ObjectValue.of(Map.of("value", new BooleanValue(true))), output.get("object"));
+            assertEquals(ObjectValue.of(Map.of("value", new StringValue("nested"))), output.get("tree"));
+            assertEquals(ArrayValue.of(List.of(NumberValue.of(2), NumberValue.of(3))), output.get("array"));
             assertTrue(output.containsKey("nullable"));
-            assertNull(output.get("nullable"));
+            assertEquals(NullValue.INSTANCE, output.get("nullable"));
             assertEquals(List.of("text", "chars", "utf8", "object", "tree", "array", "nullable"),
                     List.copyOf(output.keySet()));
         }
@@ -62,11 +65,13 @@ class PlainMapGeneratorTest {
         ObjectMapper mapper = new ObjectMapper();
         var tree = mapper.createObjectNode();
         tree.putArray("items").addNull().add(2).addObject().put("value", true);
-        try (PlainMapGenerator generator = new PlainMapGenerator(mapper);
+        try (DocumentGenerator generator = new DocumentGenerator(mapper);
              JsonParser parser = tree.traverse(mapper)) {
             parser.nextToken();
             generator.copyCurrentStructure(parser);
-            assertEquals(Map.of("items", Arrays.asList(null, 2, Map.of("value", true))), generator.result());
+            assertEquals(Document.builder().put("items", ArrayValue.of(List.of(
+                    NullValue.INSTANCE, NumberValue.of(2), ObjectValue.of(Map.of("value", new BooleanValue(true))))))
+                    .build(), generator.result());
         }
     }
 
@@ -80,21 +85,21 @@ class PlainMapGeneratorTest {
                 g -> { g.writeStartObject(); g.writeFieldName("items"); g.writeStartArray(); g.writeEndObject(); },
                 g -> { g.writeStartObject(); g.writeFieldName("items"); g.writeEndArray(); },
                 g -> { g.writeStartObject(); g.writeEndObject(); g.writeNull(); })) {
-            try (PlainMapGenerator generator = new PlainMapGenerator(new ObjectMapper())) {
-                assertThrows(ObjectCodecException.class, () -> invalid.write(generator));
-                assertThrows(ObjectCodecException.class, generator::result);
-                assertThrows(ObjectCodecException.class, generator::writeStartObject);
+            try (DocumentGenerator generator = new DocumentGenerator(new ObjectMapper())) {
+                assertThrows(DocumentCodecException.class, () -> invalid.write(generator));
+                assertThrows(DocumentCodecException.class, generator::result);
+                assertThrows(DocumentCodecException.class, generator::writeStartObject);
             }
         }
     }
 
     @Test
     void incompleteAndClosedStreamsCannotBecomeEmptySuccesses() throws Exception {
-        PlainMapGenerator generator = new PlainMapGenerator(new ObjectMapper());
+        DocumentGenerator generator = new DocumentGenerator(new ObjectMapper());
         generator.writeStartObject();
         generator.close();
-        assertThrows(ObjectCodecException.class, generator::result);
-        assertThrows(ObjectCodecException.class, generator::writeStartObject);
+        assertThrows(DocumentCodecException.class, generator::result);
+        assertThrows(DocumentCodecException.class, generator::writeStartObject);
     }
 
     @Test
@@ -110,16 +115,16 @@ class PlainMapGeneratorTest {
     private static void assertDepthFailureIsSticky(Output start) throws Exception {
         ObjectMapper mapper = new ObjectMapper();
         mapper.getFactory().setStreamWriteConstraints(StreamWriteConstraints.builder().maxNestingDepth(2).build());
-        try (PlainMapGenerator generator = new PlainMapGenerator(mapper)) {
+        try (DocumentGenerator generator = new DocumentGenerator(mapper)) {
             generator.writeStartObject();
             generator.writeFieldName("items");
             generator.writeStartArray();
             assertThrows(StreamConstraintsException.class, () -> start.write(generator));
-            assertThrows(ObjectCodecException.class, generator::writeEndArray);
-            assertThrows(ObjectCodecException.class, generator::writeEndObject);
-            assertThrows(ObjectCodecException.class, generator::result);
+            assertThrows(DocumentCodecException.class, generator::writeEndArray);
+            assertThrows(DocumentCodecException.class, generator::writeEndObject);
+            assertThrows(DocumentCodecException.class, generator::result);
             generator.close();
-            assertThrows(ObjectCodecException.class, generator::result);
+            assertThrows(DocumentCodecException.class, generator::result);
         }
     }
 
@@ -132,10 +137,10 @@ class PlainMapGeneratorTest {
                 g -> g.writeRawUTF8String(new byte[]{'x'}, 0, 1),
                 g -> g.writeObjectRef("id"),
                 g -> g.writeTypeId("type"))) {
-            try (PlainMapGenerator generator = new PlainMapGenerator(new ObjectMapper())) {
+            try (DocumentGenerator generator = new DocumentGenerator(new ObjectMapper())) {
                 generator.writeStartObject();
                 generator.writeFieldName("value");
-                assertEquals(UNSUPPORTED_OUTPUT, assertThrows(ObjectCodecException.class,
+                assertEquals(UNSUPPORTED_OUTPUT, assertThrows(DocumentCodecException.class,
                         () -> output.write(generator)).reason());
             }
         }
@@ -143,10 +148,10 @@ class PlainMapGeneratorTest {
 
     @Test
     void rejectsInvalidUtf8InsteadOfReplacingBytes() throws Exception {
-        try (PlainMapGenerator generator = new PlainMapGenerator(new ObjectMapper())) {
+        try (DocumentGenerator generator = new DocumentGenerator(new ObjectMapper())) {
             generator.writeStartObject();
             generator.writeFieldName("text");
-            assertEquals(UNSUPPORTED_OUTPUT, assertThrows(ObjectCodecException.class,
+            assertEquals(UNSUPPORTED_OUTPUT, assertThrows(DocumentCodecException.class,
                     () -> generator.writeUTF8String(new byte[]{(byte) 0xff}, 0, 1)).reason());
         }
     }
@@ -155,12 +160,12 @@ class PlainMapGeneratorTest {
     @SuppressWarnings("deprecation")
     void numericStringFormattingIsNotSilentlyIgnored() throws Exception {
         ObjectMapper mapper = new ObjectMapper().enable(JsonGenerator.Feature.WRITE_NUMBERS_AS_STRINGS);
-        try (PlainMapGenerator generator = new PlainMapGenerator(mapper)) {
+        try (DocumentGenerator generator = new DocumentGenerator(mapper)) {
             generator.writeStartObject();
             generator.writeFieldName("nullable");
             generator.writeNumber((BigDecimal) null);
             generator.writeFieldName("number");
-            assertEquals(UNSUPPORTED_OUTPUT, assertThrows(ObjectCodecException.class,
+            assertEquals(UNSUPPORTED_OUTPUT, assertThrows(DocumentCodecException.class,
                     () -> generator.writeNumber(1)).reason());
         }
     }

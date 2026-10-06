@@ -7,6 +7,18 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Document mapping (development)
+
+- Accept neutral Document CRUD payloads and return Document point reads plus
+  nullable DocumentValue change-feed data. Retain FIELD_DATA, nested JSON markers,
+  current update behavior and selected old/new/legacy event payloads.
+- Retained numeric kinds preserve existing INT64/FLOAT64 mapping and the
+  top-level BigDecimal/BigInteger STRING fallback; no new decimal rejection,
+  rounding, schema migration or precision guarantee. Jackson is now a direct
+  dependency rather than inherited through API.
+- Development coordinate `0.1.0-beta.1-SNAPSHOT` against the coordinated API;
+  no release is declared. See [mapping support and migration](../docs/customer-object-mapping.md).
+
 ### Added
 
 - Change-feed reader backed by Spanner change streams via the `READ_<stream>` TVF (single-use read-only transaction; 5-second bounded window per call). `listCursors` bootstraps the partition tree by calling the TVF with a `NULL` partition token and anchors each cursor''s bookmark at `max(now, childStart)` so `now()` cursors honour their live-tip contract on the emulator. `readChanges` drains a bounded window, absorbs `child_partitions_record` rows (splits/merges), rotates the partition list across partitions, and surfaces `isTerminal()=true` when a cursor''s sole partition closes without children. Each `data_change_record.mod` becomes one `ChangeEvent` with a stable `providerEventId` (`<server_transaction_id>:<commit_ts>:<record_sequence>:<mod_index>`). `INVALID_ARGUMENT` / `NOT_FOUND` / `OUT_OF_RANGE` on the TVF (most commonly a partition token outside the stream''s retention window) is mapped to `CursorExpiredException(reason=PROVIDER_TRIMMED)`.

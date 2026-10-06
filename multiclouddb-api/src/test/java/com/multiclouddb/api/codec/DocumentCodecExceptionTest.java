@@ -1,19 +1,19 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-package com.multiclouddb.serializer.jackson;
+package com.multiclouddb.api.codec;
 
 import org.junit.jupiter.api.Test;
 import java.io.PrintWriter;
 import java.io.StringWriter;
-import static com.multiclouddb.serializer.jackson.ObjectCodecException.Phase.*;
-import static com.multiclouddb.serializer.jackson.ObjectCodecException.Reason.*;
+import static com.multiclouddb.api.codec.DocumentCodecException.Phase.*;
+import static com.multiclouddb.api.codec.DocumentCodecException.Reason.*;
 import static org.junit.jupiter.api.Assertions.*;
 
-class ObjectCodecExceptionTest {
+class DocumentCodecExceptionTest {
     @Test
     void retainsPhaseAndReasonWithoutRawCausesOrSuppressedDetails() {
-        ObjectCodecException failure = new ObjectCodecException(CONSTRUCTION, MAPPER_COPY_FAILED);
+        DocumentCodecException failure = new DocumentCodecException(CONSTRUCTION, MAPPER_COPY_FAILED);
         IllegalStateException raw = new IllegalStateException("customer-secret");
         assertThrows(IllegalStateException.class, () -> failure.initCause(raw));
         failure.addSuppressed(raw);
@@ -29,7 +29,7 @@ class ObjectCodecExceptionTest {
 
     @Test
     void rejectsMissingIdentifiers() {
-        assertThrows(NullPointerException.class, () -> new ObjectCodecException(null, INVALID_ARGUMENT));
-        assertThrows(NullPointerException.class, () -> new ObjectCodecException(ENCODE, null));
+        assertThrows(NullPointerException.class, () -> new DocumentCodecException(null, INVALID_ARGUMENT));
+        assertThrows(NullPointerException.class, () -> new DocumentCodecException(ENCODE, null));
     }
 }

@@ -1,25 +1,23 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-package com.multiclouddb.serializer.jackson;
+package com.multiclouddb.api.codec;
 
 import java.util.Objects;
 
 /**
- * An application-object mapping failure, separate from database request failures.
- * Messages contain only SDK phase/reason identifiers, not customer values,
- * field names or serializer messages. Raw causes and suppressed exceptions are
- * deliberately not accepted or attached.
+ * A conversion failure, separate from database errors. Diagnostics contain only
+ * phase/reason identifiers, never customer values or raw serializer exceptions.
  */
-public final class ObjectCodecException extends RuntimeException {
+public final class DocumentCodecException extends RuntimeException {
     private static final long serialVersionUID = 1L;
 
-    /** Boundary at which mapping failed. */
+    /** Boundary at which conversion failed. */
     public enum Phase {
         CONSTRUCTION, ENCODE, DECODE
     }
 
-    /** Stable identifiers for implemented preparation and structural checks. */
+    /** Stable reasons, including optional mapper preparation failures. */
     public enum Reason {
         INVALID_ARGUMENT,
         MAPPER_COPY_FAILED,
@@ -33,7 +31,7 @@ public final class ObjectCodecException extends RuntimeException {
     private final Phase phase;
     private final Reason reason;
 
-    public ObjectCodecException(Phase phase, Reason reason) {
+    public DocumentCodecException(Phase phase, Reason reason) {
         super(message(phase, reason), null, false, true);
         this.phase = phase;
         this.reason = reason;
@@ -50,6 +48,6 @@ public final class ObjectCodecException extends RuntimeException {
     private static String message(Phase phase, Reason reason) {
         Objects.requireNonNull(phase, "phase");
         Objects.requireNonNull(reason, "reason");
-        return "Object codec failure: " + phase.name() + "/" + reason.name() + ".";
+        return "Document codec failure: " + phase.name() + "/" + reason.name() + ".";
     }
 }

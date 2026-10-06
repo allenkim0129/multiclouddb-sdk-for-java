@@ -3,6 +3,10 @@
 
 package com.multiclouddb.serializer.jackson;
 
+import com.multiclouddb.api.codec.DocumentCodecException;
+
+import com.multiclouddb.api.codec.TypeRef;
+
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.*;
@@ -20,8 +24,8 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 
-import static com.multiclouddb.serializer.jackson.ObjectCodecException.Phase.CONSTRUCTION;
-import static com.multiclouddb.serializer.jackson.ObjectCodecException.Reason.*;
+import static com.multiclouddb.api.codec.DocumentCodecException.Phase.CONSTRUCTION;
+import static com.multiclouddb.api.codec.DocumentCodecException.Reason.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class MapperSnapshotTest {
@@ -120,8 +124,8 @@ class MapperSnapshotTest {
                 throw new IllegalStateException("customer-secret");
             }
         };
-        ObjectCodecException failure = assertThrows(ObjectCodecException.class,
-                () -> JacksonObjectCodec.from(source));
+        DocumentCodecException failure = assertThrows(DocumentCodecException.class,
+                () -> JacksonDocumentCodec.from(source));
         assertEquals(CONSTRUCTION, failure.phase());
         assertEquals(MAPPER_COPY_FAILED, failure.reason());
         assertNull(failure.getCause());
@@ -133,21 +137,21 @@ class MapperSnapshotTest {
 
     @Test
     void rejectsNullSelfNullCopyAndIncompatibleCopy() {
-        assertEquals(INVALID_ARGUMENT, assertThrows(ObjectCodecException.class,
-                () -> JacksonObjectCodec.from(null)).reason());
+        assertEquals(INVALID_ARGUMENT, assertThrows(DocumentCodecException.class,
+                () -> JacksonDocumentCodec.from(null)).reason());
         for (ObjectMapper source : List.of(
                 new ObjectMapper() { @Override public ObjectMapper copy() { return this; } },
                 new ObjectMapper() { @Override public ObjectMapper copy() { return null; } },
                 new ObjectMapper() { @Override public ObjectMapper copy() { return new ObjectMapper(); } },
                 new ObjectMapper() {})) {
-            assertEquals(MAPPER_COPY_FAILED, assertThrows(ObjectCodecException.class,
-                    () -> JacksonObjectCodec.from(source)).reason());
+            assertEquals(MAPPER_COPY_FAILED, assertThrows(DocumentCodecException.class,
+                    () -> JacksonDocumentCodec.from(source)).reason());
         }
     }
 
     @Test
     void supportsSubclassWithIndependentCompatibleCopy() {
-        assertNotNull(JacksonObjectCodec.from(new CopyableMapper()));
+        assertNotNull(JacksonDocumentCodec.from(new CopyableMapper()));
     }
 
     static final class CopyableMapper extends ObjectMapper {

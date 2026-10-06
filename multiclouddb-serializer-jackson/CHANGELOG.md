@@ -4,38 +4,36 @@
 
 ### Added
 
-- Optional application-owned `JacksonObjectCodec` with default and
-  caller-configured mapper snapshots, explicit `encodeMap` / `decode`, Class
-  convenience and adapter-local generic `TypeRef`.
-- Direct serializer-token collection into unmodifiable plain Map/List/scalar
-  values, without a JSON-byte detour or Map-target deserializer pass. Typed
-  decoding traverses a private copy of existing ObjectNode results.
-- Explicit safe mapping errors for failed copies, invalid roots/structure,
-  observable duplicate fields and unsupported output. No silent fallback to a
-  default mapper, numeric normalization, reserved-name rewrite or client
-  registration.
-- Native-SDK-mocked E2E unit coverage through the real factory/client/providers
-  for custom naming/date serialization and generic DTO deserialization across
-  create/upsert/read, including literal Map request parity and validation.
+- Optional `JacksonDocumentCodec` implements the API-owned `DocumentCodec` with
+  `createDefault` / caller-configured `from(ObjectMapper)`, explicit encode/decode
+  and common Class/TypeRef support.
+- Direct serializer-token collection into immutable Document/DocumentValue,
+  without JSON bytes or Map-target deserialization. Decode uses decoder-owned
+  TokenBuffer tokens and the snapshot's typed reader, preserving configured
+  coercion and custom deserializers.
+- Safe phase/reason failures, independent mapper configuration snapshots,
+  object-root/duplicate/output validation, sticky collector failures and nested
+  binary isolation for decoded DTO/node mutations.
+- Actual factory/client/provider native-mock coverage for custom naming/date/
+  generic mapping and a separate handwritten non-Jackson codec. These are
+  create/upsert/point-read E2E unit tests, not live persistence guarantees.
 
-### Fixed
+### Changed
 
-- Depth-constraint failures now permanently invalidate the token collector for
-  both object and array starts, preventing partial results after a custom
-  serializer catches the failure.
-- Decode copies standard BinaryNode byte arrays throughout standard object/array
-  trees, so decoded DTO or node mutations cannot alter the supplied binary leaves.
-  Opaque POJONode values and custom JsonNode subclasses are outside the isolation
-  guarantee; no provider binary policy changes.
+- Replaces the unpublished JacksonObjectCodec Map/ObjectNode boundary with
+  Document. TypeRef and DocumentCodecException now belong to the neutral API.
+  Existing custom-reader coercion is not replaced with stricter numeric logic;
+  model numeric construction follows the documented finite bounded domain.
+- API is now a dependency; the adapter is optional for customer code and not a
+  provider dependency. No client registration, POJO overload or module discovery.
 
 ### Scope
 
-- Development coordinate `0.1.0-SNAPSHOT`; no release is declared. API/provider
-  versions and release workflows are unchanged.
-- Current Map/ObjectNode boundary only. Neutral documents, new numeric/resource
-  semantics, API Jackson removal and existing provider behavior changes remain
-  separate work. Existing provider numeric/schema/key limitations still apply.
-  This increment does not close microsoft/multiclouddb-sdk-for-java#116.
-- Decode targets point-read ObjectNode results, without QueryPage Map or
-  change-feed JsonNode convenience overloads. Existing Map update calls can use
-  encoded output, but client conformance here covers create/upsert/read only.
+- Unpublished `0.1.0-SNAPSHOT` against the coordinated development API; no release
+  workflow changes. Query Map/Object contracts remain and no query/change-feed
+  convenience decode is introduced. Update semantics are unchanged and outside
+  the new customer workflow evidence.
+- Existing native provider numeric/schema/key limitations remain. Binary model
+  isolation is not binary-write support. Full issue-116 completion and direct
+  native provider mapping remain deferred.
+- See [support, migration and source/test traceability](../docs/customer-object-mapping.md).

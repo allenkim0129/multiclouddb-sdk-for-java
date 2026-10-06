@@ -573,7 +573,7 @@ final class SpannerChangeFeedReader {
             Instant eventInstant = commitTs != null
                     ? Instant.ofEpochSecond(commitTs.getSeconds(), commitTs.getNanos())
                     : Instant.EPOCH;
-            out.add(new ChangeEvent(key, type, eventInstant, data, eventId));
+            out.add(new ChangeEvent(key, type, eventInstant, NativeDocuments.value(data), eventId));
             idx++;
         }
         return new DataChangeBatch(out, commitTs != null ? commitTs : Timestamp.now(), recordSeq);

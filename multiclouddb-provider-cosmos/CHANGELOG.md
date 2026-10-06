@@ -7,6 +7,16 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Document mapping (development)
+
+- Accept neutral Document CRUD payloads and return Document point reads plus
+  nullable DocumentValue change-feed data. Retain existing internal Map/tree
+  mapping, key/TTL injection, selected event bodies and system-field visibility.
+  Declare Jackson directly rather than inheriting it from API.
+- Coordinated `0.1.0-beta.2-SNAPSHOT` development API dependency; no release,
+  schema/envelope redesign or general provider bug fix. See
+  [mapping support and migration](../docs/customer-object-mapping.md).
+
 ## [0.1.0-beta.2] — 2026-06-17
 
 > **Requires `multiclouddb-api` 0.1.0-beta.2 or later** — this release consumes API surface (change-feed cursors, `CLIENT_CLOSED` envelope, `EXTENDED_CHANGE_FEED_HISTORY` capability) introduced in API beta.2. The dependency is pinned in the published POM.

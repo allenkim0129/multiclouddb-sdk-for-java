@@ -7,6 +7,30 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- API-owned immutable `Document` and closed null/boolean/string/number/binary/
+  array/object value model, neutral application-owned `DocumentCodec`, `TypeRef`
+  and safe `DocumentCodecException`. Mathematical number equality retains source
+  kind/scale and floating zero sign; finite floating decimal views follow runtime
+  round-trip text. Initial precision/scale/depth bounds are documented separately
+  from provider storage support.
+
+### Changed
+
+- Breaking development migration: CRUD client/SPI bodies and point-read payloads
+  use `Document`; `ChangeEvent.data()` uses nullable `DocumentValue` without new
+  image classification or changed provider image selection. Query Map/Object
+  contracts are unchanged.
+- API compile/runtime dependencies no longer include Jackson. Cursor JSON uses
+  private Gson 2.10.1 with v1 wire/coercion/retention compatibility fixtures.
+  Logical write-size validation preserves the 399 KiB byte profile without
+  allocating serialized document JSON and rejects portable binary writes.
+  Jackson remains a test-only compatibility oracle.
+- Development coordinate is `0.1.0-beta.2-SNAPSHOT`; no release is declared.
+  See [customer mapping and migration](../docs/customer-object-mapping.md).
+  This is partial work related to microsoft/multiclouddb-sdk-for-java#116.
+
 ## [0.1.0-beta.2] — 2026-06-17
 
 ### Added

@@ -1,63 +1,82 @@
-# Customer-configured object mapping
+# Customer codecs and neutral documents
 
-`multiclouddb-serializer-jackson` provides an optional, application-owned
-`JacksonObjectCodec` for the SDK's **existing Map write / ObjectNode read
-boundaries**. Customer naming rules, serializers and deserializers run explicitly
-in the application:
+Applications own their serialization policy through the API's `DocumentCodec`.
+The database client accepts an immutable `Document`, not an arbitrary POJO, and
+does not discover, register or invoke codecs:
 
 ```text
-DTO --codec.encodeMap--> Map --client.create/upsert--> existing provider
-DTO <--codec.decode---- ObjectNode <--client.read---- existing provider
+DTO --explicit codec.encode--> Document --client.create/upsert--> provider
+DTO <--explicit codec.decode-- Document <--client.read().document()-- provider
 ```
 
-This implements part of the customer object-mapping goal associated with
-[microsoft/multiclouddb-sdk-for-java#116](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/116).
-It does **not** complete that issue, introduce its proposed neutral Document,
-remove API Jackson dependencies, implement direct provider mapping, or remove
-existing internal serialization passes. Future neutral APIs will require a
-separate migration of this explicit Map/ObjectNode application boundary.
+The API's public declarations and compile/runtime dependency closure are
+Jackson-free. The API still uses SLF4J and private Gson cursor JSON handling.
+Jackson is optional for application mapping: `multiclouddb-serializer-jackson`
+implements the common contract with `JacksonDocumentCodec`. Native provider
+implementations/SDKs still use Jackson and declare their dependencies explicitly.
+The API's test-only Jackson dependency is an old-behavior comparison oracle,
+not part of the runtime closure.
 
-The decode entry point accepts the `ObjectNode` returned by a point read. There
-is no convenience decode entry point for QueryPage Map items or change-feed
-JsonNode payloads. Encoded Maps can also be passed to the existing `update` Map
-API, but this increment's client conformance tests cover only create/upsert/read;
-they do not establish new update behavior or policy.
+This is a **breaking development increment**, related to
+[microsoft/multiclouddb-sdk-for-java#116](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/116),
+not issue closure or a release. It replaces the earlier unreleased
+Map/ObjectNode codec boundary. Query values remain JDK Maps/Objects; direct native
+provider mapping, uniform query results, richer change-image contracts, complete
+migration and benchmarks remain later work.
 
-## Dependencies and lifecycle
+## Dependencies and migration
 
-Add `com.microsoft.multiclouddb:multiclouddb-serializer-jackson:0.1.0-SNAPSHOT`
-alongside the existing API and selected provider when building this development
-reactor. This coordinate is **unpublished development work**, not a new release.
-The adapter depends only on Jackson; it does not depend on new/unpublished API
-classes. API/provider versions and release workflows are unchanged.
+Build the coordinated reactor: API/Cosmos/Dynamo use
+`0.1.0-beta.2-SNAPSHOT`, Spanner uses `0.1.0-beta.1-SNAPSHOT`, and the optional
+adapter uses `0.1.0-SNAPSHOT`. These are unpublished development coordinates,
+not new stable releases or claims of compatibility with the released beta API.
+Release workflows are unchanged.
 
-The JPMS module is `com.multiclouddb.serializer.jackson`. Applications using
-reflection-based DTO mapping on the module path must open their DTO packages to
-`com.fasterxml.jackson.databind`. The module exports its concrete codec,
-`TypeRef` and `ObjectCodecException`; it does not reserve a future neutral
-`DocumentCodec` interface. The adapter is not installed into clients or providers,
-and no client registration, arbitrary-POJO overload or mapper discovery is added.
+| Earlier boundary | Current boundary |
+|---|---|
+| `JacksonObjectCodec.encodeMap(...)` | `JacksonDocumentCodec.encode(...)`, implementing `DocumentCodec` |
+| Adapter-local `TypeRef` / `ObjectCodecException` | `com.multiclouddb.api.codec.TypeRef` / `DocumentCodecException` |
+| Client/SPI create/update/upsert Map argument | `Document`, with existing key/options/convenience forms |
+| `DocumentResult.document(): ObjectNode` | `Document`; missing point read is still Java null |
+| `ChangeEvent.data(): JsonNode` | Nullable `DocumentValue`; selected provider payload semantics retained |
+| QueryPage Map items, query parameters and AST Object values | Unchanged; no new result classification or codec convenience overload |
 
-`JacksonObjectCodec.createDefault()` captures a fresh stock `ObjectMapper`.
-It does not discover modules or enable default typing. Use
-`JacksonObjectCodec.from(mapper)` for explicit customer configuration.
-Construction requires a compatible, independent `ObjectMapper.copy()` with an
-independent factory. Null, self, incompatible or failed copies are rejected,
-never replaced by the original or a default mapper.
+A `DocumentCodec` has Class and neutral TypeRef encode/decode forms. `TypeRef`
+captures direct parameterized subclasses, rejects unresolved variables and
+raw/indirect capture, and exposes only JDK reflection information. Captured
+wildcards/arrays do not promise that a codec supports them. `TypeRef.of(Class)`
+cannot recover erased generics. There is no public `reflect.Type` overload.
 
-Later configuration changes on the source mapper do not change the captured
-configuration. **Copy is not a deep clone of custom collaborators.** Shared
-serializers/deserializers must be thread-safe and must not be mutated after
-construction. The codec is thread-safe under that condition and is not closeable;
-it neither closes nor owns customer collaborator or client lifecycles. Neither
-factory is a sandbox for untrusted classes, annotations or custom code.
+JPMS applications using only the model/custom codec require
+`com.multiclouddb.api`. The optional adapter module is
+`com.multiclouddb.serializer.jackson`; reflection-based DTO packages must be
+opened to `com.fasterxml.jackson.databind`.
 
-## Example: custom date format, naming and generic DTO through CRUD
+## A codec with no Jackson imports
 
-This application method uses a previously configured client and an existing
-compatible container/table. It performs real client calls; it is not an
-independent JSON-byte utility. The date handlers are deliberately explicit so
-this example does not depend on automatic Java-time module registration.
+A customer can implement the common interface manually or with another library.
+The executable [`PlainCustomerCodec` example](../multiclouddb-conformance/src/test/java/com/multiclouddb/conformance/PlainCustomerCodec.java)
+uses only JDK/API types. Its mapping creates `customer_name` and `quantity`,
+and deliberately reads only those fields, leaving provider key/metadata policy
+to the application:
+
+```java
+DocumentCodec codec = new PlainCustomerCodec();
+PlainCustomerCodec.Customer customer = new PlainCustomerCodec.Customer("Grace", 7);
+Document document = codec.encode(customer, PlainCustomerCodec.Customer.class);
+client.create(address, key, document);
+client.upsert(address, key, document);
+DocumentResult result = client.read(address, key);
+if (result == null) throw new IllegalStateException("Document not found.");
+PlainCustomerCodec.Customer restored =
+        codec.decode(result.document(), PlainCustomerCodec.Customer.class);
+```
+
+No ObjectNode conversion, Jackson import, client registration or byte-parse
+utility is required in that customer codec. The actual client/provider-mock
+tests run this workflow on Cosmos, Dynamo and Spanner.
+
+## Optional Jackson: naming, custom dates and generic DTOs
 
 ```java
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -66,17 +85,16 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.multiclouddb.api.*;
-import com.multiclouddb.serializer.jackson.JacksonObjectCodec;
-import com.multiclouddb.serializer.jackson.TypeRef;
+import com.multiclouddb.api.codec.*;
+import com.multiclouddb.api.document.Document;
+import com.multiclouddb.serializer.jackson.JacksonDocumentCodec;
 import java.io.IOException;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Map;
 
 public class CustomerMappingExample {
     public record Customer(String displayName) {}
-
-    // Explicit application policy: tolerate provider root key/metadata fields.
+    // Explicit application policy, not installed silently by the adapter.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Batch<T>(String batchName, LocalDate createdOn, List<T> items) {}
 
@@ -84,9 +102,9 @@ public class CustomerMappingExample {
             MulticloudDbClient client, ResourceAddress address, MulticloudDbKey key) {
         SimpleModule dates = new SimpleModule();
         dates.addSerializer(LocalDate.class, new JsonSerializer<>() {
-            @Override public void serialize(LocalDate value, JsonGenerator out,
-                    SerializerProvider provider) throws IOException {
-                out.writeString(value.toString().replace("-", "/"));
+            @Override public void serialize(LocalDate date, JsonGenerator out,
+                    SerializerProvider context) throws IOException {
+                out.writeString(date.toString().replace("-", "/"));
             }
         });
         dates.addDeserializer(LocalDate.class, new JsonDeserializer<>() {
@@ -97,15 +115,13 @@ public class CustomerMappingExample {
         });
         ObjectMapper mapper = new ObjectMapper().registerModule(dates)
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
-        JacksonObjectCodec codec = JacksonObjectCodec.from(mapper);
+        DocumentCodec codec = JacksonDocumentCodec.from(mapper);
         TypeRef<Batch<Customer>> type = new TypeRef<>() {};
         Batch<Customer> batch = new Batch<>("customers", LocalDate.of(2026, 10, 6),
                 List.of(new Customer("Ada")));
-
-        Map<String, Object> fields = codec.encodeMap(batch, type);
+        Document document = codec.encode(batch, type);
         // batch_name, created_on="2026/10/06", items=[{display_name="Ada"}]
-        client.create(address, key, fields);
-        client.upsert(address, key, fields);
+        client.create(address, key, document);
         DocumentResult result = client.read(address, key);
         if (result == null) throw new IllegalStateException("Document not found.");
         return codec.decode(result.document(), type);
@@ -113,114 +129,140 @@ public class CustomerMappingExample {
 }
 ```
 
-For a non-generic DTO use `encodeMap(value, Customer.class)` and
-`decode(result.document(), Customer.class)`. `TypeRef` captures anonymous or
-named **direct parameterized** subclasses. It rejects unresolved type variables
-and raw/indirect capture rather than silently erasing them. `TypeRef.of(Class)`
-retains the supplied class, including raw classes; it cannot recover erased
-generic arguments. Wildcards and generic arrays can be captured, but actual
-mapping remains subject to the configured Jackson reader/writer and object-root
-requirements. There is no public `reflect.Type` overload.
+`createDefault()` captures a fresh stock mapper without module discovery or
+enabling default typing. `from(mapper)` requires a compatible independent
+`copy()` and factory; copy failure never falls back to the original/default
+mapper. Later source-mapper configuration changes do not alter the snapshot.
+Copy is **not a deep clone of customer collaborators**: shared serializers and
+deserializers must be thread-safe and remain unmodified. Codecs are not closeable
+and do not own collaborator/client lifecycles. They are not sandboxes for
+untrusted classes, annotations or code.
 
-## Mapping support and explicit failures
+## Immutable model and initial numeric semantics
 
-The writer emits tokens directly into a private collector; there is no adapter
-JSON-byte serialization/parse detour, intermediate JsonNode write conversion, or
-Map-target deserialization. A customer's Map deserializer is not invoked merely
-to build the encoded Map. `writeObject`/`writeTree` in custom serializers still
-use the captured mapper. The complete output contains only plain, unmodifiable
-Map/List containers and supported scalar token payloads; DTOs do not reach the
-SDK's private mappers for another DTO-mapping pass. Field encounter order and
-explicit null entries are retained. Missing fields remain absent.
+`Document` has an `ObjectValue` root. The closed value algebra contains null,
+boolean, string, number, binary, array and object. Containers copy ownership and
+are recursively immutable; binary input/output is copied. Objects retain encounter
+order but equality ignores it; array equality is ordered.
 
-| Output / operation | Behavior |
+`document.get(name)` returns `Optional.empty()` for absence and a present
+`NullValue.INSTANCE` for explicit null. Java null children are invalid. The
+builder and token collector reject duplicate names before overwrite, including
+a previous null; duplicates already overwritten in a caller's Map are not
+recoverable. There is no MissingValue or arbitrary embedded-object model kind.
+
+| Number/model property | Initial contract |
 |---|---|
-| Object root, nested objects/arrays, string, boolean, null | Supported; containers are completed before the output escapes |
-| Numeric token overloads | Keep Short/Integer/Long/Float/Double/BigInteger/BigDecimal payloads without float-to-decimal conversion, normalization, rounding or scale changes |
-| Signed zero, NaN, infinity tokens | Retained in memory; **not** a promise that a provider/service accepts them or preserves them on read |
-| Duplicate field names | Rejected before overwrite in the same object, including a previous null; duplicates already lost before serialization cannot be recovered |
-| Scalar/array/null root; incomplete/malformed/multiple roots | Rejected; a successful result is one complete object |
-| Raw/raw-value JSON, raw UTF-8, binary, embedded values, native type/object IDs, Reader-based strings, numeric text/character-array overloads | Unsupported output fails explicitly; configure customer serializers to emit supported structural/scalar tokens instead |
-| `WRITE_NUMBERS_AS_STRINGS` when a number is emitted | Explicitly unsupported; emit a string token intentionally if that is the application's representation |
-| Pretty-printing, escaping, decimal lexical formatting, nonfinite quoting | Text-output features do not redefine this token-to-Map representation |
-| Decode | Captured typed reader traverses a private copy of standard ObjectNode/ArrayNode containers and BinaryNode byte arrays, including nested binary leaves; parser codec APIs work, and no fields are stripped by the adapter |
+| Retained representation | Whitelisted immutable Byte/Short/Integer/Long/BigInteger/BigDecimal/finite Float/Double; original kind and BigDecimal scale retained |
+| Floating decimal view | Runtime Float.toString/Double.toString convention; `0.1d` has decimal view `0.1`, not exact binary expansion |
+| Equality/hash | Mathematical decimal equality: 1, 1.0 and 1.00 agree; cached normalization does not rewrite the stored payload |
+| Signed zero | Floating negative-zero payload retained; positive/negative zero compare/hash equally |
+| Nonfinite/unknown Number | Explicit failure; no model-level rounding, stringification or null fallback |
+| Numeric bounds | Precision <=1024 digits; stored scale [-1024,+1024], checked before normalization |
+| Nesting | At most 128 object/array containers including the root |
+| Binary | Immutable/copy-safe in memory; portable writes, including nested binary, rejected before native operations |
 
-The decode isolation guarantee covers standard Jackson trees. Opaque POJONode
-values and custom JsonNode subclasses retain their own `deepCopy` semantics;
-arbitrary embedded objects/custom node implementations are not deep-cloned or
-covered by that guarantee. BinaryNode copying protects the supplied read tree
-from DTO byte-array or decoded-node mutations. It does not add binary encoding,
-portable binary writes, or a different provider binary conversion policy.
+There is no promise of globally shortest or identical floating text on every
+JDK. Java 17 is the current baseline. These are in-memory semantics, **not DB
+round-trip guarantees** or a complete heap/CPU budget. Outputs and decode tokens
+are materialized; shared subtrees may be visited repeatedly. No public budget
+configuration or customer-corpus prerequisite is introduced.
 
-Jackson's captured stream-write nesting constraint applies to collector
-construction. A failed depth check permanently invalidates that collector, even
-if a custom serializer catches the exception and tries to finish or close it;
-no partial Map can be returned. There is no new portable document budget, public budget
-configuration, exact numeric domain, or memory-size/performance guarantee.
-Outputs are materialized in memory. Existing client write-size validation still
-runs **after encoding**, including its existing serialization work; the codec
-does not prevalidate or bypass it. Recursive or otherwise unsupported DTO mapping
-remains governed by Jackson and customer serializers.
+Configured Jackson reader coercion is preserved. For example, with Jackson's
+float-to-int coercion enabled, a DTO integer target may receive `1` from a
+Document containing `1.5`; disabling it causes decode failure. That does not
+round the immutable Document. Custom deserializers remain responsible for their
+own conversion choices; the SDK does not replace them with a strict numeric
+parser or claim exact conversion to every target.
 
-`ObjectCodecException` is separate from `MulticloudDbException`. Its unchecked
-`phase()` is `CONSTRUCTION`, `ENCODE` or `DECODE`; `reason()` identifies invalid
-arguments, copy failure, invalid root/structure, observable duplicates,
-unsupported output or mapping failure. Messages contain fixed identifiers, not
-customer values, field names, mapper exception messages, raw causes or suppressed
-details. These guarantees apply to codec-generated diagnostics, not logging by
-customer code or the existing SDK/provider diagnostics. TypeRef construction
-errors use `IllegalArgumentException` (null Class uses `NullPointerException`).
-Unrecoverable VM errors are not converted into successful results or swallowed.
+## Adapter support and errors
 
-## Existing provider boundaries and limitations
+The encoder collects serializer tokens directly into the model. It does not
+serialize JSON bytes, parse them back, or invoke a customer Map deserializer
+merely to materialize an object. `writeObject`/`writeTree` still use the snapshot.
+The decoder emits decoder-owned Jackson TokenBuffer tokens and invokes the
+captured typed reader. Numeric kinds and negative zero survive the token
+boundary; binary leaves are copied, including within objects/arrays, so decoded
+DTO or JsonNode mutation cannot mutate the Document.
 
-This codec does not promise that every Jackson/custom serializer output is a
-portable stored document. Follow existing provider schemas, reserved fields,
-service value constraints, and customer error handling.
-
-| Provider | Existing mapping/schema requirements, unchanged here |
+| Boundary | Behavior |
 |---|---|
-| Cosmos DB | Existing `/partitionKey` container/key arrangement. Private mapper converts the Map to ObjectNode; root `id`/`partitionKey` and optional TTL are injected/overwritten. Existing system-field stripping on reads remains. |
-| DynamoDB | Existing partitionKey/sortKey table arrangement. Private Map-to-tree then AttributeValue conversion remains; key/TTL injection remains. Number writes use the existing token's string representation. Read conversion still uses Double for dotted numbers and Int/Long otherwise: large integers, exponents, decimal precision and special values are not newly supported or repaired. |
-| Spanner | Preexisting compatible table and top-level column types are required; this adapter provisions no schema. Root `data` (case-insensitive) remains reserved, key fields retain their existing handling. Nested maps/lists use the provider's existing JSON-marked STRING format; FIELD_DATA selects written fields on read. Top-level BigDecimal/BigInteger still fall through to strings; INT64/FLOAT64 and other existing native conversions remain. |
+| Object root and supported nested scalar/container tokens | Supported; only a completed immutable result escapes |
+| Scalar/array/null/multiple/incomplete roots | Explicit failure |
+| Observable duplicates or nesting failure | Collector remains failed even if a serializer swallows the exception or closes it |
+| Raw JSON, embedded/opaque objects, binary encoder output, native IDs, Reader strings, textual number overloads | Explicitly unsupported; emit supported tokens intentionally |
+| WRITE_NUMBERS_AS_STRINGS at numeric emission | Explicitly unsupported; an intentionally emitted string is a StringValue |
+| Text formatting features | Do not redefine the structural representation |
+| Opaque POJONode/custom-node cloning | Not an offered model/decode contract; arbitrary objects are not retained inside Document |
 
-The adapter adds **no union reserved-name guard** and no global key/system-field
-policy. Customer field collisions have the same provider-specific consequences
-as equivalent literal Map writes. Customer root metadata-ignore configuration is
-explicit in the example; the adapter does not silently install it. Existing
-capability declarations, validation order, client lifecycle and query/change-feed
-behavior are unchanged.
+`DocumentCodecException` is separate from database `MulticloudDbException`.
+Its fixed phase/reason diagnostics do not expose customer values, field names,
+raw causes, suppressed exceptions or mapper exception messages. This does not
+govern logs emitted by customer code or existing SDK/provider diagnostics.
+Model violations use fixed-reason `IllegalArgumentException`; TypeRef errors
+use IllegalArgumentException or NullPointerException for a null class.
 
-An encode exception prevents a subsequent client call when encoding is evaluated
-as its argument. This is not a claim that constructing a client cannot initialize
-connections, credentials or channels. Native-SDK mock tests verify no operation
-is issued for invalid encoding or wrapper-rejected oversize input.
+## Existing provider mapping and runtime compatibility
 
-## Implementation and evidence traceability
+Providers currently unwrap Document to owned plain Map/List/scalars and retain
+their existing internal mapping passes. Reads structurally convert the existing
+native tree without a new default-mapper reinterpretation. These paths incur
+container traversal/allocation; they are not direct native model mapping.
 
-Adapter source/test paths below are under
-`multiclouddb-serializer-jackson/src/{main,test}/java/com/multiclouddb/serializer/jackson`.
+| Provider | Retained behavior and limitation |
+|---|---|
+| Cosmos | Map-to-ObjectNode route; existing `/partitionKey` schema, id/partitionKey/TTL overwrite and system-field stripping |
+| Dynamo | Map-to-tree-to-AttributeValue route; number text on write, dotted-number Double vs Int/Long read parsing and existing binary/unsupported fallback. Large integers, exponents and decimal precision are not repaired |
+| Spanner | Existing INT64/FLOAT64 binding, JSON-marked nested STRINGs and FIELD_DATA selection. **Top-level BigDecimal/BigInteger still become STRINGs**; e.g. decimal `1.20` reads as StringValue `"1.20"`, not NumberValue. No new rejection or schema change |
 
-| Part / files | Methods and behavior | Tests / remaining boundary |
-|---|---|---|
-| `JacksonObjectCodec.java` | `createDefault`, `from`, Class/TypeRef `encodeMap` and `decode`; explicit application ownership, complete Map and copied-tree traversal, safe mapping failures | `JacksonObjectCodecTest`: default/custom/generic/date mapping, source mapper changes, numeric tokens, null/absence, unmodifiable containers, root/duplicate/unsupported failures, swallowed-depth rejection, Map-deserializer bypass, tree nonmutation, nested binary DTO/node isolation and parser codec |
-| `PlainMapGenerator.java` | Direct per-call structural collector; object grammar, duplicate rejection, ordered container freezing and scalar preservation | `PlainMapGeneratorTest`: structural and alternate generator entry points, sticky failure after object/array depth exceptions and close, UTF-8 and formatting failures; no future Document/NumberValue semantics or portable write acceptance implied |
-| `MapperSnapshot.java` | Independent compatible copy, typed writer/reader, collector and tree parser creation | `MapperSnapshotTest`: copy failures, compatible subclass, JsonMapper, naming/serializer capture and concurrent use; custom collaborators are not deep-cloned |
-| `TypeRef.java`, `ObjectCodecException.java` | Adapter-local type capture and stable safe phase/reason accessors | `TypeRefTest`, `ObjectCodecExceptionTest`; no changes to existing API exports/classes |
-| Root/adapter POMs, adapter `module-info.java` | Optional reactor artifact; Jackson-only dependency boundary; source/Javadoc/JAR packaging | Java 17 / repository Jackson 2.22.1; no broader Jackson-version compatibility claim or release-workflow changes |
-| Conformance `CustomerObjectMappingTest.java` and test dependencies | Actual factory -> wrapper -> Cosmos/Dynamo/Spanner with native SDK mocks; create/upsert/read, custom naming/date/generic DTOs; same literal-Map native requests; input nonmutation; failed encode and existing size/reserved-field rejection before native operations | Spanner read fixture is reconstructed from captured mutation values **including FIELD_DATA**, not an unrelated JSON fixture. These are **E2E unit tests**, not live DB persistence, service numeric acceptance, schema, index or query validation. |
+Existing field/key collisions and metadata visibility remain provider-specific;
+no union reserved-name guard or global rewrite is added. Schema/index/TTL and
+legacy data requirements still apply.
 
-Focused verification:
+QueryPage Map items, query parameter/AST Objects and query token handling remain
+unchanged. ChangeEvent's nullable neutral payload preserves the selected body:
+it may be partial or a before-image, especially on deletion. Java null means no
+supplied payload, distinct from NullValue/empty object. No Full/Partial/None or
+BEFORE/AFTER public classification is inferred. There is no convenience query/
+change-feed decode overload or implicit partial-image-to-DTO conversion.
+Document supports existing update calls, but the new customer codec workflow
+tests establish create/upsert/point-read only, not new update semantics.
 
-The adapter-only named-module consumer compile/run was a **manual JPMS smoke
-check**, not an added automated CI test or compatibility matrix.
+The wrapper still validates logical JSON size (399 KiB) before provider calls.
+A structural counter preserves the old default Map-to-tree byte profile,
+including escaping and BigDecimal size normalization, without mutating the
+number or allocating serialized document bytes. This is not native storage size.
+Closed-client-first validation and capability gates remain.
+
+Cursor v1 keeps Base64URL JSON, field omission/order, binding, retention and
+error reasons. Gson 2.10.1 streaming syntax handling is checked against legacy
+goldens/coercion fixtures; opaque Unicode/unpaired UTF-16 is preserved. Valid
+Unicode escape spelling may differ without changing decoded cursor content.
+No change-feed token migration waiver is applied.
+
+## Source and evidence traceability
+
+| Part | Source / executable coverage |
+|---|---|
+| Complete immutable model | API `document/*`; `DocumentModelTest`, `NumberValueTest`: ownership, duplicate/null/absence, order, equality/scale/kinds, finite extremes and exact bounds |
+| Common codec/types/errors | API `codec/*`; `TypeRefTest`, `DocumentCodecExceptionTest`; handwritten `PlainCustomerCodec` |
+| Optional Jackson mapping | `JacksonDocumentCodec`, `DocumentGenerator`, `DocumentTokens`, `MapperSnapshot`; corresponding codec/generator/snapshot tests preserve naming/date/generic mapping, coercion configuration, sticky failures, binary DTO/node isolation and safe errors |
+| API runtime without Jackson | `CursorTokenCodec`/`CursorJson`, `DocumentSizeValidator`/`DocumentJsonSize`; `CursorWireCompatibilityTest`, `CursorJsonCompatibilityTest`, existing cursor/factory tests and `DocumentJsonSizeTest` legacy byte-profile comparison |
+| Native boundaries | Three ProviderClient/ChangeFeedReader pairs and provider-local NativeDocuments; existing mapping/lifecycle/feed tests retained |
+| Actual customer workflow | `CustomerObjectMappingTest`: real factory/wrapper/providers, native SDK mocks, custom Jackson and handwritten JDK-only codec through create/upsert/read; Spanner fixture uses captured mutation including FIELD_DATA |
+| Build isolation | API/provider/adapter POMs and module descriptors; runtime dependency/JAR inspection and manual API-only/optional-adapter JPMS consumer checks |
+
+These customer workflow tests are **E2E unit tests**, not live DB persistence,
+schema/index validation or universal numeric storage acceptance. Manual JPMS
+checks are not a new CI framework or cross-version compatibility matrix.
 
 ```text
-mvn -q -Punit -pl multiclouddb-conformance -am "-Dtest=CustomerObjectMappingTest,JacksonObjectCodecTest,MapperSnapshotTest,PlainMapGeneratorTest,TypeRefTest,ObjectCodecExceptionTest" "-Dsurefire.failIfNoSpecifiedTests=false" test
+mvn -q -Punit -pl multiclouddb-conformance -am "-Dtest=CustomerObjectMappingTest,JacksonDocumentCodecTest,DocumentGeneratorTest,MapperSnapshotTest,DocumentModelTest,NumberValueTest,Cursor*Test,DocumentJsonSizeTest" "-Dsurefire.failIfNoSpecifiedTests=false" test
 mvn -q -Punit clean verify
 ```
 
-Neutral Document/DocumentValue, new numeric/resource semantics, all-API Jackson
-removal, direct providers, cycle-free validation, benchmarks, migration and
-unrelated existing bugs remain separate work. This functional customer-mapping
-increment is not issue-116 closure and is not a release/publication authorization.
+Still deferred from issue #116: uniform query Document/Projection/Value and
+typed query boundaries, Full/Partial/None images, direct native provider mapping,
+complete migration/conformance/benchmarks and provider numeric-domain work.
+This increment does not guarantee less total future migration, authorize a
+release or fix unrelated preexisting provider bugs.

@@ -10,9 +10,13 @@
     </parent>
     <artifactId>multiclouddb-serializer-jackson</artifactId>
     <version>${multiclouddb-serializer-jackson.version}</version>
-    <name>Multicloud DB Jackson Object Codec</name>
-    <description>Application-owned object mapping for existing Map writes and ObjectNode reads</description>
+    <name>Multicloud DB Jackson Document Codec</name>
+    <description>Optional Jackson implementation of the neutral DocumentCodec</description>
     <dependencies>
+        <dependency>
+            <groupId>com.microsoft.multiclouddb</groupId>
+            <artifactId>multiclouddb-api</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-core</artifactId>

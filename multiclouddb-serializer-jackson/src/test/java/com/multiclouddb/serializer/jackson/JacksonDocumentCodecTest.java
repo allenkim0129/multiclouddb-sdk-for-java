@@ -3,11 +3,16 @@
 
 package com.multiclouddb.serializer.jackson;
 
+import com.multiclouddb.api.codec.DocumentCodecException;
+
+import com.multiclouddb.api.codec.TypeRef;
+
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.multiclouddb.api.document.*;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -21,11 +26,11 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static com.multiclouddb.serializer.jackson.ObjectCodecException.Phase.*;
-import static com.multiclouddb.serializer.jackson.ObjectCodecException.Reason.*;
+import static com.multiclouddb.api.codec.DocumentCodecException.Phase.*;
+import static com.multiclouddb.api.codec.DocumentCodecException.Reason.*;
 import static org.junit.jupiter.api.Assertions.*;
 
-class JacksonObjectCodecTest {
+class JacksonDocumentCodecTest {
     record Customer(String displayName, LocalDate birthDate) {}
     record Batch<T>(List<T> items) {}
     record Message(String value) {}
@@ -33,27 +38,27 @@ class JacksonObjectCodecTest {
 
     @Test
     void defaultFactoryHandlesClassAndGenericObjects() {
-        JacksonObjectCodec codec = JacksonObjectCodec.createDefault();
+        JacksonDocumentCodec codec = JacksonDocumentCodec.createDefault();
         Message source = new Message("hello");
-        Map<String, Object> map = codec.encodeMap(source, Message.class);
-        assertEquals(Map.of("value", "hello"), map);
-        assertEquals(source, codec.decode(TREE_MAPPER.valueToTree(map), Message.class));
+        Document document = codec.encode(source, Message.class);
+        assertEquals(new StringValue("hello"), document.get("value").orElseThrow());
+        assertEquals(source, codec.decode(document, Message.class));
         TypeRef<Batch<Message>> type = new TypeRef<>() {};
         Batch<Message> batch = new Batch<>(List.of(source));
-        assertEquals(batch, codec.decode(TREE_MAPPER.valueToTree(codec.encodeMap(batch, type)), type));
-        assertFalse(AutoCloseable.class.isAssignableFrom(JacksonObjectCodec.class));
+        assertEquals(batch, codec.decode(codec.encode(batch, type), type));
+        assertFalse(AutoCloseable.class.isAssignableFrom(JacksonDocumentCodec.class));
     }
 
     @Test
     void codecKeepsCollectorsAndParsersIndependentAcrossThreads() throws Exception {
-        JacksonObjectCodec codec = JacksonObjectCodec.from(new com.fasterxml.jackson.databind.json.JsonMapper());
+        JacksonDocumentCodec codec = JacksonDocumentCodec.from(new com.fasterxml.jackson.databind.json.JsonMapper());
         var pool = Executors.newFixedThreadPool(4);
         try {
             List<Callable<Boolean>> operations = new ArrayList<>();
             for (int i = 0; i < 32; i++) {
                 Message value = new Message("message-" + i);
                 operations.add(() -> value.equals(codec.decode(
-                        TREE_MAPPER.valueToTree(codec.encodeMap(value, Message.class)), Message.class)));
+                        codec.encode(value, Message.class), Message.class)));
             }
             for (var result : pool.invokeAll(operations)) assertTrue(result.get());
         } finally {
@@ -81,17 +86,17 @@ class JacksonObjectCodecTest {
         });
         ObjectMapper mapper = new ObjectMapper().registerModule(module)
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
-        JacksonObjectCodec codec = JacksonObjectCodec.from(mapper);
+        JacksonDocumentCodec codec = JacksonDocumentCodec.from(mapper);
         mapper.setPropertyNamingStrategy(PropertyNamingStrategies.UPPER_CAMEL_CASE);
         TypeRef<Batch<Customer>> type = new TypeRef<>() {};
         Batch<Customer> batch = new Batch<>(List.of(new Customer("Ada", LocalDate.of(2026, 10, 6))));
-        Map<String, Object> map = codec.encodeMap(batch, type);
-        assertEquals(Map.of("items", List.of(Map.of("display_name", "Ada", "birth_date", "2026/10/06"))), map);
-        ObjectNode tree = TREE_MAPPER.valueToTree(map);
-        assertEquals(batch, codec.decode(tree, type));
+        Document document = codec.encode(batch, type);
+        assertEquals(Document.builder().put("items", ArrayValue.of(List.of(ObjectValue.of(Map.of(
+                "display_name", new StringValue("Ada"), "birth_date", new StringValue("2026/10/06")))))).build(),
+                document);
+        assertEquals(batch, codec.decode(document, type));
         assertEquals(1, writes.get());
         assertEquals(1, reads.get());
-        assertEquals(tree, TREE_MAPPER.valueToTree(map));
     }
 
     @Test
@@ -104,8 +109,9 @@ class JacksonObjectCodecTest {
                 throw new IllegalStateException("must-not-run");
             }
         });
-        JacksonObjectCodec codec = JacksonObjectCodec.from(new ObjectMapper().registerModule(module));
-        assertEquals(Map.of("value", "hello"), codec.encodeMap(new Message("hello"), Message.class));
+        JacksonDocumentCodec codec = JacksonDocumentCodec.from(new ObjectMapper().registerModule(module));
+        assertEquals(new StringValue("hello"), codec.encode(new Message("hello"), Message.class)
+                .get("value").orElseThrow());
         assertEquals(0, mapReads.get());
     }
 
@@ -116,25 +122,25 @@ class JacksonObjectCodecTest {
         List<Object> items = new ArrayList<>(Arrays.asList(inner, null, "x"));
         Map<String, Object> source = new LinkedHashMap<>();
         source.put("items", items);
-        Map<String, Object> output = JacksonObjectCodec.createDefault()
-                .encodeMap(source, new TypeRef<Map<String, Object>>() {});
-        List<?> encodedItems = (List<?>) output.get("items");
-        Map<?, ?> encodedInner = (Map<?, ?>) encodedItems.get(0);
+        Document output = JacksonDocumentCodec.createDefault()
+                .encode(source, new TypeRef<Map<String, Object>>() {});
+        List<DocumentValue> encodedItems = ((ArrayValue) output.get("items").orElseThrow()).values();
+        Map<String, DocumentValue> encodedInner = ((ObjectValue) encodedItems.get(0)).fields();
         inner.put("nullable", "changed");
         items.clear();
         source.clear();
         assertTrue(encodedInner.containsKey("nullable"));
-        assertNull(encodedInner.get("nullable"));
-        assertNull(encodedItems.get(1));
+        assertEquals(NullValue.INSTANCE, encodedInner.get("nullable"));
+        assertEquals(NullValue.INSTANCE, encodedItems.get(1));
         assertEquals(3, encodedItems.size());
-        assertThrows(UnsupportedOperationException.class, output::clear);
+        assertThrows(UnsupportedOperationException.class, output.root().fields()::clear);
         assertThrows(UnsupportedOperationException.class, encodedInner::clear);
         assertThrows(UnsupportedOperationException.class, encodedItems::clear);
     }
 
     @Test
-    void preservesNumericTokensWithoutNewDecimalOrSpecialValuePolicy() {
-        JacksonObjectCodec codec = custom((g, value) -> {
+    void retainsFiniteNumericKindsScaleAndFloatingSigns() {
+        JacksonDocumentCodec codec = custom((g, value) -> {
             g.writeStartObject();
             g.writeNumberField("short", (short) 2);
             g.writeNumberField("int", 3);
@@ -143,11 +149,11 @@ class JacksonObjectCodecTest {
             g.writeNumberField("double", 0.1d);
             g.writeNumberField("decimal", new BigDecimal("1.00"));
             g.writeNumberField("integer", new BigInteger("123456789012345678901234567890"));
-            g.writeNumberField("nan", Double.NaN);
-            g.writeNumberField("infinity", Float.POSITIVE_INFINITY);
             g.writeEndObject();
         });
-        Map<String, Object> map = codec.encodeMap(new Message("unused"), Message.class);
+        Map<String, Object> map = new LinkedHashMap<>();
+        codec.encode(new Message("unused"), Message.class).root().fields()
+                .forEach((name, value) -> map.put(name, ((NumberValue) value).value()));
         assertInstanceOf(Short.class, map.get("short"));
         assertInstanceOf(Integer.class, map.get("int"));
         assertInstanceOf(Long.class, map.get("long"));
@@ -155,13 +161,52 @@ class JacksonObjectCodecTest {
         assertEquals(Double.doubleToRawLongBits(0.1d), Double.doubleToRawLongBits((Double) map.get("double")));
         assertEquals(new BigDecimal("1.00"), map.get("decimal"));
         assertEquals(new BigInteger("123456789012345678901234567890"), map.get("integer"));
-        assertEquals(Double.NaN, map.get("nan"));
-        assertEquals(Float.POSITIVE_INFINITY, map.get("infinity"));
+    }
+
+    @Test
+    void nonfiniteAndOutOfModelNumbersFailEvenIfSerializerSwallowsTheFailure() {
+        for (Number invalid : List.of(Double.NaN, Float.POSITIVE_INFINITY,
+                new BigDecimal(BigInteger.ONE, 1025))) {
+            assertSafeFailure(custom((g, value) -> {
+                g.writeStartObject();
+                g.writeFieldName("number");
+                try {
+                    if (invalid instanceof BigDecimal decimal) g.writeNumber(decimal);
+                    else g.writeNumber(invalid.doubleValue());
+                } catch (DocumentCodecException deliberatelySwallowed) {
+                    // A failed collector must not be repairable by a customer serializer.
+                }
+                g.writeEndObject();
+            }), INVALID_STRUCTURE);
+        }
+    }
+
+    record IntegerTarget(int number) {}
+    record FloatingTarget(float small, double large, BigDecimal decimal) {}
+
+    @Test
+    void sameTypeDecodeRetainsNegativeZeroAndDecimalScale() {
+        JacksonDocumentCodec codec = JacksonDocumentCodec.createDefault();
+        FloatingTarget source = new FloatingTarget(-0.0F, -0.0D, new BigDecimal("1.00"));
+        FloatingTarget result = codec.decode(codec.encode(source, FloatingTarget.class), FloatingTarget.class);
+        assertEquals(Float.floatToRawIntBits(-0.0F), Float.floatToRawIntBits(result.small()));
+        assertEquals(Double.doubleToRawLongBits(-0.0D), Double.doubleToRawLongBits(result.large()));
+        assertEquals(new BigDecimal("1.00"), result.decimal());
+    }
+
+    @Test
+    void retainsConfiguredJacksonCoercionRatherThanImposingStrictDtoConversions() {
+        Document source = Document.builder().put("number", NumberValue.of(1.5)).build();
+        assertEquals(new IntegerTarget(1), JacksonDocumentCodec.createDefault().decode(source, IntegerTarget.class));
+        JacksonDocumentCodec strict = JacksonDocumentCodec.from(
+                new ObjectMapper().disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT));
+        assertThrows(DocumentCodecException.class, () -> strict.decode(source, IntegerTarget.class));
+        assertEquals(1.5, ((NumberValue) source.get("number").orElseThrow()).value());
     }
 
     @Test
     void rejectsObservableDuplicatesEvenWithNullValues() {
-        JacksonObjectCodec codec = custom((g, value) -> {
+        JacksonDocumentCodec codec = custom((g, value) -> {
             g.writeStartObject();
             g.writeNullField("secret");
             g.writeStringField("secret", "customer-content");
@@ -173,19 +218,20 @@ class JacksonObjectCodecTest {
     @Test
     void duplicateNamesInSeparateObjectsAreAllowed() {
         Map<String, Object> source = Map.of("left", Map.of("same", 1), "right", Map.of("same", 2));
-        assertEquals(source, JacksonObjectCodec.createDefault()
-                .encodeMap(source, new TypeRef<Map<String, Object>>() {}));
+        Document result = JacksonDocumentCodec.createDefault().encode(source, new TypeRef<Map<String, Object>>() {});
+        assertEquals(NumberValue.of(1), ((ObjectValue) result.get("left").orElseThrow()).get("same").orElseThrow());
+        assertEquals(NumberValue.of(2), ((ObjectValue) result.get("right").orElseThrow()).get("same").orElseThrow());
     }
 
     @Test
     void rejectsNonObjectNullMultipleAndIncompleteRoots() {
-        JacksonObjectCodec codec = JacksonObjectCodec.createDefault();
-        assertEquals(INVALID_ROOT, assertThrows(ObjectCodecException.class,
-                () -> codec.encodeMap("scalar", String.class)).reason());
-        assertEquals(INVALID_ROOT, assertThrows(ObjectCodecException.class,
-                () -> codec.encodeMap(List.of(1), new TypeRef<List<Integer>>() {})).reason());
-        assertEquals(INVALID_ROOT, assertThrows(ObjectCodecException.class,
-                () -> codec.encodeMap(null, Message.class)).reason());
+        JacksonDocumentCodec codec = JacksonDocumentCodec.createDefault();
+        assertEquals(INVALID_ROOT, assertThrows(DocumentCodecException.class,
+                () -> codec.encode("scalar", String.class)).reason());
+        assertEquals(INVALID_ROOT, assertThrows(DocumentCodecException.class,
+                () -> codec.encode(List.of(1), new TypeRef<List<Integer>>() {})).reason());
+        assertEquals(INVALID_ROOT, assertThrows(DocumentCodecException.class,
+                () -> codec.encode(null, Message.class)).reason());
         assertSafeFailure(custom((g, v) -> { g.writeStartObject(); }), INVALID_STRUCTURE);
         assertSafeFailure(custom((g, v) -> {
             g.writeStartObject(); g.writeEndObject(); g.writeStartObject(); g.writeEndObject();
@@ -214,8 +260,8 @@ class JacksonObjectCodecTest {
         ObjectMapper mapper = new ObjectMapper();
         mapper.getFactory().setStreamWriteConstraints(
                 com.fasterxml.jackson.core.StreamWriteConstraints.builder().maxNestingDepth(1).build());
-        JacksonObjectCodec codec = JacksonObjectCodec.from(mapper);
-        assertThrows(ObjectCodecException.class, () -> codec.encodeMap(
+        JacksonDocumentCodec codec = JacksonDocumentCodec.from(mapper);
+        assertThrows(DocumentCodecException.class, () -> codec.encode(
                 Map.of("nested", Map.of("value", 1)), new TypeRef<Map<String, Object>>() {}));
     }
 
@@ -241,30 +287,30 @@ class JacksonObjectCodecTest {
             ObjectMapper mapper = new ObjectMapper().registerModule(module);
             mapper.getFactory().setStreamWriteConstraints(
                     com.fasterxml.jackson.core.StreamWriteConstraints.builder().maxNestingDepth(2).build());
-            assertSafeFailure(JacksonObjectCodec.from(mapper), INVALID_STRUCTURE);
+            assertSafeFailure(JacksonDocumentCodec.from(mapper), INVALID_STRUCTURE);
         }
     }
 
     @Test
     void exposesSafePhaseOnEncodeAndDecodeFailures() {
-        ObjectCodecException encode = assertThrows(ObjectCodecException.class,
+        DocumentCodecException encode = assertThrows(DocumentCodecException.class,
                 () -> custom((g, v) -> { throw new IllegalArgumentException("secret"); })
-                        .encodeMap(new Message("customer-content"), Message.class));
+                        .encode(new Message("customer-content"), Message.class));
         assertEquals(ENCODE, encode.phase());
         assertSafe(encode);
-        ObjectNode bad = TREE_MAPPER.createObjectNode().put("unexpected-secret", "customer-content");
-        ObjectCodecException decode = assertThrows(ObjectCodecException.class,
-                () -> JacksonObjectCodec.createDefault().decode(bad, Message.class));
+        Document bad = Document.builder().put("unexpected-secret", new StringValue("customer-content")).build();
+        DocumentCodecException decode = assertThrows(DocumentCodecException.class,
+                () -> JacksonDocumentCodec.createDefault().decode(bad, Message.class));
         assertEquals(DECODE, decode.phase());
         assertSafe(decode);
     }
 
     @Test
-    void decodeUsesAPrivateTreeCopyEvenForTreeTargets() {
-        ObjectNode source = TREE_MAPPER.createObjectNode().put("value", "original");
-        ObjectNode decoded = JacksonObjectCodec.createDefault().decode(source, ObjectNode.class);
+    void decodedTreeTargetsCannotMutateSourceDocument() {
+        Document source = Document.builder().put("value", new StringValue("original")).build();
+        ObjectNode decoded = JacksonDocumentCodec.createDefault().decode(source, ObjectNode.class);
         decoded.put("value", "changed");
-        assertEquals("original", source.get("value").textValue());
+        assertEquals(new StringValue("original"), source.get("value").orElseThrow());
     }
 
     record BinaryDto(byte[] bytes) {}
@@ -272,8 +318,8 @@ class JacksonObjectCodecTest {
 
     @Test
     void decodedDtoBinaryArraysDoNotAliasOriginalRootOrNestedNodes() throws Exception {
-        ObjectNode source = binaryTree();
-        BinaryTreeDto decoded = JacksonObjectCodec.createDefault().decode(source, BinaryTreeDto.class);
+        Document source = binaryTree();
+        BinaryTreeDto decoded = JacksonDocumentCodec.createDefault().decode(source, BinaryTreeDto.class);
         decoded.bytes()[0] = 9;
         decoded.object().bytes()[0] = 9;
         decoded.objects().get(0).bytes()[0] = 9;
@@ -283,8 +329,8 @@ class JacksonObjectCodecTest {
 
     @Test
     void decodedTreeBinaryArraysDoNotAliasOriginalRootOrNestedNodes() throws Exception {
-        ObjectNode source = binaryTree();
-        ObjectNode decoded = JacksonObjectCodec.createDefault().decode(source, ObjectNode.class);
+        Document source = binaryTree();
+        ObjectNode decoded = JacksonDocumentCodec.createDefault().decode(source, ObjectNode.class);
         decoded.get("bytes").binaryValue()[0] = 9;
         decoded.get("object").get("bytes").binaryValue()[0] = 9;
         decoded.get("objects").get(0).get("bytes").binaryValue()[0] = 9;
@@ -292,19 +338,19 @@ class JacksonObjectCodecTest {
         assertBinaryTreeUnchanged(source);
     }
 
-    private static ObjectNode binaryTree() {
-        ObjectNode source = TREE_MAPPER.createObjectNode().put("bytes", new byte[]{1, 2});
-        source.putObject("object").put("bytes", new byte[]{3, 4});
-        source.putArray("objects").addObject().put("bytes", new byte[]{5, 6});
-        source.putArray("arrays").add(new byte[]{7, 8});
-        return source;
+    private static Document binaryTree() {
+        return Document.builder()
+                .put("bytes", BinaryValue.of(new byte[]{1, 2}))
+                .put("object", ObjectValue.of(Map.of("bytes", BinaryValue.of(new byte[]{3, 4}))))
+                .put("objects", ArrayValue.of(List.of(ObjectValue.of(Map.of(
+                        "bytes", BinaryValue.of(new byte[]{5, 6}))))))
+                .put("arrays", ArrayValue.of(List.of(BinaryValue.of(new byte[]{7, 8}))))
+                .build();
     }
 
-    private static void assertBinaryTreeUnchanged(ObjectNode source) throws IOException {
-        assertArrayEquals(new byte[]{1, 2}, source.get("bytes").binaryValue());
-        assertArrayEquals(new byte[]{3, 4}, source.get("object").get("bytes").binaryValue());
-        assertArrayEquals(new byte[]{5, 6}, source.get("objects").get(0).get("bytes").binaryValue());
-        assertArrayEquals(new byte[]{7, 8}, source.get("arrays").get(0).binaryValue());
+    private static void assertBinaryTreeUnchanged(Document source) {
+        assertEquals(binaryTree(), source);
+        assertArrayEquals(new byte[]{1, 2}, ((BinaryValue) source.get("bytes").orElseThrow()).value());
     }
 
     @Test
@@ -317,38 +363,38 @@ class JacksonObjectCodecTest {
                 return new Message(tree.remove("custom").textValue());
             }
         });
-        JacksonObjectCodec codec = JacksonObjectCodec.from(new ObjectMapper().registerModule(module));
-        ObjectNode source = TREE_MAPPER.createObjectNode().put("custom", "hello");
+        JacksonDocumentCodec codec = JacksonDocumentCodec.from(new ObjectMapper().registerModule(module));
+        Document source = Document.builder().put("custom", new StringValue("hello")).build();
         assertEquals(new Message("hello"), codec.decode(source, Message.class));
-        assertEquals("hello", source.get("custom").textValue());
+        assertEquals(new StringValue("hello"), source.get("custom").orElseThrow());
     }
 
     @Test
     void leavesExistingReservedFieldNamesUntouched() {
         Map<String, Object> source = Map.of("id", "business", "partitionKey", "business",
                 "sortKey", "business", "Data", "business", "_etag", "business");
-        assertEquals(source, JacksonObjectCodec.createDefault()
-                .encodeMap(source, new TypeRef<Map<String, Object>>() {}));
+        Document output = JacksonDocumentCodec.createDefault().encode(source, new TypeRef<Map<String, Object>>() {});
+        source.forEach((key, value) -> assertEquals(new StringValue((String) value), output.get(key).orElseThrow()));
     }
 
     @Test
     void rejectsMissingTypeAndDocumentArgumentsWithTheCorrectPhase() {
-        JacksonObjectCodec codec = JacksonObjectCodec.createDefault();
-        assertEquals(ENCODE, assertThrows(ObjectCodecException.class,
-                () -> codec.encodeMap(new Message("x"), (Class<Message>) null)).phase());
-        assertEquals(DECODE, assertThrows(ObjectCodecException.class,
+        JacksonDocumentCodec codec = JacksonDocumentCodec.createDefault();
+        assertEquals(ENCODE, assertThrows(DocumentCodecException.class,
+                () -> codec.encode(new Message("x"), (Class<Message>) null)).phase());
+        assertEquals(DECODE, assertThrows(DocumentCodecException.class,
                 () -> codec.decode(null, Message.class)).phase());
     }
 
-    private static void assertSafeFailure(JacksonObjectCodec codec, ObjectCodecException.Reason reason) {
-        ObjectCodecException failure = assertThrows(ObjectCodecException.class,
-                () -> codec.encodeMap(new Message("customer-content"), Message.class));
+    private static void assertSafeFailure(JacksonDocumentCodec codec, DocumentCodecException.Reason reason) {
+        DocumentCodecException failure = assertThrows(DocumentCodecException.class,
+                () -> codec.encode(new Message("customer-content"), Message.class));
         assertEquals(reason, failure.reason());
         assertEquals(ENCODE, failure.phase());
         assertSafe(failure);
     }
 
-    private static void assertSafe(ObjectCodecException failure) {
+    private static void assertSafe(DocumentCodecException failure) {
         StringWriter text = new StringWriter();
         failure.printStackTrace(new PrintWriter(text));
         assertFalse(text.toString().contains("customer-content"));
@@ -362,12 +408,12 @@ class JacksonObjectCodecTest {
         void write(JsonGenerator generator, Message value) throws IOException;
     }
 
-    private static JacksonObjectCodec custom(Output output) {
+    private static JacksonDocumentCodec custom(Output output) {
         SimpleModule module = new SimpleModule();
         module.addSerializer(Message.class, new JsonSerializer<>() {
             @Override public void serialize(Message value, JsonGenerator g, SerializerProvider provider)
                     throws IOException { output.write(g, value); }
         });
-        return JacksonObjectCodec.from(new ObjectMapper().registerModule(module));
+        return JacksonDocumentCodec.from(new ObjectMapper().registerModule(module));
     }
 }

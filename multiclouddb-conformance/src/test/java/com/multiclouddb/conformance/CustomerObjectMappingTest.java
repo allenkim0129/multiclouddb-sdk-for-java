@@ -15,9 +15,11 @@ import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.cloud.spanner.*;
 import com.multiclouddb.api.*;
-import com.multiclouddb.serializer.jackson.JacksonObjectCodec;
-import com.multiclouddb.serializer.jackson.ObjectCodecException;
-import com.multiclouddb.serializer.jackson.TypeRef;
+import com.multiclouddb.api.document.*;
+import com.multiclouddb.spi.DocumentMaps;
+import com.multiclouddb.serializer.jackson.JacksonDocumentCodec;
+import com.multiclouddb.api.codec.DocumentCodecException;
+import com.multiclouddb.api.codec.TypeRef;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedConstruction;
 import org.mockito.MockedStatic;
@@ -41,6 +43,7 @@ import java.util.function.Supplier;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import static com.multiclouddb.conformance.Documents.document;
 
 /**
  * End-to-end unit tests: actual factory, client wrapper and provider mappings;
@@ -94,9 +97,12 @@ class CustomerObjectMappingTest {
             verify(container, atLeast(2)).createItem(any(ObjectNode.class), any(PartitionKey.class),
                     any(CosmosItemRequestOptions.class));
             assertLiteralMapParity(client, written::get, Function.identity());
+            assertEquals("1", written.get().get("decimal_value").asText(),
+                    "the existing default native tree conversion strips decimal trailing zeros");
+            assertEquals("123456789012345678901234567890", written.get().get("integer_value").asText());
 
             readFixture.get().put("_etag", "provider-value");
-            assertFalse(client.read(ADDRESS, KEY).document().has("_etag"));
+            assertTrue(client.read(ADDRESS, KEY).document().get("_etag").isEmpty());
             assertTrue(readFixture.get().has("_etag"), "provider read must not mutate the fixture");
             assertValidationBeforeNativeOperation(client, container);
         }
@@ -142,6 +148,8 @@ class CustomerObjectMappingTest {
                 assertNull(writes.get(2).conditionExpression());
                 assertEquals(KEY.partitionKey(), readFixture.get().get("partitionKey").s());
                 assertLiteralMapParity(client, last, Function.identity());
+                assertEquals("1", last.get().item().get("decimal_value").n());
+                assertEquals("123456789012345678901234567890", last.get().item().get("integer_value").n());
                 assertValidationBeforeNativeOperation(client, nativeClient);
             }
         }
@@ -186,8 +194,13 @@ class CustomerObjectMappingTest {
                 assertTrue(readFixture.get().asMap().containsKey("data"));
                 assertEquals(KEY.partitionKey(), readFixture.get().asMap().get("partitionKey").getString());
                 assertLiteralMapParity(client, last, Mutation::asMap);
+                assertEquals(Value.string("1.00"), last.get().asMap().get("decimal_value"),
+                        "retain the existing Spanner top-level decimal STRING fallback");
+                assertEquals(Value.string("123456789012345678901234567890"), last.get().asMap().get("integer_value"));
+                assertEquals(Value.float64((double) 0.1F), last.get().asMap().get("float_value"),
+                        "retain Float-to-FLOAT64 mapping, not decimal-to-STRING mapping");
                 assertValidationBeforeNativeOperation(client, nativeClient);
-                Map<String, Object> reserved = JacksonObjectCodec.createDefault().encodeMap(Map.of("Data", 1), MAP);
+                Document reserved = JacksonDocumentCodec.createDefault().encode(Map.of("Data", 1), MAP);
                 assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, assertThrows(MulticloudDbException.class,
                         () -> client.upsert(ADDRESS, KEY, reserved)).error().category());
                 verifyNoInteractions(nativeClient);
@@ -200,40 +213,50 @@ class CustomerObjectMappingTest {
                                     Function<R, ?> comparable) {
         AtomicInteger serialized = new AtomicInteger();
         AtomicInteger deserialized = new AtomicInteger();
-        JacksonObjectCodec codec = configuredCodec(serialized, deserialized);
+        JacksonDocumentCodec codec = configuredCodec(serialized, deserialized);
         Batch<Customer> source = new Batch<>("customers", LocalDate.of(2026, 10, 6),
                 List.of(new Customer("Ada")), 3, 1.5);
-        Map<String, Object> encoded = codec.encodeMap(source, BATCH);
+        Document encoded = codec.encode(source, BATCH);
         Map<String, Object> baseline = new LinkedHashMap<>();
         baseline.put("batch_name", "customers");
         baseline.put("created_on", "2026/10/06");
         baseline.put("items", List.of(Map.of("display_name", "Ada")));
         baseline.put("quantity", 3);
         baseline.put("ratio", 1.5);
-        assertEquals(baseline, encoded);
+        assertEquals(baseline, DocumentMaps.toMap(encoded));
 
         client.create(ADDRESS, KEY, encoded);
         R create = captured.get();
         readFixture.accept(create);
-        ObjectNode createRead = client.read(ADDRESS, KEY).document();
+        Document createRead = client.read(ADDRESS, KEY).document();
         assertEquals(source, codec.decode(createRead, BATCH));
-        client.create(ADDRESS, KEY, baseline);
+        client.create(ADDRESS, KEY, document(baseline));
         assertEquals(comparable.apply(create), comparable.apply(captured.get()));
 
         client.upsert(ADDRESS, KEY, encoded);
         R upsert = captured.get();
         readFixture.accept(upsert);
-        ObjectNode upsertRead = client.read(ADDRESS, KEY).document();
-        ObjectNode before = upsertRead.deepCopy();
+        Document upsertRead = client.read(ADDRESS, KEY).document();
+        Document before = upsertRead;
         assertEquals(source, codec.decode(upsertRead, BATCH));
         assertEquals(before, upsertRead);
-        client.upsert(ADDRESS, KEY, baseline);
+        client.upsert(ADDRESS, KEY, document(baseline));
         assertEquals(comparable.apply(upsert), comparable.apply(captured.get()));
 
         assertEquals(1, serialized.get(), "internal provider mappers must not re-run customer DTO serialization");
         assertEquals(2, deserialized.get());
-        assertEquals(baseline, encoded, "client/provider must not mutate encoded input");
+        assertEquals(baseline, DocumentMaps.toMap(encoded), "client/provider must not mutate encoded input");
         assertEquals("Ada", source.items().get(0).displayName());
+
+        PlainCustomerCodec plainCodec = new PlainCustomerCodec();
+        PlainCustomerCodec.Customer plain = new PlainCustomerCodec.Customer("Grace", 7);
+        Document independent = plainCodec.encode(plain, PlainCustomerCodec.Customer.class);
+        client.create(ADDRESS, KEY, independent);
+        readFixture.accept(captured.get());
+        assertEquals(plain, plainCodec.decode(client.read(ADDRESS, KEY).document(), PlainCustomerCodec.Customer.class));
+        client.upsert(ADDRESS, KEY, independent);
+        readFixture.accept(captured.get());
+        assertEquals(plain, plainCodec.decode(client.read(ADDRESS, KEY).document(), PlainCustomerCodec.Customer.class));
     }
 
     private static <R> void assertLiteralMapParity(MulticloudDbClient client, Supplier<R> captured,
@@ -247,29 +270,37 @@ class CustomerObjectMappingTest {
         baseline.put("integer_value", new BigInteger("123456789012345678901234567890"));
         baseline.put("nested", Map.of("decimal", new BigDecimal("1.00")));
         baseline.put("nullable", null);
-        Map<String, Object> encoded = JacksonObjectCodec.createDefault().encodeMap(baseline, MAP);
+        Document encoded = JacksonDocumentCodec.createDefault().encode(baseline, MAP);
         client.upsert(ADDRESS, KEY, encoded);
         Object actual = comparable.apply(captured.get());
-        client.upsert(ADDRESS, KEY, baseline);
+        client.upsert(ADDRESS, KEY, document(baseline));
         assertEquals(actual, comparable.apply(captured.get()),
-                "existing numeric/key behavior, including provider limitations, must match literal Map writes");
-        assertEquals(baseline, encoded);
+                "codec numeric/key behavior must match the same literal Document input");
+        assertEquals(baseline, DocumentMaps.toMap(encoded));
         assertEquals("business", baseline.get("partitionKey"));
     }
 
     private static void assertValidationBeforeNativeOperation(MulticloudDbClient client, Object nativeBoundary) {
         clearInvocations(nativeBoundary);
-        JacksonObjectCodec codec = JacksonObjectCodec.createDefault();
-        assertThrows(ObjectCodecException.class,
-                () -> client.create(ADDRESS, KEY, codec.encodeMap("not-an-object", String.class)));
+        JacksonDocumentCodec codec = JacksonDocumentCodec.createDefault();
+        assertThrows(DocumentCodecException.class,
+                () -> client.create(ADDRESS, KEY, codec.encode("not-an-object", String.class)));
         verifyNoInteractions(nativeBoundary);
-        Map<String, Object> oversized = codec.encodeMap(Map.of("body", "x".repeat(400 * 1024)), MAP);
+        assertThrows(DocumentCodecException.class,
+                () -> client.create(ADDRESS, KEY, codec.encode(Map.of("number", Double.NaN), MAP)));
+        verifyNoInteractions(nativeBoundary);
+        Document oversized = codec.encode(Map.of("body", "x".repeat(400 * 1024)), MAP);
         assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, assertThrows(MulticloudDbException.class,
                 () -> client.upsert(ADDRESS, KEY, oversized)).error().category());
         verifyNoInteractions(nativeBoundary);
+        Document binary = Document.builder().put("nested",
+                ArrayValue.of(List.of(BinaryValue.of(new byte[]{1})))).build();
+        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, assertThrows(MulticloudDbException.class,
+                () -> client.upsert(ADDRESS, KEY, binary)).error().category());
+        verifyNoInteractions(nativeBoundary);
     }
 
-    private static JacksonObjectCodec configuredCodec(AtomicInteger serialized, AtomicInteger deserialized) {
+    private static JacksonDocumentCodec configuredCodec(AtomicInteger serialized, AtomicInteger deserialized) {
         SimpleModule module = new SimpleModule();
         module.addSerializer(LocalDate.class, new JsonSerializer<>() {
             @Override public void serialize(LocalDate date, JsonGenerator generator, SerializerProvider provider)
@@ -285,7 +316,7 @@ class CustomerObjectMappingTest {
                 return LocalDate.parse(parser.getText().replace("/", "-"));
             }
         });
-        return JacksonObjectCodec.from(new ObjectMapper().registerModule(module)
+        return JacksonDocumentCodec.from(new ObjectMapper().registerModule(module)
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE));
     }
 }
