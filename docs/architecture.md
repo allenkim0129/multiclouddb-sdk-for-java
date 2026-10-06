@@ -34,6 +34,18 @@ multiclouddb-api  ← must be released first if API changed
 Providers depend on a released version of `multiclouddb-api`. They are
 independent of each other and can be released separately.
 
+### Optional customer object mapping
+
+The unpublished `multiclouddb-serializer-jackson` development module provides
+application-owned `JacksonObjectCodec.encodeMap` / `decode` against the existing
+Map-write / ObjectNode-read boundaries. It snapshots a customer ObjectMapper and
+depends only on Jackson; API/providers do not depend on it. There is no automatic
+client registration or POJO overload. Existing provider mappings, validation and
+API Jackson dependencies are unchanged. See
+[customer object mapping](customer-object-mapping.md) for usage, configuration,
+provider limitations and file/method/test traceability. The neutral Document and
+broader issue-116 API migration remain separate work.
+
 ---
 
 ## API Surface

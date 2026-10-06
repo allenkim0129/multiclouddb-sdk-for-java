@@ -52,6 +52,15 @@ Fields:
 Constraints:
 - must be serializable to a JSON-like representation
 
+**Customer object mapping increment (related to issue 116):** the optional
+Jackson adapter explicitly encodes customer DTOs to existing Map write inputs
+and decodes existing ObjectNode read results. Its complete materialized
+Map/List output preserves supported scalar token payloads and is unmodifiable;
+it is not the proposed neutral Document/DocumentValue model. Existing
+client/provider mapping, reserved fields and numeric limitations remain.
+No new numeric/resource domain or API Jackson removal is established. See
+[usage and file/method/test traceability](../../docs/customer-object-mapping.md).
+
 ### Query
 Portable query request.
 
