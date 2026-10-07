@@ -4,7 +4,6 @@
 package com.multiclouddb.api.internal;
 
 import com.multiclouddb.api.document.ArrayValue;
-import com.multiclouddb.api.document.BinaryValue;
 import com.multiclouddb.api.document.BooleanValue;
 import com.multiclouddb.api.document.Document;
 import com.multiclouddb.api.document.DocumentValue;
@@ -67,8 +66,6 @@ final class DocumentJsonSize {
             add(bool.value() ? 4 : 5);
         } else if (value instanceof NullValue) {
             add(4);
-        } else if (value instanceof BinaryValue) {
-            throw new UnsupportedBinary();
         }
     }
 
@@ -96,9 +93,4 @@ final class DocumentJsonSize {
         }
     }
 
-    static final class UnsupportedBinary extends IllegalArgumentException {
-        UnsupportedBinary() {
-            super("Portable document writes do not support binary values.");
-        }
-    }
 }

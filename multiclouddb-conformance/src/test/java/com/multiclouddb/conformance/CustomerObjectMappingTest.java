@@ -160,6 +160,10 @@ class CustomerObjectMappingTest {
                     readFixture.set(Map.of("private-field", invalid));
                     assertReadPayloadFailure(client, ProviderId.DYNAMO);
                 }
+                readFixture.set(Map.of("legacyBinary", AttributeValue.builder()
+                        .b(software.amazon.awssdk.core.SdkBytes.fromByteArray(new byte[]{1, 2})).build()));
+                assertEquals(NullValue.INSTANCE, client.read(ADDRESS, KEY).document().get("legacyBinary").orElseThrow(),
+                        "existing native B fallback happens before neutral conversion and is unchanged");
                 assertValidationBeforeNativeOperation(client, nativeClient);
             }
         }
@@ -217,6 +221,10 @@ class CustomerObjectMappingTest {
                 readFixture.set(Mutation.newInsertBuilder(ADDRESS.collection()).set("private-field")
                         .to(Value.json("[".repeat(128) + "null" + "]".repeat(128))).build());
                 assertReadPayloadFailure(client, ProviderId.SPANNER);
+                readFixture.set(Mutation.newInsertBuilder(ADDRESS.collection()).set("legacyBinary")
+                        .to(com.google.cloud.ByteArray.copyFrom(new byte[]{1, 2})).build());
+                assertEquals(new StringValue("AQI="), client.read(ADDRESS, KEY).document().get("legacyBinary").orElseThrow(),
+                        "existing native BYTES-to-base64 mapping is not new Document binary support");
                 assertValidationBeforeNativeOperation(client, nativeClient);
                 Document reserved = JacksonDocumentCodec.createDefault().encode(Map.of("Data", 1), MAP);
                 assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, assertThrows(MulticloudDbException.class,
@@ -275,21 +283,32 @@ class CustomerObjectMappingTest {
         client.upsert(ADDRESS, KEY, independent);
         readFixture.accept(captured.get());
         assertEquals(plain, plainCodec.decode(client.read(ADDRESS, KEY).document(), PlainCustomerCodec.Customer.class));
+
+        Document sixKinds = Document.builder().put("nothing", NullValue.INSTANCE)
+                .put("flag", new BooleanValue(true)).put("text", new StringValue("AQI="))
+                .put("number", NumberValue.of(7))
+                .put("object", ObjectValue.of(Map.of("inner", new BooleanValue(false))))
+                .put("array", ArrayValue.of(List.of(NullValue.INSTANCE, new BooleanValue(true),
+                        new StringValue("text"), NumberValue.of(2), ObjectValue.of(Map.of())))).build();
+        client.create(ADDRESS, KEY, sixKinds);
+        readFixture.accept(captured.get());
+        Document readSixKinds = client.read(ADDRESS, KEY).document();
+        sixKinds.root().fields().forEach((name, value) -> assertEquals(value, readSixKinds.get(name).orElseThrow()));
+        client.upsert(ADDRESS, KEY, sixKinds);
+        readFixture.accept(captured.get());
+        Document upsertSixKinds = client.read(ADDRESS, KEY).document();
+        sixKinds.root().fields().forEach((name, value) -> assertEquals(value, upsertSixKinds.get(name).orElseThrow()));
     }
 
-    private static List<ObjectNode> invalidNativeDocuments() throws IOException {
+    private static List<ObjectNode> invalidNativeDocuments() {
         ObjectMapper mapper = new ObjectMapper();
         JsonNode nested = mapper.getNodeFactory().textNode("private-value");
         for (int i = 0; i < 128; i++) nested = mapper.createArrayNode().add(nested);
-        JsonNode brokenBinary = mock(JsonNode.class);
-        when(brokenBinary.getNodeType()).thenReturn(com.fasterxml.jackson.databind.node.JsonNodeType.BINARY);
-        when(brokenBinary.deepCopy()).thenReturn(brokenBinary);
-        when(brokenBinary.binaryValue()).thenThrow(new IOException("private native diagnostic"));
         return List.of(mapper.createObjectNode().set("private-field", nested),
                 mapper.createObjectNode().put("private-field", new BigDecimal(BigInteger.ONE, 1025)),
                 mapper.createObjectNode().put("private-field", BigInteger.TEN.pow(1024)),
                 mapper.createObjectNode().putPOJO("private-field", "private-value"),
-                mapper.createObjectNode().set("private-field", brokenBinary));
+                mapper.createObjectNode().put("private-field", new byte[]{1, 2}));
     }
 
     private static void assertReadPayloadFailure(MulticloudDbClient client, ProviderId provider) {
@@ -338,11 +357,13 @@ class CustomerObjectMappingTest {
         assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, assertThrows(MulticloudDbException.class,
                 () -> client.upsert(ADDRESS, KEY, oversized)).error().category());
         verifyNoInteractions(nativeBoundary);
-        Document binary = Document.builder().put("nested",
-                ArrayValue.of(List.of(BinaryValue.of(new byte[]{1})))).build();
-        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, assertThrows(MulticloudDbException.class,
-                () -> client.upsert(ADDRESS, KEY, binary)).error().category());
-        verifyNoInteractions(nativeBoundary);
+        for (Object binary : List.of(new byte[]{1}, java.nio.ByteBuffer.wrap(new byte[]{1}))) {
+            DocumentCodecException failure = assertThrows(DocumentCodecException.class,
+                    () -> client.upsert(ADDRESS, KEY, codec.encode(Map.of("nested", List.of(binary)), MAP)));
+            assertEquals(DocumentCodecException.Reason.UNSUPPORTED_OUTPUT, failure.reason());
+            verifyNoInteractions(nativeBoundary);
+            assertThrows(IllegalArgumentException.class, () -> document(Map.of("bytes", binary)));
+        }
     }
 
     private static JacksonDocumentCodec configuredCodec(AtomicInteger serialized, AtomicInteger deserialized) {

@@ -37,7 +37,8 @@ these are not newly published releases.
 
 ### Optional customer object mapping
 
-The API owns immutable `Document`/`DocumentValue`, application-owned
+The API owns immutable `Document`/`DocumentValue` with six value kinds (null,
+boolean, string, number, array and object; no binary), application-owned
 `DocumentCodec`, neutral `TypeRef` and safe codec errors. CRUD and point reads use
 Document; nullable change-feed payloads use DocumentValue. Query Map/Object
 contracts remain unchanged. The API runtime depends on SLF4J 2.0.12 and private

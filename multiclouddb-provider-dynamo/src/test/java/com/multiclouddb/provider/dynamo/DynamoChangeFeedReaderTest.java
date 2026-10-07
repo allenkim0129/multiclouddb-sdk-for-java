@@ -107,6 +107,11 @@ class DynamoChangeFeedReaderTest {
                         .sequenceNumber("1").build()).build();
         assertEquals(ObjectValue.of(Map.of()), readRecord(absentSdkImages).data(),
                 "the native SDK represents absent image maps as empty maps, not Java null");
+        AttributeValue binary = AttributeValue.builder()
+                .b(software.amazon.awssdk.core.SdkBytes.fromByteArray(new byte[]{1, 2})).build();
+        assertEquals(ObjectValue.of(Map.of("bytes", NullValue.INSTANCE)),
+                readRecord(record(OperationType.MODIFY, Map.of("bytes", binary), Map.of())).data(),
+                "legacy native B fallback remains null before neutral conversion");
     }
 
     @Test

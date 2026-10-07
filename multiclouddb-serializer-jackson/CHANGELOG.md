@@ -12,8 +12,10 @@
   TokenBuffer tokens and the snapshot's typed reader, preserving configured
   coercion and custom deserializers.
 - Safe phase/reason failures, independent mapper configuration snapshots,
-  object-root/duplicate/output validation, sticky collector failures and nested
-  binary isolation for decoded DTO/node mutations.
+  object-root/duplicate/output validation and sticky collector failures.
+  byte[]/ByteBuffer and native binary/embedded serializer tokens are explicitly
+  unsupported at root or nested positions; customer Base64 string mapping is
+  supported without introducing a hidden binary model kind.
 - Actual factory/client/provider native-mock coverage for custom naming/date/
   generic mapping and a separate handwritten non-Jackson codec. These are
   create/upsert/point-read E2E unit tests, not live persistence guarantees.
@@ -36,7 +38,7 @@
   workflow changes. Query Map/Object contracts remain and no query/change-feed
   convenience decode is introduced. Update semantics are unchanged and outside
   the new customer workflow evidence.
-- Existing native provider numeric/schema/key limitations remain. Binary model
-  isolation is not binary-write support. Full issue-116 completion and direct
+- Existing native provider numeric/schema/key limitations remain. Document has
+  only the six JSON-like value kinds and no binary kind. Full issue-116 completion and direct
   native provider mapping remain deferred.
 - See [support, migration and source/test traceability](../docs/customer-object-mapping.md).

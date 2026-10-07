@@ -338,7 +338,7 @@ This appendix is **non-normative**. It records Java SDK behaviors that impact th
 
 ## Decision 23: Uniform document size enforcement (400 KB)
 
-- **Decision**: `DocumentSizeValidator` in `multiclouddb-api/internal` uses a structural `Document` counter preserving the legacy logical JSON byte profile, without Jackson or serialized-byte allocation. The effective limit is `MAX_BYTES = 400 * 1024 - 1024` (399 KiB). Validation occurs in `DefaultMulticloudDbClient` before provider delegation. Binary values are rejected separately; size overflow stops traversal and reports the observed count as a lower bound, not the full size.
+- **Decision**: `DocumentSizeValidator` in `multiclouddb-api/internal` uses a structural `Document` counter preserving the legacy logical JSON byte profile, without Jackson or serialized-byte allocation. The effective limit is `MAX_BYTES = 400 * 1024 - 1024` (399 KiB). Validation occurs in `DefaultMulticloudDbClient` before provider delegation. The current six-kind model has no binary values; binary serializer output fails at the codec boundary. Size overflow stops traversal and reports the observed count as a lower bound, not the full size.
 - **Rationale**: DynamoDB's item limit motivated the portable logical profile and safety margin, but logical JSON bytes are not native physical storage size. A single bounded counter avoids provider I/O and duplicated validation. The API runtime uses Gson 2.11.0 for cursor JSON plus SLF4J 2.0.12 and Gson's transitive annotation metadata dependency, not Jackson for size validation or AST serialization.
 - **Alternatives considered**:
   - Enforce per-provider adapter: duplicates logic, inconsistent enforcement.

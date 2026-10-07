@@ -477,7 +477,8 @@ class CosmosChangeFeedReaderTest {
         for (JsonNode invalid : List.of(deep,
                 mapper.getNodeFactory().numberNode(new java.math.BigDecimal(java.math.BigInteger.ONE, 1025)),
                 mapper.getNodeFactory().numberNode(java.math.BigInteger.TEN.pow(1024)),
-                mapper.getNodeFactory().numberNode(Double.NaN))) {
+                mapper.getNodeFactory().numberNode(Double.NaN),
+                mapper.getNodeFactory().binaryNode(new byte[]{1, 2}))) {
             var envelope = mapper.createObjectNode();
             envelope.putObject("metadata").put("id", "record").put("partitionKey", "tenant");
             envelope.putObject("current").set("private-field", invalid);

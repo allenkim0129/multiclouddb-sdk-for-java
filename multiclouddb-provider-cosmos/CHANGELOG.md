@@ -9,6 +9,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Document mapping (development)
 
+- The model is restricted to six JSON-like kinds. Native BinaryNode payloads
+  reaching the neutral read/feed converter fail with the safe PROVIDER_ERROR
+  below; no binary-to-null/text fallback is added.
 - Accept neutral Document CRUD payloads and return Document point reads plus
   nullable DocumentValue change-feed data. Retain existing internal Map/tree
   mapping, key/TTL injection, selected event bodies and system-field visibility.

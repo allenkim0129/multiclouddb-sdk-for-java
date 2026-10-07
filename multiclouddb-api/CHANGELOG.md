@@ -9,12 +9,15 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
-- API-owned immutable `Document` and closed null/boolean/string/number/binary/
+- API-owned immutable `Document` and closed six-kind null/boolean/string/number/
   array/object value model, neutral application-owned `DocumentCodec`, `TypeRef`
   and safe `DocumentCodecException`. Mathematical number equality retains source
   kind/scale and floating zero sign; finite floating decimal views follow runtime
   round-trip text. Initial precision/scale/depth bounds are documented separately
   from provider storage support.
+- Removed the unpublished reserved `BinaryValue`: binary/opaque objects are not
+  model values. Explicit customer Base64 text is an ordinary StringValue, with
+  no automatic model/provider decoding.
 
 ### Changed
 
@@ -30,8 +33,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   A leading U+FEFF is rejected like the legacy String reader; U+FEFF inside
   string values remains valid and unchanged.
   Logical write-size validation preserves the 399 KiB byte profile without
-  allocating serialized document JSON and rejects portable binary writes.
-  Binary diagnostics no longer imply size overflow; overflow reports an observed
+  allocating serialized document JSON. Overflow reports an observed
   byte-count lower bound at the early cutoff, not an exact full document size.
   Jackson remains a test-only compatibility oracle.
 - Development coordinate is `0.1.0-beta.2-SNAPSHOT`; no release is declared.

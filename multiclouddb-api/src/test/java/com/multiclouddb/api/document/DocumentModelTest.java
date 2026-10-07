@@ -9,24 +9,23 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.nio.ByteBuffer;
+import java.lang.reflect.InvocationTargetException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class DocumentModelTest {
     @Test
-    void snapshotsEveryMutableContainerAndBinaryBoundary() {
-        byte[] bytes = {1, 2};
-        BinaryValue binary = BinaryValue.of(bytes);
-        List<DocumentValue> list = new ArrayList<>(List.of(binary));
+    void snapshotsEveryMutableContainer() {
+        List<DocumentValue> list = new ArrayList<>(List.of(new StringValue("original")));
         ArrayValue array = ArrayValue.of(list);
         Map<String, DocumentValue> fields = new LinkedHashMap<>();
         fields.put("items", array);
         Document document = Document.of(ObjectValue.of(fields));
-        bytes[0] = 9;
-        binary.value()[0] = 8;
         list.clear();
         fields.clear();
-        assertArrayEquals(new byte[]{1, 2}, binary.value());
+        assertEquals(new StringValue("original"), array.values().get(0));
         assertSame(array, document.get("items").orElseThrow());
         assertEquals(1, array.values().size());
         assertThrows(UnsupportedOperationException.class, () -> array.values().clear());
@@ -58,7 +57,27 @@ class DocumentModelTest {
         assertEquals(List.of("n", "null"), new ArrayList<>(first.root().fields().keySet()));
         assertNotEquals(ArrayValue.of(List.of(NumberValue.of(1), NumberValue.of(2))),
                 ArrayValue.of(List.of(NumberValue.of(2), NumberValue.of(1))));
-        assertEquals(BinaryValue.of(new byte[]{1}), BinaryValue.of(new byte[]{1}));
+    }
+
+    @Test
+    void closedAlgebraContainsExactlyTheSixJsonLikeKinds() {
+        assertTrue(DocumentValue.class.isSealed());
+        assertEquals(Set.of(NullValue.class, BooleanValue.class, StringValue.class, NumberValue.class,
+                ArrayValue.class, ObjectValue.class), Set.of(DocumentValue.class.getPermittedSubclasses()));
+    }
+
+    @Test
+    void erasedContainerCallsCannotSmuggleBinaryOrArbitraryObjectsIntoTheModel() throws Exception {
+        var objectFactory = ObjectValue.class.getMethod("of", Map.class);
+        var arrayFactory = ArrayValue.class.getMethod("of", List.class);
+        for (Object unsupported : List.of(new byte[]{1, 2}, ByteBuffer.wrap(new byte[]{1, 2}), new Object())) {
+            InvocationTargetException objectFailure = assertThrows(InvocationTargetException.class,
+                    () -> objectFactory.invoke(null, Map.of("value", unsupported)));
+            assertInstanceOf(ClassCastException.class, objectFailure.getCause());
+            InvocationTargetException arrayFailure = assertThrows(InvocationTargetException.class,
+                    () -> arrayFactory.invoke(null, List.of(unsupported)));
+            assertInstanceOf(ClassCastException.class, arrayFailure.getCause());
+        }
     }
 
     @Test

@@ -53,7 +53,8 @@ Constraints:
 - must be serializable to a JSON-like representation
 
 **Customer document mapping increment (partial issue 116):** the API now owns
-immutable object-root Document, a closed DocumentValue algebra and an explicit
+immutable object-root Document, a closed six-kind DocumentValue algebra (null,
+boolean, string, number, array and object; no binary/embedded values) and an explicit
 application-owned DocumentCodec. The optional JacksonDocumentCodec implements
 that common contract. CRUD uses Document; point reads return Document; nullable
 change-feed payloads use DocumentValue. Query Map/Object contracts remain
@@ -268,7 +269,7 @@ Location: `multiclouddb-api/src/main/java/com/multiclouddb/api/internal/Document
 
 Static utility:
 - `MAX_BYTES = 400 * 1024 - 1024` (399 KiB logical JSON size, including the existing safety margin)
-- `validate(Document document, String operation)` - rejects unsupported binary writes and oversize input with `MulticloudDbException(INVALID_REQUEST)`; counts the existing byte profile without allocating document JSON
+- `validate(Document document, String operation)` - rejects oversize input with `MulticloudDbException(INVALID_REQUEST)`; counts the existing byte profile without allocating document JSON. Binary is not a model value and cannot reach this counter.
 
 Applied in `DefaultMulticloudDbClient.create()`, `update()` and `upsert()` before provider delegation.
 

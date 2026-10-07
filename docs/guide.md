@@ -6,6 +6,13 @@ and architecture overview, see the [Getting Started](getting-started.md) guide. 
 portable API surface and error mapping reference, see
 [Compatibility](compatibility.md).
 
+The immutable Document model has six JSON-like value kinds: null, boolean,
+string, number, array and object, with an object root. Binary/embedded objects
+are not model values. Applications may explicitly map bytes to ordinary text;
+the model does not infer or decode Base64. See the
+[customer mapping support table](customer-object-mapping.md#existing-provider-mapping-and-runtime-compatibility)
+for the existing per-provider schema and numeric limitations.
+
 ---
 
 ## Table of Contents

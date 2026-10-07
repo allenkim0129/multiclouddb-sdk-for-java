@@ -358,43 +358,48 @@ class JacksonDocumentCodecTest {
     }
 
     record BinaryDto(byte[] bytes) {}
-    record BinaryTreeDto(byte[] bytes, BinaryDto object, List<BinaryDto> objects, List<byte[]> arrays) {}
 
     @Test
-    void decodedDtoBinaryArraysDoNotAliasOriginalRootOrNestedNodes() throws Exception {
-        Document source = binaryTree();
-        BinaryTreeDto decoded = JacksonDocumentCodec.createDefault().decode(source, BinaryTreeDto.class);
-        decoded.bytes()[0] = 9;
-        decoded.object().bytes()[0] = 9;
-        decoded.objects().get(0).bytes()[0] = 9;
-        decoded.arrays().get(0)[0] = 9;
-        assertBinaryTreeUnchanged(source);
+    void rejectsCallerBytesBuffersAndNativeBinaryNodesAtRootAndInsideContainers() {
+        JacksonDocumentCodec codec = JacksonDocumentCodec.createDefault();
+        for (Object input : List.of(new byte[]{1, 2}, java.nio.ByteBuffer.wrap(new byte[]{1, 2}),
+                java.nio.ByteBuffer.allocateDirect(2).put(new byte[]{1, 2}).flip(),
+                com.fasterxml.jackson.databind.node.BinaryNode.valueOf(new byte[]{1, 2}))) {
+            DocumentCodecException root = assertThrows(DocumentCodecException.class,
+                    () -> codec.encode(input, Object.class));
+            DocumentCodecException nested = assertThrows(DocumentCodecException.class,
+                    () -> codec.encode(Map.of("items", List.of(Map.of("value", input))),
+                            new TypeRef<Map<String, Object>>() {}));
+            for (DocumentCodecException failure : List.of(root, nested)) {
+                assertEquals(ENCODE, failure.phase());
+                assertEquals(UNSUPPORTED_OUTPUT, failure.reason());
+                assertSafe(failure);
+            }
+        }
+        assertEquals(UNSUPPORTED_OUTPUT, assertThrows(DocumentCodecException.class,
+                () -> codec.encode(new BinaryDto(new byte[]{1, 2}), BinaryDto.class)).reason());
     }
 
     @Test
-    void decodedTreeBinaryArraysDoNotAliasOriginalRootOrNestedNodes() throws Exception {
-        Document source = binaryTree();
-        ObjectNode decoded = JacksonDocumentCodec.createDefault().decode(source, ObjectNode.class);
-        decoded.get("bytes").binaryValue()[0] = 9;
-        decoded.get("object").get("bytes").binaryValue()[0] = 9;
-        decoded.get("objects").get(0).get("bytes").binaryValue()[0] = 9;
-        decoded.get("arrays").get(0).binaryValue()[0] = 9;
-        assertBinaryTreeUnchanged(source);
-    }
-
-    private static Document binaryTree() {
-        return Document.builder()
-                .put("bytes", BinaryValue.of(new byte[]{1, 2}))
-                .put("object", ObjectValue.of(Map.of("bytes", BinaryValue.of(new byte[]{3, 4}))))
-                .put("objects", ArrayValue.of(List.of(ObjectValue.of(Map.of(
-                        "bytes", BinaryValue.of(new byte[]{5, 6}))))))
-                .put("arrays", ArrayValue.of(List.of(BinaryValue.of(new byte[]{7, 8}))))
-                .build();
-    }
-
-    private static void assertBinaryTreeUnchanged(Document source) {
-        assertEquals(binaryTree(), source);
-        assertArrayEquals(new byte[]{1, 2}, ((BinaryValue) source.get("bytes").orElseThrow()).value());
+    void explicitCustomerBase64MappingProducesOnlyAStringValue() {
+        SimpleModule module = new SimpleModule();
+        module.addSerializer(byte[].class, new JsonSerializer<>() {
+            @Override public void serialize(byte[] bytes, JsonGenerator out, SerializerProvider context)
+                    throws IOException {
+                out.writeString(Base64.getEncoder().encodeToString(bytes));
+            }
+        });
+        module.addDeserializer(byte[].class, new JsonDeserializer<>() {
+            @Override public byte[] deserialize(JsonParser in, DeserializationContext context) throws IOException {
+                return Base64.getDecoder().decode(in.getText());
+            }
+        });
+        JacksonDocumentCodec codec = JacksonDocumentCodec.from(new ObjectMapper().registerModule(module));
+        BinaryDto source = new BinaryDto(new byte[]{1, 2});
+        Document document = codec.encode(source, BinaryDto.class);
+        assertEquals(new StringValue("AQI="), document.get("bytes").orElseThrow());
+        assertEquals("AQI=", codec.decode(document, new TypeRef<Map<String, Object>>() {}).get("bytes"));
+        assertArrayEquals(source.bytes(), codec.decode(document, BinaryDto.class).bytes());
     }
 
     @Test

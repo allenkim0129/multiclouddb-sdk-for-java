@@ -71,6 +71,9 @@ class SpannerChangeFeedReaderTest {
         assertEquals(ChangeType.DELETE, deleted.type());
         assertEquals(ObjectValue.of(Map.of("old", new BooleanValue(true))), deleted.data());
         assertEquals(NullValue.INSTANCE, readValues("UPDATE", "null", null).data());
+        assertEquals(ObjectValue.of(Map.of("bytes", new StringValue("AQI="))),
+                readValues("UPDATE", "{\"bytes\":\"AQI=\"}", null).data(),
+                "native change-stream JSON text is not inferred to be binary");
         assertEquals(ObjectValue.of(Map.of()), readValues("UPDATE", null, null).data());
         assertEquals(ObjectValue.of(Map.of()), readValues("UPDATE", "{}", older).data());
         assertEquals(ObjectValue.of(Map.of("old", new BooleanValue(true))), readValues("UPDATE", null, older).data());

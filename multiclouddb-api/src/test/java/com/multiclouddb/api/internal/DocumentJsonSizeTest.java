@@ -50,9 +50,6 @@ class DocumentJsonSizeTest {
         long expected = legacySize(original);
         assertEquals(expected, DocumentJsonSize.measure(document, expected));
         assertThrows(IllegalArgumentException.class, () -> DocumentJsonSize.measure(document, expected - 1));
-        assertThrows(IllegalArgumentException.class, () -> DocumentJsonSize.measure(
-                Document.builder().put("b", ArrayValue.of(List.of(BinaryValue.of(new byte[]{1})))).build(),
-                Long.MAX_VALUE));
     }
 
     @Test
@@ -75,25 +72,14 @@ class DocumentJsonSizeTest {
     }
 
     @Test
-    void binaryFailureDoesNotClaimSizeOverflow() {
-        Document binary = Document.builder().put("secret-field", BinaryValue.of(new byte[]{1})).build();
-        MulticloudDbException failure = assertThrows(MulticloudDbException.class,
-                () -> DocumentSizeValidator.validate(binary, "upsert"));
-        assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, failure.error().category());
-        assertEquals("upsert", failure.error().operation());
-        assertEquals("Portable document writes do not support binary values.", failure.error().message());
-        assertNull(failure.getCause());
-    }
-
-    @Test
     void sizeDiagnosticReportsACutoffLowerBoundWithoutTraversingTheWholeDocument() {
         Document document = Document.builder().put("body", new StringValue("x".repeat(2_000_000)))
-                .put("later", BinaryValue.of(new byte[]{1})).build();
+                .put("later", new StringValue("y".repeat(2_000_000))).build();
         MulticloudDbException failure = assertThrows(MulticloudDbException.class,
                 () -> DocumentSizeValidator.validate(document, "create"));
         assertTrue(failure.error().message().contains("at least " + (DocumentSizeValidator.MAX_BYTES + 1)));
         assertFalse(failure.error().message().contains("2000000"));
-        assertFalse(failure.error().message().contains("binary"), "counter must stop before later fields");
+        assertFalse(failure.error().message().contains("4000000"), "counter must stop before later fields");
     }
 
     private long legacySize(Map<String, Object> document) throws Exception {

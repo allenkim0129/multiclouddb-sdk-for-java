@@ -144,9 +144,10 @@ untrusted classes, annotations or code.
 
 ## Immutable model and initial numeric semantics
 
-`Document` has an `ObjectValue` root. The closed value algebra contains null,
-boolean, string, number, binary, array and object. Containers copy ownership and
-are recursively immutable; binary input/output is copied. Objects retain encounter
+`Document` has an `ObjectValue` root. The closed value algebra contains exactly
+six JSON-like kinds: null, boolean, string, number, array and object. There is no
+binary/embedded-object kind or alias. Containers copy ownership and
+are recursively immutable. Objects retain encounter
 order but equality ignores it; array equality is ordered.
 
 `document.get(name)` returns `Optional.empty()` for absence and a present
@@ -164,7 +165,6 @@ recoverable. There is no MissingValue or arbitrary embedded-object model kind.
 | Nonfinite/unknown Number | Explicit failure; no model-level rounding, stringification or null fallback |
 | Numeric bounds | Precision <=1024 digits; stored scale [-1024,+1024], checked before normalization |
 | Nesting | At most 128 object/array containers including the root |
-| Binary | Immutable/copy-safe in memory; portable writes, including nested binary, rejected before native operations |
 
 There is no promise of globally shortest or identical floating text on every
 JDK. Java 17 is the current baseline. These are in-memory semantics, **not DB
@@ -191,8 +191,16 @@ to Integer**: Jackson has no byte numeric token, and its stock byte serializer
 also emits an integer. This does not rewrite a Byte payload already in the
 Document. A typed Byte target can still be reconstructed by the configured
 reader; model representation, token representation and reader coercion are
-separate contracts. Binary leaves are copied, including within objects/arrays, so decoded
-DTO or JsonNode mutation cannot mutate the Document.
+separate contracts. Decoder-owned containers ensure that decoded DTO or JsonNode
+mutation cannot mutate the Document.
+
+Default byte[]/ByteBuffer serializers and native binary/embedded tokens fail
+explicitly with `DocumentCodecException`/`UNSUPPORTED_OUTPUT`, including inside
+Maps and lists. An application can deliberately emit Base64 **text** with its own
+serializer; the result is an ordinary `StringValue`. The model/provider bridge
+never detects or automatically decodes Base64. A customer-selected typed reader
+or custom deserializer may interpret that string according to its own mapping
+policy; this is not a hidden binary model kind.
 
 | Boundary | Behavior |
 |---|---|
@@ -218,7 +226,7 @@ their existing internal mapping passes. Reads structurally convert the existing
 native tree without a new default-mapper reinterpretation. These paths incur
 container traversal/allocation; they are not direct native model mapping.
 
-An external or legacy database row/event can be outside the model's finite,
+An external or legacy database row/event can contain a binary/opaque node or be outside the model's finite,
 precision/scale or nesting domain even if the SDK did not write it. Conversion
 then fails as a nonretryable `MulticloudDbException` with `PROVIDER_ERROR`,
 the provider ID, operation `read` or `readChanges`, and fixed detail
@@ -229,11 +237,35 @@ The three small provider-local conversion helpers remain duplicated to keep
 Jackson outside API runtime; actual read/feed regressions pin their shared
 conversion/error behavior. Existing native-mapper fallbacks below are unchanged.
 
+The common contract is at the **value-kind** level, not a promise that every
+numeric payload or physical schema is portable. Documents require an object
+root; arrays and scalar values occur as fields or nested values.
+
+| Value kind | Cosmos existing JSON mapping | Dynamo existing attribute mapping | Spanner existing schema-bound mapping |
+|---|---|---|---|
+| Null | JSON null | NULL | Omitted value column with FIELD_DATA retaining the field; read as null |
+| Boolean | JSON boolean | BOOL | BOOL column |
+| String | JSON string | S | STRING column; existing nested-JSON marker escaping retained |
+| Number | JSON number | N | INT64/FLOAT64 for supported primitive wrappers; top-level BigDecimal/BigInteger use STRING |
+| Array | JSON array | L | JSON-marked STRING column |
+| Object | JSON object | M | Root fields select columns; nested objects use JSON-marked STRING columns |
+
+The native-mock create/upsert/read workflows exercise all six kinds, including
+nulls and nested containers. Real services still require compatible key/column
+schemas and have their own numeric and size limits; the tests do not establish
+live persistence or exact precision for all NumberValue payloads.
+
 | Provider | Retained behavior and limitation |
 |---|---|
 | Cosmos | Map-to-ObjectNode route; existing `/partitionKey` schema, id/partitionKey/TTL overwrite and system-field stripping |
-| Dynamo | Map-to-tree-to-AttributeValue route; number text on write, dotted-number Double vs Int/Long read parsing and existing binary/unsupported fallback. Large integers, exponents and decimal precision are not repaired |
-| Spanner | Existing INT64/FLOAT64 binding, JSON-marked nested STRINGs and FIELD_DATA selection. **Top-level BigDecimal/BigInteger still become STRINGs**; e.g. decimal `1.20` reads as StringValue `"1.20"`, not NumberValue. No new rejection or schema change |
+| Dynamo | Map-to-tree-to-AttributeValue route; number text on write, dotted-number Double vs Int/Long read parsing. The old native mapper turns unsupported native B attributes into null before neutral conversion, including in feed images. Large integers, exponents and decimal precision are not repaired |
+| Spanner | Existing INT64/FLOAT64 binding, JSON-marked nested STRINGs and FIELD_DATA selection. **Top-level BigDecimal/BigInteger still become STRINGs**; e.g. decimal `1.20` reads as StringValue `"1.20"`, not NumberValue. The old row mapper converts native BYTES to Base64 strings; feed JSON strings also remain strings. No schema change |
+
+A BinaryNode that actually reaches any provider's neutral converter is rejected
+with the safe error above, never converted to null/Base64 there. Cosmos read/feed
+fixtures exercise this boundary directly; ordinary service JSON does not have a
+binary token kind. Dynamo/Spanner's earlier legacy fallbacks are characterized
+separately, not advertised as binary support in Document.
 
 Existing field/key collisions and metadata visibility remain provider-specific;
 no union reserved-name guard or global rewrite is added. Schema/index/TTL and
@@ -254,7 +286,7 @@ including escaping and BigDecimal size normalization, without mutating the
 number or allocating serialized document bytes. This is not native storage size.
 Size-overflow diagnostics report the observed byte count as an **at-least lower
 bound** because traversal stops when the limit is crossed, not the complete
-document size. Binary rejection has its own message and does not claim overflow.
+document size. Binary is not a model value and cannot reach this size counter.
 Closed-client-first validation and capability gates remain.
 
 Cursor v1 keeps Base64URL JSON, field omission/order, binding, retention and
@@ -272,12 +304,12 @@ No change-feed token migration waiver is applied.
 
 | Part | Source / executable coverage |
 |---|---|
-| Complete immutable model | API `document/*`; `DocumentModelTest`, `NumberValueTest`: ownership, duplicate/null/absence, order, equality/scale/kinds, finite extremes and exact bounds |
+| Complete immutable model | API `document/*`; `DocumentModelTest`, `NumberValueTest`: exact six-kind sealed set, ownership, invalid erased byte[]/ByteBuffer/object inputs, duplicate/null/absence, order, equality/scale/kinds, finite extremes and exact bounds |
 | Common codec/types/errors | API `codec/*`; `TypeRefTest`, `DocumentCodecExceptionTest`; handwritten `PlainCustomerCodec` |
-| Optional Jackson mapping | `JacksonDocumentCodec`, `DocumentGenerator`, `DocumentTokens`, `MapperSnapshot`; corresponding codec/generator/snapshot tests preserve naming/date/generic mapping, coercion configuration, sticky failures, binary DTO/node isolation and safe errors |
+| Optional Jackson mapping | `JacksonDocumentCodec`, `DocumentGenerator`, `DocumentTokens`, `MapperSnapshot`; corresponding codec/generator/snapshot tests preserve naming/date/generic mapping, coercion configuration, sticky failures, safe binary/embedded-output rejection and explicit customer Base64-to-string mapping |
 | API runtime without Jackson | `CursorTokenCodec`/`CursorJson`, `DocumentSizeValidator`/`DocumentJsonSize`; `CursorWireCompatibilityTest`, `CursorJsonCompatibilityTest`, existing cursor/factory tests and `DocumentJsonSizeTest` legacy byte-profile comparison |
-| Native boundaries | Three ProviderClient/ChangeFeedReader pairs and provider-local NativeDocuments; `CustomerObjectMappingTest` checks actual read failures, and the three `*ChangeFeedReaderTest` classes assert final event payload selection/null/nesting plus safe model-domain errors |
-| Actual customer workflow | `CustomerObjectMappingTest`: real factory/wrapper/providers, native SDK mocks, custom Jackson and handwritten JDK-only codec through create/upsert/read; Spanner fixture uses captured mutation including FIELD_DATA |
+| Native boundaries | Three ProviderClient/ChangeFeedReader pairs and provider-local NativeDocuments; each `NativeDocumentsTest` rejects binary nodes for read/feed. `CustomerObjectMappingTest` checks actual read failures/legacy native binary fallbacks; the three `*ChangeFeedReaderTest` classes assert final event payload selection/null/nesting, safe model-domain errors and reachable binary/string behavior |
+| Actual customer workflow | `CustomerObjectMappingTest`: real factory/wrapper/providers, native SDK mocks, custom Jackson and handwritten JDK-only codec plus all six kinds through create/upsert/read; Spanner fixture uses captured mutation including FIELD_DATA |
 | Build isolation | API/provider/adapter POMs and module descriptors; runtime dependency/JAR inspection and manual API-only/optional-adapter JPMS consumer checks |
 
 These customer workflow tests are **E2E unit tests**, not live DB persistence,

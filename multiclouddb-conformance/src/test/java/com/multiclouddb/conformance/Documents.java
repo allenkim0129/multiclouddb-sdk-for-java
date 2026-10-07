@@ -22,7 +22,6 @@ public final class Documents {
         if (input instanceof String text) return new StringValue(text);
         if (input instanceof Boolean bool) return new BooleanValue(bool);
         if (input instanceof Number number) return NumberValue.of(number);
-        if (input instanceof byte[] bytes) return BinaryValue.of(bytes);
         if (input instanceof Map<?, ?> map) {
             var fields = new LinkedHashMap<String, DocumentValue>();
             map.forEach((name, child) -> fields.put((String) name, value(child)));

@@ -10,7 +10,6 @@ import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.ProviderId;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -54,12 +53,6 @@ final class NativeDocuments {
             case STRING: return new StringValue(node.textValue());
             case BOOLEAN: return new BooleanValue(node.booleanValue());
             case NUMBER: return NumberValue.of(node.numberValue());
-            case BINARY:
-                try {
-                    return BinaryValue.of(node.binaryValue());
-                } catch (IOException invalid) {
-                    throw new IllegalArgumentException("Invalid provider binary value.", invalid);
-                }
             case ARRAY:
                 var items = new ArrayList<DocumentValue>();
                 for (JsonNode child : node) items.add(value(child, depth));

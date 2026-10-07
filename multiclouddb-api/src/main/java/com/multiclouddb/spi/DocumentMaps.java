@@ -40,7 +40,6 @@ public final class DocumentMaps {
         if (value instanceof StringValue string) return string.value();
         if (value instanceof NumberValue number) return number.value();
         if (value instanceof BooleanValue bool) return bool.value();
-        if (value instanceof BinaryValue binary) return binary.value();
         return null; // The only remaining permitted kind is explicit NullValue.
     }
 }
