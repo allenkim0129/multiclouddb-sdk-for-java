@@ -15,9 +15,6 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   kind/scale and floating zero sign; finite floating decimal views follow runtime
   round-trip text. Initial precision/scale/depth bounds are documented separately
   from provider storage support.
-- Removed the unpublished reserved `BinaryValue`: binary/opaque objects are not
-  model values. Explicit customer Base64 text is an ordinary StringValue, with
-  no automatic model/provider decoding.
 
 ### Changed
 
@@ -39,6 +36,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Development coordinate is `0.1.0-beta.2-SNAPSHOT`; no release is declared.
   See [customer mapping and migration](../docs/customer-object-mapping.md).
   This is partial work related to microsoft/multiclouddb-sdk-for-java#116.
+
+### Removed
+
+- Removed the unpublished reserved `BinaryValue`: binary/opaque objects are not
+  model values. Explicit customer Base64 text is an ordinary StringValue, with
+  no automatic model/provider decoding.
 
 ## [0.1.0-beta.2] — 2026-06-17
 
