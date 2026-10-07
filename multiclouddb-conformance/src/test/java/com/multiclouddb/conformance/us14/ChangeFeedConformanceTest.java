@@ -17,6 +17,8 @@ import com.multiclouddb.api.changefeed.internal.CursorAnchor;
 import com.multiclouddb.api.changefeed.internal.CursorToken;
 import com.multiclouddb.api.changefeed.internal.CursorTokenCodec;
 import com.multiclouddb.api.changefeed.internal.PartitionPosition;
+import com.multiclouddb.api.document.NumberValue;
+import com.multiclouddb.api.document.ObjectValue;
 import com.multiclouddb.conformance.ConformanceHarness;
 import org.junit.jupiter.api.*;
 
@@ -149,6 +151,11 @@ public abstract class ChangeFeedConformanceTest {
                     + propagationTimeout().toMillis() + "ms");
             assertEquals(ChangeType.CREATE, ev.type(),
                     "first event for a fresh key must be CREATE");
+            ObjectValue data = assertInstanceOf(ObjectValue.class, ev.data(),
+                    "the fresh-key CREATE must carry the selected object payload");
+            NumberValue value = assertInstanceOf(NumberValue.class, data.fields().get("v"),
+                    "the selected CREATE payload must retain the written numeric field");
+            assertEquals(NumberValue.of(1), value, "CREATE payload must preserve the written value");
         } finally {
             ConformanceHarness.safeDelete(client, getAddress(), key);
         }
