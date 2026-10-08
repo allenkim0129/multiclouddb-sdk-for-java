@@ -9,6 +9,7 @@ import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.ResultSets;
+import com.google.cloud.spanner.Value;
 import com.google.cloud.Timestamp;
 import com.multiclouddb.api.OperationOptions;
 import com.multiclouddb.api.MulticloudDbException;
@@ -39,16 +40,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit tests for {@link SpannerChangeFeedReader#listCursors(ResourceAddress)}.
- * <p>
- * The success path (row decoding) is exercised by the emulator-backed
- * {@code SpannerChangeFeedConformanceTest}; mocking the deeply-nested
- * change-stream row schema in a unit test would be more fragile than
- * informative. This unit test covers the most ambiguous timing branch —
- * placeholder minting on an empty TVF result — and asserts that the
- * {@code issuedAtEpochMillis} stamped on the placeholder reflects the
- * instant the result-set was observed exhausted, matching the invariant
- * established by the Cosmos and Dynamo readers.
+ * Native-result fixtures for selected change images, metadata-driven decoding
+ * and cursor timing. These tests do not require a running Spanner service.
  */
 class SpannerChangeFeedReaderTest {
 
@@ -95,15 +88,148 @@ class SpannerChangeFeedReaderTest {
         }
     }
 
+    @Test
+    void nativeInt64StringsDecodeInSelectedCreateUpdateAndDeleteImages() {
+        List<Struct> columns = List.of(column("v", "INT64"), column("text", "STRING"),
+                column("data", "STRING"), column("stale", "INT64"));
+        String newer = "{\"v\":\"1\",\"text\":\"1\",\"stale\":\"not-an-integer\","
+                + "\"data\":\"[\\\"v\\\",\\\"text\\\"]\"}";
+        String older = "{\"v\":\"-2\",\"text\":\"-2\",\"data\":\"[\\\"v\\\",\\\"text\\\"]\"}";
+        for (String operation : List.of("INSERT", "UPDATE", "DELETE")) {
+            ChangeEvent event = readValues(operation, newer, older, columns);
+            long expected = operation.equals("DELETE") ? -2 : 1;
+            assertEquals(ObjectValue.of(Map.of("v", NumberValue.of(expected),
+                    "text", new StringValue(Long.toString(expected)))), event.data());
+            assertEquals(operation.equals("INSERT") ? ChangeType.CREATE
+                    : operation.equals("DELETE") ? ChangeType.DELETE : ChangeType.UPDATE, event.type());
+            assertEquals(com.multiclouddb.api.MulticloudDbKey.of("tenant", "record"), event.key());
+            assertTrue(event.providerEventId().startsWith("txn:"));
+        }
+    }
+
+    @Test
+    void declaredInt64PreservesSignedRangeAndIntegralJsonWithoutRounding() {
+        for (long value : new long[]{Long.MIN_VALUE, -9007199254740993L, -1, 0, 1,
+                9007199254740993L, Long.MAX_VALUE}) {
+            for (String json : List.of("{\"v\":\"" + value + "\"}", "{\"v\":" + value + "}")) {
+                assertEquals(ObjectValue.of(Map.of("v", NumberValue.of(value))),
+                        readValues("INSERT", json, null, List.of(column("v", "INT64"))).data());
+            }
+        }
+    }
+
+    @Test
+    void invalidDeclaredInt64FailsSafelyRatherThanReturningRawPayload() {
+        List<Struct> columns = List.of(column("v", "INT64"));
+        for (String value : List.of("\"9223372036854775808\"", "\"-9223372036854775809\"",
+                "9223372036854775808", "-9223372036854775809", "\"1.5\"", "1.5", "1.0",
+                "\"1e0\"", "\"NaN\"", "\"Infinity\"", "\"\"", "\" 1\"", "\"+1\"",
+                "\"\u0661\"", "true", "{}", "[]", "\"private-native-payload\"")) {
+            for (String operation : List.of("INSERT", "UPDATE", "DELETE")) {
+                String image = "{\"v\":" + value + "}";
+                assertSafePayloadFailure(() -> readValues(operation,
+                        operation.equals("DELETE") ? "{\"v\":\"1\"}" : image,
+                        operation.equals("DELETE") ? image : "{\"v\":\"1\"}", columns));
+            }
+        }
+        assertSafePayloadFailure(() -> readValues("INSERT", "{\"v\":", null, columns));
+    }
+
+    @Test
+    void int64MetadataDoesNotCollapseNullMissingEmptyOrFallbackImages() {
+        List<Struct> columns = List.of(column("v", "INT64"));
+        assertEquals(ObjectValue.of(Map.of("v", NullValue.INSTANCE)),
+                readValues("INSERT", "{\"v\":null}", null, columns).data());
+        assertEquals(NullValue.INSTANCE, readValues("UPDATE", "null", null, columns).data());
+        assertEquals(ObjectValue.of(Map.of()), readValues("INSERT", "{}", "{\"v\":\"2\"}", columns).data());
+        assertEquals(ObjectValue.of(Map.of()), readValues("UPDATE", null, null, columns).data());
+        assertEquals(ObjectValue.of(Map.of("v", NumberValue.of(2))),
+                readValues("UPDATE", null, "{\"v\":\"2\"}", columns).data());
+        assertEquals(ObjectValue.of(Map.of("v", NumberValue.of(3))),
+                readValues("DELETE", "{\"v\":\"3\"}", null, columns).data());
+        assertEquals(ObjectValue.of(Map.of()), readValues("DELETE", "{\"v\":\"3\"}", "{}", columns).data());
+        for (String operation : List.of("INSERT", "UPDATE", "DELETE")) {
+            assertEquals(ObjectValue.of(Map.of("v", NumberValue.of(1))),
+                    readValues(operation, operation.equals("DELETE") ? "not-json" : "{\"v\":\"1\"}",
+                            operation.equals("DELETE") ? "{\"v\":\"1\"}" : "not-json", columns).data(),
+                    "unselected images must not be decoded");
+        }
+    }
+
+    @Test
+    void missingMetadataDoesNotInferTypesAndNonInt64ColumnsStayUnchanged() {
+        String json = "{\"v\":\"1\"}";
+        ObjectValue text = ObjectValue.of(Map.of("v", new StringValue("1")));
+        assertEquals(text, readValues("INSERT", json, null).data());
+        assertEquals(text, readValues("INSERT", json, null, List.of()).data());
+        assertEquals(text, readValues("INSERT", json, null, List.of(column("other", "INT64"))).data());
+        for (String type : List.of("STRING", "NUMERIC", "BYTES", "JSON")) {
+            assertEquals(text, readValues("INSERT", json, null, List.of(column("v", type))).data());
+        }
+        Struct arrayColumn = columnType("v", Value.json(
+                "{\"code\":\"ARRAY\",\"array_element_type\":{\"code\":\"INT64\"}}"));
+        assertEquals(ObjectValue.of(Map.of("v", ArrayValue.of(List.of(new StringValue("1"), NullValue.INSTANCE)))),
+                readValues("INSERT", "{\"v\":[\"1\",null]}", null, List.of(arrayColumn)).data());
+        assertEquals(ObjectValue.of(Map.of("raw", new StringValue("not-json"))),
+                readValues("UPDATE", "not-json", null).data());
+    }
+
+    @Test
+    void typeMetadataSupportsJsonAndStringTransportButRejectsMalformedDeclarations() {
+        assertEquals(ObjectValue.of(Map.of("v", NumberValue.of(1))),
+                readValues("INSERT", "{\"v\":\"1\"}", null,
+                        List.of(columnType("v", Value.string("{\"code\":\"INT64\"}")))).data());
+        for (String invalid : List.of("not-json", "null", "{}", "{\"code\":1}")) {
+            assertSafePayloadFailure(() -> readValues("INSERT", "{\"v\":\"1\"}", null,
+                    List.of(columnType("v", Value.json(invalid)))));
+        }
+        assertSafePayloadFailure(() -> readValues("INSERT", "{\"v\":\"1\"}", null,
+                List.of(columnType("v", Value.json(null)))));
+        assertSafePayloadFailure(() -> readValues("INSERT", "{\"v\":\"1\"}", null,
+                List.of(column("v", "INT64"), column("v", "STRING"))));
+    }
+
+    private static void assertSafePayloadFailure(org.junit.jupiter.api.function.Executable action) {
+        MulticloudDbException failure = assertThrows(MulticloudDbException.class, action);
+        assertEquals(MulticloudDbErrorCategory.PROVIDER_ERROR, failure.error().category());
+        assertEquals(ProviderId.SPANNER, failure.error().provider());
+        assertEquals("readChanges", failure.error().operation());
+        assertFalse(failure.error().retryable());
+        assertEquals(Map.of("reason", "invalid_document_payload"), failure.error().providerDetails());
+        assertEquals("Provider response cannot be represented as a Document value.", failure.error().message());
+        assertNull(failure.getCause());
+        assertEquals(0, failure.getSuppressed().length);
+    }
+
+    private static Struct column(String name, String code) {
+        return columnType(name, Value.json("{\"code\":\"" + code + "\"}"));
+    }
+
+    private static Struct columnType(String name, Value type) {
+        return Struct.newBuilder().set("name").to(name).set("type").to(type)
+                .set("is_primary_key").to(false).set("ordinal_position").to(1L).build();
+    }
+
     private static ChangeEvent readValues(String operation, String newer, String older) {
+        return readValues(operation, newer, older, null);
+    }
+
+    private static ChangeEvent readValues(String operation, String newer, String older, List<Struct> columns) {
         Timestamp now = Timestamp.now();
-        Struct mod = Struct.newBuilder().set("keys").to("{\"partitionKey\":\"tenant\",\"sortKey\":\"record\"}")
-                .set("new_values").to(newer).set("old_values").to(older).build();
-        Struct record = Struct.newBuilder().set("commit_timestamp").to(now)
+        String keys = "{\"partitionKey\":\"tenant\",\"sortKey\":\"record\"}";
+        Struct mod = Struct.newBuilder().set("keys").to(columns == null ? Value.string(keys) : Value.json(keys))
+                .set("new_values").to(columns == null ? Value.string(newer) : Value.json(newer))
+                .set("old_values").to(columns == null ? Value.string(older) : Value.json(older)).build();
+        Struct.Builder record = Struct.newBuilder().set("commit_timestamp").to(now)
                 .set("record_sequence").to("1").set("server_transaction_id").to("txn")
-                .set("mod_type").to(operation).set("mods").toStructArray(mod.getType(), List.of(mod)).build();
+                .set("mod_type").to(operation).set("mods").toStructArray(mod.getType(), List.of(mod));
+        if (columns != null) {
+            record.set("column_types").toStructArray(
+                    columns.isEmpty() ? column("v", "INT64").getType() : columns.get(0).getType(), columns);
+        }
+        Struct dataRecord = record.build();
         Struct outer = Struct.newBuilder().set("data_change_record")
-                .toStructArray(record.getType(), List.of(record)).build();
+                .toStructArray(dataRecord.getType(), List.of(dataRecord)).build();
         Struct row = Struct.newBuilder().set("ChangeRecord")
                 .toStructArray(outer.getType(), List.of(outer)).build();
         DatabaseClient db = mock(DatabaseClient.class);

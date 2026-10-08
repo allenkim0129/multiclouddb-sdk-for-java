@@ -206,8 +206,9 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Preserve existing INT64/FLOAT64 mappings and top-level BigDecimal/BigInteger
   STRING fallback. Unsupported native-to-model read/feed payloads, including
   BinaryNode, fail with nonretryable `PROVIDER_ERROR` and safe
-  `invalid_document_payload` reason. Earlier BYTES-to-Base64-text and textual
-  feed JSON behavior remain unchanged; no binary kind or numeric guarantee.
+  `invalid_document_payload` reason. Earlier BYTES-to-Base64-text behavior is
+  unchanged. Textual feed values remain unchanged except metadata-declared
+  scalar INT64 (see Fixed below); no binary kind or numeric guarantee.
 - Unpublished `0.1.0-beta.1-SNAPSHOT` against the coordinated development API;
   no release or schema/envelope redesign. See
   [mapping support and migration](customer-object-mapping.md).
@@ -228,6 +229,13 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Fixed:**
 
+- Spanner change-feed scalar INT64 values are decoded from native string
+  transport using `column_types`, restoring NumberValue without coercing
+  numeric-looking STRINGs. Selected new/old images and FIELD_DATA filtering are
+  unchanged; invalid/overflowing declared integers fail as safe, nonretryable
+  `PROVIDER_ERROR/readChanges/invalid_document_payload`, not raw success values.
+  Missing-metadata legacy values and non-INT64 types retain their existing
+  representation; no native ARRAY decoding or write-policy change is included.
 - Default `ORDER BY` no longer fires for aggregate / `GROUP BY` queries (GoogleSQL rejects with `column not aggregated`). It also no longer duplicates primary-key columns when the caller already sorts by them, and `ORDER BY` detection ignores string literals (so `WHERE comment = ''please ORDER BY date''` is no longer a false positive).
 - Legacy / pre-`FIELD_DATA` rows preserve every column on read and `update()`. When `FIELD_DATA` is absent or malformed, the reader applies the historical "no metadata => no filtering" rule; `update()` deliberately leaves `FIELD_DATA` alone so the reader''s fallback continues to project all legacy columns. A subsequent `upsert()` or `create()` promotes the row into the metadata regime.
 - `ensureDatabase()` / `ensureContainer()` no longer leak raw `RuntimeException` on non-Spanner failures. `InterruptedException` → `TRANSIENT_FAILURE`; non-Spanner causes inside the admin `ExecutionException` → `PROVIDER_ERROR`.

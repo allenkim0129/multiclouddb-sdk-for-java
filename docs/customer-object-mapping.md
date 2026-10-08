@@ -259,7 +259,23 @@ live persistence or exact precision for all NumberValue payloads.
 |---|---|
 | Cosmos | Map-to-ObjectNode route; existing `/partitionKey` schema, id/partitionKey/TTL overwrite and system-field stripping |
 | Dynamo | Map-to-tree-to-AttributeValue route; number text on write, dotted-number Double vs Int/Long read parsing. The old native mapper turns unsupported native B attributes into null before neutral conversion, including in feed images. Large integers, exponents and decimal precision are not repaired |
-| Spanner | Existing INT64/FLOAT64 binding, JSON-marked nested STRINGs and FIELD_DATA selection. **Top-level BigDecimal/BigInteger still become STRINGs**; e.g. decimal `1.20` reads as StringValue `"1.20"`, not NumberValue. The old row mapper converts native BYTES to Base64 strings; feed JSON strings also remain strings. No schema change |
+| Spanner | Existing INT64/FLOAT64 binding, JSON-marked nested STRINGs and FIELD_DATA selection. **Top-level BigDecimal/BigInteger still become STRINGs**; e.g. decimal `1.20` reads as StringValue `"1.20"`, not NumberValue. The old row mapper converts native BYTES to Base64 strings. Feed decoding restores only metadata-declared scalar INT64 strings to numbers; other string values remain strings. No schema change |
+
+Spanner change-feed `column_types` metadata identifies scalar INT64 columns.
+For the selected new/old image, retained fields of that type accept decimal
+integer strings or integral JSON numbers within the signed 64-bit range, without
+rounding. They become NumberValue through the existing neutral converter.
+Null stays NullValue; absent fields are not invented. FIELD_DATA filtering
+precedes normalization, and unselected images are not decoded.
+
+Missing, null or empty `column_types` preserves legacy representation without
+type inference; an undeclared field is also unchanged. Malformed supplied type
+declarations and invalid/overflowing declared INT64 values fail with the safe
+`PROVIDER_ERROR/readChanges/invalid_document_payload` error, not the legacy raw
+fallback. Numeric-looking STRINGs, JSON, NUMERIC and BYTES are not reinterpreted.
+Native ARRAY columns are unchanged: the current writer encodes Collection/Map
+as JSON-marked STRING columns, not native ARRAY&lt;INT64&gt;. This correction does
+not add native-array support or recursively coerce nested strings.
 
 A BinaryNode that actually reaches any provider's neutral converter is rejected
 with the safe error above, never converted to null/Base64 there. Cosmos read/feed

@@ -36,7 +36,7 @@ final class NativeDocuments {
         }
     }
 
-    private static MulticloudDbException invalidPayload(String operation) {
+    static MulticloudDbException invalidPayload(String operation) {
         return new MulticloudDbException(new MulticloudDbError(
                 MulticloudDbErrorCategory.PROVIDER_ERROR,
                 "Provider response cannot be represented as a Document value.",
