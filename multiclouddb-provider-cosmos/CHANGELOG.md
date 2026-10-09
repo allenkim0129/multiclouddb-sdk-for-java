@@ -12,6 +12,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Cosmos clients now always use Gateway mode with HTTP/2 enabled. Upgraded
   `azure-cosmos` from 4.78.0 to 4.82.0 so account-advertised Gateway V2
   endpoints and the SDK connectivity probe can select routing automatically.
+- Aligned managed `azure-core` to 1.59.0 and `azure-json` to 1.5.1 with the
+  Cosmos SDK dependency requirements, avoiding older transitive overrides.
 - Gateway version selection is now left entirely to Cosmos account
   configuration and the Azure SDK. Successful construction logs the fixed
   Gateway/HTTP2 policy and automatic selection without claiming a negotiated

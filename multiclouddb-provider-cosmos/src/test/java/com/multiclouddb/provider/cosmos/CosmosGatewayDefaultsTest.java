@@ -18,14 +18,20 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.MockedConstruction;
+import org.mockito.stubbing.Answer;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockConstruction;
 import static org.mockito.Mockito.never;
@@ -64,70 +70,98 @@ class CosmosGatewayDefaultsTest {
         appender.start();
         logger.addAppender(appender);
 
-        try (MockedConstruction<CosmosClientBuilder> ignored = mockBuilderConstruction();
+        try (MockedConstruction<CosmosClientBuilder> ignored = mockBuilderConstruction(invocation -> {
+                 assertTrue(transportLogs(appender).isEmpty(),
+                         "Transport policy must not be logged before native construction succeeds");
+                 return mock(CosmosClient.class);
+             });
              CosmosProviderClient ignoredClient = new CosmosProviderClient(config(Map.of()))) {
-            // Construction emits the transport snapshot after the native client is built.
+            List<ILoggingEvent> events = transportLogs(appender);
+            assertEquals(1, events.size(), "Emit one transport policy snapshot per client");
+            ILoggingEvent event = events.get(0);
+            assertEquals(Level.INFO, event.getLevel());
+            String message = event.getFormattedMessage();
+            assertAll(
+                    () -> assertTrue(message.contains("configured"), message),
+                    () -> assertTrue(message.contains("Gateway mode"), message),
+                    () -> assertTrue(message.contains("HTTP/2 enabled"), message),
+                    () -> assertTrue(message.contains("Gateway V1/V2"), message),
+                    () -> assertTrue(message.contains("selected automatically"), message),
+                    () -> assertTrue(message.contains("account configuration"), message),
+                    () -> assertTrue(message.contains("Azure Cosmos DB"), message),
+                    () -> assertTrue(message.contains("SDK"), message),
+                    () -> assertFalse(message.matches(
+                            "(?is).*\\b(?:using|uses|negotiated)\\s+Gateway V[12]\\b.*"),
+                            "The configuration snapshot must not claim a negotiated route: " + message));
         } finally {
             logger.detachAppender(appender);
             appender.stop();
         }
+    }
 
-        long transportConfigurationLogCount = appender.list.stream().filter(
-                event -> event.getLevel() == Level.INFO
-                        && event.getFormattedMessage().equals(
-                                "Cosmos transport configured: Gateway mode, HTTP/2 enabled. "
-                                        + "Gateway V1/V2 routing is selected automatically from "
-                                        + "account configuration by Azure Cosmos DB and its SDK."))
-                .count();
-        assertEquals(1L, transportConfigurationLogCount);
+    @Test
+    void doesNotLogTransportWhenNativeConstructionFails() {
+        Logger logger = (Logger) LoggerFactory.getLogger(CosmosProviderClient.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        IllegalStateException failure = new IllegalStateException("Native client construction failed");
+
+        try (MockedConstruction<CosmosClientBuilder> ignored = mockBuilderConstruction(invocation -> {
+                 throw failure;
+             })) {
+            assertSame(failure, assertThrows(IllegalStateException.class,
+                    () -> new CosmosProviderClient(config(Map.of()))));
+            assertTrue(transportLogs(appender).isEmpty(),
+                    "Failed native construction must not emit a transport policy snapshot");
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
+    private static List<ILoggingEvent> transportLogs(ListAppender<ILoggingEvent> appender) {
+        return appender.list.stream()
+                .filter(event -> event.getFormattedMessage().contains("Cosmos transport"))
+                .toList();
     }
 
     @ParameterizedTest(name = "{0}={1}")
     @MethodSource("removedTransportSettings")
     void rejectsRemovedTransportSettingBeforeBuilderConstruction(
-            String property, String value, String expectedMessage) {
+            String property, String value, List<String> expectedGuidance) {
         try (MockedConstruction<CosmosClientBuilder> mocked = mockBuilderConstruction()) {
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class,
                     () -> new CosmosProviderClient(config(property, value)));
 
-            assertEquals(expectedMessage, error.getMessage());
+            String message = error.getMessage();
+            assertTrue(message.contains("'" + property + "'"),
+                    "Identify the exact rejected key: " + message);
+            assertTrue(message.contains("not supported") || message.contains("no longer supported"),
+                    "State that the setting is unsupported: " + message);
+            assertAll(expectedGuidance.stream().map(fragment ->
+                    () -> assertTrue(message.contains(fragment),
+                            "Missing migration guidance '" + fragment + "': " + message)));
             assertEquals(0, mocked.constructed().size());
         }
     }
 
     private static Stream<Arguments> removedTransportSettings() {
-        String connectionModeMessage =
-                "Cosmos connection property 'connectionMode' is no longer supported; "
-                        + "Gateway mode is always used";
-        String http2Message =
-                "Cosmos connection property 'gatewayHttp2Enabled' is not supported; "
-                        + "Gateway HTTP/2 is always enabled";
-        String automaticRoutingSuffix =
-                "' is not supported; Gateway V1/V2 routing is selected automatically "
-                        + "from account configuration by Azure Cosmos DB and its SDK";
+        List<String> fixedGateway = List.of("Gateway mode", "always used");
+        List<String> fixedHttp2 = List.of("Gateway HTTP/2", "always enabled");
+        List<String> automaticRouting = List.of(
+                "Gateway V1/V2", "selected automatically", "account configuration", "Azure Cosmos DB", "SDK");
 
         return Stream.of(
-                Arguments.of("connectionMode", "direct", connectionModeMessage),
-                Arguments.of("connectionMode", "gateway", connectionModeMessage),
-                Arguments.of("gatewayHttp2Enabled", "false", http2Message),
-                Arguments.of("gatewayHttp2Enabled", "true", http2Message),
-                Arguments.of(
-                        "gatewayV2Enable",
-                        "false",
-                        "Cosmos connection property 'gatewayV2Enable" + automaticRoutingSuffix),
-                Arguments.of(
-                        "gatewayV2Enable",
-                        "true",
-                        "Cosmos connection property 'gatewayV2Enable" + automaticRoutingSuffix),
-                Arguments.of(
-                        "thinClientEnabled",
-                        "false",
-                        "Cosmos connection property 'thinClientEnabled" + automaticRoutingSuffix),
-                Arguments.of(
-                        "thinClientEnabled",
-                        "true",
-                        "Cosmos connection property 'thinClientEnabled" + automaticRoutingSuffix));
+                Arguments.of("connectionMode", "direct", fixedGateway),
+                Arguments.of("connectionMode", "gateway", fixedGateway),
+                Arguments.of("gatewayHttp2Enabled", "false", fixedHttp2),
+                Arguments.of("gatewayHttp2Enabled", "true", fixedHttp2),
+                Arguments.of("gatewayV2Enable", "false", automaticRouting),
+                Arguments.of("gatewayV2Enable", "true", automaticRouting),
+                Arguments.of("thinClientEnabled", "false", automaticRouting),
+                Arguments.of("thinClientEnabled", "true", automaticRouting));
     }
 
     private static MulticloudDbClientConfig config(String property, String value) {
@@ -153,6 +187,11 @@ class CosmosGatewayDefaultsTest {
 
     private static MockedConstruction<CosmosClientBuilder> mockBuilderConstruction() {
         CosmosClient client = mock(CosmosClient.class);
+        return mockBuilderConstruction(invocation -> client);
+    }
+
+    private static MockedConstruction<CosmosClientBuilder> mockBuilderConstruction(
+            Answer<CosmosClient> buildAnswer) {
         return mockConstruction(
                 CosmosClientBuilder.class,
                 withSettings().defaultAnswer(invocation -> {
@@ -162,6 +201,6 @@ class CosmosGatewayDefaultsTest {
                     }
                     return null;
                 }),
-                (builder, context) -> when(builder.buildClient()).thenReturn(client));
+                (builder, context) -> when(builder.buildClient()).thenAnswer(buildAnswer));
     }
 }
