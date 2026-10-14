@@ -43,7 +43,7 @@ Use the supplied **JacksonDocumentCodec** with application-configured naming, mo
 
 ```mermaid
 flowchart LR
-    A["DTO<br/>productName = Book"] --> B["Application codec<br/>Naming rule: snake_case"]
+    A["Java object<br/>productName = Book"] --> B["Application codec<br/>Naming rule: snake_case"]
     B --> C["Document field<br/>product_name = StringValue(Book)"]
 ```
 
@@ -56,16 +56,35 @@ The Jackson adapter uses in-memory tokens, not a JSON byte serialization/reparse
 
 ## 3. End-to-end workflow
 
+Boxes group responsibilities, not separate processes. The app invokes the codec explicitly, including the supplied Jackson adapter. Follow the selected provider branch, not all three.
+
 **Write: application to database**
 
 ```mermaid
 flowchart LR
-    A["Application DTO"] --> B["App calls codec.encode<br/>with Class or TypeRef"]
-    B --> C["Document"]
-    C -->|"create / update / upsert"| D["Multicloud<br/>Validate Document"]
-    D --> E["Multicloud<br/>Map to provider values<br/>Add keys / metadata"]
-    E --> F["Native SDK<br/>Encode and send request"]
-    F --> G[("DB")]
+    subgraph APP["Customer application"]
+        A["Java object"] --> B["codec.encode<br/>Class or TypeRef"]
+        B --> C["Document"]
+    end
+    subgraph MC["Multicloud SDK"]
+        W["Validate Document"] --> CW["ObjectNode<br/>Keys / optional TTL"]
+        W --> DW["AttributeValue map<br/>Keys / optional TTL"]
+        W --> SW["Mutation<br/>Typed columns + marked JSON strings<br/>Keys / field metadata"]
+    end
+    subgraph NATIVE["Native SDK"]
+        CN["Cosmos SDK<br/>JSON encoding"]
+        DN["AWS SDK<br/>Typed JSON encoding"]
+        SN["Spanner SDK<br/>Protobuf / gRPC"]
+    end
+    subgraph DB["Database"]
+        CDB[("Cosmos DB")]
+        DDB[("DynamoDB")]
+        SDB[("Spanner")]
+    end
+    C --> W
+    CW --> CN --> CDB
+    DW --> DN --> DDB
+    SW --> SN --> SDB
 ```
 
 **Read: database to application**
@@ -74,78 +93,31 @@ The app calls `read(address, key)`. A found item's data returns through:
 
 ```mermaid
 flowchart LR
-    A[("DB")] --> B["Native SDK<br/>Receive and decode response"]
-    B --> C["Multicloud<br/>Map to Document"]
-    C --> D["DocumentResult<br/>Document + metadata"]
-    D -->|"Extract Document"| E["App calls codec.decode<br/>with Class or TypeRef"]
-    E --> F["Application DTO"]
+    subgraph DB["Database"]
+        CDB[("Cosmos DB")]
+        DDB[("DynamoDB")]
+        SDB[("Spanner")]
+    end
+    subgraph NATIVE["Native SDK"]
+        CN["Cosmos SDK<br/>Decode to ObjectNode"]
+        DN["AWS SDK<br/>Decode to AttributeValue map"]
+        SN["Spanner SDK<br/>Decode to typed rows"]
+    end
+    subgraph MC["Multicloud SDK"]
+        CR["Extract metadata<br/>Skip root system fields"] --> R["DocumentResult<br/>Document + metadata"]
+        DR["Convert through JSON tree<br/>Extract metadata"] --> R
+        SR["Apply field metadata<br/>Decode marked strings<br/>Build JSON tree"] --> R
+    end
+    subgraph APP["Customer application"]
+        E["Extract Document<br/>codec.decode<br/>Class or TypeRef"] --> F["Java object"]
+    end
+    CDB --> CN --> CR
+    DDB --> DN --> DR
+    SDB --> SN --> SR
+    R --> E
 ```
 
-The app invokes the codec explicitly. A missing read returns no document; handle it before decoding.
-
-## 4. Provider-specific data flow
-
-Each write below starts after Document-level validation.
-
-### Cosmos DB
-
-**Write**
-
-```mermaid
-flowchart LR
-    A["Document"] --> B["Multicloud<br/>ObjectNode + keys / optional TTL"]
-    B --> C["Cosmos SDK<br/>JSON encoding"]
-    C --> D[("Cosmos DB")]
-```
-
-**Read**
-
-```mermaid
-flowchart LR
-    A[("Cosmos DB")] --> B["Cosmos SDK<br/>ObjectNode response"]
-    B --> C["Multicloud<br/>Extract metadata; skip root system fields"]
-    C --> D["Document"]
-```
-
-### DynamoDB
-
-**Write**
-
-```mermaid
-flowchart LR
-    A["Document"] --> B["Multicloud<br/>AttributeValue map + keys / optional TTL"]
-    B --> C["AWS SDK<br/>Typed JSON encoding"]
-    C --> D[("DynamoDB")]
-```
-
-**Read**
-
-```mermaid
-flowchart LR
-    A[("DynamoDB")] --> B["AWS SDK<br/>AttributeValue map"]
-    B --> C["Multicloud<br/>JSON tree conversion + metadata extraction"]
-    C --> D["Document"]
-```
-
-### Spanner
-
-**Write**
-
-```mermaid
-flowchart LR
-    A["Document"] --> B["Multicloud<br/>Mutation: typed columns + marked JSON strings<br/>Keys and field metadata"]
-    B --> C["Spanner SDK<br/>Protobuf / gRPC"]
-    C --> D[("Spanner")]
-```
-
-**Read**
-
-```mermaid
-flowchart LR
-    A[("Spanner")] --> B["Spanner SDK<br/>Typed rows"]
-    B --> C["Multicloud<br/>Apply field metadata; decode marked strings<br/>Build JSON tree"]
-    C --> D["Document"]
-```
+A missing read returns no document; handle it before decoding.
 
 ### Native input example
 
@@ -159,7 +131,7 @@ The same `quantity: 2` field becomes:
 
 These are selected-field sketches; the SDK also supplies keys and metadata. ObjectNode is our Cosmos adapter's choice, not a Cosmos requirement. Spanner nested objects use marked JSON strings in compatible columns.
 
-## 5. Size and value guarantees
+## 4. Size and value guarantees
 
 **Check what is known from Document before building provider input.**
 
@@ -184,7 +156,7 @@ Cosmos backend encoding savings do not increase this common budget. Mapping comp
 
 **Not guaranteed by PR 1:** comprehensive native-size prechecks, an expanded portable numeric domain, or a common final-document limit after partial updates. An update's input size is not its resulting document size.
 
-## 6. Delivery plan
+## 5. Delivery plan
 
 ```mermaid
 flowchart LR
