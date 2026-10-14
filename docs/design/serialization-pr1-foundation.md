@@ -24,6 +24,11 @@ public final class ObjectValue implements DocumentValue {
 public sealed interface DocumentValue permits
         NullValue, BooleanValue, StringValue,
         NumberValue, ArrayValue, ObjectValue {}
+
+public final class NumberValue implements DocumentValue {
+    private final Number value;
+    public Number value() { return value; }
+}
 ```
 
 **Example instance**
@@ -36,6 +41,16 @@ Document document = Document.builder()
                 "city", new StringValue("Seoul"))))
         .build();
 ```
+
+**NumberValue is not "everything as double."** It retains the supplied `Byte`, `Short`, `Integer`, `Long`, `Float`, `Double`, `BigInteger`, or `BigDecimal`, subject to model bounds; NaN and infinity are rejected.
+
+```java
+NumberValue quantity = NumberValue.of(2);    // value() returns Integer
+NumberValue count = NumberValue.of(2L);      // value() returns Long
+NumberValue price = NumberValue.of(2.5d);    // value() returns Double
+```
+
+One numeric kind, multiple Java representations. Equality is mathematical (`2`, `2L`, and `2.0d` compare equal); retaining a representation in Document does **not** guarantee the same Java type after a database round trip.
 
 ## 2. How does custom mapping work?
 
@@ -53,6 +68,17 @@ Order restored = codec.decode(document, Order.class);
 ```
 
 The Jackson adapter uses in-memory tokens, not a JSON byte serialization/reparse cycle. Custom mapping controls business fields; **database keys and native types remain SDK-owned**.
+
+**Serialization design rules**, informed by [Azure/azure-sdk-for-java#38997](https://github.com/Azure/azure-sdk-for-java/pull/38997):
+
+| Rule | Our design |
+|---|---|
+| Neutral public boundary | Use typed, immutable Document rather than exposing Jackson or an unrestricted Map |
+| Explicit customization | The app calls its codec; no SDK serializer registration or second application-mapping pass |
+| Minimal intermediate conversion | Map Document directly to provider input; reuse native trees where safe, without sharing mutable state with Document |
+| Validate after app mapping | Validate the resulting Document, not the original Java object; envelopes affect field paths, projections, partial updates, and size |
+
+Application mapping does not replace native transport encoding or automatically rewrite queries/updates. New envelope, compression, or encryption features are not added by these rules.
 
 ## 3. End-to-end workflow
 
@@ -130,6 +156,8 @@ The same `quantity: 2` field becomes:
 | **Spanner** | Mutation binding: `quantity = INT64(2)` | Protobuf / gRPC request |
 
 These are selected-field sketches; the SDK also supplies keys and metadata. ObjectNode is our Cosmos adapter's choice, not a Cosmos requirement. Spanner nested objects use marked JSON strings in compatible columns.
+
+**Why ObjectNode?** Cosmos SDK 4.78.0's default serializer can reuse this tree on eligible paths, avoiding a separate Document-to-Map-to-tree conversion. This is an internal optimization, not a zero-copy or universal performance guarantee; no dependency on Cosmos internal wrapper classes is required.
 
 ## 4. Size and value guarantees
 
