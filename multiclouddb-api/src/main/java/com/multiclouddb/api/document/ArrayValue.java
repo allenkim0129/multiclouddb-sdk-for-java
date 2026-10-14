@@ -10,10 +10,12 @@ import java.util.Objects;
 public final class ArrayValue implements DocumentValue {
     private final List<DocumentValue> values;
     private final int depth;
+    private final int hashCode;
 
     private ArrayValue(List<? extends DocumentValue> values) {
         this.values = List.copyOf(Objects.requireNonNull(values, "values"));
         this.depth = ValueDepth.container(this.values);
+        this.hashCode = this.values.hashCode();
     }
 
     /** Copies the list; elements must be non-null immutable document values. */
@@ -37,7 +39,7 @@ public final class ArrayValue implements DocumentValue {
 
     @Override
     public int hashCode() {
-        return values.hashCode();
+        return hashCode;
     }
 
     @Override

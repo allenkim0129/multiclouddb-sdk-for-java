@@ -13,6 +13,7 @@ import java.util.Optional;
 public final class ObjectValue implements DocumentValue {
     private final Map<String, DocumentValue> fields;
     private final int depth;
+    private final int hashCode;
 
     private ObjectValue(Map<String, ? extends DocumentValue> fields) {
         Objects.requireNonNull(fields, "fields");
@@ -21,6 +22,7 @@ public final class ObjectValue implements DocumentValue {
                 Objects.requireNonNull(name, "name"), Objects.requireNonNull(value, "value")));
         this.fields = Collections.unmodifiableMap(copy);
         this.depth = ValueDepth.container(copy.values());
+        this.hashCode = this.fields.hashCode();
     }
 
     /** Copies fields; duplicate names already overwritten in a Map cannot be detected. */
@@ -49,7 +51,7 @@ public final class ObjectValue implements DocumentValue {
 
     @Override
     public int hashCode() {
-        return fields.hashCode();
+        return hashCode;
     }
 
     @Override

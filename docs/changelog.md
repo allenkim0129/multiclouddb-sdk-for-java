@@ -11,6 +11,12 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
+**Fixed:**
+
+- Compute immutable array/object hashes once at construction so shared child
+  containers do not cause exponential recursive hashing. Preserve List/Map hash
+  semantics, including zero hashes, numeric equality and Document delegation.
+
 **Added:**
 
 - API-owned immutable `Document` with six JSON-like value kinds (null, boolean,

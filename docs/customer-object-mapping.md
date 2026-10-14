@@ -155,6 +155,9 @@ six JSON-like kinds: null, boolean, string, number, array and object. There is n
 binary/embedded-object kind or alias. Containers copy ownership and
 are recursively immutable. Objects retain encounter
 order but equality ignores it; array equality is ordered.
+Each container computes and stores its List/Map-compatible hash during
+construction, reusing child container hashes. Shared subtrees therefore do not
+cause repeated recursive hashing; Document delegates to its root's stored hash.
 
 `document.get(name)` returns `Optional.empty()` for absence and a present
 `NullValue.INSTANCE` for explicit null. Java null children are invalid. The
