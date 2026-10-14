@@ -1656,13 +1656,18 @@ system properties (`_ts`, `_etag`, `_rid`, `_self`, `_attachments`, `partitionKe
 
 ## Document Size Enforcement
 
-The SDK enforces a **399 KB** (408,576 bytes) maximum document size before any
-data leaves the client. This limit applies to `create()`, `upsert()`, and
-`update()` on all providers.
+The SDK enforces a **399 KiB** (408,576 bytes) logical JSON input limit before
+provider delegation. The structural counter does not allocate serialized JSON
+bytes. This limit applies to `create()`, `upsert()`, and `update()` on all providers.
 
-### Why 399 KB, not 400 KB?
+### Why 399 KiB, not 400 KiB?
 
-Providers inject additional fields (`partitionKey`, `sortKey`, `id`, `ttlExpiry`) before writing. DynamoDB measures its 400 KB limit against the internal wire format, which can be larger than raw JSON bytes. The 1 KB safety margin prevents valid-looking documents from exceeding the wire limit after field injection.
+The historical 1 KiB margin below DynamoDB's 400 KiB native item limit is
+retained. Logical JSON is not native item accounting, however: injected
+keys/TTL, metadata and provider encoding are outside this count. The margin does
+not guarantee native fit, nor the final size after an existing partial update.
+The [Foundation design](design/serialization-pr1-foundation.md) describes a
+follow-on DynamoDB-equivalent item budget; it is not implemented in PR 1.
 
 ### Validation Behaviour
 

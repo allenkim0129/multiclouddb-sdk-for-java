@@ -3,7 +3,7 @@
 
 package com.multiclouddb.provider.spanner;
 
-import com.multiclouddb.api.document.Document;
+import com.multiclouddb.api.document.*;
 import com.multiclouddb.spi.DocumentMaps;
 
 import com.multiclouddb.api.CapabilitySet;
@@ -241,7 +241,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     @Override
     public void create(ResourceAddress address, MulticloudDbKey key, Document payload, OperationOptions options) {
         checkOpen(OperationNames.CREATE);
-        Map<String, Object> document = DocumentMaps.toMap(payload);
+        Map<String, DocumentValue> document = Objects.requireNonNull(payload, "document").root().fields();
         validateNoReservedFields(document, OperationNames.CREATE);
         try {
             String table = address.collection();
@@ -299,7 +299,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     @Override
     public void update(ResourceAddress address, MulticloudDbKey key, Document payload, OperationOptions options) {
         checkOpen(OperationNames.UPDATE);
-        Map<String, Object> document = DocumentMaps.toMap(payload);
+        Map<String, DocumentValue> document = Objects.requireNonNull(payload, "document").root().fields();
         validateNoReservedFields(document, OperationNames.UPDATE);
         try {
             String table = address.collection();
@@ -415,7 +415,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     @Override
     public void upsert(ResourceAddress address, MulticloudDbKey key, Document payload, OperationOptions options) {
         checkOpen(OperationNames.UPSERT);
-        Map<String, Object> document = DocumentMaps.toMap(payload);
+        Map<String, DocumentValue> document = Objects.requireNonNull(payload, "document").root().fields();
         validateNoReservedFields(document, OperationNames.UPSERT);
         try {
             String table = address.collection();
@@ -447,7 +447,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * @throws MulticloudDbException category {@code INVALID_REQUEST} if a
      *         reserved field name is present
      */
-    private static void validateNoReservedFields(Map<String, Object> document, String operationOp) {
+    private static void validateNoReservedFields(Map<String, DocumentValue> document, String operationOp) {
         if (document == null) return;
         // Spanner resolves column names case-insensitively (`Data`, `DATA`, and
         // `data` all bind to the same column at write time). The reserved-field
@@ -496,14 +496,14 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * @param document the document payload; may be {@code null} (no fields written)
      * @return the field names that were written by this call (may be empty)
      */
-    private List<String> writeDocumentFields(Mutation.WriteBuilder mutation, Map<String, Object> document) {
+    private List<String> writeDocumentFields(Mutation.WriteBuilder mutation, Map<String, DocumentValue> document) {
         List<String> fieldNames = new ArrayList<>();
         if (document == null) {
             return fieldNames;
         }
-        for (Map.Entry<String, Object> entry : document.entrySet()) {
+        for (Map.Entry<String, DocumentValue> entry : document.entrySet()) {
             String name = entry.getKey();
-            Object value = entry.getValue();
+            DocumentValue value = entry.getValue();
 
             // Skip primary key fields — already set by caller from the
             // MulticloudDbKey. These names are conventionally not user-document
@@ -555,7 +555,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * read-merge-write of {@code FIELD_DATA} so previously-written columns
      * remain visible (see {@link #update}).
      */
-    private void writeFullDocument(Mutation.WriteBuilder mutation, Map<String, Object> document, String op) {
+    private void writeFullDocument(Mutation.WriteBuilder mutation, Map<String, DocumentValue> document, String op) {
         List<String> fieldNames = writeDocumentFields(mutation, document);
         mutation.set(SpannerConstants.FIELD_DATA).to(serialiseFieldNames(fieldNames, op));
     }
@@ -1495,24 +1495,20 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
     /**
      * Sets a single column value in a Spanner mutation builder.
      * <p>
-     * Supported Java types: {@link String}, {@link Long}, {@link Integer},
-     * {@link Boolean}, {@link Double}, {@link Float}, and {@code null}
-     * (written as {@code NULL STRING}). {@link Map} and {@link java.util.Collection}
-     * values are serialised as JSON with an unambiguous marker prefix
-     * ({@link SpannerConstants#JSON_VALUE_MARKER}); on read, the marker is detected
-     * and the value is parsed back into a JSON node. Any other type falls back to
-     * {@link Object#toString()} to preserve the prior behaviour and avoid surprise
-     * failures for types Jackson cannot handle without extra modules (e.g.,
-     * {@code java.time.Instant}).
+     * Retains the original Java-number dispatch: Integer/Long use INT64,
+     * Float/Double use FLOAT64, and other number classes use STRING.
+     * Null remains a typed NULL STRING. Containers stream to marker-prefixed
+     * JSON STRINGs without an intermediate Map/List tree.
      *
      * @param mutation the mutation builder to write the column into
      * @param column   the Spanner column name
-     * @param value    the value to write; {@code null} writes a null STRING
+     * @param value    the immutable value to write
      */
-    private void setMutationValue(Mutation.WriteBuilder mutation, String column, Object value) {
-        if (value == null) {
+    private void setMutationValue(Mutation.WriteBuilder mutation, String column, DocumentValue value) {
+        if (value instanceof NullValue) {
             mutation.set(column).to((String) null);
-        } else if (value instanceof String s) {
+        } else if (value instanceof StringValue string) {
+            String s = string.value();
             // Escape leading SOH (U+0001) so a user string starting with the
             // SDK's JSON_VALUE_MARKER (which begins with U+0001) cannot collide
             // with marker-prefixed encoded values on read. Reader strips one
@@ -1522,33 +1518,31 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
             } else {
                 mutation.set(column).to(s);
             }
-        } else if (value instanceof Long l) {
-            mutation.set(column).to(l);
-        } else if (value instanceof Integer i) {
-            mutation.set(column).to((long) i);
-        } else if (value instanceof Boolean b) {
-            mutation.set(column).to(b);
-        } else if (value instanceof Double d) {
-            mutation.set(column).to(d);
-        } else if (value instanceof Float f) {
-            mutation.set(column).to((double) f);
-        } else if (value instanceof Map<?, ?> || value instanceof Collection<?>) {
+        } else if (value instanceof NumberValue number) {
+            Number retained = number.value();
+            if (retained instanceof Long || retained instanceof Integer) {
+                mutation.set(column).to(retained.longValue());
+            } else if (retained instanceof Double || retained instanceof Float) {
+                mutation.set(column).to(retained.doubleValue());
+            } else {
+                mutation.set(column).to(retained.toString());
+            }
+        } else if (value instanceof BooleanValue bool) {
+            mutation.set(column).to(bool.value());
+        } else if (value instanceof ObjectValue || value instanceof ArrayValue) {
             // Complex containers: encode as JSON with marker prefix so reads can
             // unambiguously round-trip them back to Map/List without misclassifying
             // user strings that happen to start with '{' or '['.
             try {
                 mutation.set(column).to(
-                        SpannerConstants.JSON_VALUE_MARKER + JSON_MAPPER.writeValueAsString(value));
+                        SpannerConstants.JSON_VALUE_MARKER + NativeDocuments.json(value));
             } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
-                // Nested unsupported value (e.g. java.time.Instant without jsr310 module):
-                // fall back to toString() rather than failing the write.
+                // Preserve the legacy plain-container fallback only on serialization failure.
                 LOG.debug("JSON serialise failed for column '{}', falling back to toString(): {}",
                         column, ex.getMessage());
-                mutation.set(column).to(value.toString());
+                mutation.set(column).to(DocumentMaps.toMap(
+                        Document.builder().put(column, value).build()).get(column).toString());
             }
-        } else {
-            // Unknown types: preserve historical toString() fallback.
-            mutation.set(column).to(value.toString());
         }
     }
 

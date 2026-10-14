@@ -24,9 +24,15 @@ not part of the runtime closure.
 This is a **breaking development increment**, related to
 [microsoft/multiclouddb-sdk-for-java#116](https://github.com/microsoft/multiclouddb-sdk-for-java/issues/116),
 not issue closure or a release. It replaces the earlier unreleased
-Map/ObjectNode codec boundary. Query values remain JDK Maps/Objects; direct native
-provider mapping, uniform query results, richer change-image contracts, complete
-migration and benchmarks remain later work.
+Map/ObjectNode codec boundary. Provider writes now traverse Document directly,
+while query values remain JDK Maps/Objects. Uniform query results, richer
+change-image contracts, further read-path mapping, complete migration and
+production benchmarks remain later work.
+
+The [Foundation design](design/serialization-pr1-foundation.md) summarizes the
+approved scope and separates it from future Binary, numeric/item-size and
+partial-update work. In particular, the selected follow-on DynamoDB-equivalent
+400 KiB budget does not replace this increment's 399 KiB logical JSON check.
 
 ## Dependencies and migration
 
@@ -221,10 +227,22 @@ use IllegalArgumentException or NullPointerException for a null class.
 
 ## Existing provider mapping and runtime compatibility
 
-Providers currently unwrap Document to owned plain Map/List/scalars and retain
-their existing internal mapping passes. Reads structurally convert the existing
-native tree without a new default-mapper reinterpretation. These paths incur
-container traversal/allocation; they are not direct native model mapping.
+Application Java object mapping (`DocumentCodec`) is separate from provider mapping
+and native SDK wire encoding. CREATE, UPDATE and UPSERT traverse Document directly
+into each provider's existing representation, avoiding an intermediate plain
+Map/List tree. Cosmos still builds an ObjectNode for its SDK; Dynamo builds
+AttributeValue containers without a whole Jackson tree. Scalar decimal conversion
+retains the pinned Jackson normalization rather than introducing a numeric policy.
+Spanner binds scalar columns directly and streams nested containers through a
+private JsonGenerator into the same JSON-marker STRING storage format.
+
+Cosmos point reads filter root system fields while constructing the immutable
+Document, without deep-copying or mutating the native response; metadata still
+comes from the raw response. Dynamo/Spanner point reads, all change-feed parsers,
+query mappings and native SDK transport encoding remain unchanged. This reduces
+specific intermediate allocations, not all serialization or every operation's
+latency. Spanner's nested JSON text and FIELD_DATA text still require serialization
+and parsing; changing their representation would require a separate storage decision.
 
 An external or legacy database row/event can contain a binary/opaque node or be outside the model's finite,
 precision/scale or nesting domain even if the SDK did not write it. Conversion
@@ -243,10 +261,10 @@ root; arrays and scalar values occur as fields or nested values.
 
 | Value kind | Cosmos existing JSON mapping | Dynamo existing attribute mapping | Spanner existing schema-bound mapping |
 |---|---|---|---|
-| Null | JSON null | NULL | Omitted value column with FIELD_DATA retaining the field; read as null |
+| Null | JSON null | NULL | Typed NULL STRING binding with FIELD_DATA retaining the field; read as null |
 | Boolean | JSON boolean | BOOL | BOOL column |
 | String | JSON string | S | STRING column; existing nested-JSON marker escaping retained |
-| Number | JSON number | N | INT64/FLOAT64 for supported primitive wrappers; top-level BigDecimal/BigInteger use STRING |
+| Number | JSON number | N | Integer/Long use INT64, Float/Double use FLOAT64; top-level Byte/Short/BigDecimal/BigInteger use STRING |
 | Array | JSON array | L | JSON-marked STRING column |
 | Object | JSON object | M | Root fields select columns; nested objects use JSON-marked STRING columns |
 
@@ -257,9 +275,9 @@ live persistence or exact precision for all NumberValue payloads.
 
 | Provider | Retained behavior and limitation |
 |---|---|
-| Cosmos | Map-to-ObjectNode route; existing `/partitionKey` schema, id/partitionKey/TTL overwrite and system-field stripping |
-| Dynamo | Map-to-tree-to-AttributeValue route; number text on write, dotted-number Double vs Int/Long read parsing. The old native mapper turns unsupported native B attributes into null before neutral conversion, including in feed images. Large integers, exponents and decimal precision are not repaired |
-| Spanner | Existing INT64/FLOAT64 binding, JSON-marked nested STRINGs and FIELD_DATA selection. **Top-level BigDecimal/BigInteger still become STRINGs**; e.g. decimal `1.20` reads as StringValue `"1.20"`, not NumberValue. The old row mapper converts native BYTES to Base64 strings. Feed decoding restores only metadata-declared scalar INT64 strings to numbers; other string values remain strings. No schema change |
+| Cosmos | Document-to-ObjectNode writes; existing `/partitionKey` schema, id/partitionKey/TTL overwrite and root system-field stripping. Decimal scale normalization is retained. Feed selected bodies are not subject to point-read filtering |
+| Dynamo | Document-to-AttributeValue writes retain legacy number text; reads retain dotted-number Double vs Int/Long parsing. The old native mapper turns unsupported native B attributes into null before neutral conversion, including in feed images. Large integers, exponents and decimal precision are not repaired |
+| Spanner | Direct scalar binding, streaming JSON-marked nested STRINGs and FIELD_DATA selection. **Top-level Byte/Short/BigDecimal/BigInteger still become STRINGs**; e.g. decimal `1.20` reads as StringValue `"1.20"`, not NumberValue. Integer/Long use INT64, Float/Double use FLOAT64. The old row mapper converts native BYTES to Base64 strings. Feed decoding restores only metadata-declared scalar INT64 strings to numbers; other string values remain strings, including nested JSON-marker strings. No schema change |
 
 Spanner change-feed `column_types` metadata identifies scalar INT64 columns.
 For the selected new/old image, retained fields of that type accept decimal
@@ -293,8 +311,11 @@ it may be partial or a before-image, especially on deletion. Java null means no
 supplied payload, distinct from NullValue/empty object. No Full/Partial/None or
 BEFORE/AFTER public classification is inferred. There is no convenience query/
 change-feed decode overload or implicit partial-image-to-DTO conversion.
-Document supports existing update calls, but the new customer codec workflow
-tests establish create/upsert/point-read only, not new update semantics.
+The customer codec workflow tests establish create/upsert/point-read; separate
+native-write differential tests cover CREATE/UPDATE/UPSERT without defining new
+update semantics. Spanner still performs its existing partial-update transaction,
+merging valid prior FIELD_DATA and leaving legacy/malformed metadata untouched;
+Cosmos and Dynamo updates remain full replacements.
 
 The wrapper still validates logical JSON size (399 KiB) before provider calls.
 A structural counter preserves the old default Map-to-tree byte profile,
@@ -326,6 +347,7 @@ No change-feed token migration waiver is applied.
 | API runtime without Jackson | `CursorTokenCodec`/`CursorJson`, `DocumentSizeValidator`/`DocumentJsonSize`; `CursorWireCompatibilityTest`, `CursorJsonCompatibilityTest`, existing cursor/factory tests and `DocumentJsonSizeTest` legacy byte-profile comparison |
 | Native boundaries | Three ProviderClient/ChangeFeedReader pairs and provider-local NativeDocuments; each `NativeDocumentsTest` rejects binary nodes for read/feed. `CustomerObjectMappingTest` checks actual read failures/legacy native binary fallbacks; the three `*ChangeFeedReaderTest` classes assert final event payload selection/null/nesting, safe model-domain errors and reachable binary/string behavior |
 | Actual customer workflow | `CustomerObjectMappingTest`: real factory/wrapper/providers, native SDK mocks, custom Jackson and handwritten JDK-only codec plus all six kinds through create/upsert/read; Spanner fixture uses captured mutation including FIELD_DATA |
+| Direct writes and Cosmos read filtering | `NativeWriteMappingTest`: test-only legacy conversion oracles compare all three native write operations, exact node/number types and strings, all eight JDK number classes, nested/empty/wide/deep/near-limit values, special Unicode, key/TTL collisions, FIELD_DATA and update call counts. Cosmos filtering occurs before model validation and preserves raw response/metadata |
 | Build isolation | API/provider/adapter POMs and module descriptors; runtime dependency/JAR inspection and manual API-only/optional-adapter JPMS consumer checks |
 
 These customer workflow tests are **E2E unit tests**, not live DB persistence,
@@ -333,12 +355,12 @@ schema/index validation or universal numeric storage acceptance. Manual JPMS
 checks are not a new CI framework or cross-version compatibility matrix.
 
 ```text
-mvn -q -Punit -pl multiclouddb-conformance -am "-Dtest=CustomerObjectMappingTest,JacksonDocumentCodecTest,DocumentGeneratorTest,MapperSnapshotTest,DocumentModelTest,NumberValueTest,Cursor*Test,DocumentJsonSizeTest" "-Dsurefire.failIfNoSpecifiedTests=false" test
+mvn -q -Punit -pl multiclouddb-conformance -am "-Dtest=NativeWriteMappingTest,CustomerObjectMappingTest,JacksonDocumentCodecTest,DocumentGeneratorTest,MapperSnapshotTest,DocumentModelTest,NumberValueTest,Cursor*Test,DocumentJsonSizeTest" "-Dsurefire.failIfNoSpecifiedTests=false" test
 mvn -q -Punit clean verify
 ```
 
 Still deferred from issue #116: uniform query Document/Projection/Value and
-typed query boundaries, Full/Partial/None images, direct native provider mapping,
-complete migration/conformance/benchmarks and provider numeric-domain work.
+typed query boundaries, Full/Partial/None images, further direct read/feed mapping,
+complete migration/conformance/production benchmarks and provider numeric-domain work.
 This increment does not guarantee less total future migration, authorize a
 release or fix unrelated preexisting provider bugs.

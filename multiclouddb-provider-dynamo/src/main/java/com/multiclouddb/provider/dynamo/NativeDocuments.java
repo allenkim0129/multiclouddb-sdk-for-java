@@ -4,6 +4,8 @@
 package com.multiclouddb.provider.dynamo;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import com.multiclouddb.api.document.*;
 import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
@@ -13,10 +15,45 @@ import com.multiclouddb.api.ProviderId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
+import java.math.BigDecimal;
 
-/** Structural conversion after the existing native mapping, without mapper coercion. */
+/** Direct native writes and structural response conversion with legacy numeric behavior. */
 final class NativeDocuments {
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     private NativeDocuments() {
+    }
+
+    static Map<String, AttributeValue> write(Document document) {
+        return writeObject(Objects.requireNonNull(document, "document").root());
+    }
+
+    private static Map<String, AttributeValue> writeObject(ObjectValue object) {
+        var fields = new LinkedHashMap<String, AttributeValue>();
+        object.fields().forEach((name, child) -> fields.put(name, writeValue(child)));
+        return fields;
+    }
+
+    private static AttributeValue writeValue(DocumentValue value) {
+        if (value instanceof ObjectValue object) return AttributeValue.fromM(writeObject(object));
+        if (value instanceof ArrayValue array) {
+            var items = new ArrayList<AttributeValue>(array.values().size());
+            array.values().forEach(child -> items.add(writeValue(child)));
+            return AttributeValue.fromL(items);
+        }
+        if (value instanceof StringValue string) return AttributeValue.fromS(string.value());
+        if (value instanceof BooleanValue bool) return AttributeValue.fromBool(bool.value());
+        if (value instanceof NumberValue number) {
+            Number retained = number.value();
+            // Only decimals need the pinned mapper's scale/zero normalization.
+            if (retained instanceof BigDecimal) {
+                JsonNode scalar = MAPPER.valueToTree(retained);
+                retained = scalar.numberValue();
+            }
+            return AttributeValue.fromN(retained.toString());
+        }
+        return AttributeValue.fromNul(true);
     }
 
     static Document document(JsonNode node) {

@@ -336,10 +336,17 @@ This appendix is **non-normative**. It records Java SDK behaviors that impact th
 
 ---
 
-## Decision 23: Uniform document size enforcement (400 KB)
+## Decision 23: Uniform logical document size enforcement (399 KiB)
 
-- **Decision**: `DocumentSizeValidator` in `multiclouddb-api/internal` uses a structural `Document` counter preserving the legacy logical JSON byte profile, without Jackson or serialized-byte allocation. The effective limit is `MAX_BYTES = 400 * 1024 - 1024` (399 KiB). Validation occurs in `DefaultMulticloudDbClient` before provider delegation. The current six-kind model has no binary values; binary serializer output fails at the codec boundary. Size overflow stops traversal and reports the observed count as a lower bound, not the full size.
+- **Decision**: `DocumentSizeValidator` in `multiclouddb-api/internal` uses a structural `Document` counter preserving the legacy logical JSON byte profile, without Jackson or serialized-byte allocation. The effective limit is `MAX_BYTES = 400 * 1024 - 1024` (399 KiB = 408,576 bytes). Validation occurs in `DefaultMulticloudDbClient` for create/update/upsert before provider delegation. The current six-kind model has no binary values; binary serializer output fails at the codec boundary. Size overflow stops traversal and reports the observed count as a lower bound, not the full size. The legacy Jackson byte encoder escapes both UTF-16 surrogate units, including valid supplementary pairs; this differs from encoding a Java JSON String as UTF-8 and remains intentional.
 - **Rationale**: DynamoDB's item limit motivated the portable logical profile and safety margin, but logical JSON bytes are not native physical storage size. A single bounded counter avoids provider I/O and duplicated validation. The API runtime uses Gson 2.11.0 for cursor JSON plus SLF4J 2.0.12 and Gson's transitive annotation metadata dependency, not Jackson for size validation or AST serialization.
+
+- **Foundation boundary**: [PR 1 design](../../docs/design/serialization-pr1-foundation.md)
+  retains this logical profile. A DynamoDB-equivalent 400 KiB item budget including
+  keys/options is selected follow-on direction; exact numeric/binary accounting
+  and margins are not implemented here. Direct native writes remove intermediate
+  plain containers but preserve native numeric types/text, Spanner marked JSON
+  STRING storage and FIELD_DATA. SDK transport encoding remains necessary.
 - **Alternatives considered**:
   - Enforce per-provider adapter: duplicates logic, inconsistent enforcement.
   - Enforce at SPI layer: coupling SPI to a specific limit.

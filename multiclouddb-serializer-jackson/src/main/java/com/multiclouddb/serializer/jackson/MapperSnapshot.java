@@ -32,18 +32,17 @@ final class MapperSnapshot {
         if (source == null) {
             throw new DocumentCodecException(CONSTRUCTION, INVALID_ARGUMENT);
         }
-        final ObjectMapper copy;
         try {
-            // This is the caller-overridable copy boundary, not a general SDK catch.
-            copy = source.copy();
+            // Copy and factory access are caller-overridable construction boundaries.
+            ObjectMapper copy = source.copy();
+            if (copy == null || copy == source || !source.getClass().isInstance(copy)
+                    || copy.getFactory() == source.getFactory()) {
+                throw new DocumentCodecException(CONSTRUCTION, MAPPER_COPY_FAILED);
+            }
+            return new MapperSnapshot(copy);
         } catch (RuntimeException failure) {
             throw new DocumentCodecException(CONSTRUCTION, MAPPER_COPY_FAILED);
         }
-        if (copy == null || copy == source || !source.getClass().isInstance(copy)
-                || copy.getFactory() == source.getFactory()) {
-            throw new DocumentCodecException(CONSTRUCTION, MAPPER_COPY_FAILED);
-        }
-        return new MapperSnapshot(copy);
     }
 
     ObjectWriter writerFor(TypeRef<?> type) {

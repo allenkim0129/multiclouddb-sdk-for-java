@@ -100,8 +100,11 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 **Changed:**
 
 - Accept neutral Document CRUD bodies and return Document point reads plus
-  nullable DocumentValue feed data. The existing Map/tree bridge, key/TTL
-  injection, selected event bodies and system-field visibility remain; Jackson
+  nullable DocumentValue feed data. Direct ObjectNode writes remove the plain
+  Map/List intermediate while preserving numeric behavior and key/TTL injection.
+  Point reads filter root system fields during immutable construction without
+  copying or mutating the native response; raw metadata, selected feed bodies,
+  query mappings and native SDK JSON encoding remain. Jackson
   is now a direct provider dependency rather than inherited from API.
 - Unsupported native-to-model read/feed payloads, including BinaryNode, fail
   with nonretryable `PROVIDER_ERROR`, the operation/provider and safe
@@ -153,8 +156,10 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 **Changed:**
 
 - Accept neutral Document CRUD bodies and return Document point reads plus
-  nullable DocumentValue feed data. Retain the existing Map/tree/AttributeValue
-  bridge, numeric parsing limitations, metadata and selected old/new images.
+  nullable DocumentValue feed data. Direct AttributeValue writes remove the
+  plain Map/List and whole Jackson-tree intermediates while retaining numeric
+  text, key/TTL injection and request conditions. Read/feed/query conversions,
+  numeric parsing limitations, native SDK encoding and selected images remain.
   Jackson is now a direct provider dependency rather than inherited from API.
 - Unsupported native-to-model read/feed payloads fail with nonretryable
   `PROVIDER_ERROR` and safe `invalid_document_payload` reason. BinaryNode is
@@ -203,6 +208,11 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   nullable DocumentValue feed data, retaining FIELD_DATA, nested JSON markers,
   current update behavior and selected old/new/legacy images. Jackson is now a
   direct provider dependency rather than inherited from API.
+- Direct mutation binding and private streaming JsonGenerator writes remove
+  the normal-path plain Map/List intermediate. Exact nested marker-prefixed
+  STRINGs, scalar number dispatch, FIELD_DATA, reserved-field handling and
+  existing update transaction/native call counts are retained. JSON text
+  serialization, native SDK encoding and row/feed/query parsing remain.
 - Preserve existing INT64/FLOAT64 mappings and top-level BigDecimal/BigInteger
   STRING fallback. Unsupported native-to-model read/feed payloads, including
   BinaryNode, fail with nonretryable `PROVIDER_ERROR` and safe
@@ -268,6 +278,12 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
+**Fixed:**
+
+- Caller-overridable mapper factory compatibility checks now share the safe
+  construction boundary with `copy()`: failures on source or copy return
+  `CONSTRUCTION/MAPPER_COPY_FAILED` without original diagnostic leakage.
+
 **Added:**
 
 - Optional `JacksonDocumentCodec` implements the API-owned `DocumentCodec` with
@@ -293,5 +309,5 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Unpublished `0.1.0-SNAPSHOT` depends on the coordinated API; the adapter is
   optional for applications and not a provider dependency. Query Map/Object
   contracts, existing provider/schema limits and update semantics remain.
-  No query/change-feed convenience decode, direct native mapping, release or
+  No query/change-feed convenience decode, release or
   release-workflow change; full issue-116 completion remains deferred.

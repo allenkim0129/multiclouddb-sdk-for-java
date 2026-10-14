@@ -154,6 +154,37 @@ class MapperSnapshotTest {
         assertNotNull(JacksonDocumentCodec.from(new CopyableMapper()));
     }
 
+    @Test
+    void factoryAccessFailuresOnSourceAndCopyStayInsideSafeConstructionBoundary() {
+        for (boolean sourceFails : List.of(false, true)) {
+            DocumentCodecException failure = assertThrows(DocumentCodecException.class,
+                    () -> JacksonDocumentCodec.from(new ThrowingFactoryMapper(sourceFails)));
+            assertEquals(CONSTRUCTION, failure.phase());
+            assertEquals(MAPPER_COPY_FAILED, failure.reason());
+            assertEquals(new DocumentCodecException(CONSTRUCTION, MAPPER_COPY_FAILED).getMessage(),
+                    failure.getMessage());
+            assertNull(failure.getCause());
+            assertEquals(0, failure.getSuppressed().length);
+            StringWriter trace = new StringWriter();
+            failure.printStackTrace(new PrintWriter(trace));
+            assertFalse(trace.toString().contains("factory-secret"));
+        }
+    }
+
+    static final class ThrowingFactoryMapper extends ObjectMapper {
+        private final boolean fail;
+        ThrowingFactoryMapper(boolean fail) { this.fail = fail; }
+        private ThrowingFactoryMapper(ThrowingFactoryMapper source) {
+            super(source);
+            fail = !source.fail;
+        }
+        @Override public ThrowingFactoryMapper copy() { return new ThrowingFactoryMapper(this); }
+        @Override public com.fasterxml.jackson.core.JsonFactory getFactory() {
+            if (fail) throw new IllegalStateException("factory-secret");
+            return super.getFactory();
+        }
+    }
+
     static final class CopyableMapper extends ObjectMapper {
         CopyableMapper() {}
         private CopyableMapper(CopyableMapper source) { super(source); }

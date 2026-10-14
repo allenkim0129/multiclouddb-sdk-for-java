@@ -44,13 +44,15 @@ Validation:
 - must include all key parts required by the configured provider and target collection schema
 
 ### Document
-Portable JSON-like payload.
+Immutable, typed JSON-like payload; not JSON text or bytes.
 
 Fields:
-- `value`: JSON-like object
+- `root`: immutable `ObjectValue` with named `DocumentValue` fields
 
 Constraints:
-- must be serializable to a JSON-like representation
+- exactly six value kinds: null, boolean, string, number, array and object
+- missing field differs from explicit `NullValue`; root must be an object
+- containers preserve encounter order, copy inputs and enforce depth <=128
 
 **Customer document mapping increment (partial issue 116):** the API now owns
 immutable object-root Document, a closed six-kind DocumentValue algebra (null,
@@ -59,8 +61,12 @@ application-owned DocumentCodec. The optional JacksonDocumentCodec implements
 that common contract. CRUD uses Document; point reads return Document; nullable
 change-feed payloads use DocumentValue. Query Map/Object contracts remain
 unchanged. API compile/runtime dependencies no longer include Jackson; providers
-retain their internal mappings, reserved fields and storage limitations.
-The initial finite numeric view retains source kinds/scale, mathematical
+retain their reserved fields and storage limitations. Writes traverse Document
+directly into native representations; Cosmos point reads skip root system fields
+without mutating the response. Dynamo/Spanner reads and all feed/query parsers
+retain the existing paths.
+The finite numeric view retains Byte, Short, Integer, Long, Float, Double,
+BigInteger and BigDecimal representations, source scale/zero sign, mathematical
 equality, precision <=1024 and scale [-1024,+1024], with 128-container depth.
 These are in-memory bounds, not provider round-trip guarantees. See
 [usage and file/method/test traceability](../../docs/customer-object-mapping.md).

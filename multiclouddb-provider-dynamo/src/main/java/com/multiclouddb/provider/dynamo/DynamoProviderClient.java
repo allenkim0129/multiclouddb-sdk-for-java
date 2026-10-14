@@ -4,7 +4,6 @@
 package com.multiclouddb.provider.dynamo;
 
 import com.multiclouddb.api.document.Document;
-import com.multiclouddb.spi.DocumentMaps;
 
 import com.multiclouddb.api.CapabilitySet;
 import com.multiclouddb.api.DocumentMetadata;
@@ -217,7 +216,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     public void create(ResourceAddress address, MulticloudDbKey key, Document document, OperationOptions options) {
         checkOpen(OperationNames.CREATE);
         try {
-            Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(DocumentMaps.toMap(document));
+            Map<String, AttributeValue> item = NativeDocuments.write(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             item.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));
@@ -320,7 +319,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     public void update(ResourceAddress address, MulticloudDbKey key, Document document, OperationOptions options) {
         checkOpen(OperationNames.UPDATE);
         try {
-            Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(DocumentMaps.toMap(document));
+            Map<String, AttributeValue> item = NativeDocuments.write(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             item.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));
@@ -376,7 +375,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
     public void upsert(ResourceAddress address, MulticloudDbKey key, Document document, OperationOptions options) {
         checkOpen(OperationNames.UPSERT);
         try {
-            Map<String, AttributeValue> item = DynamoItemMapper.mapToAttributeMap(DocumentMaps.toMap(document));
+            Map<String, AttributeValue> item = NativeDocuments.write(document);
             item.put(DynamoConstants.ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
             item.put(DynamoConstants.ATTR_SORT_KEY, AttributeValue.fromS(
                     key.sortKey() != null ? key.sortKey() : key.partitionKey()));

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep caller-overridable factory compatibility checks inside the safe mapper
+  construction boundary. Failures on the source or copied mapper return
+  `CONSTRUCTION/MAPPER_COPY_FAILED` without leaking the original diagnostics.
+
 ### Added
 
 - Optional `JacksonDocumentCodec` implements the API-owned `DocumentCodec` with
@@ -39,6 +45,7 @@
   convenience decode is introduced. Update semantics are unchanged and outside
   the new customer workflow evidence.
 - Existing native provider numeric/schema/key limitations remain. Document has
-  only the six JSON-like value kinds and no binary kind. Full issue-116 completion and direct
-  native provider mapping remain deferred.
+  only the six JSON-like value kinds and no binary kind. Providers use direct
+  write mapping independently of this optional adapter; further read/feed mapping
+  and full issue-116 completion remain deferred.
 - See [support, migration and source/test traceability](../docs/customer-object-mapping.md).

@@ -14,8 +14,11 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   The earlier native B-attribute-to-null fallback remains unchanged and is
   characterized for actual read/feed paths; it is not Document binary support.
 - Accept neutral Document CRUD payloads and return Document point reads plus
-  nullable DocumentValue change-feed data. Retain existing Map/tree/AttributeValue
-  conversion, number parsing limitations, metadata and delete old-image selection.
+  nullable DocumentValue change-feed data. Write directly to AttributeValue
+  containers without intermediate Map/List or whole Jackson trees, retaining
+  numeric text (including decimal normalization), key/TTL injection and write
+  conditions. Read/feed/query mapping, number parsing limitations, native SDK
+  encoding, metadata and delete old-image selection remain unchanged.
   Declare Jackson directly rather than inheriting it from API.
 - Native-to-model read/feed rejection is a nonretryable `PROVIDER_ERROR` with
   operation/provider and fixed `invalid_document_payload` reason, without

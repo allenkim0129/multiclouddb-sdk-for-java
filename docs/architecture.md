@@ -49,11 +49,23 @@ Gson's JPMS requirement for that annotation module is static.
 The optional `multiclouddb-serializer-jackson` module implements that contract
 with `JacksonDocumentCodec`, snapshots a customer ObjectMapper and depends on API
 and Jackson. Providers do not depend on this codec module, but still explicitly
-depend on Jackson for their existing internal native mappings. There is no
+depend on Jackson for internal native mappings. There is no
 automatic client registration or POJO overload. See
 [customer object mapping](customer-object-mapping.md) for usage, configuration,
 provider limitations and file/method/test traceability. Uniform query/image
-contracts and direct native mapping remain later issue-116 work.
+contracts remain later issue-116 work.
+
+Provider CREATE/UPDATE/UPSERT paths traverse Document directly: Cosmos constructs
+an ObjectNode, Dynamo constructs AttributeValue containers, and Spanner binds
+scalar columns while streaming nested values into existing JSON-marker STRINGs.
+Cosmos point reads skip root system fields during immutable construction instead
+of copying the response tree. Native SDK wire encoding, decimal compatibility,
+Spanner FIELD_DATA/JSON text encoding, query mappings and other read/feed paths
+remain; this is intermediate-allocation removal, not serialization elimination
+or a new storage/numeric contract.
+
+See the [Foundation design](design/serialization-pr1-foundation.md) for the
+application/native responsibility split and explicitly deferred follow-on scope.
 
 ---
 

@@ -317,7 +317,12 @@ Document doc = result.document();  // neutral immutable payload
 
 ## Uniform Document Size Limit
 
-The SDK enforces a **400 KB** maximum document size across all providers (driven by DynamoDB's limit). Documents exceeding the limit are rejected at the SDK layer before any I/O.
+The SDK enforces a **399 KiB (408,576 bytes) logical JSON** maximum for create,
+update and upsert inputs across all providers. The structural counter rejects
+oversized Documents before provider delegation without creating JSON bytes.
+This retains the legacy byte-encoding profile and safety margin below DynamoDB's
+400 KiB native item limit; it is not native item accounting or a guarantee of
+native fit. The DynamoDB-equivalent item budget is follow-on design only.
 
 ```java
 // Oversized documents are rejected before any I/O

@@ -30,6 +30,14 @@ class DocumentJsonSizeTest {
     }
 
     @Test
+    void supplementaryCharactersRetainLegacyByteEncoderSurrogateEscapes() throws Exception {
+        Map<String, Object> fields = Map.of("v", "\ud83d\ude00");
+        assertEquals(20, legacySize(fields));
+        assertEquals(20, DocumentJsonSize.measure(Document.builder()
+                .put("v", new StringValue("\ud83d\ude00")).build(), Long.MAX_VALUE));
+    }
+
+    @Test
     void retainsTheOriginalNumericSizeProfileWithoutChangingStoredScale() throws Exception {
         for (Number number : List.of((byte) 1, (short) 2, 3, Long.MIN_VALUE, BigInteger.TEN.pow(100),
                 0.1F, -0.0D, Double.MIN_VALUE, Double.MAX_VALUE,

@@ -13,8 +13,11 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   reaching the neutral read/feed converter fail with the safe PROVIDER_ERROR
   below; no binary-to-null/text fallback is added.
 - Accept neutral Document CRUD payloads and return Document point reads plus
-  nullable DocumentValue change-feed data. Retain existing internal Map/tree
-  mapping, key/TTL injection, selected event bodies and system-field visibility.
+  nullable DocumentValue change-feed data. Write directly to ObjectNode without
+  an intermediate Map/List tree, retaining numeric node/text behavior and key/TTL
+  injection. Point reads filter root system fields during immutable construction
+  instead of deep-copying the response; raw metadata and selected feed bodies
+  remain unchanged. Native SDK JSON encoding and query mappings remain.
   Declare Jackson directly rather than inheriting it from API.
 - Native-to-model read/feed rejection is a nonretryable `PROVIDER_ERROR` with
   operation/provider and fixed `invalid_document_payload` reason, without

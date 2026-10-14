@@ -17,6 +17,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Accept neutral Document CRUD payloads and return Document point reads plus
   nullable DocumentValue change-feed data. Retain FIELD_DATA, nested JSON markers,
   current update behavior and selected old/new/legacy event payloads.
+- Traverse Document writes directly into mutation bindings and stream nested
+  containers through a private JsonGenerator into the same marker-prefixed JSON
+  STRINGs. Avoid the intermediate plain Map/List tree on the normal write path;
+  preserve exact nested text, scalar type dispatch, key/reserved-field handling,
+  FIELD_DATA and update transaction/native call counts. JSON text serialization,
+  native SDK encoding and all row/feed/query parsing remain.
 - Retained numeric kinds preserve existing INT64/FLOAT64 mapping and the
   top-level BigDecimal/BigInteger STRING fallback; no new decimal rejection,
   rounding, schema migration or precision guarantee. Jackson is now a direct

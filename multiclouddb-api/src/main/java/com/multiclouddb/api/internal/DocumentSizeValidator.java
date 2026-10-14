@@ -11,31 +11,26 @@ import com.multiclouddb.api.MulticloudDbException;
 /**
  * Validates document payload sizes against the uniform maximum defined by FR-061.
  * <p>
- * The limit is 400 KB (409_600 bytes) — the most restrictive of the three providers:
- * <ul>
- *   <li>Amazon DynamoDB: 400 KB per item (hard limit)</li>
- *   <li>Cosmos DB: 2 MB per document</li>
- *   <li>Cloud Spanner: no per-row limit</li>
- * </ul>
- * By enforcing the lowest common denominator at the SDK layer, documents remain
- * portable across all providers without surprise failures on write.
+ * The effective limit is 399 KiB (408,576 bytes) of logical JSON, counted
+ * structurally without allocating serialized bytes. It retains the legacy byte
+ * encoder profile, including numeric normalization and surrogate escaping.
  * <p>
- * A 1 KB safety margin is subtracted from the raw DynamoDB limit to account for
- * system fields injected by providers before writing ({@code partitionKey},
- * {@code sortKey}, {@code id}, {@code ttlExpiry}, etc.).  DynamoDB's 400 KB cap
- * is measured against its internal wire format, which can be slightly larger than
- * the raw JSON.  The effective validated limit is therefore 399 KB.
+ * The historical 1 KiB margin below DynamoDB's 400 KiB native item limit is
+ * retained, but logical JSON is not DynamoDB item accounting or physical storage
+ * size. Injected keys/TTL, metadata and native encoding are outside this count.
+ * Passing validation does not guarantee native fit or the final size after a
+ * provider's existing partial-update operation.
  */
 public final class DocumentSizeValidator {
 
-    /** Maximum document size in bytes — DynamoDB hard limit minus 1 KB safety margin. */
-    public static final int MAX_BYTES = 400 * 1024 - 1024; // 399 KB
+    /** Maximum logical JSON input size in bytes, retaining the historical margin. */
+    public static final int MAX_BYTES = 400 * 1024 - 1024; // 399 KiB
 
     private DocumentSizeValidator() {
     }
 
     /**
-     * Validates that the serialized size of {@code document} does not exceed
+     * Validates that the structural logical JSON size of {@code document} does not exceed
      * {@link #MAX_BYTES}.
      *
      * @param document  the document to validate

@@ -4,6 +4,13 @@
 package com.multiclouddb.provider.spanner;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonSerializer;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectWriter;
+import com.fasterxml.jackson.databind.SerializerProvider;
+import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.multiclouddb.api.document.*;
 import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
@@ -13,10 +20,48 @@ import com.multiclouddb.api.ProviderId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.io.IOException;
 
-/** Structural conversion after the existing native mapping, without mapper coercion. */
+/** Streaming nested-value JSON writes and structural conversion after native reads. */
 final class NativeDocuments {
+    private static final ObjectWriter JSON_WRITER = new ObjectMapper().registerModule(
+            new SimpleModule().addSerializer(DocumentValue.class, new JsonSerializer<>() {
+                @Override
+                public void serialize(DocumentValue value, JsonGenerator generator, SerializerProvider provider)
+                        throws IOException {
+                    writeJson(value, generator, provider);
+                }
+            })).writerFor(DocumentValue.class);
+
     private NativeDocuments() {
+    }
+
+    static String json(DocumentValue value) throws JsonProcessingException {
+        return JSON_WRITER.writeValueAsString(value);
+    }
+
+    private static void writeJson(DocumentValue value, JsonGenerator generator, SerializerProvider provider)
+            throws IOException {
+        if (value instanceof ObjectValue object) {
+            generator.writeStartObject();
+            for (var field : object.fields().entrySet()) {
+                generator.writeFieldName(field.getKey());
+                writeJson(field.getValue(), generator, provider);
+            }
+            generator.writeEndObject();
+        } else if (value instanceof ArrayValue array) {
+            generator.writeStartArray();
+            for (DocumentValue child : array.values()) writeJson(child, generator, provider);
+            generator.writeEndArray();
+        } else if (value instanceof StringValue string) {
+            generator.writeString(string.value());
+        } else if (value instanceof NumberValue number) {
+            provider.defaultSerializeValue(number.value(), generator);
+        } else if (value instanceof BooleanValue bool) {
+            generator.writeBoolean(bool.value());
+        } else {
+            generator.writeNull();
+        }
     }
 
     static Document document(JsonNode node) {
