@@ -176,7 +176,11 @@ flowchart LR
 | **Logical size** | At most **399 KiB = 408,576 bytes**, counted without creating JSON bytes |
 | **Provider and service** | Native schema, type, and size constraints; passing the logical check does **not** guarantee native fit |
 
-DynamoDB's native item limit is **400 KiB**; Cosmos and Spanner have different limits and accounting rules. Model number support/equality does not guarantee identical database precision, scale, or arithmetic.
+**Follow-on size direction (PR 3): DynamoDB-based portable item-size budget.** Use DynamoDB's **400 KiB = 409,600 bytes** item limit as the lowest-common-denominator (LCD) size policy for every provider, not predicted physical storage. Count the DynamoDB-equivalent item, including attribute names, values, nested structure overhead, and SDK-added keys/TTL.
+
+The check can traverse **Document + keys + write options** before native mapping, without constructing AttributeValue objects or JSON bytes. Binary uses raw-byte accounting; approximate numeric accounting needs a defined conservative rule and margin. These details remain to be finalized; **PR 1 retains its existing 399 KiB logical JSON check**.
+
+Cosmos backend encoding savings do not increase this common budget. Mapping compatibility with Cosmos/Spanner constraints still needs verification; DynamoDB fit alone is not proof of every native constraint. Model number support/equality does not guarantee identical database precision, scale, or arithmetic.
 
 **Not guaranteed by PR 1:** comprehensive native-size prechecks, an expanded portable numeric domain, or a common final-document limit after partial updates. An update's input size is not its resulting document size.
 
@@ -185,12 +189,12 @@ DynamoDB's native item limit is **400 KiB**; Cosmos and Spanner have different l
 ```mermaid
 flowchart LR
     A["PR 1: Foundation<br/>THIS DOCUMENT"] --> B["PR 2: Binary<br/>Representation + accounting"]
-    B --> C["PR 3: Numeric and size<br/>Agreed guarantees + enforcement"]
+    B --> C["PR 3: Numeric and size<br/>DynamoDB-based LCD budget"]
     C --> D["PR 4: Partial update<br/>Atomicity + final-size policy"]
 ```
 
 **PR 1:** Document, custom codecs, optional Jackson, validation, and provider integration. Each PR includes its own tests, documentation, and changelogs.
 
-Future review: PR 2 - Binary, PR 3 - Numeric and Size, PR 4 - Partial Update. These contracts require separate agreement.
+Future review: PR 2 - Binary, PR 3 - Numeric and Size, PR 4 - Partial Update. The LCD size direction is selected; remaining accounting, numeric, binary, and partial-update details require separate agreement.
 
 *Design summary, not a released-support guarantee.*
