@@ -157,7 +157,7 @@ The same `quantity: 2` field becomes:
 
 These are selected-field sketches; the SDK also supplies keys and metadata. ObjectNode is our Cosmos adapter's choice, not a Cosmos requirement. Spanner nested objects use marked JSON strings in compatible columns.
 
-**Why ObjectNode?** Cosmos SDK 4.78.0's default serializer can reuse this tree on eligible paths, avoiding a separate Document-to-Map-to-tree conversion. This is an internal optimization, not a zero-copy or universal performance guarantee; no dependency on Cosmos internal wrapper classes is required.
+**Why ObjectNode?** Constructing the native input tree directly avoids a separate Document-to-Map-to-tree conversion before Cosmos SDK encoding. The current Cosmos SDK dependency is 4.82.0. This is an internal optimization, not a zero-copy or universal performance guarantee; no dependency on Cosmos internal wrapper classes is required.
 
 ## 4. Size and value guarantees
 

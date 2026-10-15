@@ -45,7 +45,6 @@ class CosmosQueryIntegrationTest {
                 .provider(ProviderId.COSMOS)
                 .connection("endpoint", ENDPOINT)
                 .connection("key", KEY)
-                .connection("connectionMode", "gateway")
                 .build();
         client = MulticloudDbClientFactory.create(config);
 
