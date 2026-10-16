@@ -158,6 +158,10 @@ order but equality ignores it; array equality is ordered.
 Each container computes and stores its List/Map-compatible hash during
 construction, reusing child container hashes. Shared subtrees therefore do not
 cause repeated recursive hashing; Document delegates to its root's stored hash.
+Container equality shares a per-call identity-pair memo across array and object
+traversal, avoiding repeated comparison of shared subtrees. Equality remains
+value-based, independent of sharing layout, with no comparison state retained
+on the immutable values.
 
 `document.get(name)` returns `Optional.empty()` for absence and a present
 `NullValue.INSTANCE` for explicit null. Java null children are invalid. The

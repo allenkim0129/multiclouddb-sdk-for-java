@@ -9,6 +9,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Compare shared array/object subtrees once per identity pair within an equality
+  call, including mixed graphs and Document/HashSet comparisons. Preserve value
+  equality regardless of sharing layout, field order or hash collisions; no
+  comparison state is retained on model values.
 - Compute immutable array/object hashes once at construction so shared child
   containers do not cause exponential recursive hashing. Preserve List/Map hash
   semantics, including zero hashes, numeric equality and Document delegation.

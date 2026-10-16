@@ -34,7 +34,7 @@ public final class ArrayValue implements DocumentValue {
 
     @Override
     public boolean equals(Object other) {
-        return this == other || other instanceof ArrayValue array && values.equals(array.values);
+        return this == other || other instanceof ArrayValue array && ValueEquality.equal(this, array);
     }
 
     @Override

@@ -46,7 +46,7 @@ public final class ObjectValue implements DocumentValue {
 
     @Override
     public boolean equals(Object other) {
-        return this == other || other instanceof ObjectValue object && fields.equals(object.fields);
+        return this == other || other instanceof ObjectValue object && ValueEquality.equal(this, object);
     }
 
     @Override
