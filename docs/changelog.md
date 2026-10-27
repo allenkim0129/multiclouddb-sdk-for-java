@@ -43,7 +43,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Unpublished `0.1.0-beta.2-SNAPSHOT` development coordinate; no release or
   release-workflow change. This is partial work related to
   microsoft/multiclouddb-sdk-for-java#116; see
-  [customer mapping and migration](customer-object-mapping.md).
+  [customer mapping and migration](guide.md#application-owned-mapping).
 
 **Documentation:**
 
@@ -98,14 +98,11 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Use detached Map writes/point reads and neutral Object feed data with explicit
   presence. Preserve numeric normalization, key/TTL injection, root-only
   filtering, metadata, selected feed bodies and native SDK encoding.
-- Remove direct production Jackson imports/dependencies. Bundle/relocate the
-  Cosmos v4 runtime closure with explicit JPMS and a reduced consumer POM;
-  preserve native filenames, private metadata, services and notices.
-  JNA 5.13.0/jna-platform 5.17.0 remain shared and unrelocated; arbitrary
-  application JNA-version coexistence is not established.
+- Remove direct Jackson usage from Multicloud-owned production code; native
+  Cosmos SDK dependencies remain externally visible and still use Jackson.
 - Coordinated unpublished `0.1.0-beta.2-SNAPSHOT` API dependency; no release,
   schema/envelope redesign or general provider bug fix. See
-  [mapping support and migration](customer-object-mapping.md).
+  [mapping support and migration](guide.md#application-owned-mapping).
 - Cosmos clients now always use Gateway mode with HTTP/2 enabled. The
   `azure-cosmos` dependency is upgraded from 4.78.0 to 4.82.0 so account-advertised
   Gateway V2 endpoints and the SDK connectivity probe select routing automatically.
@@ -170,7 +167,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   encoding and the legacy native binary-to-null fallback remain.
 - Coordinated unpublished `0.1.0-beta.2-SNAPSHOT` API dependency; no release,
   storage-range expansion or general provider bug fix. See
-  [mapping support and migration](customer-object-mapping.md).
+  [mapping support and migration](guide.md#application-owned-mapping).
 - `SORT_KEY_ASC` comparator handles numeric sort keys with type-aware comparison (Long/Integer use native compare; mixed numerics fall back to `BigDecimal`) so integers beyond `2^53` are no longer truncated.
 - `BETWEEN` translation wraps in parentheses (`(field BETWEEN ? AND ?)`) for cross-provider consistency.
 
@@ -218,7 +215,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   INT64 feed normalization (see Fixed below), without new portable binary support.
 - Unpublished `0.1.0-beta.1-SNAPSHOT` against the coordinated development API;
   no release or schema/envelope redesign. See
-  [mapping support and migration](customer-object-mapping.md).
+  [mapping support and migration](guide.md#application-owned-mapping).
 - `upsert(address, key, document)` uses Spanner `INSERT_OR_UPDATE` (was `REPLACE`). `REPLACE` is internally delete-then-insert, which change streams surface as `mod_type=INSERT` — making a second upsert of the same key appear as `ChangeType.CREATE` instead of `ChangeType.UPDATE`. `INSERT_OR_UPDATE` matches Cosmos AVAD and DynamoDB Streams.
 - Spanner instance creation in `ensureDatabase` is gated to emulator mode. In production the instance is expected to pre-exist; only the database is created.
 - Complex container values (`Map`, `Collection`) round-trip through STRING columns using an unambiguous prefix marker (`U+0001` + `mcdb:json:`).

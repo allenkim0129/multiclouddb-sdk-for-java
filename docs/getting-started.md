@@ -74,7 +74,7 @@ runtime dependencies:
 
 The following examples target the coordinated development SNAPSHOT reactor,
 not the previous released beta signatures. See
-[application mapping and migration](customer-object-mapping.md).
+[application mapping and migration](guide.md#application-owned-mapping).
 
 ```java
 import com.multiclouddb.api.*;
@@ -99,7 +99,10 @@ MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
 try (MulticloudDbClient client = MulticloudDbClientFactory.create(config)) {
 
 // CRUD - same code for every provider
-Map<String, Object> doc = Map.of("title", "Buy groceries", "completed", false);
+Map<String, Object> doc = Map.of(
+        "title", "Buy groceries",
+        "completed", false
+);
 
 ResourceAddress todos = new ResourceAddress("mydb", "todos");
 MulticloudDbKey key = MulticloudDbKey.of("todo-1", "todo-1");

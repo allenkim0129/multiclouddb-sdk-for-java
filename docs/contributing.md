@@ -81,57 +81,6 @@ mvn test -pl multiclouddb-conformance -Dtest=DynamoConformanceTest
 mvn test -pl multiclouddb-conformance -Dtest=SpannerConformanceTest
 ```
 
-### Cosmos v4 packaging checks
-
-The Cosmos source graph includes the native SDKs. The published JAR bundles their
-relocated runtime closure; its consumer POM retains API, SLF4J, JNA 5.13.0 and
-jna-platform 5.17.0. JNA is shared, not isolated from application versions.
-Never test only `target/classes` when validating publication.
-
-Native Cosmos mock tests live in the provider module and run before shading;
-mocking original Azure classes from a downstream module would not intercept
-the private packaged classes. For focused mapping and lifecycle coverage:
-
-```powershell
-mvn -Punit -pl multiclouddb-conformance -am "-Dtest=CosmosMapContractTest,CustomerObjectMappingTest,NativeWriteMappingTest,SpannerJsonTest,DocumentJsonSizeTest,QueryPageTest" "-Dsurefire.failIfNoSpecifiedTests=false" clean package
-```
-
-Use a fresh local file publication and a separate consumer Maven cache. For
-example, from the repository root with Java 17:
-
-```powershell
-$work = Join-Path $env:TEMP ("mcdb-v4-" + [guid]::NewGuid())
-New-Item -ItemType Directory $work | Out-Null
-$publication = ([uri](Join-Path $work "published")).AbsoluteUri
-mvn -pl multiclouddb-provider-cosmos -am -DskipTests "-Dmaven.repo.local=$work\build-repository" "-DaltDeploymentRepository=validation::$publication" deploy
-$fixture = "multiclouddb-provider-cosmos\src\it\packaging"
-mvn -f "$fixture\pom.xml" "-Dvalidation.repository=$publication" "-Dmaven.repo.local=$work\consumer-repository" "-Dmdep.outputFile=$work\clean-classpath.txt" package org.apache.maven.plugins:maven-dependency-plugin:3.7.0:build-classpath
-$cp = (Get-Content "$work\clean-classpath.txt" -Raw).Trim()
-java -cp "$fixture\target\classes;$cp" probe.Consumer
-```
-
-Repeat consumer resolution with `-Pcollisions`, a distinct classpath output file
-and `probe.Consumer collisions`. The application fixture deliberately uses
-different Azure/Jackson/Netty/Reactor versions. Compare built, installed,
-file-deployed and freshly consumed JAR/POM hashes; inspect the consumed graph,
-not only source declarations. No cloud credentials are needed.
-
-Compile `src\it\packaging\module-src\module-info.java` with `--patch-module
-probe.consumer=<fixture classes>` and the consumed module path, package it with
-those classes, then run `probe.Consumer public` (or `public collisions`) using
-`--add-modules ALL-MODULE-PATH`. These checks require explicit JPMS, provider
-discovery and no public exports, without opening private packages.
-
-Run the native consumer on both Windows and Linux. On Linux,
-`probe.NativeTransportProbe [collisions]` executes and closes actual epoll event
-loops. `src\it\http2-fixture` is a separate, loopback-only HTTP/2 server; supply a
-generated test PKCS12 certificate with password `probe-only`, then run
-`probe.KeyModeProbe <test-keystore> <loopback-endpoint>` from the consumed
-classpath/module path. Require `NEGOTIATED_PROTOCOL h2` and an h2 request in the
-server log, and stop the fixture afterward. It uses a synthetic account and
-dummy key, not real Cosmos authentication or CRUD. Keep these tests bounded and
-network-isolated; do not substitute cloud/emulator credentials.
-
 ---
 
 ## Submitting a Pull Request

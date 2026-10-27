@@ -19,7 +19,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   Byte/Short/BigInteger/BigDecimal STRING fallback, and native BYTES-to-Base64
   row conversion. No new numeric limits, rounding or schema changes.
 - Development coordinate `0.1.0-beta.1-SNAPSHOT` against the coordinated API;
-  no release is declared. See [mapping support and migration](../docs/customer-object-mapping.md).
+  no release is declared. See [mapping support and migration](../docs/guide.md#application-owned-mapping).
 
 ### Added
 

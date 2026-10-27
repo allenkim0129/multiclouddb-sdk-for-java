@@ -190,7 +190,11 @@ try (MulticloudDbClient client = MulticloudDbClientFactory.create(config)) {
 // CRUD - same code for every provider
 ResourceAddress todos = new ResourceAddress("mydb", "todos");
 MulticloudDbKey key = MulticloudDbKey.of("todo-1", "todo-1");
-Map<String, Object> doc = Map.of("id", "todo-1", "status", "active", "category", "shopping");
+Map<String, Object> doc = Map.of(
+    "id", "todo-1",
+    "status", "active",
+    "category", "shopping"
+);
 client.upsert(todos, key, doc);
 
 // Query with portable expressions - auto-translated per provider

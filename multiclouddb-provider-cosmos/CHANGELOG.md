@@ -16,14 +16,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Remove direct Jackson imports/dependencies from Multicloud-owned code.
   Unsupported native objects fail with safe `PROVIDER_ERROR` and
   `invalid_document_payload`, not payload-bearing native causes.
-- Bundle/relocate the Cosmos v4 native runtime closure with private Netty
-  metadata/native filenames, preserved services/notices/multi-release paths,
-  explicit JPMS and a reduced published POM. API/SLF4J and JNA remain external.
-  The checked JNA 5.13.0/jna-platform 5.17.0 configuration is shared, not full
-  isolation or a guarantee for arbitrary application dependency versions.
 - Coordinated `0.1.0-beta.2-SNAPSHOT` development API dependency; no release,
   schema/envelope redesign or general provider bug fix. See
-  [mapping support and migration](../docs/customer-object-mapping.md).
+  [mapping support and migration](../docs/guide.md#application-owned-mapping).
 
 ### Changed
 

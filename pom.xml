@@ -101,14 +101,13 @@
                 <version>${multiclouddb-provider-spanner.version}</version>
             </dependency>
 
-
-
-            <!-- Logging -->
+            <!-- Internal JSON syntax -->
             <dependency>
                 <groupId>com.google.code.gson</groupId>
                 <artifactId>gson</artifactId>
                 <version>${gson.version}</version>
             </dependency>
+            <!-- Logging -->
             <dependency>
                 <groupId>org.slf4j</groupId>
                 <artifactId>slf4j-api</artifactId>

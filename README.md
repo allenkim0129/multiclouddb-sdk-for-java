@@ -123,7 +123,7 @@ mvn clean install -DskipTests
 
 This example targets the coordinated development Map API. Released beta
 callers must migrate and recompile; see
-[application mapping, dependencies and migration](docs/customer-object-mapping.md).
+[application mapping, dependencies and migration](docs/guide.md#application-owned-mapping).
 The API runtime is Jackson-free; native providers may still depend on Jackson.
 
 ```java

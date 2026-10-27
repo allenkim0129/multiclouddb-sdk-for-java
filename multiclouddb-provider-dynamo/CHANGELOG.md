@@ -18,7 +18,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   not new portable binary support. Native SDK request encoding remains.
 - Coordinated `0.1.0-beta.2-SNAPSHOT` development API dependency; no release,
   storage-range expansion or general provider bug fix. See
-  [mapping support and migration](../docs/customer-object-mapping.md).
+  [mapping support and migration](../docs/guide.md#application-owned-mapping).
 
 ## [0.1.0-beta.2] — 2026-06-22
 

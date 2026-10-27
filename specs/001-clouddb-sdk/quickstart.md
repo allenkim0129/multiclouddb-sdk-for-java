@@ -318,10 +318,10 @@ Map<String, Object> doc = result.document();  // detached mutable payload
 
 The SDK enforces a **399 KiB (408,576 bytes) logical JSON** maximum for create,
 update and upsert inputs across all providers. The structural counter rejects
-oversized Documents before provider delegation without creating JSON bytes.
+oversized Maps before provider delegation without creating JSON bytes.
 This retains the legacy byte-encoding profile and safety margin below DynamoDB's
 400 KiB native item limit; it is not native item accounting or a guarantee of
-native fit. The DynamoDB-equivalent item budget is follow-on design only.
+native fit.
 
 ```java
 // Oversized documents are rejected before any I/O

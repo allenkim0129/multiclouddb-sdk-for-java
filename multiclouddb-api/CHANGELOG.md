@@ -37,7 +37,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   byte-count lower bound at the early cutoff, not an exact full document size.
   Cursor and size fixtures pin the released Jackson byte/coercion profile.
 - Development coordinate is `0.1.0-beta.2-SNAPSHOT`; no release is declared.
-  See [customer mapping and migration](../docs/customer-object-mapping.md).
+  See [customer mapping and migration](../docs/guide.md#application-owned-mapping).
   This is partial work related to microsoft/multiclouddb-sdk-for-java#116.
 
 ## [0.1.0-beta.2] — 2026-06-17

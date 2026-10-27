@@ -31,39 +31,8 @@ multiclouddb-api  ← must be released first if API changed
     └── multiclouddb-provider-spanner  ← independent of other providers
 ```
 
-Released providers depend on a released `multiclouddb-api`. The current breaking
-Map-boundary increment builds against coordinated development SNAPSHOT versions;
-these are not newly published releases.
-
-### Optional customer object mapping
-
-CRUD and point reads use `Map<String, Object>`; change-feed payloads use Object
-with explicit `hasData()` presence. QueryPage retains its Map-row contract.
-Applications map DTOs explicitly without a shipped mapping interface. Supported
-inputs are Maps/Lists, strings, booleans, null and the documented finite numeric
-types, not arbitrary POJOs or binary values.
-The API runtime depends on SLF4J 2.0.12 and private
-Gson 2.11.0 cursor handling, not Jackson (including transitive or shaded Jackson).
-Gson also brings `error_prone_annotations` 2.27.0 into the Maven runtime closure;
-Gson's JPMS requirement for that annotation module is static.
-
-There is no serializer module, automatic client registration or POJO overload.
-Optional Jackson examples are application code with separate dependencies.
-Multicloud production code does not import Jackson; native SDK implementations
-may still require it. See [customer object mapping](customer-object-mapping.md)
-for migration, ownership and provider limitations.
-
-Provider writes map ordinary Maps: Cosmos builds detached request Maps, Dynamo
-constructs AttributeValue containers, and Spanner binds scalar columns and
-encodes nested values into existing JSON-marker STRINGs. Point-read/feed outputs
-are detached mutable data; QueryPage is shallowly read-only. Native SDK wire
-encoding and necessary Spanner FIELD_DATA/JSON encoding remain. Avoiding
-intermediate conversions is not elimination of serialization or a speedup claim.
-
-See the [Foundation design](design/serialization-pr1-foundation.md) for the
-application/native responsibility split and provider-local Cosmos packaging.
-The current v4 artifact is checked with shared JNA 5.13.0/jna-platform 5.17.0;
-this does not establish arbitrary application JNA-version coexistence.
+Providers depend on a released version of `multiclouddb-api`. They are
+independent of each other and can be released separately.
 
 ---
 

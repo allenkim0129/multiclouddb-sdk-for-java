@@ -57,7 +57,7 @@ them after return. Point-read/feed containers are detached and mutable.
 QueryPage retains shallow read-only Maps/list with nested mutability.
 `ChangeEvent.data()` is Object and `hasData()` distinguishes absence from
 present null. Existing provider storage formats, numeric limitations and
-selected-image semantics remain. See [mapping and migration](../../docs/customer-object-mapping.md).
+selected-image semantics remain. See [mapping and migration](../../docs/guide.md#application-owned-mapping).
 
 ### Query
 Portable query request.
