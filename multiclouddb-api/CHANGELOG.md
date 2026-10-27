@@ -7,31 +7,24 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-### Fixed
-
-- Compare shared array/object subtrees once per identity pair within an equality
-  call, including mixed graphs and Document/HashSet comparisons. Preserve value
-  equality regardless of sharing layout, field order or hash collisions; no
-  comparison state is retained on model values.
-- Compute immutable array/object hashes once at construction so shared child
-  containers do not cause exponential recursive hashing. Preserve List/Map hash
-  semantics, including zero hashes, numeric equality and Document delegation.
-
 ### Added
 
-- API-owned immutable `Document` and closed six-kind null/boolean/string/number/
-  array/object value model, neutral application-owned `DocumentCodec`, `TypeRef`
-  and safe `DocumentCodecException`. Mathematical number equality retains source
-  kind/scale and floating zero sign; finite floating decimal views follow runtime
-  round-trip text. Initial precision/scale/depth bounds are documented separately
-  from provider storage support.
+- Explicit neutral-value validation for Map writes: string-keyed Maps/Lists,
+  strings, booleans, null and the eight documented finite numeric types.
+  Reject unsupported objects, keys and cycles before native I/O; allow shared
+  acyclic subtrees. Preserve released numeric/depth behavior and 399 KiB semantics.
+- `ChangeEvent.hasData()` and a six-argument constructor distinguish absent
+  payloads from present null. The five-argument constructor keeps null-as-absent.
 
 ### Changed
 
-- Breaking development migration: CRUD client/SPI bodies and point-read payloads
-  use `Document`; `ChangeEvent.data()` uses nullable `DocumentValue` without new
-  image classification or changed provider image selection. Query Map/Object
-  contracts are unchanged.
+- Breaking migration from beta.2: `DocumentResult.document()` returns Map
+  instead of ObjectNode; `ChangeEvent.data()` returns Object instead of JsonNode.
+  Map write signatures and QueryPage Map rows remain unchanged. Applications
+  explicitly map their DTOs; no shipped mapping interface is introduced.
+- Document the synchronous input no-mutation window and no SDK retention after
+  return. Read/feed containers are detached and mutable; QueryPage retains
+  shallow read-only containers with nested mutability.
 - API compile/runtime dependencies no longer include Jackson, but are not empty:
   SLF4J 2.0.12 and private Gson 2.11.0 remain, plus Gson's transitive
   `error_prone_annotations` 2.27.0 metadata dependency (static in JPMS).
@@ -42,16 +35,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   Logical write-size validation preserves the 399 KiB byte profile without
   allocating serialized document JSON. Overflow reports an observed
   byte-count lower bound at the early cutoff, not an exact full document size.
-  Jackson remains a test-only compatibility oracle.
+  Cursor and size fixtures pin the released Jackson byte/coercion profile.
 - Development coordinate is `0.1.0-beta.2-SNAPSHOT`; no release is declared.
   See [customer mapping and migration](../docs/customer-object-mapping.md).
   This is partial work related to microsoft/multiclouddb-sdk-for-java#116.
-
-### Removed
-
-- Removed the unpublished reserved `BinaryValue`: binary/opaque objects are not
-  model values. Explicit customer Base64 text is an ordinary StringValue, with
-  no automatic model/provider decoding.
 
 ## [0.1.0-beta.2] — 2026-06-17
 

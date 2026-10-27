@@ -33,16 +33,15 @@ dependencies {
 
 ### Example (illustrative)
 
-Current development examples use `com.multiclouddb.api.document.*`; the
-previous released beta Map/ObjectNode boundary requires migration.
+Current development examples use `java.util.Map`; released beta point-read
+ObjectNode and feed JsonNode access requires migration to neutral data.
 
 ```java
 MulticloudDbClient client = MulticloudDbClientFactory.create(config);
 
 ResourceAddress resource = new ResourceAddress("db", "collection");
 MulticloudDbKey key = MulticloudDbKey.of("partitionKey-123", "sortKey-456");
-Document doc = Document.builder()
-        .put("id", new StringValue("123")).put("name", new StringValue("Ada")).build();
+Map<String, Object> doc = Map.of("id", "123", "name", "Ada");
 
 client.upsert(resource, key, doc);
 DocumentResult got = client.read(resource, key);  // null if not found
@@ -297,7 +296,7 @@ OperationOptions optionsWithMeta = OperationOptions.builder()
     .build();
 
 DocumentResult result = client.read(address, key, optionsWithMeta);
-Document doc = result.document();
+Map<String, Object> doc = result.document();
 DocumentMetadata meta = result.metadata();
 if (meta != null) {
     if (meta.lastModified() != null) System.out.println("Last written: " + meta.lastModified());
@@ -310,7 +309,7 @@ if (meta != null) {
 ```java
 // Existing callers: pass OperationOptions.defaults() — no metadata overhead
 DocumentResult result = client.read(address, key, OperationOptions.defaults());
-Document doc = result.document();  // neutral immutable payload
+Map<String, Object> doc = result.document();  // detached mutable payload
 ```
 
 ---
@@ -326,7 +325,7 @@ native fit. The DynamoDB-equivalent item budget is follow-on design only.
 
 ```java
 // Oversized documents are rejected before any I/O
-Document largeDoc = buildLargeDocument();  // >399 KiB logical JSON size
+Map<String, Object> largeDoc = Map.of("body", "x".repeat(400 * 1024));
 try {
     client.create(address, key, largeDoc, OperationOptions.defaults());
 } catch (MulticloudDbException e) {

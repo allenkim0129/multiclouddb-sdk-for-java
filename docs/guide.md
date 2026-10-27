@@ -6,11 +6,12 @@ and architecture overview, see the [Getting Started](getting-started.md) guide. 
 portable API surface and error mapping reference, see
 [Compatibility](compatibility.md).
 
-The immutable Document model has six JSON-like value kinds: null, boolean,
-string, number, array and object, with an object root. Binary/embedded objects
-are not model values. Applications may explicitly map bytes to ordinary text;
-the model does not infer or decode Base64. See the
-[customer mapping support table](customer-object-mapping.md#existing-provider-mapping-and-runtime-compatibility)
+The Map boundary accepts null, boolean, string, supported finite numbers, Lists
+and string-keyed Maps. Binary/embedded objects are not supported inputs.
+Applications may explicitly map bytes to ordinary text; the SDK does not infer
+or decode Base64. Do not mutate input containers during a synchronous write;
+the SDK neither mutates nor retains them after return. See the
+[customer mapping support table](customer-object-mapping.md#provider-mapping-and-serialization)
 for the existing per-provider schema and numeric limitations.
 
 ---
@@ -504,9 +505,9 @@ but the default SPI implementation works correctly for all providers.
 
 ## CRUD Semantics
 
-These examples describe the coordinated development Document API and use
-`import com.multiclouddb.api.document.*;`. Released beta callers must migrate
-and recompile; see [customer codecs and migration](customer-object-mapping.md).
+These examples describe the coordinated development Map API and use
+`import java.util.Map;`. Released beta callers must migrate point-read/feed
+payload access and recompile; see [application mapping and migration](customer-object-mapping.md).
 Query Map/Object contracts and existing provider-specific update behavior are
 not changed by this increment.
 
@@ -519,10 +520,7 @@ insert-only semantics with duplicate detection.
 ```java
 ResourceAddress addr = new ResourceAddress("mydb", "orders");
 MulticloudDbKey key = MulticloudDbKey.of("customer-456", "order-123");
-Document doc = Document.builder()
-        .put("total", NumberValue.of(99.95))
-        .put("status", new StringValue("pending"))
-        .build();
+Map<String, Object> doc = Map.of("total", 99.95, "status", "pending");
 
 client.create(addr, key, doc);   // Fails if document already exists
 ```
@@ -539,12 +537,12 @@ client.create(addr, key, doc);   // Fails if document already exists
 ### read - Point Read
 
 `read()` performs a single-document read using the full key. Returns a
-`DocumentResult` wrapping an immutable neutral `Document`, or `null` if not found.
+`DocumentResult` wrapping a detached mutable Map, or `null` if not found.
 
 ```java
 DocumentResult result = client.read(addr, MulticloudDbKey.of("customer-456", "order-123"));
 if (result != null) {
-    String status = ((StringValue) result.document().get("status").orElseThrow()).value();
+    String status = (String) result.document().get("status");
 }
 ```
 
@@ -561,15 +559,14 @@ can go directly to the partition/item without scanning.
 
 ### update - Replace Existing
 
-`update()` replaces an existing document. If the document does **not** exist,
+`update()` modifies an existing document. Cosmos and DynamoDB replace its body;
+Spanner retains its existing partial-update transaction and FIELD_DATA merge.
+If the document does **not** exist,
 the operation **fails** with a not-found error. Use this when you need strict
 update-only semantics.
 
 ```java
-Document updated = Document.builder()
-        .put("total", NumberValue.of(109.95))
-        .put("status", new StringValue("shipped"))
-        .build();
+Map<String, Object> updated = Map.of("total", 109.95, "status", "shipped");
 
 client.update(addr, MulticloudDbKey.of("customer-456", "order-123"), updated);   // Fails if not exists
 ```
@@ -579,7 +576,7 @@ client.update(addr, MulticloudDbKey.of("customer-456", "order-123"), updated);  
 | Behavior | Cosmos DB | DynamoDB | Spanner |
 |----------|-----------|----------|---------|
 | Operation | `replaceItem()` | `putItem()` with `attribute_exists` condition | `newUpdateBuilder` mutation |
-| If exists | Replace | Replace | Replace |
+| If exists | Replace | Replace | Update supplied fields |
 | If not exists | Throws NOT_FOUND | Throws NOT_FOUND | Throws NOT_FOUND |
 | Return value | None (void) | None (void) | None (void) |
 
@@ -591,10 +588,7 @@ the same key. It is an insert-or-update in all providers.
 ```java
 ResourceAddress addr = new ResourceAddress("mydb", "orders");
 MulticloudDbKey key = MulticloudDbKey.of("customer-456", "order-123");
-Document doc = Document.builder()
-        .put("total", NumberValue.of(99.95))
-        .put("status", new StringValue("pending"))
-        .build();
+Map<String, Object> doc = Map.of("total", 99.95, "status", "pending");
 
 client.upsert(addr, key, doc);   // Creates or replaces the document
 ```
@@ -645,10 +639,7 @@ fields into the document** automatically. You don't need to manually set `"id"`
 or `"partitionKey"` in your JSON - the provider handles this:
 
 ```java
-Document doc = Document.builder()
-        .put("name", new StringValue("Alpha Fund"))
-        .put("type", new StringValue("EQUITY"))
-        .build();
+Map<String, Object> doc = Map.of("name", "Alpha Fund", "type", "EQUITY");
 
 // No need to set "id" or "partitionKey" in doc - injected by provider
 client.upsert(addr, MulticloudDbKey.of("acme", "port-1"), doc);

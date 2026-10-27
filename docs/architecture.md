@@ -32,40 +32,38 @@ multiclouddb-api  ← must be released first if API changed
 ```
 
 Released providers depend on a released `multiclouddb-api`. The current breaking
-Document increment builds against coordinated development SNAPSHOT versions;
+Map-boundary increment builds against coordinated development SNAPSHOT versions;
 these are not newly published releases.
 
 ### Optional customer object mapping
 
-The API owns immutable `Document`/`DocumentValue` with six value kinds (null,
-boolean, string, number, array and object; no binary), application-owned
-`DocumentCodec`, neutral `TypeRef` and safe codec errors. CRUD and point reads use
-Document; nullable change-feed payloads use DocumentValue. Query Map/Object
-contracts remain unchanged. The API runtime depends on SLF4J 2.0.12 and private
+CRUD and point reads use `Map<String, Object>`; change-feed payloads use Object
+with explicit `hasData()` presence. QueryPage retains its Map-row contract.
+Applications map DTOs explicitly without a shipped mapping interface. Supported
+inputs are Maps/Lists, strings, booleans, null and the documented finite numeric
+types, not arbitrary POJOs or binary values.
+The API runtime depends on SLF4J 2.0.12 and private
 Gson 2.11.0 cursor handling, not Jackson (including transitive or shaded Jackson).
 Gson also brings `error_prone_annotations` 2.27.0 into the Maven runtime closure;
 Gson's JPMS requirement for that annotation module is static.
 
-The optional `multiclouddb-serializer-jackson` module implements that contract
-with `JacksonDocumentCodec`, snapshots a customer ObjectMapper and depends on API
-and Jackson. Providers do not depend on this codec module, but still explicitly
-depend on Jackson for internal native mappings. There is no
-automatic client registration or POJO overload. See
-[customer object mapping](customer-object-mapping.md) for usage, configuration,
-provider limitations and file/method/test traceability. Uniform query/image
-contracts remain later issue-116 work.
+There is no serializer module, automatic client registration or POJO overload.
+Optional Jackson examples are application code with separate dependencies.
+Multicloud production code does not import Jackson; native SDK implementations
+may still require it. See [customer object mapping](customer-object-mapping.md)
+for migration, ownership and provider limitations.
 
-Provider CREATE/UPDATE/UPSERT paths traverse Document directly: Cosmos constructs
-an ObjectNode, Dynamo constructs AttributeValue containers, and Spanner binds
-scalar columns while streaming nested values into existing JSON-marker STRINGs.
-Cosmos point reads skip root system fields during immutable construction instead
-of copying the response tree. Native SDK wire encoding, decimal compatibility,
-Spanner FIELD_DATA/JSON text encoding, query mappings and other read/feed paths
-remain; this is intermediate-allocation removal, not serialization elimination
-or a new storage/numeric contract.
+Provider writes map ordinary Maps: Cosmos builds detached request Maps, Dynamo
+constructs AttributeValue containers, and Spanner binds scalar columns and
+encodes nested values into existing JSON-marker STRINGs. Point-read/feed outputs
+are detached mutable data; QueryPage is shallowly read-only. Native SDK wire
+encoding and necessary Spanner FIELD_DATA/JSON encoding remain. Avoiding
+intermediate conversions is not elimination of serialization or a speedup claim.
 
 See the [Foundation design](design/serialization-pr1-foundation.md) for the
-application/native responsibility split and explicitly deferred follow-on scope.
+application/native responsibility split and provider-local Cosmos packaging.
+The current v4 artifact is checked with shared JNA 5.13.0/jna-platform 5.17.0;
+this does not establish arbitrary application JNA-version coexistence.
 
 ---
 

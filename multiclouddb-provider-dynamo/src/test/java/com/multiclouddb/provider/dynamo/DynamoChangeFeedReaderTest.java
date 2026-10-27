@@ -6,7 +6,6 @@ package com.multiclouddb.provider.dynamo;
 import com.multiclouddb.api.OperationOptions;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
-import com.multiclouddb.api.document.*;
 import com.multiclouddb.api.changefeed.ChangeEvent;
 import com.multiclouddb.api.changefeed.ChangeType;
 import com.multiclouddb.api.ProviderId;
@@ -94,40 +93,36 @@ class DynamoChangeFeedReaderTest {
         Map<String, AttributeValue> older = Map.of("old", AttributeValue.builder().bool(true).build());
         var current = readRecord(record(OperationType.INSERT, newer, older));
         assertEquals(ChangeType.CREATE, current.type());
-        assertEquals(ObjectValue.of(Map.of("nested", ArrayValue.of(List.of(NullValue.INSTANCE,
-                ObjectValue.of(Map.of("n", NumberValue.of(2))))))), current.data());
+        assertEquals(Map.of("nested", java.util.Arrays.asList(null, Map.of("n", 2))), current.data());
+        assertTrue(current.hasData());
         assertEquals(current.data(), readRecord(record(OperationType.MODIFY, newer, older)).data());
         var deleted = readRecord(record(OperationType.REMOVE, newer, older));
         assertEquals(ChangeType.DELETE, deleted.type());
-        assertEquals(ObjectValue.of(Map.of("old", new BooleanValue(true))), deleted.data());
-        assertEquals(ObjectValue.of(Map.of()), readRecord(record(OperationType.MODIFY, Map.of(), older)).data());
+        assertEquals(Map.of("old", true), deleted.data());
+        assertEquals(Map.of(), readRecord(record(OperationType.MODIFY, Map.of(), older)).data());
         org.junit.jupiter.api.Assertions.assertNull(readRecord(record(OperationType.MODIFY, null, older)).data());
+        assertFalse(readRecord(record(OperationType.MODIFY, null, older)).hasData());
         Record absentSdkImages = Record.builder().eventName(OperationType.MODIFY).dynamodb(
                 StreamRecord.builder().keys(Map.of("partitionKey", AttributeValue.builder().s("tenant").build()))
                         .sequenceNumber("1").build()).build();
-        assertEquals(ObjectValue.of(Map.of()), readRecord(absentSdkImages).data(),
+        assertEquals(Map.of(), readRecord(absentSdkImages).data(),
                 "the native SDK represents absent image maps as empty maps, not Java null");
         AttributeValue binary = AttributeValue.builder()
                 .b(software.amazon.awssdk.core.SdkBytes.fromByteArray(new byte[]{1, 2})).build();
-        assertEquals(ObjectValue.of(Map.of("bytes", NullValue.INSTANCE)),
+        assertEquals(java.util.Collections.singletonMap("bytes", null),
                 readRecord(record(OperationType.MODIFY, Map.of("bytes", binary), Map.of())).data(),
                 "legacy native B fallback remains null before neutral conversion");
     }
 
     @Test
-    void modelDomainFailuresAreSafeClassifiedFeedErrors() {
+    void retainsReleasedDepthAndNumericParsingFailuresWithoutModelCaps() {
         AttributeValue deep = AttributeValue.builder().s("private-value").build();
         for (int i = 0; i < 128; i++) deep = AttributeValue.builder().l(deep).build();
-        for (AttributeValue invalid : List.of(deep, AttributeValue.builder().n("1.0E309").build())) {
-            MulticloudDbException failure = org.junit.jupiter.api.Assertions.assertThrows(MulticloudDbException.class,
+        assertTrue(readRecord(record(OperationType.MODIFY, Map.of("nested", deep), Map.of())).hasData());
+        for (AttributeValue invalid : List.of(AttributeValue.fromN("1E+3"),
+                AttributeValue.fromN("9223372036854775808"))) {
+            org.junit.jupiter.api.Assertions.assertThrows(NumberFormatException.class,
                     () -> readRecord(record(OperationType.MODIFY, Map.of("private-field", invalid), Map.of())));
-            assertEquals(MulticloudDbErrorCategory.PROVIDER_ERROR, failure.error().category());
-            assertEquals(ProviderId.DYNAMO, failure.error().provider());
-            assertEquals("readChanges", failure.error().operation());
-            assertFalse(failure.error().retryable());
-            assertEquals(Map.of("reason", "invalid_document_payload"), failure.error().providerDetails());
-            assertEquals("Provider response cannot be represented as a Document value.", failure.error().message());
-            org.junit.jupiter.api.Assertions.assertNull(failure.getCause());
         }
     }
 

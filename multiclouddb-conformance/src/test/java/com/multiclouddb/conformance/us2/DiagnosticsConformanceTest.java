@@ -3,8 +3,6 @@
 
 package com.multiclouddb.conformance.us2;
 
-import static com.multiclouddb.conformance.Documents.document;
-
 import com.multiclouddb.api.*;
 import com.multiclouddb.api.MulticloudDbKey;
 import com.multiclouddb.conformance.ConformanceConfig;
@@ -88,7 +86,7 @@ public abstract class DiagnosticsConformanceTest {
     void exceptionHasOperationName() {
         ResourceAddress badAddress = new ResourceAddress("nonexistent-db-12345", "nonexistent-collection-12345");
         try {
-            client.upsert(badAddress, MulticloudDbKey.of("bad-key", "bad-key"), document(java.util.Map.of("test", true)),
+            client.upsert(badAddress, MulticloudDbKey.of("bad-key", "bad-key"), java.util.Map.of("test", true),
                     OperationOptions.defaults());
         } catch (MulticloudDbException e) {
             if (e.diagnostics() != null) {

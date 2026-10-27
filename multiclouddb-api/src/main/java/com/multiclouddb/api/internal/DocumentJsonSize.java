@@ -3,29 +3,51 @@
 
 package com.multiclouddb.api.internal;
 
-import com.multiclouddb.api.document.ArrayValue;
-import com.multiclouddb.api.document.BooleanValue;
-import com.multiclouddb.api.document.Document;
-import com.multiclouddb.api.document.DocumentValue;
-import com.multiclouddb.api.document.NullValue;
-import com.multiclouddb.api.document.NumberValue;
-import com.multiclouddb.api.document.ObjectValue;
-import com.multiclouddb.api.document.StringValue;
-
 import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.ArrayDeque;
+import java.util.IdentityHashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 
-/** Counts the existing logical JSON byte profile without materializing JSON. */
+/** Validates neutral values and counts the legacy JSON byte profile without a tree copy. */
 final class DocumentJsonSize {
+    // Released Map -> Jackson tree -> bytes serialization rejects depth above 1000.
+    private static final int MAX_DEPTH = 1000;
     private final long limit;
     private long size;
+    private final ArrayDeque<Frame> stack = new ArrayDeque<>();
+    private final IdentityHashMap<Object, Boolean> active = new IdentityHashMap<>();
 
     private DocumentJsonSize(long limit) {
         this.limit = limit;
     }
 
-    static long measure(Document document, long limit) {
+    static long measure(Map<String, Object> document, long limit) {
         DocumentJsonSize counter = new DocumentJsonSize(limit);
-        counter.value(document.root());
+        counter.value(document);
+        while (!counter.stack.isEmpty()) {
+            Frame frame = counter.stack.peek();
+            if (!frame.children.hasNext()) {
+                counter.active.remove(frame.container);
+                counter.stack.pop();
+                continue;
+            }
+            if (!frame.first) counter.add(1);
+            frame.first = false;
+            Object child = frame.children.next();
+            if (frame.container instanceof Map<?, ?>) {
+                Map.Entry<?, ?> entry = (Map.Entry<?, ?>) child;
+                if (!(entry.getKey() instanceof String key)) {
+                    throw new IllegalArgumentException("Document keys must be non-null strings.");
+                }
+                counter.string(key);
+                counter.add(1);
+                child = entry.getValue();
+            }
+            counter.value(child);
+        }
         return counter.size;
     }
 
@@ -34,38 +56,54 @@ final class DocumentJsonSize {
         if (size > limit) throw new SizeExceeded(size);
     }
 
-    private void value(DocumentValue value) {
-        if (value instanceof ObjectValue object) {
-            add(2);
-            boolean first = true;
-            for (var field : object.fields().entrySet()) {
-                if (!first) add(1);
-                first = false;
-                string(field.getKey());
-                add(1);
-                value(field.getValue());
+    private void value(Object value) {
+        if (value instanceof Map<?, ?> || value instanceof List<?>) {
+            if (active.containsKey(value)) {
+                throw new IllegalArgumentException("Document contains a cycle.");
             }
-        } else if (value instanceof ArrayValue array) {
-            add(2);
-            boolean first = true;
-            for (DocumentValue element : array.values()) {
-                if (!first) add(1);
-                first = false;
-                value(element);
+            if (stack.size() >= MAX_DEPTH) {
+                throw new IllegalArgumentException("Document exceeds the existing JSON nesting limit.");
             }
-        } else if (value instanceof StringValue string) {
-            string(string.value());
-        } else if (value instanceof NumberValue number) {
-            Number retained = number.value();
+            add(2);
+            active.put(value, Boolean.TRUE);
+            Iterator<?> children = value instanceof Map<?, ?> map
+                    ? map.entrySet().iterator() : ((List<?>) value).iterator();
+            stack.push(new Frame(value, children));
+        } else if (value instanceof String text) {
+            string(text);
+        } else if (value instanceof Number number) {
+            Class<?> kind = number.getClass();
+            if (kind != Byte.class && kind != Short.class && kind != Integer.class
+                    && kind != Long.class && kind != Float.class && kind != Double.class
+                    && kind != BigInteger.class && kind != BigDecimal.class) {
+                throw new IllegalArgumentException("Unsupported document number implementation.");
+            }
+            if (number instanceof Float f && !Float.isFinite(f)
+                    || number instanceof Double d && !Double.isFinite(d)) {
+                throw new IllegalArgumentException("Document numbers must be finite.");
+            }
             // The old default mapper's Map -> tree size profile normalizes
-            // BigDecimal zeros. This count does not modify the model value.
-            String text = retained instanceof BigDecimal decimal
-                    ? decimal.stripTrailingZeros().toString() : retained.toString();
+            // BigDecimal zeros. This count does not modify the caller's value.
+            String text = number instanceof BigDecimal decimal
+                    ? decimal.stripTrailingZeros().toString() : number.toString();
             add(text.length());
-        } else if (value instanceof BooleanValue bool) {
-            add(bool.value() ? 4 : 5);
-        } else if (value instanceof NullValue) {
+        } else if (value instanceof Boolean bool) {
+            add(bool ? 4 : 5);
+        } else if (value == null) {
             add(4);
+        } else {
+            throw new IllegalArgumentException("Unsupported document value.");
+        }
+    }
+
+    private static final class Frame {
+        final Object container;
+        final Iterator<?> children;
+        boolean first = true;
+
+        Frame(Object container, Iterator<?> children) {
+            this.container = container;
+            this.children = children;
         }
     }
 

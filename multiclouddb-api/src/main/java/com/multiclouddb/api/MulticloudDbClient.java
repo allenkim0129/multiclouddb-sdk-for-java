@@ -6,7 +6,6 @@ package com.multiclouddb.api;
 import com.multiclouddb.api.changefeed.ChangeFeedCursor;
 import com.multiclouddb.api.changefeed.ChangeFeedPage;
 import com.multiclouddb.api.changefeed.CursorExpiredException;
-import com.multiclouddb.api.document.Document;
 
 import java.util.List;
 import java.util.Map;
@@ -21,6 +20,23 @@ import java.util.Map;
  * <p>
  * There are no code-level escape hatches. Diagnostics and provider-specific
  * opt-ins are controlled via {@link MulticloudDbClientConfig} only.
+ *
+ * <h2>Document values and ownership</h2>
+ * Write documents contain string-keyed Maps, Lists, Strings, Booleans,
+ * {@code null}, and exactly Byte, Short, Integer, Long, Float, Double,
+ * java.math.BigInteger or java.math.BigDecimal numbers. Floating-point numbers
+ * must be finite. Cycles, null/non-string keys, arrays, sets, arbitrary Java
+ * objects and other Number implementations are rejected with
+ * {@link MulticloudDbErrorCategory#INVALID_REQUEST} before native I/O.
+ * Shared acyclic subtrees are permitted. Applications explicitly map their
+ * objects before calling the SDK; no application serializer is invoked.
+ * <p>
+ * Callers must not mutate a write document or its nested containers during the
+ * entire synchronous call, including retries. The SDK does not mutate caller
+ * data or retain it after the call returns. Validation preserves the existing
+ * logical JSON input limit of 399 KiB; this is not native item-size accounting.
+ * Returned point-read and feed data is detached and mutable; queries retain
+ * the ownership contract of {@link QueryPage}.
  */
 public interface MulticloudDbClient extends AutoCloseable {
 
@@ -33,12 +49,12 @@ public interface MulticloudDbClient extends AutoCloseable {
      * @param options  operation options (timeout, etc.)
      * @throws MulticloudDbException with category CONFLICT if the key already exists
      */
-    void create(ResourceAddress address, MulticloudDbKey key, Document document, OperationOptions options);
+    void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options);
 
     /**
      * Insert a new document using default options. Fails if key already exists.
      */
-    default void create(ResourceAddress address, MulticloudDbKey key, Document document) {
+    default void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document) {
         create(address, key, document, OperationOptions.defaults());
     }
 
@@ -63,6 +79,8 @@ public interface MulticloudDbClient extends AutoCloseable {
     /**
      * Update an existing document. Fails if a document with the given key does not
      * exist.
+     * Cosmos and DynamoDB replace the document body; Spanner retains its existing
+     * partial-update behavior for the supplied fields.
      *
      * @param address  target database + collection
      * @param key      document key
@@ -70,13 +88,13 @@ public interface MulticloudDbClient extends AutoCloseable {
      * @param options  operation options
      * @throws MulticloudDbException with category NOT_FOUND if the key does not exist
      */
-    void update(ResourceAddress address, MulticloudDbKey key, Document document, OperationOptions options);
+    void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options);
 
     /**
      * Update an existing document using default options. Fails if key does not
      * exist.
      */
-    default void update(ResourceAddress address, MulticloudDbKey key, Document document) {
+    default void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document) {
         update(address, key, document, OperationOptions.defaults());
     }
 
@@ -88,13 +106,13 @@ public interface MulticloudDbClient extends AutoCloseable {
      * @param document document payload
      * @param options  operation options (timeout, etc.)
      */
-    void upsert(ResourceAddress address, MulticloudDbKey key, Document document, OperationOptions options);
+    void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options);
 
     /**
      * Upsert (create or replace) a document identified by key, using default
      * options.
      */
-    default void upsert(ResourceAddress address, MulticloudDbKey key, Document document) {
+    default void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document) {
         upsert(address, key, document, OperationOptions.defaults());
     }
 

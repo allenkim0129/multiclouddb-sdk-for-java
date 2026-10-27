@@ -14,7 +14,6 @@ import com.google.cloud.Timestamp;
 import com.multiclouddb.api.OperationOptions;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
-import com.multiclouddb.api.document.*;
 import com.multiclouddb.api.changefeed.ChangeEvent;
 import com.multiclouddb.api.changefeed.ChangeType;
 import com.multiclouddb.api.ProviderId;
@@ -54,38 +53,28 @@ class SpannerChangeFeedReaderTest {
         String older = "{\"old\":true}";
         ChangeEvent inserted = readValues("INSERT", newer, older);
         assertEquals(ChangeType.CREATE, inserted.type());
-        assertEquals(ObjectValue.of(Map.of("partitionKey", new StringValue("tenant"),
-                "sortKey", new StringValue("record"), "nested", ArrayValue.of(List.of(
-                        NullValue.INSTANCE, ObjectValue.of(Map.of("n", NumberValue.of(2))))))), inserted.data());
-        assertTrue(((ObjectValue) inserted.data()).get("data").isEmpty());
-        assertTrue(((ObjectValue) inserted.data()).get("stale").isEmpty());
+        assertEquals(Map.of("partitionKey", "tenant", "sortKey", "record",
+                "nested", java.util.Arrays.asList(null, Map.of("n", 2))), inserted.data());
+        assertFalse(((Map<?, ?>) inserted.data()).containsKey("data"));
+        assertFalse(((Map<?, ?>) inserted.data()).containsKey("stale"));
         assertEquals(inserted.data(), readValues("UPDATE", newer, older).data());
         ChangeEvent deleted = readValues("DELETE", newer, older);
         assertEquals(ChangeType.DELETE, deleted.type());
-        assertEquals(ObjectValue.of(Map.of("old", new BooleanValue(true))), deleted.data());
-        assertEquals(NullValue.INSTANCE, readValues("UPDATE", "null", null).data());
-        assertEquals(ObjectValue.of(Map.of("bytes", new StringValue("AQI="))),
+        assertEquals(Map.of("old", true), deleted.data());
+        assertNull(readValues("UPDATE", "null", null).data());
+        assertTrue(readValues("UPDATE", "null", null).hasData());
+        assertEquals(Map.of("bytes", "AQI="),
                 readValues("UPDATE", "{\"bytes\":\"AQI=\"}", null).data(),
                 "native change-stream JSON text is not inferred to be binary");
-        assertEquals(ObjectValue.of(Map.of()), readValues("UPDATE", null, null).data());
-        assertEquals(ObjectValue.of(Map.of()), readValues("UPDATE", "{}", older).data());
-        assertEquals(ObjectValue.of(Map.of("old", new BooleanValue(true))), readValues("UPDATE", null, older).data());
+        assertEquals(Map.of(), readValues("UPDATE", null, null).data());
+        assertEquals(Map.of(), readValues("UPDATE", "{}", older).data());
+        assertEquals(Map.of("old", true), readValues("UPDATE", null, older).data());
     }
 
     @Test
-    void modelDomainFailuresAreSafeClassifiedFeedErrors() {
-        for (String invalid : List.of("{\"private-field\":1e309}", "{\"private-field\":-1e309}",
-                "{\"private-field\":" + "[".repeat(128) + "null" + "]".repeat(128) + "}")) {
-            MulticloudDbException failure = assertThrows(MulticloudDbException.class,
-                    () -> readValues("UPDATE", invalid, null));
-            assertEquals(MulticloudDbErrorCategory.PROVIDER_ERROR, failure.error().category());
-            assertEquals(ProviderId.SPANNER, failure.error().provider());
-            assertEquals("readChanges", failure.error().operation());
-            assertFalse(failure.error().retryable());
-            assertEquals(Map.of("reason", "invalid_document_payload"), failure.error().providerDetails());
-            assertEquals("Provider response cannot be represented as a Document value.", failure.error().message());
-            assertNull(failure.getCause());
-        }
+    void acceptsReleasedDepthBeyondRemovedModelLimit() {
+        String json = "{\"nested\":" + "[".repeat(128) + "null" + "]".repeat(128) + "}";
+        assertTrue(readValues("UPDATE", json, null).hasData());
     }
 
     @Test
@@ -98,8 +87,7 @@ class SpannerChangeFeedReaderTest {
         for (String operation : List.of("INSERT", "UPDATE", "DELETE")) {
             ChangeEvent event = readValues(operation, newer, older, columns);
             long expected = operation.equals("DELETE") ? -2 : 1;
-            assertEquals(ObjectValue.of(Map.of("v", NumberValue.of(expected),
-                    "text", new StringValue(Long.toString(expected)))), event.data());
+            assertEquals(Map.of("v", expected, "text", Long.toString(expected)), event.data());
             assertEquals(operation.equals("INSERT") ? ChangeType.CREATE
                     : operation.equals("DELETE") ? ChangeType.DELETE : ChangeType.UPDATE, event.type());
             assertEquals(com.multiclouddb.api.MulticloudDbKey.of("tenant", "record"), event.key());
@@ -112,7 +100,7 @@ class SpannerChangeFeedReaderTest {
         for (long value : new long[]{Long.MIN_VALUE, -9007199254740993L, -1, 0, 1,
                 9007199254740993L, Long.MAX_VALUE}) {
             for (String json : List.of("{\"v\":\"" + value + "\"}", "{\"v\":" + value + "}")) {
-                assertEquals(ObjectValue.of(Map.of("v", NumberValue.of(value))),
+                assertEquals(Map.of("v", value),
                         readValues("INSERT", json, null, List.of(column("v", "INT64"))).data());
             }
         }
@@ -138,18 +126,18 @@ class SpannerChangeFeedReaderTest {
     @Test
     void int64MetadataDoesNotCollapseNullMissingEmptyOrFallbackImages() {
         List<Struct> columns = List.of(column("v", "INT64"));
-        assertEquals(ObjectValue.of(Map.of("v", NullValue.INSTANCE)),
+        assertEquals(java.util.Collections.singletonMap("v", null),
                 readValues("INSERT", "{\"v\":null}", null, columns).data());
-        assertEquals(NullValue.INSTANCE, readValues("UPDATE", "null", null, columns).data());
-        assertEquals(ObjectValue.of(Map.of()), readValues("INSERT", "{}", "{\"v\":\"2\"}", columns).data());
-        assertEquals(ObjectValue.of(Map.of()), readValues("UPDATE", null, null, columns).data());
-        assertEquals(ObjectValue.of(Map.of("v", NumberValue.of(2))),
+        assertNull(readValues("UPDATE", "null", null, columns).data());
+        assertEquals(Map.of(), readValues("INSERT", "{}", "{\"v\":\"2\"}", columns).data());
+        assertEquals(Map.of(), readValues("UPDATE", null, null, columns).data());
+        assertEquals(Map.of("v", 2L),
                 readValues("UPDATE", null, "{\"v\":\"2\"}", columns).data());
-        assertEquals(ObjectValue.of(Map.of("v", NumberValue.of(3))),
+        assertEquals(Map.of("v", 3L),
                 readValues("DELETE", "{\"v\":\"3\"}", null, columns).data());
-        assertEquals(ObjectValue.of(Map.of()), readValues("DELETE", "{\"v\":\"3\"}", "{}", columns).data());
+        assertEquals(Map.of(), readValues("DELETE", "{\"v\":\"3\"}", "{}", columns).data());
         for (String operation : List.of("INSERT", "UPDATE", "DELETE")) {
-            assertEquals(ObjectValue.of(Map.of("v", NumberValue.of(1))),
+            assertEquals(Map.of("v", 1L),
                     readValues(operation, operation.equals("DELETE") ? "not-json" : "{\"v\":\"1\"}",
                             operation.equals("DELETE") ? "{\"v\":\"1\"}" : "not-json", columns).data(),
                     "unselected images must not be decoded");
@@ -159,7 +147,7 @@ class SpannerChangeFeedReaderTest {
     @Test
     void missingMetadataDoesNotInferTypesAndNonInt64ColumnsStayUnchanged() {
         String json = "{\"v\":\"1\"}";
-        ObjectValue text = ObjectValue.of(Map.of("v", new StringValue("1")));
+        Map<String, Object> text = Map.of("v", "1");
         assertEquals(text, readValues("INSERT", json, null).data());
         assertEquals(text, readValues("INSERT", json, null, List.of()).data());
         assertEquals(text, readValues("INSERT", json, null, List.of(column("other", "INT64"))).data());
@@ -168,15 +156,15 @@ class SpannerChangeFeedReaderTest {
         }
         Struct arrayColumn = columnType("v", Value.json(
                 "{\"code\":\"ARRAY\",\"array_element_type\":{\"code\":\"INT64\"}}"));
-        assertEquals(ObjectValue.of(Map.of("v", ArrayValue.of(List.of(new StringValue("1"), NullValue.INSTANCE)))),
+        assertEquals(Map.of("v", java.util.Arrays.asList("1", null)),
                 readValues("INSERT", "{\"v\":[\"1\",null]}", null, List.of(arrayColumn)).data());
-        assertEquals(ObjectValue.of(Map.of("raw", new StringValue("not-json"))),
+        assertEquals(Map.of("raw", "not-json"),
                 readValues("UPDATE", "not-json", null).data());
     }
 
     @Test
     void typeMetadataSupportsJsonAndStringTransportButRejectsMalformedDeclarations() {
-        assertEquals(ObjectValue.of(Map.of("v", NumberValue.of(1))),
+        assertEquals(Map.of("v", 1L),
                 readValues("INSERT", "{\"v\":\"1\"}", null,
                         List.of(columnType("v", Value.string("{\"code\":\"INT64\"}")))).data());
         for (String invalid : List.of("not-json", "null", "{}", "{\"code\":1}")) {
@@ -196,7 +184,7 @@ class SpannerChangeFeedReaderTest {
         assertEquals("readChanges", failure.error().operation());
         assertFalse(failure.error().retryable());
         assertEquals(Map.of("reason", "invalid_document_payload"), failure.error().providerDetails());
-        assertEquals("Provider response cannot be represented as a Document value.", failure.error().message());
+        assertEquals("Provider response cannot be represented as neutral data.", failure.error().message());
         assertNull(failure.getCause());
         assertEquals(0, failure.getSuppressed().length);
     }

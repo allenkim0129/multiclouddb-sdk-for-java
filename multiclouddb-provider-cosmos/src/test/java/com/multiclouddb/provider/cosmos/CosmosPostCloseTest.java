@@ -3,8 +3,6 @@
 
 package com.multiclouddb.provider.cosmos;
 
-import static com.multiclouddb.provider.cosmos.DocumentTestData.document;
-
 import com.azure.core.credential.TokenCredential;
 import com.azure.cosmos.CosmosClient;
 import com.azure.cosmos.CosmosClientBuilder;
@@ -108,7 +106,7 @@ class CosmosPostCloseTest {
                      mockConstruction(CosmosClientBuilder.class, builderMockInit())) {
             CosmosProviderClient client = closedClient();
             assertClientClosed(assertThrows(MulticloudDbException.class,
-                    () -> client.create(ADDR, KEY, document(Map.of("k", "v")), null)),
+                    () -> client.create(ADDR, KEY, Map.of("k", "v"), null)),
                     OperationNames.CREATE);
         }
     }
@@ -132,7 +130,7 @@ class CosmosPostCloseTest {
                      mockConstruction(CosmosClientBuilder.class, builderMockInit())) {
             CosmosProviderClient client = closedClient();
             assertClientClosed(assertThrows(MulticloudDbException.class,
-                    () -> client.update(ADDR, KEY, document(Map.of("k", "v")), null)),
+                    () -> client.update(ADDR, KEY, Map.of("k", "v"), null)),
                     OperationNames.UPDATE);
         }
     }
@@ -144,7 +142,7 @@ class CosmosPostCloseTest {
                      mockConstruction(CosmosClientBuilder.class, builderMockInit())) {
             CosmosProviderClient client = closedClient();
             assertClientClosed(assertThrows(MulticloudDbException.class,
-                    () -> client.upsert(ADDR, KEY, document(Map.of("k", "v")), null)),
+                    () -> client.upsert(ADDR, KEY, Map.of("k", "v"), null)),
                     OperationNames.UPSERT);
         }
     }

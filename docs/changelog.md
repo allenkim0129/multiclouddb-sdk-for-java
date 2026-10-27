@@ -11,23 +11,13 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### [Unreleased]
 
-**Fixed:**
-
-- Compare shared array/object subtrees once per identity pair within an equality
-  call, including mixed graphs and Document/HashSet comparisons. Preserve value
-  equality regardless of sharing layout, field order or hash collisions; no
-  comparison state is retained on model values.
-- Compute immutable array/object hashes once at construction so shared child
-  containers do not cause exponential recursive hashing. Preserve List/Map hash
-  semantics, including zero hashes, numeric equality and Document delegation.
-
 **Added:**
 
-- API-owned immutable `Document` with six JSON-like value kinds (null, boolean,
-  string, number, array and object), application-owned `DocumentCodec`, neutral
-  `TypeRef` and safe `DocumentCodecException`. Mathematical numeric equality
-  preserves source kind/scale and floating zero sign; finite numeric and nesting
-  bounds are in-memory contracts, not universal provider precision guarantees.
+- Neutral Map input validation for supported Maps/Lists/scalars and finite
+  numbers; reject cycles, invalid keys and unsupported objects before I/O.
+  Preserve released numeric/depth and 399 KiB behavior.
+- `ChangeEvent.hasData()` and an explicit-presence constructor distinguish
+  absent payloads from present null without an image wrapper or classification.
 - Portable change-feed API in `com.multiclouddb.api.changefeed`: `ChangeFeedCursor` (opaque, persistable via `toToken()` / `fromToken(...)` with a `now()` live-tip sentinel), `ChangeFeedPage` (events + `nextCursor` + `hasMore`/`terminal`), `ChangeEvent` (with stable `providerEventId` for dedup), `ChangeType`, and `CursorExpiredException`. Two new entry points on `MulticloudDbClient`: `listCursors(ResourceAddress)` and `readChanges(ResourceAddress, ChangeFeedCursor[, OperationOptions])`. Provider SPI methods default to `UNSUPPORTED_CAPABILITY` so existing adapters compile unchanged. The cursor wire format is opaque, version-tagged Base64URL JSON; the 24-hour portable baseline is enforced client-side on the token''s last-issued timestamp. `OperationOptions.timeout()` is not enforced on the change-feed path in this release.
 - New error category `MulticloudDbErrorCategory.CURSOR_EXPIRED` carrying a canonical `providerDetails.reason` set (`TOKEN_AGED_OUT`, `PROVIDER_TRIMMED`, `ITERATOR_EXPIRED`, `MALFORMED`, `VERSION_UNSUPPORTED`, `PROVIDER_MISMATCH`, `RESOURCE_MISMATCH`), exported as public `CursorTokenCodec.REASON_*` constants.
 - New error category `MulticloudDbErrorCategory.CLIENT_CLOSED` surfaced by a `DefaultMulticloudDbClient` post-close guard on every public entry point (replaces provider-specific `IllegalStateException` leaks). `MulticloudDbClient.close()` is now idempotent.
@@ -36,15 +26,17 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Changed:**
 
-- Breaking development migration: CRUD client/SPI bodies and point reads use
-  `Document`; `ChangeEvent.data()` is nullable `DocumentValue`, preserving
-  selected provider payloads without new image classification. Query Map/Object
-  contracts remain unchanged.
+- Breaking migration from beta.2: point-read payloads return Map instead of
+  ObjectNode; feed data returns Object instead of JsonNode. Map writes and
+  QueryPage Map rows remain. Application mapping is explicit, with no shipped
+  mapping interface. Read/feed data is detached/mutable; QueryPage is shallowly
+  read-only. Inputs must not be mutated during a synchronous write and are not
+  retained by the SDK afterward.
 - API compile/runtime Jackson dependency removed, not all runtime dependencies:
   SLF4J 2.0.12, private Gson 2.11.0 and its transitive `error_prone_annotations`
   2.27.0 remain (the annotation module is static in JPMS). Gson STRICT cursor
   parsing and the leading-U+FEFF guard preserve the tested v1 wire, lexical,
-  coercion and retention behavior. Jackson remains a test-only oracle.
+  coercion and retention behavior against captured released fixtures.
 - Structural logical-size validation retains the 399 KiB byte profile without
   allocating document JSON. Overflow reports the observed cutoff lower bound,
   not an exact full size.
@@ -52,12 +44,6 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   release-workflow change. This is partial work related to
   microsoft/multiclouddb-sdk-for-java#116; see
   [customer mapping and migration](customer-object-mapping.md).
-
-**Removed:**
-
-- Unpublished reserved `BinaryValue`. Binary/opaque objects are not model values;
-  explicit customer Base64 text is an ordinary StringValue, with no automatic
-  model/provider decoding.
 
 **Documentation:**
 
@@ -109,17 +95,14 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Changed:**
 
-- Accept neutral Document CRUD bodies and return Document point reads plus
-  nullable DocumentValue feed data. Direct ObjectNode writes remove the plain
-  Map/List intermediate while preserving numeric behavior and key/TTL injection.
-  Point reads filter root system fields during immutable construction without
-  copying or mutating the native response; raw metadata, selected feed bodies,
-  query mappings and native SDK JSON encoding remain. Jackson
-  is now a direct provider dependency rather than inherited from API.
-- Unsupported native-to-model read/feed payloads, including BinaryNode, fail
-  with nonretryable `PROVIDER_ERROR`, the operation/provider and safe
-  `invalid_document_payload` reason, without payload/native diagnostic causes.
-  No binary-to-null/text fallback is introduced by the neutral converter.
+- Use detached Map writes/point reads and neutral Object feed data with explicit
+  presence. Preserve numeric normalization, key/TTL injection, root-only
+  filtering, metadata, selected feed bodies and native SDK encoding.
+- Remove direct production Jackson imports/dependencies. Bundle/relocate the
+  Cosmos v4 runtime closure with explicit JPMS and a reduced consumer POM;
+  preserve native filenames, private metadata, services and notices.
+  JNA 5.13.0/jna-platform 5.17.0 remain shared and unrelocated; arbitrary
+  application JNA-version coexistence is not established.
 - Coordinated unpublished `0.1.0-beta.2-SNAPSHOT` API dependency; no release,
   schema/envelope redesign or general provider bug fix. See
   [mapping support and migration](customer-object-mapping.md).
@@ -180,16 +163,11 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Changed:**
 
-- Accept neutral Document CRUD bodies and return Document point reads plus
-  nullable DocumentValue feed data. Direct AttributeValue writes remove the
-  plain Map/List and whole Jackson-tree intermediates while retaining numeric
-  text, key/TTL injection and request conditions. Read/feed/query conversions,
-  numeric parsing limitations, native SDK encoding and selected images remain.
-  Jackson is now a direct provider dependency rather than inherited from API.
-- Unsupported native-to-model read/feed payloads fail with nonretryable
-  `PROVIDER_ERROR` and safe `invalid_document_payload` reason. BinaryNode is
-  rejected there; the earlier native B-attribute-to-null fallback is unchanged,
-  not binary support in the six-kind model.
+- Map supported values directly to/from AttributeValue without Jackson trees.
+  Point-read/feed containers are detached and mutable; feed presence is explicit.
+  Preserve numeric text/parsing limitations, key/TTL injection, conditions and
+  selected images. Remove direct Jackson imports/dependencies; native SDK
+  encoding and the legacy native binary-to-null fallback remain.
 - Coordinated unpublished `0.1.0-beta.2-SNAPSHOT` API dependency; no release,
   storage-range expansion or general provider bug fix. See
   [mapping support and migration](customer-object-mapping.md).
@@ -229,21 +207,15 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Changed:**
 
-- Accept neutral Document CRUD bodies and return Document point reads plus
-  nullable DocumentValue feed data, retaining FIELD_DATA, nested JSON markers,
-  current update behavior and selected old/new/legacy images. Jackson is now a
-  direct provider dependency rather than inherited from API.
-- Direct mutation binding and private streaming JsonGenerator writes remove
-  the normal-path plain Map/List intermediate. Exact nested marker-prefixed
-  STRINGs, scalar number dispatch, FIELD_DATA, reserved-field handling and
-  existing update transaction/native call counts are retained. JSON text
-  serialization, native SDK encoding and row/feed/query parsing remain.
-- Preserve existing INT64/FLOAT64 mappings and top-level BigDecimal/BigInteger
-  STRING fallback. Unsupported native-to-model read/feed payloads, including
-  BinaryNode, fail with nonretryable `PROVIDER_ERROR` and safe
-  `invalid_document_payload` reason. Earlier BYTES-to-Base64-text behavior is
-  unchanged. Textual feed values remain unchanged except metadata-declared
-  scalar INT64 (see Fixed below); no binary kind or numeric guarantee.
+- Map values directly to typed mutations and return detached mutable row Maps
+  and neutral feed data with explicit presence. Preserve FIELD_DATA, nested
+  JSON markers, update transactions and selected images.
+- Replace direct Jackson imports/dependencies with internal Gson streaming JSON
+  syntax processing. Preserve persisted JSON text, scalar dispatch and native
+  encoding; Integer/Long INT64, Float/Double FLOAT64 and top-level
+  Byte/Short/BigInteger/BigDecimal STRING behavior remain.
+- Preserve native BYTES-to-Base64 row conversion and metadata-declared scalar
+  INT64 feed normalization (see Fixed below), without new portable binary support.
 - Unpublished `0.1.0-beta.1-SNAPSHOT` against the coordinated development API;
   no release or schema/envelope redesign. See
   [mapping support and migration](customer-object-mapping.md).
@@ -265,7 +237,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 **Fixed:**
 
 - Spanner change-feed scalar INT64 values are decoded from native string
-  transport using `column_types`, restoring NumberValue without coercing
+  transport using `column_types`, restoring Long values without coercing
   numeric-looking STRINGs. Selected new/old images and FIELD_DATA filtering are
   unchanged; invalid/overflowing declared integers fail as safe, nonretryable
   `PROVIDER_ERROR/readChanges/invalid_document_payload`, not raw success values.
@@ -296,43 +268,3 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Portable expression translation to GoogleSQL
 - Native GoogleSQL passthrough
 - Schema provisioning (DDL-based table creation)
-
----
-
-## multiclouddb-serializer-jackson
-
-### [Unreleased]
-
-**Fixed:**
-
-- Caller-overridable mapper factory compatibility checks now share the safe
-  construction boundary with `copy()`: failures on source or copy return
-  `CONSTRUCTION/MAPPER_COPY_FAILED` without original diagnostic leakage.
-
-**Added:**
-
-- Optional `JacksonDocumentCodec` implements the API-owned `DocumentCodec` with
-  default/caller-configured ObjectMapper snapshot factories, explicit
-  encode/decode and common Class/TypeRef support. Customers may instead implement
-  the neutral contract without Jackson; no client registration or POJO overload.
-- Direct serializer-token collection into immutable Document, without a JSON
-  bytes roundtrip or Map-target deserialization. Decode uses owned tokens and
-  the captured typed reader, preserving custom deserializers and coercion.
-- Safe phase/reason errors, explicit snapshot-copy failure, object-root/duplicate
-  validation and sticky collector failures. byte[]/ByteBuffer and binary/embedded
-  output are unsupported; explicit customer Base64 string mapping remains valid.
-- Actual client/provider native-mock create/upsert/read coverage for custom
-  naming/date/generic mapping and a separate non-Jackson codec; not live
-  persistence or universal numeric-storage guarantees.
-
-**Changed:**
-
-- Replaces the unpublished JacksonObjectCodec Map/ObjectNode boundary with
-  Document; TypeRef and codec errors belong to API. Short decode tokens are
-  retained; Byte becomes Integer at Jackson's token boundary without rewriting
-  the model or overriding configured typed-reader coercion.
-- Unpublished `0.1.0-SNAPSHOT` depends on the coordinated API; the adapter is
-  optional for applications and not a provider dependency. Query Map/Object
-  contracts, existing provider/schema limits and update semantics remain.
-  No query/change-feed convenience decode, release or
-  release-workflow change; full issue-116 completion remains deferred.

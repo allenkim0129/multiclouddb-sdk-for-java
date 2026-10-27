@@ -3,8 +3,6 @@
 
 package com.multiclouddb.conformance.us7;
 
-import static com.multiclouddb.conformance.Documents.document;
-
 import java.util.Map;
 import com.multiclouddb.api.*;
 import com.multiclouddb.api.internal.DocumentSizeValidator;
@@ -50,7 +48,7 @@ public class DocumentSizeConformanceTest {
             // Provider connection errors (e.g., no live DynamoDB in unit-test environments)
             // are acceptable — they confirm the document passed the size gate.
             try {
-                client.upsert(address, key, document(doc));
+                client.upsert(address, key, doc);
             } catch (MulticloudDbException e) {
                 assertNotEquals(MulticloudDbErrorCategory.INVALID_REQUEST, e.error().category(),
                         "Document within 400 KB limit must not be rejected with INVALID_REQUEST");
@@ -71,7 +69,7 @@ public class DocumentSizeConformanceTest {
             MulticloudDbKey key = MulticloudDbKey.of("size-test-over", "size-test-over");
 
             MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                    () -> client.upsert(address, key, document(doc)),
+                    () -> client.upsert(address, key, doc),
                     "Document exceeding 400 KB must throw MulticloudDbException");
             assertNotNull(ex.error(), "Exception must carry structured error");
             assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category(),
@@ -91,7 +89,7 @@ public class DocumentSizeConformanceTest {
             MulticloudDbKey key = MulticloudDbKey.of("size-test-create-over", "size-test-create-over");
 
             MulticloudDbException ex = assertThrows(MulticloudDbException.class,
-                    () -> client.create(address, key, document(doc)),
+                    () -> client.create(address, key, doc),
                     "Oversized document must throw on create too");
             assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, ex.error().category());
         }

@@ -74,11 +74,10 @@ runtime dependencies:
 
 The following examples target the coordinated development SNAPSHOT reactor,
 not the previous released beta signatures. See
-[customer codecs and migration](customer-object-mapping.md).
+[application mapping and migration](customer-object-mapping.md).
 
 ```java
 import com.multiclouddb.api.*;
-import com.multiclouddb.api.document.*;
 import java.util.Map;
 import java.util.Properties;
 
@@ -100,17 +99,14 @@ MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
 try (MulticloudDbClient client = MulticloudDbClientFactory.create(config)) {
 
 // CRUD - same code for every provider
-Document doc = Document.builder()
-        .put("title", new StringValue("Buy groceries"))
-        .put("completed", new BooleanValue(false))
-        .build();
+Map<String, Object> doc = Map.of("title", "Buy groceries", "completed", false);
 
 ResourceAddress todos = new ResourceAddress("mydb", "todos");
 MulticloudDbKey key = MulticloudDbKey.of("todo-1", "todo-1");
 
 client.upsert(todos, key, doc);                  // Create or replace
 DocumentResult result = client.read(todos, key); // Point read
-Document document = result.document();           // Immutable neutral payload
+Map<String, Object> document = result.document(); // Detached mutable payload
 client.delete(todos, key);                       // Delete
 }
 ```

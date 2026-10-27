@@ -7,25 +7,28 @@
 ## Foundation serialization scope (PR 1)
 
 The current [Foundation design](../../docs/design/serialization-pr1-foundation.md)
-requires an immutable object-root Document with exactly null, boolean, string,
-number, array and object values. Missing fields differ from explicit null.
-NumberValue retains the supplied Byte, Short, Integer, Long, Float, Double,
-BigInteger or BigDecimal with mathematical equality, finite values, precision
-<=1024 digits, scale [-1024,+1024] and container depth <=128. These are model
-bounds, not universal database numeric fidelity or Java-type round-trip guarantees.
+requires object-shaped Map writes/point reads and application-owned DTO mapping,
+without a shipped mapping interface. Values are string-keyed Maps, Lists,
+Strings, Booleans, null and exactly Byte, Short, Integer, Long, Float, Double,
+BigInteger or BigDecimal; floating values MUST be finite. Invalid keys, cycles
+and unsupported Java objects MUST fail before native I/O. Missing fields differ
+from present null. Preserve released numeric/depth behavior and JDK equality;
+there is no universal numeric fidelity or Java-type round-trip guarantee.
 
-Applications MUST explicitly call their selected DocumentCodec with Class or
-neutral TypeRef; the client MUST NOT register, discover or invoke application
-codecs. The optional JacksonDocumentCodec uses in-memory tokens and a safe
-configuration snapshot. Core API public/runtime boundaries MUST remain Jackson-free.
-CRUD writes and point reads use Document; ChangeEvent data is nullable
-DocumentValue with existing selected-image semantics. Query Map/Object contracts
-remain unchanged.
+Core API public/runtime boundaries MUST remain Jackson-free. Production code
+MUST NOT import Jackson or declare it directly; optional application examples
+own their dependencies. The client MUST NOT invoke application mappers.
+`ChangeEvent.data()` returns Object with `hasData()` presence, retaining selected
+images; absent requires null, while present null and empty objects are valid.
+QueryPage MUST retain `List<Map<String, Object>>` and existing supported shapes.
+Callers MUST NOT mutate input containers during the synchronous call; the SDK
+MUST NOT mutate or retain them after return. Read/feed containers are detached
+and mutable; QueryPage is shallowly read-only with mutable nested values.
 
 Providers MUST preserve existing keys, TTL, conditions, field visibility,
-numeric conversion and errors while mapping writes directly to Cosmos ObjectNode,
+numeric conversion and errors while mapping writes directly to Cosmos Maps,
 Dynamo AttributeValue and Spanner typed mutations/marked nested JSON STRINGs.
-Cosmos read construction skips excluded root fields before model validation,
+Cosmos read construction skips excluded root fields,
 without mutating the native response. Other read/feed parsers and Spanner update
 transactions remain unchanged. Native SDK transport encoding is separate.
 
@@ -272,8 +275,8 @@ As an application developer, I can specify a read consistency level (e.g., stron
 ### User Story 11 - Transparent Large Object (BLOB) Offloading (Priority: P2)
 
 **Current implementation scope**: This is a deferred requirement, not implemented
-by the current customer-serialization increment. Its Document model contains
-only null, boolean, string, number, array and object; there is no binary kind or
+by the current application-mapping increment. Its Map input vocabulary contains
+only null, boolean, string, supported numbers, Lists and Maps; there is no binary kind or
 automatic BLOB offloading. Explicit application text mapping remains ordinary
 string data. The future acceptance scenarios below are retained as requirements.
 

@@ -3,8 +3,6 @@
 
 package com.multiclouddb.provider.spanner;
 
-import static com.multiclouddb.provider.spanner.DocumentTestData.document;
-
 import com.multiclouddb.api.MulticloudDbClientConfig;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
@@ -99,7 +97,7 @@ class SpannerPostCloseTest {
     @DisplayName("create() after close() throws CLIENT_CLOSED")
     void createAfterClose() {
         assertClientClosed(assertThrows(MulticloudDbException.class,
-                () -> client.create(ADDR, KEY, document(Map.of("k", "v")), null)),
+                () -> client.create(ADDR, KEY, Map.of("k", "v"), null)),
                 OperationNames.CREATE);
     }
 
@@ -115,7 +113,7 @@ class SpannerPostCloseTest {
     @DisplayName("update() after close() throws CLIENT_CLOSED")
     void updateAfterClose() {
         assertClientClosed(assertThrows(MulticloudDbException.class,
-                () -> client.update(ADDR, KEY, document(Map.of("k", "v")), null)),
+                () -> client.update(ADDR, KEY, Map.of("k", "v"), null)),
                 OperationNames.UPDATE);
     }
 
@@ -123,7 +121,7 @@ class SpannerPostCloseTest {
     @DisplayName("upsert() after close() throws CLIENT_CLOSED")
     void upsertAfterClose() {
         assertClientClosed(assertThrows(MulticloudDbException.class,
-                () -> client.upsert(ADDR, KEY, document(Map.of("k", "v")), null)),
+                () -> client.upsert(ADDR, KEY, Map.of("k", "v"), null)),
                 OperationNames.UPSERT);
     }
 

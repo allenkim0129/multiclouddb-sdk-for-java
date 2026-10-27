@@ -3,8 +3,6 @@
 
 package com.multiclouddb.api.changefeed;
 
-import com.multiclouddb.api.document.ObjectValue;
-import com.multiclouddb.api.document.StringValue;
 import com.multiclouddb.api.MulticloudDbKey;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -18,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class ChangeFeedPageTest {
 
     private static ChangeEvent evt(String key) {
-        ObjectValue data = ObjectValue.of(Map.of("k", new StringValue(key)));
+        Map<String, Object> data = Map.of("k", key);
         return new ChangeEvent(MulticloudDbKey.of(key), ChangeType.CREATE,
                 Instant.parse("2025-01-01T00:00:00Z"), data, key);
     }

@@ -44,32 +44,20 @@ Validation:
 - must include all key parts required by the configured provider and target collection schema
 
 ### Document
-Immutable, typed JSON-like payload; not JSON text or bytes.
+Object-shaped `Map<String, Object>` data, not a shipped Document class.
+Nested values are string-keyed Maps, Lists, Strings, Booleans, null and exactly
+Byte, Short, Integer, Long, Float, Double, BigInteger or BigDecimal. Floating
+values must be finite. Reject cycles, invalid keys and unsupported Java objects;
+shared acyclic subtrees are valid. Missing keys differ from present nulls.
+Preserve released numeric/depth behavior rather than imposing new limits.
 
-Fields:
-- `root`: immutable `ObjectValue` with named `DocumentValue` fields
-
-Constraints:
-- exactly six value kinds: null, boolean, string, number, array and object
-- missing field differs from explicit `NullValue`; root must be an object
-- containers preserve encounter order, copy inputs and enforce depth <=128
-
-**Customer document mapping increment (partial issue 116):** the API now owns
-immutable object-root Document, a closed six-kind DocumentValue algebra (null,
-boolean, string, number, array and object; no binary/embedded values) and an explicit
-application-owned DocumentCodec. The optional JacksonDocumentCodec implements
-that common contract. CRUD uses Document; point reads return Document; nullable
-change-feed payloads use DocumentValue. Query Map/Object contracts remain
-unchanged. API compile/runtime dependencies no longer include Jackson; providers
-retain their reserved fields and storage limitations. Writes traverse Document
-directly into native representations; Cosmos point reads skip root system fields
-without mutating the response. Dynamo/Spanner reads and all feed/query parsers
-retain the existing paths.
-The finite numeric view retains Byte, Short, Integer, Long, Float, Double,
-BigInteger and BigDecimal representations, source scale/zero sign, mathematical
-equality, precision <=1024 and scale [-1024,+1024], with 128-container depth.
-These are in-memory bounds, not provider round-trip guarantees. See
-[usage and file/method/test traceability](../../docs/customer-object-mapping.md).
+Applications map DTOs explicitly without an SDK mapping interface. Inputs must
+not be mutated during the synchronous call; the SDK neither mutates nor retains
+them after return. Point-read/feed containers are detached and mutable.
+QueryPage retains shallow read-only Maps/list with nested mutability.
+`ChangeEvent.data()` is Object and `hasData()` distinguishes absence from
+present null. Existing provider storage formats, numeric limitations and
+selected-image semantics remain. See [mapping and migration](../../docs/customer-object-mapping.md).
 
 ### Query
 Portable query request.
@@ -136,7 +124,7 @@ Fields:
 Single page of results.
 
 Fields:
-- `items`: list of Document (or row-mapped objects)
+- `items`: list of `Map<String, Object>` rows; nested scalar/array values are valid
 - `continuation_token`: optional string
 - `warnings`: optional list of portability warnings
 
@@ -241,11 +229,11 @@ Provider availability:
 Location: `multiclouddb-api/src/main/java/com/multiclouddb/api/DocumentResult.java`
 
 Fields:
-- `document: Document` (required - immutable object-root payload)
+- `document: Map<String, Object>` (required - detached mutable object payload)
 - `metadata: DocumentMetadata` — null when `OperationOptions.includeMetadata()` is false (the default)
 
 **API impact**: `MulticloudDbClient.read()` returns `DocumentResult` (or null for
-absence); `.document()` now returns the neutral Document rather than ObjectNode.
+absence); `.document()` now returns a Map rather than ObjectNode.
 
 ### OperationOptions (modified)
 
@@ -275,7 +263,7 @@ Location: `multiclouddb-api/src/main/java/com/multiclouddb/api/internal/Document
 
 Static utility:
 - `MAX_BYTES = 400 * 1024 - 1024` (399 KiB logical JSON size, including the existing safety margin)
-- `validate(Document document, String operation)` - rejects oversize input with `MulticloudDbException(INVALID_REQUEST)`; counts the existing byte profile without allocating document JSON. Binary is not a model value and cannot reach this counter.
+- `validate(Map<String, Object> document, String operation)` - rejects oversized or unsupported input with `MulticloudDbException(INVALID_REQUEST)`; counts the existing byte profile without allocating document JSON.
 
 Applied in `DefaultMulticloudDbClient.create()`, `update()` and `upsert()` before provider delegation.
 

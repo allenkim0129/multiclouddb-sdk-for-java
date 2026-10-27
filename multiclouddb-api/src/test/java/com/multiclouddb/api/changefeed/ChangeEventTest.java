@@ -3,8 +3,6 @@
 
 package com.multiclouddb.api.changefeed;
 
-import com.multiclouddb.api.document.ObjectValue;
-import com.multiclouddb.api.document.StringValue;
 import com.multiclouddb.api.MulticloudDbKey;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -21,7 +19,7 @@ class ChangeEventTest {
     void constructorPreservesFields() {
         MulticloudDbKey key = MulticloudDbKey.of("user-1");
         Instant ts = Instant.parse("2025-01-01T00:00:00Z");
-        ObjectValue data = ObjectValue.of(Map.of("name", new StringValue("alice")));
+        Map<String, Object> data = Map.of("name", "alice");
 
         ChangeEvent ev = new ChangeEvent(key, ChangeType.UPDATE, ts, data, "evt-123");
 
@@ -29,6 +27,7 @@ class ChangeEventTest {
         assertEquals(ChangeType.UPDATE, ev.type());
         assertEquals(ts, ev.commitTimestamp());
         assertSame(data, ev.data());
+        assertTrue(ev.hasData());
         assertEquals("evt-123", ev.providerEventId());
     }
 
@@ -40,6 +39,7 @@ class ChangeEventTest {
                 Instant.EPOCH, null, "evt-d");
         assertEquals(ChangeType.DELETE, ev.type());
         assertNull(ev.data());
+        assertFalse(ev.hasData());
     }
 
     @Test
@@ -48,12 +48,27 @@ class ChangeEventTest {
         Instant ts = Instant.now();
         MulticloudDbKey key = MulticloudDbKey.of("k");
         assertThrows(NullPointerException.class,
-                () -> new ChangeEvent(null, ChangeType.CREATE, ts, ObjectValue.of(Map.of()), "id"));
+                () -> new ChangeEvent(null, ChangeType.CREATE, ts, Map.of(), "id"));
         assertThrows(NullPointerException.class,
-                () -> new ChangeEvent(key, null, ts, ObjectValue.of(Map.of()), "id"));
+                () -> new ChangeEvent(key, null, ts, Map.of(), "id"));
         assertThrows(NullPointerException.class,
-                () -> new ChangeEvent(key, ChangeType.CREATE, null, ObjectValue.of(Map.of()), "id"));
+                () -> new ChangeEvent(key, ChangeType.CREATE, null, Map.of(), "id"));
         assertThrows(NullPointerException.class,
-                () -> new ChangeEvent(key, ChangeType.CREATE, ts, ObjectValue.of(Map.of()), null));
+                () -> new ChangeEvent(key, ChangeType.CREATE, ts, Map.of(), null));
+    }
+
+    @Test
+    void distinguishesPresentNullEmptyAndAbsentPayloads() {
+        MulticloudDbKey key = MulticloudDbKey.of("k");
+        ChangeEvent presentNull = new ChangeEvent(key, ChangeType.UPDATE, Instant.EPOCH, null, "id", true);
+        ChangeEvent empty = new ChangeEvent(key, ChangeType.UPDATE, Instant.EPOCH, Map.of(), "id");
+        ChangeEvent absent = new ChangeEvent(key, ChangeType.DELETE, Instant.EPOCH, null, "id", false);
+        assertTrue(presentNull.hasData());
+        assertNull(presentNull.data());
+        assertTrue(presentNull.toString().contains("(data)"));
+        assertTrue(empty.hasData());
+        assertFalse(absent.hasData());
+        assertThrows(IllegalArgumentException.class,
+                () -> new ChangeEvent(key, ChangeType.UPDATE, Instant.EPOCH, Map.of(), "id", false));
     }
 }

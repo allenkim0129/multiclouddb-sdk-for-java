@@ -3,115 +3,109 @@
 
 package com.multiclouddb.provider.cosmos;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.multiclouddb.api.document.*;
 import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.ProviderId;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.math.BigInteger;
 
-/** Direct native writes and structural response conversion with legacy numeric behavior. */
+/** Detached native Map requests and responses, without an SDK-owned JSON tree. */
 final class NativeDocuments {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
     private NativeDocuments() {
     }
 
-    static ObjectNode write(Document document) {
-        return (ObjectNode) writeValue(Objects.requireNonNull(document, "document").root());
+    static Map<String, Object> write(Map<String, Object> document) {
+        return object(Objects.requireNonNull(document, "document"), true);
     }
 
-    private static JsonNode writeValue(DocumentValue value) {
-        if (value instanceof ObjectValue object) {
-            ObjectNode node = MAPPER.createObjectNode();
-            object.fields().forEach((name, child) -> node.set(name, writeValue(child)));
-            return node;
-        }
-        if (value instanceof ArrayValue array) {
-            var node = MAPPER.createArrayNode();
-            array.values().forEach(child -> node.add(writeValue(child)));
-            return node;
-        }
-        if (value instanceof StringValue string) return MAPPER.getNodeFactory().textNode(string.value());
-        if (value instanceof BooleanValue bool) return MAPPER.getNodeFactory().booleanNode(bool.value());
-        if (value instanceof NumberValue number) {
-            Number retained = number.value();
-            var factory = MAPPER.getNodeFactory();
-            if (retained instanceof Byte || retained instanceof Short || retained instanceof Integer)
-                return factory.numberNode(retained.intValue());
-            if (retained instanceof Long) return factory.numberNode(retained.longValue());
-            if (retained instanceof Float) return factory.numberNode(retained.floatValue());
-            if (retained instanceof Double) return factory.numberNode(retained.doubleValue());
-            if (retained instanceof BigInteger integer) return factory.numberNode(integer);
-            // BigDecimal keeps the pinned Map-to-tree normalization of scale and zero.
-            return MAPPER.valueToTree(retained);
-        }
-        return MAPPER.getNodeFactory().nullNode();
-    }
-
-    static Document document(JsonNode node) {
+    static Map<String, Object> document(Object value) {
         try {
-            if (node == null || !node.isObject()) throw new IllegalArgumentException("Expected document object.");
-            var fields = new LinkedHashMap<String, DocumentValue>();
-            var iterator = node.fields();
-            while (iterator.hasNext()) {
-                var field = iterator.next();
-                if (!CosmosConstants.SYSTEM_FIELDS.contains(field.getKey())) {
-                    fields.put(field.getKey(), value(field.getValue(), 1));
+            if (!(value instanceof Map<?, ?> map)) throw new IllegalArgumentException("Expected document object.");
+            Map<String, Object> fields = new LinkedHashMap<>();
+            for (var entry : map.entrySet()) {
+                if (!(entry.getKey() instanceof String key)) throw new IllegalArgumentException("Invalid document key.");
+                if (!CosmosConstants.SYSTEM_FIELDS.contains(key)) {
+                    fields.put(key, copy(entry.getValue(), false));
                 }
             }
-            return Document.of(ObjectValue.of(fields));
+            return fields;
         } catch (IllegalArgumentException invalid) {
             throw invalidPayload("read");
         }
     }
 
-    static DocumentValue changeData(JsonNode node) {
+    static Object changeData(Object value) {
         try {
-            return value(node, 0);
+            return copy(value, false);
         } catch (IllegalArgumentException invalid) {
             throw invalidPayload("readChanges");
         }
     }
 
+    static Map<String, Object> queryRow(Object value) {
+        if (value == null) return null;
+        if (!(value instanceof Map<?, ?> map)) {
+            throw new IllegalArgumentException("Query result is not an object row.");
+        }
+        return object(map, false);
+    }
+
+    private static Map<String, Object> object(Map<?, ?> map, boolean writing) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        for (var entry : map.entrySet()) {
+            if (!(entry.getKey() instanceof String name)) throw new IllegalArgumentException("Invalid document key.");
+            fields.put(name, copy(entry.getValue(), writing));
+        }
+        return fields;
+    }
+
+    private static Object copy(Object value, boolean writing) {
+        if (value instanceof Map<?, ?> map) return object(map, writing);
+        if (value instanceof List<?> list) {
+            List<Object> items = new ArrayList<>(list.size());
+            for (Object item : list) items.add(copy(item, writing));
+            return items;
+        }
+        if (writing && value instanceof BigDecimal decimal) return decimal.stripTrailingZeros();
+        if (value == null || value instanceof String || value instanceof Boolean || value instanceof Number) {
+            return value;
+        }
+        throw new IllegalArgumentException("Unsupported native value.");
+    }
+
+    static Object get(Object value, String name) {
+        return value instanceof Map<?, ?> map ? map.get(name) : null;
+    }
+
+    static String text(Object value) {
+        return value instanceof String || value instanceof Number || value instanceof Boolean ? value.toString() : "";
+    }
+
+    static long asLong(Object value, long fallback) {
+        if (value instanceof Number number) return number.longValue();
+        if (value instanceof Boolean bool) return bool ? 1 : 0;
+        if (value instanceof String text) {
+            String trimmed = text.trim();
+            try {
+                if (trimmed.matches("[+-]?[0-9]+")) return Long.parseLong(trimmed);
+                return (long) Double.parseDouble(trimmed);
+            } catch (NumberFormatException invalid) {
+                return fallback;
+            }
+        }
+        return fallback;
+    }
+
     private static MulticloudDbException invalidPayload(String operation) {
         return new MulticloudDbException(new MulticloudDbError(
                 MulticloudDbErrorCategory.PROVIDER_ERROR,
-                "Provider response cannot be represented as a Document value.",
+                "Provider response cannot be represented as neutral data.",
                 ProviderId.COSMOS, operation, false, Map.of("reason", "invalid_document_payload")));
-    }
-
-    private static DocumentValue value(JsonNode node, int depth) {
-        if (node == null) return null;
-        if ((node.isObject() || node.isArray()) && ++depth > 128) {
-            throw new IllegalArgumentException("Provider payload exceeds document nesting limit.");
-        }
-        switch (node.getNodeType()) {
-            case NULL: return NullValue.INSTANCE;
-            case STRING: return new StringValue(node.textValue());
-            case BOOLEAN: return new BooleanValue(node.booleanValue());
-            case NUMBER: return NumberValue.of(node.numberValue());
-            case ARRAY:
-                var items = new ArrayList<DocumentValue>();
-                for (JsonNode child : node) items.add(value(child, depth));
-                return ArrayValue.of(items);
-            case OBJECT:
-                var fields = new LinkedHashMap<String, DocumentValue>();
-                var iterator = node.fields();
-                while (iterator.hasNext()) {
-                    var field = iterator.next();
-                    fields.put(field.getKey(), value(field.getValue(), depth));
-                }
-                return ObjectValue.of(fields);
-            default: throw new IllegalArgumentException("Unsupported provider value kind.");
-        }
     }
 }

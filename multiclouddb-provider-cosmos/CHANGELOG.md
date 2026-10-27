@@ -7,22 +7,20 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-### Document mapping (development)
+### Map mapping (development)
 
-- The model is restricted to six JSON-like kinds. Native BinaryNode payloads
-  reaching the neutral read/feed converter fail with the safe PROVIDER_ERROR
-  below; no binary-to-null/text fallback is added.
-- Accept neutral Document CRUD payloads and return Document point reads plus
-  nullable DocumentValue change-feed data. Write directly to ObjectNode without
-  an intermediate Map/List tree, retaining numeric node/text behavior and key/TTL
-  injection. Point reads filter root system fields during immutable construction
-  instead of deep-copying the response; raw metadata and selected feed bodies
-  remain unchanged. Native SDK JSON encoding and query mappings remain.
-  Declare Jackson directly rather than inheriting it from API.
-- Native-to-model read/feed rejection is a nonretryable `PROVIDER_ERROR` with
-  operation/provider and fixed `invalid_document_payload` reason, without
-  payload/native diagnostic causes. External rows/events outside the model domain
-  can fail this way; final event payload selection/null/nesting is regression-tested.
+- Pass detached Maps to native writes and request Map point reads. Preserve
+  key/TTL injection, numeric normalization, metadata and root-only system-field
+  filtering. Query rows and selected feed bodies retain their existing shapes;
+  feed presence is explicit. Native SDK JSON encoding remains.
+- Remove direct Jackson imports/dependencies from Multicloud-owned code.
+  Unsupported native objects fail with safe `PROVIDER_ERROR` and
+  `invalid_document_payload`, not payload-bearing native causes.
+- Bundle/relocate the Cosmos v4 native runtime closure with private Netty
+  metadata/native filenames, preserved services/notices/multi-release paths,
+  explicit JPMS and a reduced published POM. API/SLF4J and JNA remain external.
+  The checked JNA 5.13.0/jna-platform 5.17.0 configuration is shared, not full
+  isolation or a guarantee for arbitrary application dependency versions.
 - Coordinated `0.1.0-beta.2-SNAPSHOT` development API dependency; no release,
   schema/envelope redesign or general provider bug fix. See
   [mapping support and migration](../docs/customer-object-mapping.md).

@@ -121,14 +121,13 @@ mvn clean install -DskipTests
 
 ### 3. Write portable code
 
-This example targets the coordinated development Document API. Released beta
+This example targets the coordinated development Map API. Released beta
 callers must migrate and recompile; see
-[customer codecs, dependencies and migration](docs/customer-object-mapping.md).
+[application mapping, dependencies and migration](docs/customer-object-mapping.md).
 The API runtime is Jackson-free; native providers may still depend on Jackson.
 
 ```java
 import com.multiclouddb.api.*;
-import com.multiclouddb.api.document.*;
 import java.util.Map;
 import java.util.Properties;
 
@@ -149,17 +148,14 @@ MulticloudDbClientConfig config = MulticloudDbClientConfig.builder()
 MulticloudDbClient client = MulticloudDbClientFactory.create(config);
 
 // CRUD - same code for every provider
-Document doc = Document.builder()
-        .put("title", new StringValue("Buy groceries"))
-        .put("completed", new BooleanValue(false))
-        .build();
+Map<String, Object> doc = Map.of("title", "Buy groceries", "completed", false);
 
 ResourceAddress todos = new ResourceAddress("mydb", "todos");
 MulticloudDbKey key = MulticloudDbKey.of("todo-1", "todo-1");
 
 client.upsert(todos, key, doc);                  // Create or replace (upsert)
 DocumentResult result = client.read(todos, key); // Point read → returns DocumentResult
-Document document = result.document();           // Immutable neutral payload
+Map<String, Object> document = result.document(); // Detached mutable payload
 client.delete(todos, key);                       // Delete
 
 // Query with portable expressions - automatically translated per provider

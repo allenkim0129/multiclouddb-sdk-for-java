@@ -7,31 +7,17 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-### Document mapping (development)
+### Map mapping (development)
 
-- The model is restricted to six JSON-like kinds. BinaryNode payloads reaching
-  the neutral read/feed converter fail with the safe PROVIDER_ERROR below.
-  The existing row-mapper BYTES-to-Base64-string path remains unchanged.
-  Textual feed values remain unchanged except metadata-declared scalar INT64
-  (see Fixed below); neither path introduces binary support in Document.
-- Accept neutral Document CRUD payloads and return Document point reads plus
-  nullable DocumentValue change-feed data. Retain FIELD_DATA, nested JSON markers,
-  current update behavior and selected old/new/legacy event payloads.
-- Traverse Document writes directly into mutation bindings and stream nested
-  containers through a private JsonGenerator into the same marker-prefixed JSON
-  STRINGs. Avoid the intermediate plain Map/List tree on the normal write path;
-  preserve exact nested text, scalar type dispatch, key/reserved-field handling,
-  FIELD_DATA and update transaction/native call counts. JSON text serialization,
-  native SDK encoding and all row/feed/query parsing remain.
-- Retained numeric kinds preserve existing INT64/FLOAT64 mapping and the
-  top-level BigDecimal/BigInteger STRING fallback; no new decimal rejection,
-  rounding, schema migration or precision guarantee. Jackson is now a direct
-  dependency rather than inherited through API.
-- Native-to-model read/feed rejection is a nonretryable `PROVIDER_ERROR` with
-  operation/provider and fixed `invalid_document_payload` reason, without native
-  diagnostic causes. External rows/events with nonfinite numbers or excessive
-  model depth can fail this way; selected event payloads and FIELD_DATA filtering
-  are regression-tested. Existing native fallbacks are not changed.
+- Map writes directly to typed mutations and return detached mutable row Maps.
+  Feed data uses Object with explicit presence. Preserve FIELD_DATA, selected
+  images, nested JSON markers and existing update transaction/native call counts.
+- Replace direct Jackson usage/dependencies with private Gson streaming syntax
+  processing for persisted JSON only. Nested Map/List STRING encoding, metadata
+  coercion, raw fallbacks and native Protobuf/gRPC encoding remain.
+- Retain Integer/Long INT64 and Float/Double FLOAT64 dispatch, top-level
+  Byte/Short/BigInteger/BigDecimal STRING fallback, and native BYTES-to-Base64
+  row conversion. No new numeric limits, rounding or schema changes.
 - Development coordinate `0.1.0-beta.1-SNAPSHOT` against the coordinated API;
   no release is declared. See [mapping support and migration](../docs/customer-object-mapping.md).
 
@@ -62,7 +48,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Fixed
 
 - Change-feed scalar INT64 columns now use native `column_types` metadata to
-  decode string-encoded signed 64-bit integers before neutral model conversion.
+  decode string-encoded signed 64-bit integers to Long values.
   Selected new/old images and FIELD_DATA filtering are preserved. Invalid or
   overflowing declared integers fail safely as `PROVIDER_ERROR/readChanges`
   (`invalid_document_payload`), outside the legacy raw-JSON fallback.

@@ -7,7 +7,6 @@ import com.multiclouddb.api.ProviderId;
 import com.multiclouddb.api.ResourceAddress;
 import com.multiclouddb.api.changefeed.CursorExpiredException;
 import com.multiclouddb.api.changefeed.ChangeFeedCursor;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -85,7 +84,6 @@ class CursorWireCompatibilityTest {
                 json.replace("normal", "line\nbreak"), json.replace("normal", "literal\ttab"),
                 json.replace("normal", "escaped\\'quote"), json.replace("normal", "escaped\\\nline"))
                 .stream().<org.junit.jupiter.api.function.Executable>map(invalid -> () -> {
-                    assertThrows(java.io.IOException.class, () -> new ObjectMapper().readTree(invalid));
                     CursorExpiredException failure = assertThrows(CursorExpiredException.class,
                             () -> ChangeFeedCursor.fromToken(wire(invalid)));
                     assertEquals(CursorTokenCodec.REASON_MALFORMED, failure.error().providerDetails().get("reason"));
@@ -107,10 +105,9 @@ class CursorWireCompatibilityTest {
     @Test
     void publicDecoderRejectsLeadingBomLikeLegacyStringReaderAndHandlesEmptyInput() throws Exception {
         String valid = json(ChangeFeedCursor.now().toToken());
-        ObjectMapper legacy = new ObjectMapper();
-        assertNotNull(legacy.readTree(valid));
+        assertNotNull(CursorJson.read(valid));
         String withBom = "\uFEFF" + valid;
-        assertThrows(java.io.IOException.class, () -> legacy.readTree(withBom));
+        assertThrows(java.io.IOException.class, () -> CursorJson.read(withBom));
         assertThrows(java.io.IOException.class, () -> CursorJson.read(""));
         for (String invalid : List.of(withBom, "")) {
             CursorExpiredException failure = assertThrows(CursorExpiredException.class,
@@ -125,7 +122,6 @@ class CursorWireCompatibilityTest {
         for (String content : List.of(expected, "\\uFEFFinside\\uFEFF")) {
             String json = "{\"v\":1,\"p\":\"cosmos\",\"i\":" + System.currentTimeMillis()
                     + ",\"a\":\"CONTINUING\",\"s\":[{\"id\":\"p0\",\"c\":\"" + content + "\"}]}";
-            assertEquals(expected, new ObjectMapper().readTree(json).get("s").get(0).get("c").textValue());
             ChangeFeedCursor cursor = ChangeFeedCursor.fromToken(wire(json));
             assertEquals(expected, cursor.token().partitions().get(0).continuation());
             assertEquals(cursor.token(), ChangeFeedCursor.fromToken(cursor.toToken()).token());

@@ -18,7 +18,6 @@ import com.multiclouddb.api.QueryRequest;
 import com.multiclouddb.api.ResourceAddress;
 import com.multiclouddb.api.changefeed.ChangeFeedCursor;
 import com.multiclouddb.api.changefeed.ChangeFeedPage;
-import com.multiclouddb.api.document.Document;
 import com.multiclouddb.api.query.TranslatedQuery;
 
 import java.util.ArrayList;
@@ -34,6 +33,9 @@ import java.util.concurrent.TimeUnit;
 /**
  * SPI contract for a provider client that implements CRUD + query operations.
  * Provider adapters create instances of this interface.
+ * Write inputs follow {@link com.multiclouddb.api.MulticloudDbClient}'s neutral
+ * value contract. Implementations must not mutate or retain caller input after
+ * return, and must detach returned data from retained native response state.
  */
 public interface MulticloudDbProviderClient extends AutoCloseable {
 
@@ -42,7 +44,7 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      *
      * @throws MulticloudDbException with category CONFLICT if the key already exists
      */
-    void create(ResourceAddress address, MulticloudDbKey key, Document document, OperationOptions options);
+    void create(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options);
 
     /**
      * Read a document by key.
@@ -56,12 +58,12 @@ public interface MulticloudDbProviderClient extends AutoCloseable {
      *
      * @throws MulticloudDbException with category NOT_FOUND if the key does not exist
      */
-    void update(ResourceAddress address, MulticloudDbKey key, Document document, OperationOptions options);
+    void update(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options);
 
     /**
      * Upsert (create or replace) a document.
      */
-    void upsert(ResourceAddress address, MulticloudDbKey key, Document document, OperationOptions options);
+    void upsert(ResourceAddress address, MulticloudDbKey key, Map<String, Object> document, OperationOptions options);
 
     /**
      * Delete a document by key.

@@ -3,20 +3,12 @@
 
 package com.multiclouddb.conformance;
 
-import com.azure.cosmos.*;
-import com.azure.cosmos.models.*;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.cloud.spanner.*;
 import com.multiclouddb.api.*;
-import com.multiclouddb.api.document.*;
-import com.multiclouddb.provider.cosmos.CosmosConstants;
 import com.multiclouddb.provider.dynamo.DynamoItemMapper;
 import com.multiclouddb.provider.spanner.SpannerConstants;
-import com.multiclouddb.spi.DocumentMaps;
 import org.junit.jupiter.api.Test;
-import org.mockito.MockedConstruction;
 import org.mockito.MockedStatic;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
@@ -30,7 +22,6 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static com.multiclouddb.conformance.Documents.document;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -44,7 +35,7 @@ class NativeWriteMappingTest {
     private static final List<OperationOptions> OPTIONS = List.of(
             OperationOptions.defaults(), OperationOptions.builder().ttlSeconds(120).build());
 
-    private static List<Document> fixtures() {
+    private static List<Map<String, Object>> fixtures() {
         var numbers = List.<Number>of((byte) -2, (short) 3, 4, Long.MIN_VALUE, Long.MAX_VALUE,
                 0.1F, Float.MIN_VALUE, Float.MAX_VALUE, -0.0F, -0.0D, Double.MIN_VALUE, Double.MAX_VALUE,
                 new BigInteger("123456789012345678901234567890"),
@@ -68,12 +59,12 @@ class NativeWriteMappingTest {
         for (int i = 0; i < 256; i++) wide.put("f" + i, List.of(i, "v" + i));
         Object deep = "leaf";
         for (int i = 0; i < 127; i++) deep = List.of(deep);
-        return List.of(Document.builder().build(), document(fields), document(wide),
-                document(Map.of("deep", deep)), document(Map.of("large", "x".repeat(408500))));
+        return List.of(Map.of(), fields, wide,
+                Map.of("deep", deep), Map.of("large", "x".repeat(408500)));
     }
 
     private static void write(MulticloudDbClient client, String operation, MulticloudDbKey key,
-                              Document document, OperationOptions options) {
+                              Map<String, Object> document, OperationOptions options) {
         switch (operation) {
             case "create" -> client.create(ADDRESS, key, document, options);
             case "update" -> client.update(ADDRESS, key, document, options);
@@ -82,94 +73,6 @@ class NativeWriteMappingTest {
         }
     }
 
-    @Test
-    void cosmosAllWriteOperationsMatchLegacyNativeTreesAndReadFiltersBeforeValidation() throws Exception {
-        CosmosClient sdk = mock(CosmosClient.class);
-        CosmosDatabase database = mock(CosmosDatabase.class);
-        CosmosContainer container = mock(CosmosContainer.class);
-        @SuppressWarnings("unchecked")
-        CosmosItemResponse<ObjectNode> response = mock(CosmosItemResponse.class);
-        var captured = new AtomicReference<ObjectNode>();
-        when(sdk.getDatabase(ADDRESS.database())).thenReturn(database);
-        when(database.getContainer(ADDRESS.collection())).thenReturn(container);
-        when(container.createItem(any(ObjectNode.class), any(PartitionKey.class), any(CosmosItemRequestOptions.class)))
-                .thenAnswer(call -> { captured.set(call.getArgument(0)); return response; });
-        when(container.replaceItem(any(ObjectNode.class), anyString(), any(PartitionKey.class),
-                any(CosmosItemRequestOptions.class)))
-                .thenAnswer(call -> { captured.set(call.getArgument(0)); return response; });
-        when(container.upsertItem(any(ObjectNode.class), any(PartitionKey.class), any(CosmosItemRequestOptions.class)))
-                .thenAnswer(call -> { captured.set(call.getArgument(0)); return response; });
-        try (MockedConstruction<CosmosClientBuilder> ignored = mockConstruction(CosmosClientBuilder.class,
-                withSettings().defaultAnswer(RETURNS_SELF),
-                (builder, context) -> when(builder.buildClient()).thenReturn(sdk));
-             MulticloudDbClient client = MulticloudDbClientFactory.create(MulticloudDbClientConfig.builder()
-                     .provider(ProviderId.COSMOS)
-                     .connection(Map.of("endpoint", "https://example.documents.azure.com:443/", "key", "dGVzdA=="))
-                     .build())) {
-            for (Document input : fixtures()) {
-                Map<String, Object> before = DocumentMaps.toMap(input);
-                for (var key : KEYS) for (var options : OPTIONS) {
-                    ObjectNode expected = MAPPER.convertValue(before, ObjectNode.class);
-                    expected.put("id", key.sortKey() == null ? key.partitionKey() : key.sortKey());
-                    expected.put("partitionKey", key.partitionKey());
-                    if (options.ttlSeconds() != null) expected.put("ttl", options.ttlSeconds());
-                    for (String op : List.of("create", "update", "upsert")) {
-                        clearInvocations(container);
-                        write(client, op, key, input, options);
-                        assertNativeTree(expected, captured.get());
-                        assertEquals(before, DocumentMaps.toMap(input));
-                        assertEquals(1, mockingDetails(container).getInvocations().size());
-                        var invocation = mockingDetails(container).getInvocations().iterator().next();
-                        assertEquals(switch (op) {
-                            case "create" -> "createItem";
-                            case "update" -> "replaceItem";
-                            default -> "upsertItem";
-                        }, invocation.getMethod().getName());
-                        assertEquals(new PartitionKey(key.partitionKey()),
-                                invocation.getArgument(op.equals("update") ? 2 : 1));
-                        if (op.equals("update")) assertEquals(expected.get("id").textValue(), invocation.getArgument(1));
-                    }
-                }
-            }
-            ObjectNode raw = MAPPER.createObjectNode();
-            // These invalid model values must be skipped before conversion, not copied or validated.
-            CosmosConstants.SYSTEM_FIELDS.forEach(name -> raw.put(name, new byte[]{1, 2}));
-            raw.put("_ts", 123L);
-            raw.putObject("nested").put("_etag", "user-field");
-            when(container.readItem(anyString(), any(PartitionKey.class),
-                    any(CosmosItemRequestOptions.class), eq(ObjectNode.class))).thenReturn(response);
-            when(response.getItem()).thenReturn(raw);
-            when(response.getETag()).thenReturn("version");
-            ObjectNode before = raw.deepCopy();
-            DocumentResult result = client.read(ADDRESS, KEYS.get(0),
-                    OperationOptions.builder().includeMetadata(true).build());
-            assertEquals(Document.builder().put("nested", ObjectValue.of(Map.of(
-                    "_etag", new StringValue("user-field")))).build(), result.document());
-            assertEquals(Instant.ofEpochSecond(123), result.metadata().lastModified());
-            assertEquals("version", result.metadata().version());
-            assertNativeTree(before, raw);
-        }
-    }
-
-    private static void assertNativeTree(JsonNode expected, JsonNode actual) {
-        assertEquals(expected.getClass(), actual.getClass());
-        assertEquals(expected, actual);
-        if (expected.isNumber()) {
-            assertEquals(expected.numberValue().getClass(), actual.numberValue().getClass());
-            assertEquals(expected.numberValue().toString(), actual.numberValue().toString());
-        } else if (expected.isObject()) {
-            assertEquals(toNames(expected), toNames(actual));
-            expected.fields().forEachRemaining(field -> assertNativeTree(field.getValue(), actual.get(field.getKey())));
-        } else if (expected.isArray()) {
-            for (int i = 0; i < expected.size(); i++) assertNativeTree(expected.get(i), actual.get(i));
-        }
-    }
-
-    private static List<String> toNames(JsonNode node) {
-        var names = new ArrayList<String>();
-        node.fieldNames().forEachRemaining(names::add);
-        return names;
-    }
 
     @Test
     void dynamoAllWriteOperationsMatchLegacyNativeRequests() throws Exception {
@@ -188,8 +91,8 @@ class NativeWriteMappingTest {
             streamClients.when(DynamoDbStreamsClient::builder).thenReturn(streamBuilder);
             try (MulticloudDbClient client = MulticloudDbClientFactory.create(MulticloudDbClientConfig.builder()
                     .provider(ProviderId.DYNAMO).connection(Map.of("region", "us-east-1")).build())) {
-                for (Document input : fixtures()) {
-                    Map<String, Object> before = DocumentMaps.toMap(input);
+                for (Map<String, Object> input : fixtures()) {
+                    Map<String, Object> before = new LinkedHashMap<>(input);
                     for (var key : KEYS) for (var options : OPTIONS) {
                         for (String op : List.of("create", "update", "upsert")) {
                             clearInvocations(sdk);
@@ -200,7 +103,7 @@ class NativeWriteMappingTest {
                             verify(sdk).putItem(captor.capture());
                             verifyNoMoreInteractions(sdk);
                             PutItemRequest actual = captor.getValue();
-                            // Exact old Document -> Map -> Jackson tree -> AttributeValue path.
+                            // Native envelope and operation policy are checked independently of the mapper.
                             var expectedItem = DynamoItemMapper.mapToAttributeMap(before);
                             expectedItem.put("partitionKey", AttributeValue.fromS(key.partitionKey()));
                             expectedItem.put("sortKey", AttributeValue.fromS(
@@ -217,7 +120,7 @@ class NativeWriteMappingTest {
                                         case "update" -> "attribute_exists(partitionKey)";
                                         default -> null;
                                     }).build(), actual);
-                            assertEquals(before, DocumentMaps.toMap(input));
+                            assertEquals(before, new LinkedHashMap<>(input));
                         }
                     }
                 }
@@ -259,8 +162,8 @@ class NativeWriteMappingTest {
                     .provider(ProviderId.SPANNER)
                     .connection(Map.of("projectId", "project", "instanceId", "instance", "databaseId", "database"))
                     .build())) {
-                for (Document input : fixtures()) {
-                    var before = DocumentMaps.toMap(input);
+                for (Map<String, Object> input : fixtures()) {
+                    var before = new LinkedHashMap<>(input);
                     for (var key : KEYS) for (var operationOptions : OPTIONS) {
                         for (String op : List.of("create", "update", "upsert")) {
                             for (String metadata : Arrays.asList("[\"prior\",\"n0\"]", "[]", "malformed", null)) {
@@ -271,7 +174,7 @@ class NativeWriteMappingTest {
                                 assertEquals(expected.getOperation(), captured.get().getOperation());
                                 assertEquals(expected.getColumns(), captured.get().getColumns());
                                 assertEquals(expected.asMap(), captured.get().asMap());
-                                assertEquals(before, DocumentMaps.toMap(input));
+                                assertEquals(before, new LinkedHashMap<>(input));
                                 if (op.equals("update")) {
                                     verify(sdk).readWriteTransaction();
                                     verify(runner).run(any());
@@ -290,12 +193,12 @@ class NativeWriteMappingTest {
                 clearInvocations(sdk, runner, txn);
                 prior.set(null);
                 assertEquals(MulticloudDbErrorCategory.NOT_FOUND, assertThrows(MulticloudDbException.class,
-                        () -> client.update(ADDRESS, KEYS.get(0), Document.builder().build())).error().category());
+                        () -> client.update(ADDRESS, KEYS.get(0), Map.of())).error().category());
                 verify(txn, never()).buffer(any(Mutation.class));
                 for (String op : List.of("create", "update", "upsert")) {
                     clearInvocations(sdk, runner, txn);
                     assertEquals(MulticloudDbErrorCategory.INVALID_REQUEST, assertThrows(MulticloudDbException.class,
-                            () -> write(client, op, KEYS.get(0), document(Map.of("DaTa", 1)),
+                            () -> write(client, op, KEYS.get(0), Map.of("DaTa", 1),
                                     OperationOptions.defaults())).error().category());
                     verifyNoInteractions(sdk, runner, txn);
                 }

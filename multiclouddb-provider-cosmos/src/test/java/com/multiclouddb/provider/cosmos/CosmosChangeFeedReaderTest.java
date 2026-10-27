@@ -8,11 +8,8 @@ import com.azure.cosmos.models.CosmosChangeFeedRequestOptions;
 import com.azure.cosmos.models.FeedRange;
 import com.azure.cosmos.models.FeedResponse;
 import com.azure.cosmos.util.CosmosPagedIterable;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.multiclouddb.api.MulticloudDbException;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
-import com.multiclouddb.api.document.*;
 import com.multiclouddb.api.MulticloudDbKey;
 import com.multiclouddb.api.changefeed.ChangeEvent;
 import com.multiclouddb.api.changefeed.ChangeType;
@@ -87,7 +84,7 @@ class CosmosChangeFeedReaderTest {
         CosmosContainer container = mock(CosmosContainer.class);
         FeedRange range = mockRange("range-0");
         when(container.getFeedRanges()).thenReturn(List.of(range));
-        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(Object.class)))
                 .thenThrow(new RuntimeException("simulated warmup failure"));
 
         List<ChangeFeedCursor> cursors = newReader().listCursors(container, ADDR);
@@ -112,11 +109,11 @@ class CosmosChangeFeedReaderTest {
         FeedRange range = mockRange("range-0");
         when(container.getFeedRanges()).thenReturn(List.of(range));
 
-        CosmosPagedIterable<JsonNode> paged = mock(CosmosPagedIterable.class);
-        Iterable<FeedResponse<JsonNode>> pages = mock(Iterable.class);
-        Iterator<FeedResponse<JsonNode>> it = mock(Iterator.class);
-        FeedResponse<JsonNode> resp = mock(FeedResponse.class);
-        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+        CosmosPagedIterable<Object> paged = mock(CosmosPagedIterable.class);
+        Iterable<FeedResponse<Object>> pages = mock(Iterable.class);
+        Iterator<FeedResponse<Object>> it = mock(Iterator.class);
+        FeedResponse<Object> resp = mock(FeedResponse.class);
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(Object.class)))
                 .thenReturn(paged);
         when(paged.iterableByPage()).thenReturn(pages);
         when(pages.iterator()).thenReturn(it);
@@ -150,11 +147,11 @@ class CosmosChangeFeedReaderTest {
         FeedRange range = FeedRange.forFullRange();
         when(container.getFeedRanges()).thenReturn(List.of(range));
 
-        CosmosPagedIterable<JsonNode> paged = mock(CosmosPagedIterable.class);
-        Iterable<FeedResponse<JsonNode>> pages = mock(Iterable.class);
-        Iterator<FeedResponse<JsonNode>> it = mock(Iterator.class);
-        FeedResponse<JsonNode> resp = mock(FeedResponse.class);
-        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+        CosmosPagedIterable<Object> paged = mock(CosmosPagedIterable.class);
+        Iterable<FeedResponse<Object>> pages = mock(Iterable.class);
+        Iterator<FeedResponse<Object>> it = mock(Iterator.class);
+        FeedResponse<Object> resp = mock(FeedResponse.class);
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(Object.class)))
                 .thenReturn(paged);
         when(paged.iterableByPage()).thenReturn(pages);
         when(pages.iterator()).thenReturn(it);
@@ -195,7 +192,7 @@ class CosmosChangeFeedReaderTest {
         // for that range's iteration. The point of this test is that each
         // iteration captures its own nowMs — not that the values are necessarily
         // distinct (they may coincide on a fast machine within 1ms).
-        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(Object.class)))
                 .thenThrow(new RuntimeException("forced PIT fallback"));
 
         long preLoop = System.currentTimeMillis();
@@ -231,7 +228,7 @@ class CosmosChangeFeedReaderTest {
     void emptyRanges_fallsBackToFullRange() {
         CosmosContainer container = mock(CosmosContainer.class);
         when(container.getFeedRanges()).thenReturn(Collections.emptyList());
-        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(Object.class)))
                 .thenThrow(new RuntimeException("forced PIT fallback"));
 
         List<ChangeFeedCursor> cursors = newReader().listCursors(container, ADDR);
@@ -269,11 +266,11 @@ class CosmosChangeFeedReaderTest {
 
         // Each queryChangeFeed call returns an empty page with a fresh
         // continuation; we just want to observe the head-partition rotation.
-        CosmosPagedIterable<JsonNode> paged = mock(CosmosPagedIterable.class);
-        Iterable<FeedResponse<JsonNode>> pages = mock(Iterable.class);
-        Iterator<FeedResponse<JsonNode>> it = mock(Iterator.class);
-        FeedResponse<JsonNode> resp = mock(FeedResponse.class);
-        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+        CosmosPagedIterable<Object> paged = mock(CosmosPagedIterable.class);
+        Iterable<FeedResponse<Object>> pages = mock(Iterable.class);
+        Iterator<FeedResponse<Object>> it = mock(Iterator.class);
+        FeedResponse<Object> resp = mock(FeedResponse.class);
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(Object.class)))
                 .thenReturn(paged);
         when(paged.iterableByPage()).thenReturn(pages);
         when(pages.iterator()).thenReturn(it);
@@ -311,13 +308,9 @@ class CosmosChangeFeedReaderTest {
     void readChanges_avadDeleteTombstone_recoversKeysFromMetadata() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
 
-        ObjectMapper om = new ObjectMapper();
-        JsonNode envelope = om.readTree(
-                "{\"current\":{},"
-                        + "\"metadata\":{\"lsn\":50,\"crts\":1700000000,"
-                        + "\"operationType\":\"delete\",\"previousImageLSN\":49,"
-                        + "\"id\":\"cf-delete-abc\","
-                        + "\"partitionKey\":{\"partitionKey\":\"cf-delete-abc\"}}}");
+        Object envelope = Map.of("current", Map.of(), "metadata", Map.of(
+                "lsn", 50, "crts", 1700000000, "operationType", "delete", "previousImageLSN", 49,
+                "id", "cf-delete-abc", "partitionKey", Map.of("partitionKey", "cf-delete-abc")));
 
         String rangeA = FeedRange.forLogicalPartition(
                 new com.azure.cosmos.models.PartitionKey("cf-delete-abc")).toString();
@@ -326,11 +319,11 @@ class CosmosChangeFeedReaderTest {
                 List.of(new PartitionPosition(rangeA, "@@FROM_NOW")));
         ChangeFeedCursor cursor = new ChangeFeedCursor(seed);
 
-        CosmosPagedIterable<JsonNode> paged = mock(CosmosPagedIterable.class);
-        Iterable<FeedResponse<JsonNode>> pages = mock(Iterable.class);
-        Iterator<FeedResponse<JsonNode>> it = mock(Iterator.class);
-        FeedResponse<JsonNode> resp = mock(FeedResponse.class);
-        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+        CosmosPagedIterable<Object> paged = mock(CosmosPagedIterable.class);
+        Iterable<FeedResponse<Object>> pages = mock(Iterable.class);
+        Iterator<FeedResponse<Object>> it = mock(Iterator.class);
+        FeedResponse<Object> resp = mock(FeedResponse.class);
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(Object.class)))
                 .thenReturn(paged);
         when(paged.iterableByPage()).thenReturn(pages);
         when(pages.iterator()).thenReturn(it);
@@ -350,7 +343,8 @@ class CosmosChangeFeedReaderTest {
         assertEquals(MulticloudDbKey.of("cf-delete-abc", "cf-delete-abc"), ev.key(),
                 "key (pk+sk) must be recovered from metadata.id and metadata.partitionKey");
         assertNotNull(ev.data(), "data must never be null even for tombstones");
-        assertEquals(ObjectValue.of(Map.of()), ev.data());
+        assertEquals(Map.of(), ev.data());
+        assertTrue(ev.hasData());
     }
 
     @Test
@@ -359,15 +353,11 @@ class CosmosChangeFeedReaderTest {
     void readChanges_avadDelete_metadataPkAsBareString_recovers() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
 
-        ObjectMapper om = new ObjectMapper();
         // Defensive: tolerate a future / alternative shape where the value
         // arrives as a bare string instead of a nested {path:value} object.
-        JsonNode envelope = om.readTree(
-                "{\"current\":{},"
-                        + "\"metadata\":{\"lsn\":51,\"crts\":1700000001,"
-                        + "\"operationType\":\"delete\",\"previousImageLSN\":50,"
-                        + "\"id\":\"cf-delete-xyz\","
-                        + "\"partitionKey\":\"cf-delete-xyz\"}}");
+        Object envelope = Map.of("current", Map.of(), "metadata", Map.of(
+                "lsn", 51, "crts", 1700000001, "operationType", "delete", "previousImageLSN", 50,
+                "id", "cf-delete-xyz", "partitionKey", "cf-delete-xyz"));
 
         String rangeA = FeedRange.forLogicalPartition(
                 new com.azure.cosmos.models.PartitionKey("cf-delete-xyz")).toString();
@@ -376,11 +366,11 @@ class CosmosChangeFeedReaderTest {
                 List.of(new PartitionPosition(rangeA, "@@FROM_NOW")));
         ChangeFeedCursor cursor = new ChangeFeedCursor(seed);
 
-        CosmosPagedIterable<JsonNode> paged = mock(CosmosPagedIterable.class);
-        Iterable<FeedResponse<JsonNode>> pages = mock(Iterable.class);
-        Iterator<FeedResponse<JsonNode>> it = mock(Iterator.class);
-        FeedResponse<JsonNode> resp = mock(FeedResponse.class);
-        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+        CosmosPagedIterable<Object> paged = mock(CosmosPagedIterable.class);
+        Iterable<FeedResponse<Object>> pages = mock(Iterable.class);
+        Iterator<FeedResponse<Object>> it = mock(Iterator.class);
+        FeedResponse<Object> resp = mock(FeedResponse.class);
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(Object.class)))
                 .thenReturn(paged);
         when(paged.iterableByPage()).thenReturn(pages);
         when(pages.iterator()).thenReturn(it);
@@ -402,15 +392,12 @@ class CosmosChangeFeedReaderTest {
     void readChanges_avadDelete_previousPresent_usesBodyForKeys() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
 
-        ObjectMapper om = new ObjectMapper();
-        JsonNode envelope = om.readTree(
-                "{\"current\":{},"
-                        + "\"previous\":{\"id\":\"cf-delete-prev\",\"partitionKey\":\"cf-delete-prev\",\"v\":1,"
-                        + "\"_ts\":1700000002,\"_etag\":\"\\\"etag-prev\\\"\"},"
-                        + "\"metadata\":{\"lsn\":52,\"crts\":1700000002,"
-                        + "\"operationType\":\"delete\",\"previousImageLSN\":51,"
-                        + "\"id\":\"cf-delete-prev\","
-                        + "\"partitionKey\":{\"partitionKey\":\"cf-delete-prev\"}}}");
+        Object envelope = Map.of("current", Map.of(),
+                "previous", Map.of("id", "cf-delete-prev", "partitionKey", "cf-delete-prev", "v", 1,
+                        "_ts", 1700000002, "_etag", "\"etag-prev\""),
+                "metadata", Map.of("lsn", 52, "crts", 1700000002, "operationType", "delete",
+                        "previousImageLSN", 51, "id", "cf-delete-prev",
+                        "partitionKey", Map.of("partitionKey", "cf-delete-prev")));
 
         String rangeA = FeedRange.forLogicalPartition(
                 new com.azure.cosmos.models.PartitionKey("cf-delete-prev")).toString();
@@ -419,11 +406,11 @@ class CosmosChangeFeedReaderTest {
                 List.of(new PartitionPosition(rangeA, "@@FROM_NOW")));
         ChangeFeedCursor cursor = new ChangeFeedCursor(seed);
 
-        CosmosPagedIterable<JsonNode> paged = mock(CosmosPagedIterable.class);
-        Iterable<FeedResponse<JsonNode>> pages = mock(Iterable.class);
-        Iterator<FeedResponse<JsonNode>> it = mock(Iterator.class);
-        FeedResponse<JsonNode> resp = mock(FeedResponse.class);
-        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+        CosmosPagedIterable<Object> paged = mock(CosmosPagedIterable.class);
+        Iterable<FeedResponse<Object>> pages = mock(Iterable.class);
+        Iterator<FeedResponse<Object>> it = mock(Iterator.class);
+        FeedResponse<Object> resp = mock(FeedResponse.class);
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(Object.class)))
                 .thenReturn(paged);
         when(paged.iterableByPage()).thenReturn(pages);
         when(pages.iterator()).thenReturn(it);
@@ -442,63 +429,55 @@ class CosmosChangeFeedReaderTest {
         // synthesised id@ts fallback.
         assertEquals("\"etag-prev\"", ev.providerEventId(),
                 "providerEventId must come from the `previous` body's _etag when available");
-        ObjectValue data = (ObjectValue) ev.data();
-        assertEquals(NumberValue.of(1), data.get("v").orElseThrow());
-        assertEquals(new StringValue("cf-delete-prev"), data.get("id").orElseThrow());
+        Map<?, ?> data = (Map<?, ?>) ev.data();
+        assertEquals(1, data.get("v"));
+        assertEquals("cf-delete-prev", data.get("id"));
     }
 
     @Test
     void selectedPayloadsReachTheFinalNeutralEventWithoutInventingImageSemantics() throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-        var envelope = mapper.createObjectNode();
-        envelope.putObject("metadata").put("operationType", "replace").put("id", "record")
-                .put("partitionKey", "tenant");
-        envelope.set("current", mapper.readTree("{\"nested\":[null,{\"n\":2}]}"));
-        envelope.set("previous", mapper.readTree("{\"old\":true}"));
-        ObjectValue expected = ObjectValue.of(Map.of("nested", ArrayValue.of(List.of(
-                NullValue.INSTANCE, ObjectValue.of(Map.of("n", NumberValue.of(2)))))));
+        Map<String, Object> envelope = new java.util.LinkedHashMap<>();
+        Map<String, Object> metadata = new java.util.LinkedHashMap<>(Map.of(
+                "operationType", "replace", "id", "record", "partitionKey", "tenant"));
+        envelope.put("metadata", metadata);
+        Map<String, Object> expected = Map.of("nested", java.util.Arrays.asList(null, Map.of("n", 2)));
+        envelope.put("current", expected);
+        envelope.put("previous", Map.of("old", true));
         assertEquals(expected, readEnvelope(envelope).data());
-        envelope.withObject("/metadata").put("operationType", "delete");
-        assertEquals(ObjectValue.of(Map.of("old", new BooleanValue(true))), readEnvelope(envelope).data());
+        metadata.put("operationType", "delete");
+        assertEquals(Map.of("old", true), readEnvelope(envelope).data());
         envelope.remove("previous");
-        envelope.putNull("current");
-        ObjectValue fallback = (ObjectValue) readEnvelope(envelope).data();
-        assertEquals(NullValue.INSTANCE, fallback.get("current").orElseThrow());
-        assertTrue(fallback.get("previous").isEmpty());
+        envelope.put("current", null);
+        Map<?, ?> fallback = (Map<?, ?>) readEnvelope(envelope).data();
+        assertTrue(fallback.containsKey("current"));
+        org.junit.jupiter.api.Assertions.assertNull(fallback.get("current"));
+        assertFalse(fallback.containsKey("previous"));
         envelope.remove("current");
-        assertTrue(((ObjectValue) readEnvelope(envelope).data()).get("current").isEmpty());
+        assertFalse(((Map<?, ?>) readEnvelope(envelope).data()).containsKey("current"));
     }
 
     @Test
-    void modelDomainFailuresAreSafeClassifiedFeedErrors() {
-        ObjectMapper mapper = new ObjectMapper();
-        JsonNode deep = mapper.createObjectNode();
-        for (int i = 0; i < 128; i++) deep = mapper.createArrayNode().add(deep);
-        for (JsonNode invalid : List.of(deep,
-                mapper.getNodeFactory().numberNode(new java.math.BigDecimal(java.math.BigInteger.ONE, 1025)),
-                mapper.getNodeFactory().numberNode(java.math.BigInteger.TEN.pow(1024)),
-                mapper.getNodeFactory().numberNode(Double.NaN),
-                mapper.getNodeFactory().binaryNode(new byte[]{1, 2}))) {
-            var envelope = mapper.createObjectNode();
-            envelope.putObject("metadata").put("id", "record").put("partitionKey", "tenant");
-            envelope.putObject("current").set("private-field", invalid);
+    void unsupportedNativeValuesAreSafeClassifiedFeedErrors() {
+        for (Object invalid : List.of(new byte[]{1, 2}, new Object())) {
+            Object envelope = Map.of("metadata", Map.of("id", "record", "partitionKey", "tenant"),
+                    "current", Map.of("private-field", invalid));
             MulticloudDbException failure = assertThrows(MulticloudDbException.class, () -> readEnvelope(envelope));
             assertEquals(MulticloudDbErrorCategory.PROVIDER_ERROR, failure.error().category());
             assertEquals(ProviderId.COSMOS, failure.error().provider());
             assertEquals("readChanges", failure.error().operation());
             assertFalse(failure.error().retryable());
             assertEquals(Map.of("reason", "invalid_document_payload"), failure.error().providerDetails());
-            assertEquals("Provider response cannot be represented as a Document value.", failure.error().message());
+            assertEquals("Provider response cannot be represented as neutral data.", failure.error().message());
             org.junit.jupiter.api.Assertions.assertNull(failure.getCause());
         }
     }
 
     @SuppressWarnings("unchecked")
-    private ChangeEvent readEnvelope(JsonNode envelope) {
+    private ChangeEvent readEnvelope(Object envelope) {
         CosmosContainer container = mock(CosmosContainer.class);
-        CosmosPagedIterable<JsonNode> paged = mock(CosmosPagedIterable.class);
-        FeedResponse<JsonNode> response = mock(FeedResponse.class);
-        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+        CosmosPagedIterable<Object> paged = mock(CosmosPagedIterable.class);
+        FeedResponse<Object> response = mock(FeedResponse.class);
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(Object.class)))
                 .thenReturn(paged);
         when(paged.iterableByPage()).thenReturn(List.of(response));
         when(response.getResults()).thenReturn(List.of(envelope));
@@ -514,14 +493,11 @@ class CosmosChangeFeedReaderTest {
     void readChanges_envelopeMissingAllKeys_throwsProviderError() throws Exception {
         CosmosContainer container = mock(CosmosContainer.class);
 
-        ObjectMapper om = new ObjectMapper();
         // Pathological: a DELETE envelope where the metadata block has no
         // id/partitionKey at all and the bodies are empty. The reader must
         // surface a structured PROVIDER_ERROR instead of an opaque IAE.
-        JsonNode envelope = om.readTree(
-                "{\"current\":{},"
-                        + "\"metadata\":{\"lsn\":99,\"crts\":1700000099,"
-                        + "\"operationType\":\"delete\"}}");
+        Object envelope = Map.of("current", Map.of(),
+                "metadata", Map.of("lsn", 99, "crts", 1700000099, "operationType", "delete"));
 
         String rangeA = FeedRange.forLogicalPartition(
                 new com.azure.cosmos.models.PartitionKey("orphan")).toString();
@@ -530,11 +506,11 @@ class CosmosChangeFeedReaderTest {
                 List.of(new PartitionPosition(rangeA, "@@FROM_NOW")));
         ChangeFeedCursor cursor = new ChangeFeedCursor(seed);
 
-        CosmosPagedIterable<JsonNode> paged = mock(CosmosPagedIterable.class);
-        Iterable<FeedResponse<JsonNode>> pages = mock(Iterable.class);
-        Iterator<FeedResponse<JsonNode>> it = mock(Iterator.class);
-        FeedResponse<JsonNode> resp = mock(FeedResponse.class);
-        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(JsonNode.class)))
+        CosmosPagedIterable<Object> paged = mock(CosmosPagedIterable.class);
+        Iterable<FeedResponse<Object>> pages = mock(Iterable.class);
+        Iterator<FeedResponse<Object>> it = mock(Iterator.class);
+        FeedResponse<Object> resp = mock(FeedResponse.class);
+        when(container.queryChangeFeed(any(CosmosChangeFeedRequestOptions.class), eq(Object.class)))
                 .thenReturn(paged);
         when(paged.iterableByPage()).thenReturn(pages);
         when(pages.iterator()).thenReturn(it);

@@ -16,8 +16,6 @@ module com.multiclouddb.api {
     exports com.multiclouddb.api;
     exports com.multiclouddb.api.query;
     exports com.multiclouddb.api.changefeed;
-    exports com.multiclouddb.api.document;
-    exports com.multiclouddb.api.codec;
 
     // SPI — only to provider modules and the conformance test suite, not to app code.
     // NOTE: multiclouddb-conformance currently has no module-info.java and runs on

@@ -3,8 +3,6 @@
 
 package com.multiclouddb.conformance.us1;
 
-import static com.multiclouddb.conformance.Documents.document;
-
 import com.multiclouddb.api.*;
 import org.junit.jupiter.api.*;
 
@@ -55,7 +53,7 @@ public abstract class QueryPagingConformanceTest {
     void setupItems() {
         for (int i = 1; i <= TOTAL_ITEMS; i++) {
             MulticloudDbKey key = MulticloudDbKey.of(KEY_PREFIX + i, KEY_PREFIX + i);
-            client.upsert(getAddress(), key, document(Map.of("title", "Paging Item " + i, "batch", "paging-conformance")));
+            client.upsert(getAddress(), key, Map.of("title", "Paging Item " + i, "batch", "paging-conformance"));
         }
     }
 

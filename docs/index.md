@@ -190,12 +190,7 @@ try (MulticloudDbClient client = MulticloudDbClientFactory.create(config)) {
 // CRUD - same code for every provider
 ResourceAddress todos = new ResourceAddress("mydb", "todos");
 MulticloudDbKey key = MulticloudDbKey.of("todo-1", "todo-1");
-// Document types are in com.multiclouddb.api.document (development API).
-Document doc = Document.builder()
-    .put("id", new StringValue("todo-1"))
-    .put("status", new StringValue("active"))
-    .put("category", new StringValue("shopping"))
-    .build();
+Map<String, Object> doc = Map.of("id", "todo-1", "status", "active", "category", "shopping");
 client.upsert(todos, key, doc);
 
 // Query with portable expressions - auto-translated per provider

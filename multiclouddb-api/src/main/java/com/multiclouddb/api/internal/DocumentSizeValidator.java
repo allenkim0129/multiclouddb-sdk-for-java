@@ -3,10 +3,10 @@
 
 package com.multiclouddb.api.internal;
 
-import com.multiclouddb.api.document.Document;
 import com.multiclouddb.api.MulticloudDbError;
 import com.multiclouddb.api.MulticloudDbErrorCategory;
 import com.multiclouddb.api.MulticloudDbException;
+import java.util.Map;
 
 /**
  * Validates document payload sizes against the uniform maximum defined by FR-061.
@@ -38,7 +38,7 @@ public final class DocumentSizeValidator {
      * @throws MulticloudDbException with category {@link MulticloudDbErrorCategory#INVALID_REQUEST}
      *                               if the document exceeds the size limit
      */
-    public static void validate(Document document, String operation) {
+    public static void validate(Map<String, Object> document, String operation) {
         if (document == null) {
             return;
         }
@@ -48,6 +48,8 @@ public final class DocumentSizeValidator {
             throw invalid("Document logical JSON size is at least " + failure.observedBytes
                     + " bytes (measurement stopped at the limit; not the full size)."
                     + " Maximum logical JSON size is " + MAX_BYTES + " bytes (399 KB).", operation);
+        } catch (IllegalArgumentException | ArithmeticException failure) {
+            throw invalid("Document cannot be represented as supported neutral JSON data.", operation);
         }
     }
 

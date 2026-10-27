@@ -69,7 +69,7 @@ The SDK is fully implemented with CRUD + query + paging + conformance tests (47 
 ## Technical Context
 
 **Language/Version**: Java 17 LTS (Eclipse Adoptium Temurin-17.0.10.7-hotspot)
-**Primary Dependencies**: API runtime: Gson 2.11.0 (private cursor JSON), its transitive error_prone_annotations 2.27.0 metadata dependency, and SLF4J 2.0.12; no Jackson. Optional customer adapter/native providers: Jackson 2.22.3, Azure Cosmos SDK 4.82.0, Azure Identity 1.18.2, AWS SDK v2 2.34.0, Google Cloud Spanner 6.62.0; provider-specific dependencies are managed in the root POM.
+**Primary Dependencies**: API runtime: Gson 2.11.0 (private cursor JSON), its transitive error_prone_annotations 2.27.0 metadata dependency, and SLF4J 2.0.12; no Jackson. Native providers: Azure Cosmos SDK 4.82.0, Azure Identity 1.18.2, AWS SDK v2 2.34.0, Google Cloud Spanner 6.62.0. Spanner also uses Gson for internal persisted JSON. No direct production Jackson declaration or shipped mapping adapter.
 **Storage**: Cosmos DB (NoSQL), DynamoDB, Spanner (via provider SDKs)
 **Testing**: JUnit 5.10.2, Mockito 5.11.0, Maven Surefire/Failsafe
 **Target Platform**: JVM 17+ (server-side)
@@ -81,23 +81,28 @@ The SDK is fully implemented with CRUD + query + paging + conformance tests (47 
 ## Foundation serialization increment
 
 The [Foundation design](../../docs/design/serialization-pr1-foundation.md)
-defines this increment: immutable six-kind Document, explicit application-owned
-Class/TypeRef codecs, optional Jackson token mapping and Jackson-free core API.
-Provider writes traverse Document directly into Cosmos ObjectNode, Dynamo
+defines this increment: Map boundaries, explicit application-owned mapping
+examples and Jackson-free core API, without a shipped mapping interface.
+Provider writes traverse Maps directly into Cosmos request Maps, Dynamo
 AttributeValue containers and Spanner typed mutations/marked nested JSON STRINGs.
-Cosmos point reads filter root system fields without copying or mutating the
-response. Other read/feed parsers and query Map/Object contracts stay unchanged.
+Cosmos point reads filter root system fields into detached mutable data without
+mutating the response. Internal JSON syntax uses Gson where necessary; existing
+read/feed selection and query Map-row contracts stay unchanged.
 Native SDK encoding is separate from application mapping.
 
 Validation remains structural logical JSON size <=399 KiB (408,576 bytes) after
-application mapping and before provider input construction. The selected
-DynamoDB-equivalent 400 KiB item budget, Binary and new numeric/partial-update
-policies are follow-on designs, not this implementation. Retain current numeric
+application mapping and before provider input construction. Do not introduce
+native-size, binary or new numeric/partial-update policies. Retain current numeric
 conversion, reserved keys, TTL, FIELD_DATA and Spanner update transactions.
 `NativeWriteMappingTest` compares old native conversion oracles with all three
-write operations; existing model, codec, size and read/feed tests cover the
+write operations; application mapping, value/size and read/feed tests cover the
 unchanged boundaries. No live-service or universal performance guarantee follows
 from native-mock tests or mapping-only measurements.
+
+Integrate provider-local Cosmos v4 packaging with explicit JPMS and a reduced
+published POM; validate the current dependency configuration. JNA 5.13.0 and
+jna-platform 5.17.0 remain shared and unrelocated; arbitrary application-version
+coexistence is not established by this configuration's checks.
 
 ## Constitution Check
 
