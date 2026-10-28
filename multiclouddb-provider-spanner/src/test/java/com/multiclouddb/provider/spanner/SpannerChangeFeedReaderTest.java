@@ -96,6 +96,58 @@ class SpannerChangeFeedReaderTest {
     }
 
     @Test
+    void allDeclaredInt64ColumnsDecodeInSelectedImages() {
+        List<Struct> columns = List.of(column("first", "INT64"), column("second", "INT64"),
+                column("third", "INT64"), column("text", "STRING"));
+        String newer = "{\"first\":\"1\",\"second\":\"9223372036854775807\","
+                + "\"third\":9007199254740993,\"text\":\"1\"}";
+        String older = "{\"first\":\"-2\",\"second\":\"-9223372036854775808\","
+                + "\"third\":-9007199254740993,\"text\":\"-2\"}";
+        for (String operation : List.of("INSERT", "UPDATE", "DELETE")) {
+            Map<String, Object> expected = operation.equals("DELETE")
+                    ? Map.of("first", -2L, "second", Long.MIN_VALUE,
+                            "third", -9007199254740993L, "text", "-2")
+                    : Map.of("first", 1L, "second", Long.MAX_VALUE,
+                            "third", 9007199254740993L, "text", "1");
+            assertEquals(expected, readValues(operation, newer, older, columns).data());
+        }
+    }
+
+    @Test
+    void absentNullOrFilteredFirstInt64DoesNotSkipLaterColumns() {
+        List<Struct> columns = List.of(column("first", "INT64"), column("second", "INT64"),
+                column("data", "STRING"));
+        for (String operation : List.of("INSERT", "UPDATE", "DELETE")) {
+            for (String image : List.of("{\"second\":\"2\"}",
+                    "{\"first\":null,\"second\":\"2\"}",
+                    "{\"first\":\"not-an-integer\",\"second\":\"2\",\"data\":\"[\\\"second\\\"]\"}")) {
+                Map<String, Object> expected = new java.util.LinkedHashMap<>();
+                if (image.contains("\"first\":null")) {
+                    expected.put("first", null);
+                }
+                expected.put("second", 2L);
+                assertEquals(expected, readValues(operation, image, image, columns).data());
+            }
+        }
+    }
+
+    @Test
+    void invalidLaterInt64FailsSafelyEvenWhenFirstIsAbsentNullOrFiltered() {
+        List<Struct> columns = List.of(column("first", "INT64"), column("second", "INT64"),
+                column("data", "STRING"));
+        for (String first : List.of("\"first\":\"1\",", "", "\"first\":null,",
+                "\"first\":\"filtered\",\"data\":\"[\\\"second\\\"]\",")) {
+            for (String value : List.of("\"9223372036854775808\"", "\"-9223372036854775809\"",
+                    "9223372036854775808", "\"1.5\"", "true", "\"private-native-payload\"")) {
+                String image = "{" + first + "\"second\":" + value + "}";
+                for (String operation : List.of("INSERT", "UPDATE", "DELETE")) {
+                    assertSafePayloadFailure(() -> readValues(operation, image, image, columns));
+                }
+            }
+        }
+    }
+
+    @Test
     void declaredInt64PreservesSignedRangeAndIntegralJsonWithoutRounding() {
         for (long value : new long[]{Long.MIN_VALUE, -9007199254740993L, -1, 0, 1,
                 9007199254740993L, Long.MAX_VALUE}) {

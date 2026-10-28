@@ -691,8 +691,8 @@ final class SpannerChangeFeedReader {
                 if (value != null) {
                     object.put(column, decodeInt64(value));
                 }
-                return object;
             }
+            return object;
         }
         return raw;
     }

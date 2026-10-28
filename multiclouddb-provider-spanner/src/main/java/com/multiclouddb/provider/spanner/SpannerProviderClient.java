@@ -716,7 +716,7 @@ public class SpannerProviderClient implements MulticloudDbProviderClient {
      * Executes a pre-translated portable query using GoogleSQL and returns a single
      * page of results.
      * <p>
-     * Called by {@link com.multiclouddb.api.internal.DefaultMulticloudDbClient} after
+     * Called by the internal {@code DefaultMulticloudDbClient} after
      * the portable expression has been parsed, validated, and translated into GoogleSQL
      * by {@link SpannerExpressionTranslator}. Named parameters from
      * {@link TranslatedQuery#namedParameters()} are bound; leading {@code @} prefixes

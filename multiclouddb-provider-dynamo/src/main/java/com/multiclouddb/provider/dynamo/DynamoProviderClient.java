@@ -515,7 +515,7 @@ public class DynamoProviderClient implements MulticloudDbProviderClient {
      * Executes a pre-translated portable query using DynamoDB PartiQL and returns a
      * single page of results.
      * <p>
-     * Called by {@link com.multiclouddb.api.internal.DefaultMulticloudDbClient} after
+     * Called by the internal {@code DefaultMulticloudDbClient} after
      * the portable expression has been parsed, validated, and translated into a PartiQL
      * statement by {@link DynamoExpressionTranslator}.
      * <p>

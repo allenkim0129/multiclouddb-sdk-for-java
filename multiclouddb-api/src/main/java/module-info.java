@@ -10,6 +10,9 @@
  * visible to provider modules and the conformance test module, and the
  * internal package is not exported.
  */
+// Qualified-export recipients are downstream modules, absent while this API compiles.
+// Suppress only descriptor module lint; missing required modules remain compiler errors.
+@SuppressWarnings("module")
 module com.multiclouddb.api {
 
     // Public API — what app developers use

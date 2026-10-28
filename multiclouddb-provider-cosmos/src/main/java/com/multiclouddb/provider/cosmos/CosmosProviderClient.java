@@ -461,7 +461,7 @@ public class CosmosProviderClient implements MulticloudDbProviderClient {
     /**
      * Executes a pre-translated portable query and returns a single page of results.
      * <p>
-     * Called by {@link com.multiclouddb.api.internal.DefaultMulticloudDbClient} after
+     * Called by the internal {@code DefaultMulticloudDbClient} after
      * the portable expression has been parsed, validated, and translated into Cosmos SQL
      * by {@link CosmosExpressionTranslator}. Named parameters from
      * {@link TranslatedQuery#namedParameters()} are bound directly as

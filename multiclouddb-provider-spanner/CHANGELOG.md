@@ -48,7 +48,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Fixed
 
 - Change-feed scalar INT64 columns now use native `column_types` metadata to
-  decode string-encoded signed 64-bit integers to Long values.
+  decode string-encoded signed 64-bit integers to Long values. Every retained
+  declared column is processed, including after an absent, null or filtered column.
   Selected new/old images and FIELD_DATA filtering are preserved. Invalid or
   overflowing declared integers fail safely as `PROVIDER_ERROR/readChanges`
   (`invalid_document_payload`), outside the legacy raw-JSON fallback.

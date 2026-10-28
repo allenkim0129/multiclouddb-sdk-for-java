@@ -583,7 +583,8 @@ objects are valid. Inspect the selected payload rather than assume a full DTO.
 
 Spanner's JSON marker, FIELD_DATA and update transaction are existing storage
 contracts, not redundant serialization to remove. In change feeds, `column_types`
-identifies scalar INT64 fields after FIELD_DATA filtering. In-range integer
+identifies every retained scalar INT64 field after FIELD_DATA filtering; an
+absent, null or filtered earlier column does not skip later fields. In-range integer
 strings and integral numbers become Long without rounding; null/absence remain.
 Missing/null/empty type metadata retains legacy representation. Malformed
 declarations or invalid/overflowing declared INT64 values report
