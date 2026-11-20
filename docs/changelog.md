@@ -13,7 +13,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Added:**
 
-- Portable change-feed API in `com.multiclouddb.api.changefeed`: `ChangeFeedCursor` (opaque, persistable via `toToken(serialize)` / `fromToken(token, deserialize)` with a `now()` live-tip sentinel), `ChangeFeedPage` (events + `nextCursor` + `hasMore`/`terminal`), `ChangeEvent` (with stable `providerEventId` for dedup), `ChangeType`, and `CursorExpiredException`. Two new entry points on `MulticloudDbClient`: `listCursors(ResourceAddress)` and `readChanges(ResourceAddress, ChangeFeedCursor[, OperationOptions])`. Provider SPI methods default to `UNSUPPORTED_CAPABILITY` so existing adapters compile unchanged. The cursor wire format is opaque, version-tagged Base64URL JSON; the 24-hour portable baseline is enforced client-side on the token''s last-issued timestamp. `OperationOptions.timeout()` is not enforced on the change-feed path in this release.
+- Portable change-feed API in `com.multiclouddb.api.changefeed`: `ChangeFeedCursor` (opaque, persistable via `toToken()` / `fromToken(token)` with a `now()` live-tip sentinel), `ChangeFeedPage` (events + `nextCursor` + `hasMore`/`terminal`), `ChangeEvent` (with stable `providerEventId` for dedup), `ChangeType`, and `CursorExpiredException`. Two new entry points on `MulticloudDbClient`: `listCursors(ResourceAddress)` and `readChanges(ResourceAddress, ChangeFeedCursor[, OperationOptions])`. Provider SPI methods default to `UNSUPPORTED_CAPABILITY` so existing adapters compile unchanged. The cursor wire format is opaque, version-tagged Base64URL JSON; the 24-hour portable baseline is enforced client-side on the token''s last-issued timestamp. `OperationOptions.timeout()` is not enforced on the change-feed path in this release.
 - New error category `MulticloudDbErrorCategory.CURSOR_EXPIRED` carrying a canonical `providerDetails.reason` set (`TOKEN_AGED_OUT`, `PROVIDER_TRIMMED`, `ITERATOR_EXPIRED`, `MALFORMED`, `VERSION_UNSUPPORTED`, `PROVIDER_MISMATCH`, `RESOURCE_MISMATCH`), exported as public `CursorTokenCodec.REASON_*` constants.
 - New error category `MulticloudDbErrorCategory.CLIENT_CLOSED` surfaced by a `DefaultMulticloudDbClient` post-close guard on every public entry point (replaces provider-specific `IllegalStateException` leaks). `MulticloudDbClient.close()` is now idempotent.
 - Extended change-feed retention opt-in: `ChangeFeedConfig.extendedRetention(Duration)` (validates `> 24h`), wired into `MulticloudDbClientConfig.changeFeed(...)`, plus the new `Capability.EXTENDED_CHANGE_FEED_HISTORY`. The factory''s build-time gate refuses to instantiate a client whose provider does not declare the capability, surfacing `UNSUPPORTED_CAPABILITY(reason="extended_retention_unavailable")` before any I/O. The cursor token wire format carries an optional `"e"` field stamping the opted-in retention so a persisted cursor under a 7-day opt-in can be resumed beyond 24h up to the configured window without `TOKEN_AGED_OUT`; older tokens (no `"e"`) keep the 24h floor.
@@ -21,14 +21,19 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 **Changed:**
 
-- Cache completed container identities during common write/cursor validation.
+- **Breaking (from the intermediate callback API):** Replace cursor
+  `toToken(serializer)` / `fromToken(token, deserializer)` with `toToken()` /
+  `fromToken(token)`. Remove callback arguments and recompile; existing v1 tokens
+  remain readable. An internal Gson 2.15 streaming codec preserves numeric/parser,
+  Unicode, sentinel, retention and binding behavior. No client-level serializer
+  is required. Gson is a runtime API-module dependency; Jackson stays test-only.
+- Cache completed container identities during common write validation.
   Write validation rechecks subtree height at each reuse depth; cycles and writes
   beyond the 32-level boundary remain rejected. This does not bound native serialization
   of a shared graph by its distinct edges.
-- Keep invalid cursor retention values out of error messages and sanitize runtime
-  failures while accessing callback results. Malformed retention fields retain
-  `MALFORMED`; callback contract/access failures use `IllegalStateException`
-  without original messages, causes or suppressed exceptions.
+- Keep invalid cursor retention values out of error messages. Cursor JSON parse
+  failures remain `MALFORMED` without original parser messages, causes, suppressed
+  exceptions or payloads; callback-only failure paths have been removed.
   ([PR #122](https://github.com/microsoft/multiclouddb-sdk-for-java/pull/122))
 - Normalize unavailable change-feed images to `data() == null` rather than
   synthesizing an empty object or returning a Cosmos transport envelope.
@@ -46,7 +51,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   ([PR #122](https://github.com/microsoft/multiclouddb-sdk-for-java/pull/122))
 - **Breaking:** Replace Jackson payload types with Map/Object in point-read
   and change-feed results; applications own object mapping. Cursor persistence
-  now requires explicit JSON callbacks, retaining existing JSON token compatibility.
+  remains SDK-owned, retaining existing JSON token compatibility.
   Writes reject null roots, non-finite numbers and formerly implicitly serialized
   values outside the supported Map/List/scalar vocabulary; applications map them
   explicitly and declare their own Jackson dependencies/JPMS requirements if used.
@@ -57,7 +62,7 @@ and all modules adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 - Development Map examples now use the coordinated source-installed API/Cosmos/
   Dynamo `0.1.0-beta.2-SNAPSHOT` and Spanner `0.1.0-beta.1-SNAPSHOT`.
-  Correct Map example symbols, payload ownership, explicit JSON callbacks and
+  Correct Map example symbols, payload ownership, SDK-owned cursor encoding and
   native-to-Map field visibility without changing runtime behavior.
 - `MulticloudDbClient.delete(...)` is documented as idempotent on every provider — a missing key is a silent no-op. Callers needing to detect a missing key should use `read(...)`.
 

@@ -122,8 +122,8 @@ public abstract class ChangeFeedConformanceTest {
     void cursorTokenRoundTrip() {
         List<ChangeFeedCursor> cursors = client.listCursors(getAddress());
         for (ChangeFeedCursor c : cursors) {
-            String wire = c.toToken(com.multiclouddb.conformance.ApplicationJson::write);
-            ChangeFeedCursor revived = ChangeFeedCursor.fromToken(wire, com.multiclouddb.conformance.ApplicationJson::read);
+            String wire = c.toToken();
+            ChangeFeedCursor revived = ChangeFeedCursor.fromToken(wire);
             assertEquals(c.token().providerId(), revived.token().providerId());
             assertEquals(c.token().resource(), revived.token().resource());
             assertEquals(c.token().anchor(), revived.token().anchor());
@@ -278,14 +278,14 @@ public abstract class ChangeFeedConformanceTest {
                     client.listCursors(getAddress()).toArray(new ChangeFeedCursor[0]));
             // Persist as wire form
             String[] wires = new String[resumeCursors.length];
-            for (int i = 0; i < wires.length; i++) wires[i] = resumeCursors[i].toToken(com.multiclouddb.conformance.ApplicationJson::write);
+            for (int i = 0; i < wires.length; i++) wires[i] = resumeCursors[i].toToken();
 
             client.upsert(getAddress(), second, Map.of("v", 1));
 
             // Restore and read
             ChangeFeedCursor[] restored = new ChangeFeedCursor[wires.length];
             for (int i = 0; i < wires.length; i++) {
-                restored[i] = ChangeFeedCursor.fromToken(wires[i], com.multiclouddb.conformance.ApplicationJson::read);
+                restored[i] = ChangeFeedCursor.fromToken(wires[i]);
             }
             ChangeEvent secondEvent = waitForEventByKey(restored, second, propagationTimeout());
             assertNotNull(secondEvent, "second event must surface on restored cursors");
@@ -308,9 +308,9 @@ public abstract class ChangeFeedConformanceTest {
                 longAgo,
                 CursorAnchor.CONTINUING,
                 List.of(new PartitionPosition("any", null)));
-        String wire = CursorTokenCodec.encode(aged, com.multiclouddb.conformance.ApplicationJson::write);
+        String wire = CursorTokenCodec.encode(aged);
         CursorExpiredException ex = assertThrows(CursorExpiredException.class,
-                () -> ChangeFeedCursor.fromToken(wire, com.multiclouddb.conformance.ApplicationJson::read));
+                () -> ChangeFeedCursor.fromToken(wire));
         assertEquals(CursorTokenCodec.REASON_TOKEN_AGED_OUT,
                 ex.error().providerDetails().get("reason"));
     }
@@ -361,7 +361,7 @@ public abstract class ChangeFeedConformanceTest {
     @DisplayName("FR-cf-011: malformed Base64 garbage raises CursorExpiredException(MALFORMED)")
     void malformedTokenRaises() {
         CursorExpiredException ex = assertThrows(CursorExpiredException.class,
-                () -> ChangeFeedCursor.fromToken("!!! not a token !!!", com.multiclouddb.conformance.ApplicationJson::read));
+                () -> ChangeFeedCursor.fromToken("!!! not a token !!!"));
         assertEquals(CursorTokenCodec.REASON_MALFORMED,
                 ex.error().providerDetails().get("reason"));
     }

@@ -4,6 +4,11 @@
 package com.multiclouddb.api.changefeed;
 
 import com.multiclouddb.api.changefeed.internal.CursorToken;
+import com.multiclouddb.api.changefeed.internal.CursorAnchor;
+import com.multiclouddb.api.changefeed.internal.PartitionPosition;
+import com.multiclouddb.api.ProviderId;
+import com.multiclouddb.api.ResourceAddress;
+import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -38,8 +43,8 @@ class ChangeFeedCursorTest {
     @DisplayName("toToken round-trips through fromToken into an equal CursorToken")
     void toTokenRoundTrip() {
         ChangeFeedCursor original = ChangeFeedCursor.now();
-        String wire = original.toToken(com.multiclouddb.api.TestJson::write);
-        ChangeFeedCursor decoded = ChangeFeedCursor.fromToken(wire, com.multiclouddb.api.TestJson::read);
+        String wire = original.toToken();
+        ChangeFeedCursor decoded = ChangeFeedCursor.fromToken(wire);
         assertEquals(original.token().providerId(), decoded.token().providerId());
         assertEquals(original.token().anchor(), decoded.token().anchor());
         assertEquals(original.token().partitions(), decoded.token().partitions());
@@ -49,12 +54,40 @@ class ChangeFeedCursorTest {
     @Test
     @DisplayName("fromToken on garbage raises CursorExpiredException")
     void fromTokenGarbageThrows() {
-        assertThrows(CursorExpiredException.class, () -> ChangeFeedCursor.fromToken("not-a-real-token", com.multiclouddb.api.TestJson::read));
+        assertThrows(CursorExpiredException.class, () -> ChangeFeedCursor.fromToken("not-a-real-token"));
     }
 
     @Test
     @DisplayName("constructor rejects null token")
     void constructorRejectsNull() {
         assertThrows(NullPointerException.class, () -> new ChangeFeedCursor((CursorToken) null));
+    }
+
+    @Test
+    void persistencePreservesAllProviderPositionsAndDoesNotRefreshIssuedAt() {
+        long issuedAt = System.currentTimeMillis() - 60_000;
+        var address = new ResourceAddress("db", "collection");
+        for (ProviderId provider : List.of(ProviderId.COSMOS, ProviderId.DYNAMO, ProviderId.SPANNER)) {
+            for (CursorAnchor anchor : CursorAnchor.values()) {
+                var state = new CursorToken(provider, address, issuedAt, anchor,
+                        List.of(new PartitionPosition("p0", "@@ITER:opaque/\ud800"),
+                                new PartitionPosition("p1", null)), 604_800_000);
+                var cursor = new ChangeFeedCursor(state);
+                String saved = cursor.toToken();
+                var restored = ChangeFeedCursor.fromToken(saved);
+                assertEquals(state, restored.token());
+                assertEquals(saved, restored.toToken());
+                assertFalse(restored.isUnhydratedSentinel());
+            }
+        }
+    }
+
+    @Test
+    void oldUnhydratedSentinelStillResumesAsLiveTipNotAsCheckpoint() {
+        var state = new CursorToken(ChangeFeedCursor.SENTINEL_PROVIDER, null, 0,
+                CursorAnchor.NOW, List.of());
+        var restored = ChangeFeedCursor.fromToken(new ChangeFeedCursor(state).toToken());
+        assertTrue(restored.isUnhydratedSentinel());
+        assertEquals(state, restored.token());
     }
 }

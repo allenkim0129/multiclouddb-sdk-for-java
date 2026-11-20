@@ -36,8 +36,10 @@ In this development reactor, the root POM coordinates API/Cosmos/Dynamo
 `0.1.0-beta.2-SNAPSHOT` and Spanner `0.1.0-beta.1-SNAPSHOT`. Build and consume
 the same revision; see [Quick Start](getting-started.md#2-add-dependencies).
 
-The common API has no runtime JSON-library dependency. Applications own object
-mapping and cursor JSON callbacks. Native provider dependencies remain visible:
+The common API uses an internal Gson streaming codec for cursor tokens, without
+exposing JSON-library types or callback configuration. Jackson is test-only in
+the API module. Applications own document mapping; client-level document
+serialization is not implemented. Native provider dependencies remain visible:
 Cosmos still uses native Jackson, DynamoDB its AWS JSON stack, and Spanner an
 explicit production Gson dependency (Jackson is test-only in that module).
 `ItemMapper` (Cosmos), `DynamoItemMapper` and `SpannerRowMapper` are package-private

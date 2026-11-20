@@ -253,11 +253,10 @@ Subscribe to inserts, updates and deletes with three primitives —
 `ChangeFeedCursor` (opaque, persistable position), `listCursors` (one cursor
 per provider partition), and `readChanges` (one page at a time).
 
-For persistence, use `serialize` from the
-[JSON callback example](guide.md#application-owned-json-processing);
-in-memory cursors do not require JSON configuration.
+Cursor persistence uses the [SDK-owned codec](guide.md#sdk-owned-cursor-encoding);
+no application JSON configuration is required.
 `persist(String)` below is your application's durable checkpoint function, not
-an SDK method. Supply its implementation and the JSON callback before compiling
+an SDK method. Supply its implementation before compiling
 this method-body fragment; handle interruption or declare `InterruptedException`.
 
 ```java
@@ -275,7 +274,7 @@ while (true) {
     }
 
     cursor = page.nextCursor();
-    persist(cursor.toToken(serialize)); // resume from this point on restart
+    persist(cursor.toToken()); // resume from this point on restart
 
     if (!page.hasMore()) Thread.sleep(500);
 }

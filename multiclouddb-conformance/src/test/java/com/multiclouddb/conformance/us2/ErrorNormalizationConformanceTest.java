@@ -223,10 +223,10 @@ public abstract class ErrorNormalizationConformanceTest {
                 stale,
                 CursorAnchor.CONTINUING,
                 List.of(new PartitionPosition("p-0", "c-0")));
-        String wire = CursorTokenCodec.encode(token, com.multiclouddb.conformance.ApplicationJson::write);
+        String wire = CursorTokenCodec.encode(token);
 
         CursorExpiredException ex = assertThrows(CursorExpiredException.class,
-                () -> ChangeFeedCursor.fromToken(wire, com.multiclouddb.conformance.ApplicationJson::read),
+                () -> ChangeFeedCursor.fromToken(wire),
                 "fromToken of an aged token must throw CursorExpiredException");
 
         assertNotNull(ex.error(), "CursorExpiredException must carry a structured error");

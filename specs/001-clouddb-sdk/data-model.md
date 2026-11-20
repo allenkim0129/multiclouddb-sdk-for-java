@@ -171,7 +171,7 @@ Fields:
 - `provider`: provider id
 - `operation`: string
 - `retryable`: bool
-- `provider_details`: optional object (available provider codes, request ids and native diagnostic text). Native messages/details and original causes are preserved and may contain sensitive data; applications apply logging/redaction policy. SDK document-validation and cursor callback/result-access diagnostics are separately sanitized without input values or original callback exceptions.
+- `provider_details`: optional object (available provider codes, request ids and native diagnostic text). Native messages/details and original causes are preserved and may contain sensitive data; applications apply logging/redaction policy. SDK document-validation and cursor JSON parse diagnostics are separately sanitized without input values or original parser exceptions.
 
 ## Relationships
 - ClientConfig selects Provider and influences capabilities.

@@ -8,10 +8,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.function.BiFunction;
-import java.util.function.Function;
 
-/** Test-owned adapter for the released Jackson JSON profile, not an SDK default. */
+/** Test-only reference for the released Jackson cursor profile. */
 public final class TestJson {
     private static final ObjectMapper MAPPER = new ObjectMapper(JsonFactory.builder()
             .streamReadConstraints(StreamReadConstraints.builder().maxNestingDepth(1000)
@@ -21,9 +19,6 @@ public final class TestJson {
             .disable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
             .disable(DeserializationFeature.USE_BIG_INTEGER_FOR_INTS)
             .disable(DeserializationFeature.USE_LONG_FOR_INTS);
-    public static final Function<Object, String> SERIALIZE = TestJson::write;
-    public static final BiFunction<String, Class<?>, Object> DESERIALIZE = TestJson::read;
-
     private TestJson() {}
 
     public static String write(Object value) {

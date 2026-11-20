@@ -9,20 +9,20 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
-- **Breaking:** Narrow cursor deserializer callback numeric results to the exact
-  Byte, Short, Integer, Long, Float, Double, BigInteger and BigDecimal classes.
-  Previously accepted BigInteger/BigDecimal subclasses now fail with the existing
-  unsupported-neutral-value `IllegalStateException`, preventing overridden
-  `toString()` from introducing locale-dependent cursor text. Standard numeric
-  coercion, scale/exponent text and cursor wire behavior are unchanged.
+- **Breaking (from the intermediate callback API):** Replace
+  `toToken(serializer)` / `fromToken(token, deserializer)` with `toToken()` /
+  `fromToken(token)`. The SDK owns cursor encoding through an internal Gson 2.15
+  streaming codec; no application callback or client-level serializer is needed.
+  Remove callback arguments and recompile. Existing v1 Base64URL JSON tokens,
+  numeric/parser compatibility, sentinel behavior, retention and binding checks
+  are preserved. Jackson stays test-only in the API module; Gson is a runtime
+  dependency with no public JSON-library types or configuration.
 - Validate shared Map/List subgraphs once per call, retaining cycle checks and
-  checking cached subtree height at every write-depth reuse. Cursor callback
-  results use the same completed-identity approach without a document-depth
-  limit. This bounds validation traversal, not native serialization expansion.
-- Keep invalid cursor retention values out of error messages and sanitize runtime
-  failures while accessing callback results. Malformed retention fields retain
-  `MALFORMED`; callback contract/access failures use `IllegalStateException`
-  without original messages, causes or suppressed exceptions.
+  checking cached subtree height at every write-depth reuse.
+  This bounds validation traversal, not native serialization expansion.
+- Keep invalid cursor retention values out of error messages. Cursor JSON parse
+  failures remain `MALFORMED` without original parser messages, causes, suppressed
+  exceptions or payloads; callback-only failure paths have been removed.
   ([PR #122](https://github.com/microsoft/multiclouddb-sdk-for-java/pull/122))
 - Normalize unavailable change-feed images to `data() == null` rather than
   synthesizing an empty object or returning a Cosmos transport envelope.
@@ -39,7 +39,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   ([PR #122](https://github.com/microsoft/multiclouddb-sdk-for-java/pull/122))
 - **Breaking:** Replace Jackson payload types with Map/Object in point-read
   and change-feed results; applications own object mapping. Cursor persistence
-  now requires explicit JSON callbacks, retaining existing JSON token compatibility.
+  remains SDK-owned, retaining existing JSON token compatibility.
   Writes reject null roots, non-finite numbers and formerly implicitly serialized
   values outside the supported Map/List/scalar vocabulary; applications map them
   explicitly and declare their own Jackson dependencies/JPMS requirements if used.
@@ -49,7 +49,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Documentation
 
 - Align development Map examples with source-installed module versions and
-  application-owned mapping/cursor callbacks. Clarify missing point-read payloads
+  application-owned mapping and SDK-owned cursor encoding. Clarify missing point-read payloads
   and result ownership. These documentation corrections do not change runtime
   behavior.
 

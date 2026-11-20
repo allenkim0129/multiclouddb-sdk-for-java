@@ -4,8 +4,9 @@ All configuration flows through `MulticloudDbClientConfig` or a `.properties` fi
 Select a provider and supply its connection and auth properties.
 
 There is no client-level POJO mapper or JSON serializer option. Cursor
-persistence receives [application-owned callbacks](guide.md#application-owned-json-processing)
-on each `toToken`/`fromToken` call; CRUD, queries and in-memory cursors need none.
+persistence uses an [SDK-owned codec](guide.md#sdk-owned-cursor-encoding)
+through `toToken()` / `fromToken(String)`, independently of document mapping.
+Neither cursor persistence nor client construction requires JSON configuration.
 
 ---
 

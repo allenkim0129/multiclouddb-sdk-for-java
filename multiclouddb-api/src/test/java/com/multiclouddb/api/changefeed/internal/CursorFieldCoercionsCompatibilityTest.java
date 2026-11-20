@@ -14,6 +14,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import com.multiclouddb.api.changefeed.ChangeFeedCursor;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -44,19 +46,16 @@ class CursorFieldCoercionsCompatibilityTest {
                     for (int i = 0; i < numbers.size(); i++) {
                         Number value = numbers.get(i);
                         assertEquals(expected.get(i), CursorFieldCoercions.text(value, null));
-                        int[] callbacks = {0};
-                        ChangeFeedCursor cursor = ChangeFeedCursor.fromToken("e30", (text, target) -> {
-                            assertEquals(Object.class, target);
-                            callbacks[0]++;
-                            return Map.of("v", 1, "p", "cosmos", "i", issuedAt, "a", "CONTINUING",
-                                    "s", List.of(Map.of("id", value, "c", value)));
-                        });
-                        assertEquals(1, callbacks[0]);
+                        String json = TestJson.write(Map.of("v", 1, "p", "cosmos", "i", issuedAt,
+                                "a", "CONTINUING", "s", List.of(Map.of(
+                                        "id", expected.get(i), "c", expected.get(i)))));
+                        ChangeFeedCursor cursor = ChangeFeedCursor.fromToken(Base64.getUrlEncoder()
+                                .withoutPadding().encodeToString(json.getBytes(StandardCharsets.UTF_8)));
                         assertEquals(expected.get(i), cursor.token().partitions().get(0).partitionId());
                         assertEquals(expected.get(i), cursor.token().partitions().get(0).continuation());
-                        String wire = cursor.toToken(TestJson.SERIALIZE);
+                        String wire = cursor.toToken();
                         assertEquals(cursor.token(),
-                                ChangeFeedCursor.fromToken(wire, TestJson.DESERIALIZE).token());
+                                ChangeFeedCursor.fromToken(wire).token());
                         if (baselineWires.size() < numbers.size()) baselineWires.add(wire);
                         else assertEquals(baselineWires.get(i), wire);
                     }
@@ -95,7 +94,7 @@ class CursorFieldCoercionsCompatibilityTest {
                 new Coercion("\"Infinity\"", 2147483647, 9223372036854775807L, "Infinity", false),
                 new Coercion("[]", -9, -9L, "", false),
                 new Coercion("{}", -9, -9L, "", false))) {
-            Object next = JsonSupport.read(fixture.json(), TestJson.DESERIALIZE);
+            Object next = JsonSupport.read(fixture.json());
             assertEquals(fixture.integer(), CursorFieldCoercions.asInt(next, -9), "int: " + fixture.json());
             assertEquals(fixture.longValue(), CursorFieldCoercions.asLong(next, -9), "long: " + fixture.json());
             assertEquals(fixture.text(), CursorFieldCoercions.text(next, null), "text: " + fixture.json());
@@ -106,10 +105,10 @@ class CursorFieldCoercionsCompatibilityTest {
     @Test
     void strictSyntaxAndDuplicateTrailingBehaviorMatchTheEstablishedBaseline() throws IOException {
         assertEquals(2, ((java.util.Map<?, ?>) JsonSupport.read(
-                "{\"v\":1,\"v\":2} true", TestJson.DESERIALIZE)).get("v"));
+                "{\"v\":1,\"v\":2} true")).get("v"));
         for (String invalid : List.of("{'v':1}", "{v:1}", "{\"v\":NaN}",
                 "{\"v\":1,}", "{\"v\":01}", "{/*comment*/\"v\":1}")) {
-            assertThrows(IOException.class, () -> JsonSupport.read(invalid, TestJson.DESERIALIZE), invalid);
+            assertThrows(IOException.class, () -> JsonSupport.read(invalid), invalid);
         }
     }
 
@@ -119,8 +118,8 @@ class CursorFieldCoercionsCompatibilityTest {
                 "\u00e9 \ud83d\ude00", "\ud800", "\udc00", "\\uD800")) {
             CursorToken original = new CursorToken(com.multiclouddb.api.ProviderId.COSMOS, null,
                     0, CursorAnchor.NOW, List.of(new PartitionPosition("p", value)));
-            String wire = CursorTokenCodec.encode(original, TestJson.SERIALIZE);
-            assertEquals(value, CursorTokenCodec.decode(wire, 0, TestJson.DESERIALIZE)
+            String wire = CursorTokenCodec.encode(original);
+            assertEquals(value, CursorTokenCodec.decode(wire, 0)
                     .partitions().get(0).continuation());
         }
     }
@@ -128,10 +127,10 @@ class CursorFieldCoercionsCompatibilityTest {
     @Test
     void preservesExistingParserDepthAndIntegerLimits() throws IOException {
         String atDepth = "[".repeat(1000) + "null" + "]".repeat(1000);
-        assertNotNull(JsonSupport.read(atDepth, TestJson.DESERIALIZE));
+        assertNotNull(JsonSupport.read(atDepth));
         for (String invalid : List.of("[" + atDepth + "]", "1".repeat(1001),
                 "-" + "1".repeat(1001))) {
-            assertThrows(IOException.class, () -> JsonSupport.read(invalid, TestJson.DESERIALIZE));
+            assertThrows(IOException.class, () -> JsonSupport.read(invalid));
         }
     }
 }

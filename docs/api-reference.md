@@ -13,7 +13,7 @@ contract.
 This reference describes the development Map API. Use the exact source-installed
 [module versions](getting-started.md#2-add-dependencies), not older beta
 dependencies with these signatures. Additional application libraries are needed
-only when your own mapping or cursor JSON callbacks use them.
+only when your own document mapping uses them. Cursor encoding is SDK-owned.
 
 ### Key Types
 
@@ -47,7 +47,7 @@ only when your own mapping or cursor JSON callbacks use them.
 
 | Type | Description |
 |------|-------------|
-| `ChangeFeedCursor` | Opaque, immutable position in a change feed. `now()` mints a sentinel at the live tip; `toToken(serialize)` / `fromToken(token, deserialize)` persist it. |
+| `ChangeFeedCursor` | Opaque, immutable position in a change feed. `now()` mints a sentinel at the live tip; `toToken()` / `fromToken(token)` persist it. |
 | `ChangeFeedPage` | A page of change events plus `nextCursor`, `hasMore`, and `terminal` flags. |
 | `ChangeEvent` | A single change with `key`, `type`, `commitTimestamp`, `data`, and `providerEventId`. |
 | `ChangeType` | Enum: `CREATE`, `UPDATE`, `DELETE`. |
@@ -57,7 +57,7 @@ only when your own mapping or cursor JSON callbacks use them.
 See [guide.md - Change Feeds](guide.md#change-feeds) for the full workflow,
 provisioning prerequisites, and multi-thread pattern.
 
-### Payloads, ownership and JSON callbacks
+### Payloads, ownership and cursor encoding
 
 - Writes take non-null `Map<String, Object>` with the
   [supported neutral values](guide.md#supported-values-and-numeric-precision).
@@ -69,12 +69,11 @@ provisioning prerequisites, and multi-thread pattern.
   empty Map remains a payload. There is no `hasData()` member or completeness
   guarantee. Provider-returned payload containers are detached and mutable.
   Direct `DocumentResult`/`ChangeEvent` constructors retain their supplied data.
-- Cursor persistence takes `Function<Object, String>` and restoration takes
-  `BiFunction<String, Class<?>, Object>` with `Object.class` as the target.
-  No client-level serializer configuration or SDK POJO adapter is implemented.
-  See the [callback compatibility and error contract](guide.md#application-owned-json-processing):
-  parse processing failures become `CURSOR_EXPIRED/MALFORMED`; callback/result
-  contract failures are sanitized `IllegalStateException`s.
+- Cursor persistence uses `toToken()` and restoration uses `fromToken(String)`.
+  The codec is internal; no client-level serializer or application JSON callback
+  is required. No SDK POJO adapter is implemented.
+  See the [compatibility and error contract](guide.md#sdk-owned-cursor-encoding):
+  parse failures become sanitized `CURSOR_EXPIRED/MALFORMED` errors.
 
 ---
 

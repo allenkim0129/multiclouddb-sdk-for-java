@@ -151,7 +151,7 @@ numeric/null mappings. See also
 ## Change-Feed History Retention
 
 The portable change-feed read path guarantees a **24-hour** history floor on
-every provider out of the box — a cursor token minted by `ChangeFeedCursor#toToken(serialize)`
+every provider out of the box — a cursor token minted by `ChangeFeedCursor#toToken()`
 can be replayed for 24 hours regardless of which provider produced it.
 
 To request a longer server-side retention window, opt in via

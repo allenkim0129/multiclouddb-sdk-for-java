@@ -7,7 +7,7 @@ import java.math.BigInteger;
 
 /**
  * Text, int, long and retention-field coercions for the SDK v1 cursor envelope
- * after an application JSON callback has decoded it. This is not a general JSON
+ * after the SDK-owned JSON reader has decoded it. This is not a general JSON
  * parser or value converter. Persisted tokens may be malformed or user-supplied;
  * schema, version and age validation remain in the codec, and binding validation
  * remains at the existing codec/client boundaries.
